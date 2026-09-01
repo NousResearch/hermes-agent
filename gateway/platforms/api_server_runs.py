@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import logging
 import os
 import threading
@@ -235,7 +236,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
-    ) = ({} for _ in range(7))
+        self._run_clarify_sessions,
+    ) = ({} for _ in range(8))
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -244,6 +246,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
+        ("POST", "/v1/runs/{run_id}/clarification", self._handle_run_clarification),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
@@ -362,7 +365,8 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
 # and clarify share the grant's ``approve`` permission. Acknowledging a lost owner epoch
 # ends the run like a stop, so ``/resolve-unknown`` rides the ``stop`` permission.
 _ROOM_CONTROL_PERMISSIONS = {
-    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
+    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve",
+    "/clarify": "approve", "/clarification": "approve"}
 
 
 def _room_permission_for(request: web.Request) -> str:
@@ -543,6 +547,10 @@ class _RunLaunch:
         # Isolated per run: session ids are conversation scopes, not authorization namespaces.
         return self.run_id
 
+    @property
+    def clarify_session_key(self) -> str:
+        return self.run_id
+
     def put_event(self, event: Optional[dict]) -> None:
         """Enqueue only while this run still owns live transport state."""
         if self.owner._run_streams.get(self.run_id) is self.queue:
@@ -556,8 +564,22 @@ def _forget_run(self, run_id: str, *tables) -> None:
     self._release_run_owner_if_forgotten(run_id)
 
 
+def _clear_run_clarify(self, run_id: str) -> None:
+    """Drop the run's clarify session key and unblock any waiter."""
+    clarify_session_key = self._run_clarify_sessions.pop(run_id, None)
+    if not clarify_session_key:
+        return
+    with suppress(Exception):
+        from tools.clarify_gateway import clear_session
+        clear_session(clarify_session_key)
+
+
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
+    _clear_run_clarify(self, run_id)
+    cur = self._run_statuses.get(run_id)
+    if cur is not None and cur.get("awaiting_user"):
+        cur["awaiting_user"] = False
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
                 self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
@@ -801,8 +823,10 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
+    self._run_clarify_sessions[run_id] = run_id  # clarify session key (same isolation rule)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id,
+        model=body.get("model", self._model_name), awaiting_user=False)
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -811,7 +835,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
+                self._run_clarify_sessions, self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
@@ -1041,6 +1065,64 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # need not yield to already-scheduled commentary/tool callbacks.
             loop.call_soon(run.put_event, _run_event(run_id, f"run.{status}", **fields, **extra))
 
+    clarify_session_key = run.clarify_session_key
+    q = run.queue
+
+    def _clarify_callback(question: str, choices, multi_select: bool = False) -> str:
+        from tools import clarify_gateway
+        redact = _api_server.redact_sensitive_text
+        safe_question = str(redact(str(question or ""), force=True) or "")[
+            :_api_server._RUN_CLARIFY_MAX_QUESTION_CHARS]
+        safe_choices = None
+        if choices:
+            safe_choices = [
+                str(redact(str(choice), force=True) or "")[:_api_server._RUN_CLARIFY_MAX_CHOICE_CHARS]
+                for choice in list(choices)[:4]]
+        allow_multi = bool(multi_select) and bool(safe_choices)
+        request_id = f"clarify_{uuid.uuid4().hex}"
+        clarify_gateway.register(
+            clarify_id=request_id, session_key=clarify_session_key, question=safe_question,
+            choices=safe_choices, multi_select=allow_multi)
+        prompt = {
+            "version": _api_server._RUN_CLARIFY_PROMPT_VERSION,
+            "type": "choice" if safe_choices else "text", "question": safe_question}
+        if safe_choices:
+            prompt["choices"] = [
+                {"id": f"choice-{index}", "label": label}
+                for index, label in enumerate(safe_choices, start=1)]
+            prompt["multi_select"] = allow_multi
+
+        def _publish_clarify() -> None:
+            if (
+                run_id in self._stopping_run_ids
+                or clarify_gateway.get_pending_by_id(request_id, session_key=clarify_session_key) is None
+            ):
+                return
+            if self._run_streams.get(run_id) is not q:
+                clarify_gateway.clear_session(clarify_session_key)
+                return
+            self._set_run_status(
+                run_id, "waiting_for_clarification", last_event="clarify.request", awaiting_user=True)
+            run.put_event(_run_event(run_id, "clarify.request", request_id=request_id, prompt=prompt))
+
+        try:
+            loop.call_soon_threadsafe(_publish_clarify)
+        except RuntimeError:
+            clarify_gateway.clear_session(clarify_session_key)
+            return "[clarify prompt could not be delivered]"
+        timeout = clarify_gateway.get_clarify_timeout()
+        response = clarify_gateway.wait_for_response(request_id, timeout=float(timeout))
+        if not response:
+            def _clear_awaiting_on_timeout() -> None:
+                if self._run_statuses.get(run_id, {}).get("awaiting_user"):
+                    self._set_run_status(
+                        run_id, "running", last_event="clarify.timeout", awaiting_user=False)
+
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(_clear_awaiting_on_timeout)
+            return f"[user did not respond within {int(timeout / 60)}m]"
+        return response
+
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
         # interrupt yet, and starting a turn now would outlive the gateway.
@@ -1082,7 +1164,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with self._profile_scope(run.request_profile):
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                    interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                    interim_assistant_callback=_interim_cb,
+                    clarify_callback=_clarify_callback, enable_clarify=True, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(
@@ -1146,7 +1229,7 @@ def _release_run_owner_if_forgotten(self, run_id: str) -> None:
     """Drop the owner stamp only once nothing keyed by *run_id* survives: ownership must
     outlive every surface it protects (retired on different clocks); ownerless = fail-closed."""
     live = (self._run_statuses, self._active_run_agents, self._active_run_tasks, self._run_streams,
-            self._run_approval_sessions)
+            self._run_approval_sessions, self._run_clarify_sessions)
     if not any(run_id in table for table in live):
         self._run_owners.pop(run_id, None)
 
@@ -1459,7 +1542,7 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         return _json_error(
             _openai_error, f"Run is not active in this gateway process: {run_id}",
             code="run_not_active", status=409)
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+    self._set_run_status(run_id, "stopping", last_event="run.stopping", awaiting_user=False)
     self._stopping_run_ids.add(run_id)
     if agent is not None:
         with suppress(Exception):
@@ -1467,6 +1550,7 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         # Reap only this run's background processes (epoch-gated inside, so a concurrent
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")
+    _clear_run_clarify(self, run_id)
     return web.json_response({"run_id": run_id, "status": "stopping"})
 
 

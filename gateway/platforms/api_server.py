@@ -63,10 +63,20 @@ class _ArtifactScopeFacade:
 # Advertised in capabilities and echoed in registration responses; validated by the broker.
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
+# Runs clarification prompt/response bounds (advertised in /v1/capabilities).
+_RUN_CLARIFY_PROMPT_VERSION = 1
+_RUN_CLARIFY_MAX_QUESTION_CHARS = 2000
+_RUN_CLARIFY_MAX_CHOICE_CHARS = 500
+_RUN_CLARIFY_MAX_RESPONSE_CHARS = 2000
+_RUN_CLARIFY_REQUEST_ID_RE = re.compile(r"^clarify_[0-9a-f]{32}$")
+
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
-    "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
+    "run_approval_response": True, "run_clarification_response": True,
+    "run_clarification_request_binding": True,
+    "run_clarification_prompt_version": _RUN_CLARIFY_PROMPT_VERSION,
+    "tool_progress_events": True, "approval_events": True, "clarification_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
@@ -84,6 +94,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_status", ("GET", "/v1/runs/{run_id}")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
+    ("run_clarification", ("POST", "/v1/runs/{run_id}/clarification")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
@@ -1267,10 +1278,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _active_structured_run_count(self) -> int:
         """Count structured runs that still have executable work."""
         # "stopping" is not terminal: executor work continues until the agent notices.
+        # Clarification waits still own a live agent thread, so they count as active.
         return sum(
             1
             for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            if status.get("status") in {
+                "queued", "running", "waiting_for_approval",
+                "waiting_for_clarification", "stopping"}
         )
 
     @staticmethod
@@ -2284,11 +2298,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[dict[str, Any]] = None, route: Optional[dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[dict[str, Any]] = None,
-        room_execution_policy: Optional[dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[dict[str, Any]] = None,
+        clarify_callback=None, enable_clarify: bool = False) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
-        session ``/model`` override, disables the fallback chain and fails closed."""
+        session ``/model`` override, disables the fallback chain and fails closed.
+        ``enable_clarify`` is reserved for the Runs lifecycle (typed HTTP response route)."""
         from run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
@@ -2312,7 +2328,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = set(_get_platform_tools(user_config, "api_server"))
+        if enable_clarify:
+            enabled_toolsets.add("clarify")
+        enabled_toolsets = sorted(enabled_toolsets)
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
         if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
@@ -2340,6 +2359,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "interim_assistant_callback": interim_assistant_callback,
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
+            "clarify_callback": clarify_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -4392,6 +4412,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_run_clarify = _run_route_delegate("_handle_run_clarify")
+    _handle_run_clarification = _run_route_delegate("_handle_run_clarification")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
     _handle_resolve_unknown_run = _run_route_delegate("_handle_resolve_unknown_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")

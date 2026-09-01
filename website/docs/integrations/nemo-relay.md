@@ -58,7 +58,7 @@ Relay exporters and [runtime plugins](https://docs.nvidia.com/nemo/relay/v0.8.2/
 
 Hermes depends on `nemo-relay>=0.8.2,<0.9`. A normal Hermes install or update installs Relay automatically on [supported platforms](https://docs.nvidia.com/nemo/relay/v0.8.2/reference/support-matrix#platforms-and-architectures). You do not need the Relay CLI for the basic setup below; the CLI is useful for optional tasks such as [validating a dynamic plugin manifest](https://docs.nvidia.com/nemo/relay/v0.8.2/configure-plugins/discoverable-plugins#validate-before-loading-code).
 
-Relay publishes native Python wheels for:
+The NeMo Relay integration is available only on platforms for which Relay publishes a native Python wheel:
 
 | Operating system | Architecture |
 |---|---|
@@ -66,7 +66,7 @@ Relay publishes native Python wheels for:
 | Linux, including glibc and musl distributions (not Android) | x86_64 or ARM64 |
 | Windows | x86_64 or ARM64 |
 
-Hermes continues to work on other platforms, but Relay scopes, middleware, plugins, and subscribers are unavailable there.
+Platforms not listed above—including Intel Macs and Android/Termux—are unsupported by the Relay integration. Hermes continues to work on those platforms, but Relay scopes, middleware, plugins, and subscribers are unavailable.
 
 ## Quick Start
 

@@ -208,7 +208,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir / remote remembered cwd (detached otherwise)
+//   2. Configured default project dir (detached otherwise — in BOTH local and
+//      remote mode; a bare new chat never inherits the sticky remembered cwd,
+//      #57911 / #84220)
 //
 // The "active project" is just an atom ($projectScope) — so inside a project a
 // new session (cmd-n, the trunk "+") starts at that project's root (its primary

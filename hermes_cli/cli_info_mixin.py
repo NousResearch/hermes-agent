@@ -1009,7 +1009,7 @@ class CLIInfoMixin:
         conversation_history, so message alternation stays intact.
         """
         try:
-            from agent.skill_commands import reload_skills, get_skill_commands
+            from agent.skill_commands import reload_skills, get_interactive_skill_commands
             if not self._command_running:
                 print(t("cli.reload_skills.reloading"))
             result = reload_skills()
@@ -1017,7 +1017,7 @@ class CLIInfoMixin:
             # Sync cli.py's module-level _skill_commands so help / dispatch / Tab-completion see
             # the updated dict without a restart.
             import cli as _cli
-            _cli._skill_commands = get_skill_commands()
+            _cli._skill_commands = get_interactive_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])
             total = result.get("total", 0)

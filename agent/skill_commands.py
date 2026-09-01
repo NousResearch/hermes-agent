@@ -509,6 +509,62 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
+def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Project enabled plugin skills into the interactive-only slash namespace."""
+    from agent.skill_utils import get_disabled_skill_names
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    from tools.skills_tool import (
+        _parse_frontmatter, skill_matches_apps, skill_matches_environment,
+        skill_matches_platform,
+    )
+
+    discover_plugins()
+    manager = get_plugin_manager()
+    disabled = get_disabled_skill_names()
+    disabled_plugins = _get_disabled_plugins()
+    commands: Dict[str, Dict[str, Any]] = {}
+    for metadata in manager.list_plugin_skill_metadata():
+        qualified = str(metadata.get("name") or "").strip()
+        if not qualified or ":" not in qualified or qualified in disabled or qualified.split(":", 1)[1] in disabled:
+            continue
+        if metadata.get("plugin_key") in disabled_plugins or qualified.split(":", 1)[0] in disabled_plugins:
+            continue
+        skill_md = manager.find_plugin_skill(qualified)
+        if skill_md is None or not skill_md.is_file():
+            continue
+        try:
+            parsed, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
+        except OSError:
+            continue
+        frontmatter = metadata.get("frontmatter") or parsed
+        if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
+                and skill_matches_apps(frontmatter)):
+            continue
+        key = f"/{qualified.lower()}"
+        if skill_command_collision_note(qualified) is not None or key in commands:
+            logger.warning("Plugin skill %r collides with an existing slash command; skipping", qualified)
+            continue
+        commands[key] = {
+            "name": qualified, "description": str(metadata.get("description") or parsed.get("description")
+                                                  or f"Invoke the {qualified} plugin skill").strip(),
+            "skill_identifier": qualified, "skill_md_path": str(skill_md),
+            "skill_dir": str(skill_md.parent), "source": "plugin",
+        }
+    return commands
+
+
+def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Filesystem skills plus profile-scoped plugin skills; never use for native menus."""
+    commands = dict(get_skill_commands())
+    for key, info in get_plugin_skill_commands().items():
+        if key in commands:
+            logger.warning("Plugin skill %r collides with %r; keeping the first", key, commands[key]["name"])
+        else:
+            commands[key] = info
+    return commands
+
+
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
     """Diff two {name: description} snapshots into added/removed/unchanged/total.
     Removed entries carry the pre-rescan description (the file may be gone)."""
@@ -543,17 +599,19 @@ def reload_skills() -> Dict[str, Any]:
     return result
 
 
-def resolve_skill_command_key(command: str) -> Optional[str]:
-    """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
-    return resolve_slash_key(command, get_skill_commands())
+def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Optional[str]:
+    """Resolve a user-typed /command; native callers retain filesystem-only lookup."""
+    return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
     """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
+    exact_key = f"/{command.lower()}"
+    if exact_key in table:
+        return exact_key
+    cmd_key = f"/{command.replace('_', '-').lower()}"
     return cmd_key if cmd_key in table else None
 
 
@@ -561,8 +619,8 @@ def build_skill_invocation_message(
     cmd_key: str, user_instruction: str = "", task_id: str | None = None, runtime_note: str = "",
 ) -> Optional[str]:
     """Build the user message for a skill slash command, or None if not found."""
-    skill_info = get_skill_commands().get(cmd_key)
-    loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id) if skill_info else None
+    skill_info = get_interactive_skill_commands().get(cmd_key)
+    loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id) if skill_info else None
     if not loaded:
         return None
     note = (f'[IMPORTANT: The user has invoked the "{loaded[2]}" skill, indicating they want '
@@ -587,7 +645,7 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
         if not stripped.startswith("/"):
             break
         token, tail = (stripped.split(None, 1) + [""])[:2]
-        cmd_key = resolve_skill_command_key(token.lstrip("/"))
+        cmd_key = resolve_skill_command_key(token.lstrip("/"), interactive=True)
         if cmd_key is None or cmd_key in keys:
             break
         keys.append(cmd_key)
@@ -600,11 +658,11 @@ def build_stacked_skill_invocation_message(
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation:
     ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded."""
-    commands = get_skill_commands()
+    commands = get_interactive_skill_commands()
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,
-        lambda cmd_key: _load_skill_payload(commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
+        lambda cmd_key: _load_skill_payload(commands[cmd_key].get("skill_identifier") or commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
         lambda name: f'[Loaded as part of the stacked skill invocation "{name}".]',  # bundle block marker
         task_id, missing_label=lambda k: k.lstrip("/"),
     )
@@ -649,7 +707,8 @@ def _load_skill_blocks(
             missing.append(missing_label(identifier))
             continue
         skill_name = loaded[2]
-        if disabled_names and (skill_name in disabled_names or identifier in disabled_names):
+        if disabled_names and (skill_name in disabled_names or identifier in disabled_names
+                               or (":" in skill_name and skill_name.split(":", 1)[1] in disabled_names)):
             if disabled_as_missing:
                 missing.append(identifier)
             else:

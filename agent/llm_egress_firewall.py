@@ -250,8 +250,10 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
     "HANDLING",
     "VERIFICATION",
     "ADVISORY",
+    "FAIL",
 })
 _LINTER_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][0-9]{3,4}$")
+_PYTHON_DUNDER_IDENTIFIER = re.compile(r"^__[a-z][a-z0-9_]{0,62}__$")
 _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
     r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
@@ -589,6 +591,10 @@ def _canonical_base64_candidate(candidate: str) -> bool:
         # are not source excerpts or opaque encoded payloads, even when a
         # tool result is carried as a SanitizedSegment rather than generated
         # context where the source-atom mask would already apply.
+        return False
+    if _PYTHON_DUNDER_IDENTIFIER.fullmatch(candidate):
+        # Python's bounded dunder names are source-language structure, not
+        # encoded content (for example __file__ and __main__ in CI scripts).
         return False
     if _BOUNDED_DURATION.fullmatch(candidate):
         return False

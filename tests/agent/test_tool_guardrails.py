@@ -3,6 +3,7 @@
 import json
 
 from agent.tool_guardrails import (
+    LoopCapConfig,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
@@ -176,6 +177,25 @@ def test_file_mutation_resets_guardrail_no_progress_counts():
 
     # read_file should now be allowed again
     assert controller.before_call("read_file", args).action == "allow"
+
+
+def test_file_mutation_does_not_reset_turn_loop_caps():
+    config = ToolCallGuardrailConfig(
+        loop_caps=LoopCapConfig(max_web_searches=2),
+    )
+    controller = ToolCallGuardrailController(config)
+    # 2 web searches reach the per-turn limit
+    controller.before_call("web_search", {"query": "q1"})
+    controller.before_call("web_search", {"query": "q2"})
+    # 3rd is blocked
+    assert controller.before_call("web_search", {"query": "q3"}).action == "block"
+
+    # Successful file mutation landed
+    patch_args = {"path": "/root/project/file.py", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # Per-turn loop cap should still remain enforced (not wiped by file mutation)
+    assert controller.before_call("web_search", {"query": "q3"}).action == "block"
 
 
 def test_after_call_survives_lone_surrogates_in_result_and_args():

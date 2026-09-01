@@ -600,7 +600,12 @@ def reload_skills() -> Dict[str, Any]:
 
 
 def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Optional[str]:
-    """Resolve a user-typed /command; native callers retain filesystem-only lookup."""
+    """Resolve a user-typed slash command, or return None.
+
+    Try the exact qualified spelling before the filesystem skill slug fallback,
+    where underscores and hyphens are interchangeable for Telegram. Native
+    callers retain the filesystem-only lookup; plugin skills are interactive.
+    """
     return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
 
 

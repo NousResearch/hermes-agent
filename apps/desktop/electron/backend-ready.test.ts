@@ -260,3 +260,57 @@ test('exit-before-announcement error stays clean when no output was buffered', a
     return true
   })
 })
+
+// ---------------------------------------------------------------------------
+// bufferedOutput (#60323): a sentinel consumed BEFORE the wait attaches must
+// still resolve. main.ts attaches an output tail at spawn, then awaits
+// claimBackendChild/advanceBootProgress before calling this wait; flowing-mode
+// stdout never replays consumed chunks to late listeners.
+// ---------------------------------------------------------------------------
+
+test('resolves from bufferedOutput when the sentinel was consumed before the wait attached (#60323)', async () => {
+  const child = makeFakeChild()
+
+  // Simulate the spawn-time output tail: it consumed the READY line already,
+  // and no further stdout data will ever arrive.
+  const alreadyConsumed = 'boot noise\nHERMES_BACKEND_READY port=43211\n'
+
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => alreadyConsumed,
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 43211)
+})
+
+test('bufferedOutput accepts the legacy HERMES_DASHBOARD_READY sentinel too', async () => {
+  const child = makeFakeChild()
+
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => 'HERMES_DASHBOARD_READY port=43212\n',
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 43212)
+})
+
+test('bufferedOutput without a sentinel still resolves from later live stdout', async () => {
+  const child = makeFakeChild()
+
+  const wait = waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => 'uvicorn still importing...\n',
+    timeoutMs: 1000
+  })
+
+  child.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=43213\n'))
+
+  assert.equal(await wait, 43213)
+})
+
+test('bufferedOutput without a sentinel still times out (no false positive)', async () => {
+  const child = makeFakeChild()
+
+  const wait = waitForDashboardPort(child, 50, () => '', () => 'no sentinel here\n')
+
+  await assert.rejects(wait, /Timed out waiting/)
+})

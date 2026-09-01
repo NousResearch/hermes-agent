@@ -683,6 +683,84 @@ class TestR28DashboardValidation:
         assert h["root"] == "KENSEI"
 
 
+# ── R3-4 ─────────────────────────────────────────────────────────────────────
+
+class TestR34GlobalInvalidRegistry:
+    """R3-4: a registry that EXISTS but fails validation is a GLOBAL invalid
+    state — every filesystem profile is ``invalid_registry``, including ones
+    the malformed list does not mention.  ``unregistered`` applies only when
+    a VALID registry omits a profile (or the registry is absent).
+    """
+
+    @pytest.fixture
+    def dash(self, tmp_path, monkeypatch):
+        dash_root = os.environ.get("EVIDENCE_SPINE_DASHBOARD")
+        if not dash_root or not Path(dash_root).is_dir():
+            pytest.skip("EVIDENCE_SPINE_DASHBOARD not supplied (cross-repo test)")
+        assert isinstance(dash_root, str)
+        home = tmp_path / "hermes-home"
+        (home / "profiles").mkdir(parents=True)
+        (home / "governance").mkdir()
+        import sys
+        sys.path.insert(0, dash_root)
+        import importlib
+        saved_backend = sys.modules.pop("backend", None)
+        from backend import profile_docs
+        monkeypatch.setattr(profile_docs, "HERMES_HOME", home)
+        monkeypatch.setattr(profile_docs, "PROFILES_DIR", home / "profiles")
+        monkeypatch.setattr(profile_docs, "GATEWAY_PROFILES", ["octacon"])
+        yield home, profile_docs
+        sys.modules.pop("backend", None)
+        if saved_backend is not None:
+            sys.modules["backend"] = saved_backend
+        sys.path.remove(dash_root)
+
+    def _mk_profiles(self, home):
+        for name in ("octacon", "wesker"):
+            (home / "profiles" / name).mkdir(parents=True)
+
+    def test_malformed_registry_all_profiles_invalid(self, dash):
+        """RED: duplicate entry makes the registry malformed → BOTH fs
+        profiles (listed and unlisted) must be invalid_registry."""
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        (home / "governance" / "profile-registry.yaml").write_text(
+            "schema_version: 1\n"
+            "root: {name: KENSEI, description: r}\n"
+            "profiles:\n"
+            "- {name: octacon, kind: lead, parent: KENSEI, lifecycle: active, domains: [], gateway_unit: null}\n"
+            "- {name: octacon, kind: lead, parent: KENSEI, lifecycle: active, domains: [], gateway_unit: null}\n"
+        )
+        h = profile_docs.profile_hierarchy()
+        states = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert states["octacon"] == "invalid_registry"
+        # the unlisted profile must ALSO be globally invalid, not unregistered
+        assert states["wesker"] == "invalid_registry"
+
+    def test_valid_registry_omitted_profile_unregistered(self, dash):
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        (home / "governance" / "profile-registry.yaml").write_text(
+            "schema_version: 1\n"
+            "root: {name: KENSEI, description: r}\n"
+            "profiles:\n"
+            "- {name: octacon, kind: lead, parent: KENSEI, lifecycle: active, domains: [], gateway_unit: null}\n"
+        )
+        h = profile_docs.profile_hierarchy()
+        states = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert states["octacon"] == "registered"
+        assert states["wesker"] == "unregistered"
+
+    def test_absent_registry_unregistered(self, dash):
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        # No registry file at all — NOT a malformed registry
+        h = profile_docs.profile_hierarchy()
+        states = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert states["octacon"] == "unregistered"
+        assert states["wesker"] == "unregistered"
+
+
 # ── R2-9 ─────────────────────────────────────────────────────────────────────
 
 class TestR29ForceMode:

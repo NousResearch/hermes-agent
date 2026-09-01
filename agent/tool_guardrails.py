@@ -374,6 +374,12 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_on_file_mutation(self) -> None:
+        """Reset failure and no-progress guardrail streaks when a file write lands."""
+        self._exact_failure_counts.clear()
+        self._same_tool_failure_counts.clear()
+        self._no_progress.clear()
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

@@ -2289,16 +2289,20 @@ def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
 
     Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the fetchers
     key on, and prefers an authenticated catalog. Scans rather than rebuilding a
-    key, because callers hold a base URL but no credential.
+    key, because callers hold a base URL but no credential — newest first, and
+    skipping expired entries, so a rotated credential does not keep answering
+    from the catalog its predecessor read.
     """
     root = (base_url or "").rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3].rstrip("/")
     authed_prefix = root + _PRICING_AUTH_KEY_PREFIX
-    for key, cached in _pricing_cache.items():
-        if cached and key.startswith(authed_prefix):
-            return cached
-    return _pricing_cache.get(root) or {}
+    for key in reversed(list(_pricing_cache)):
+        if key.startswith(authed_prefix):
+            cached = _cached_catalog(key)
+            if cached:
+                return cached
+    return _cached_catalog(root) or {}
 
 
 def _format_price_per_mtok(per_token_str: str) -> str:

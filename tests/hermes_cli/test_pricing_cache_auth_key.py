@@ -186,3 +186,25 @@ class TestNousCatalogExpiry:
         monkeypatch.setattr(models_mod.time, "monotonic", lambda: now + 86_400)
         fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
         assert len(catalog) == 1
+
+    def test_peek_prefers_the_newest_credential(self, per_org_catalog):
+        """After a rotation the older entry is still resident and, being
+        insertion-ordered, comes first."""
+        fetch_models_with_pricing(api_key="tok-a", base_url=BASE, cache_ttl_seconds=300)
+        fetch_models_with_pricing(api_key="tok-b", base_url=BASE, cache_ttl_seconds=300)
+        assert list(peek_cached_pricing(BASE)) == ["org-b/only"]
+
+    def test_peek_skips_an_expired_entry(self, catalog, monkeypatch):
+        """Reading _pricing_cache directly walked straight past the TTL."""
+        from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+
+        fetch_models_with_pricing(
+            api_key="sk-test", base_url=BASE,
+            cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
+        )
+        now = models_mod.time.monotonic()
+        monkeypatch.setattr(
+            models_mod.time, "monotonic",
+            lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
+        )
+        assert peek_cached_pricing(BASE) == {}

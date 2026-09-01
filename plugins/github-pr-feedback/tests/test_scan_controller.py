@@ -181,7 +181,9 @@ def test_environment_blocked_ci_receipt_does_not_dispatch_a_fixer() -> None:
         status="failed",
         started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
         completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
-        actions_state=CheckState(False, True, 0),
+        # Actions is enabled, but there are no hosted checks. This must still
+        # route a logic-regression receipt to the configured local fixer.
+        actions_state=CheckState(True, False, 0),
         commands=(
             CommandEvidence(
                 argv=("python3", "scripts/run_static_lane.py"),
@@ -1940,6 +1942,107 @@ def test_scan_retries_failed_local_ci_dispatch_and_reclaims_its_slot(
     assert len(kanban.tasks) == 1
     assert receipt_status(ledger, receipt) == "completed"
     assert receipt_lease_version(ledger, receipt) == 2
+    ledger.close()
+
+
+def test_scan_selects_oldest_missing_head_from_catalogue_window(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    assert policy.local_ci_audit is not None
+    policy = replace(
+        policy,
+        local_ci_audit=replace(
+            policy.local_ci_audit,
+            max_dispatches_per_scan=12,
+            max_open_prs_per_scan=12,
+        ),
+    )
+    recent = datetime(2026, 8, 30, tzinfo=UTC)
+    oldest = PullRequest(
+        715,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/old-backlog",
+        sha,
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    pulls = tuple(
+        PullRequest(
+            number,
+            "OPEN",
+            "acme/widgets",
+            "acme/widgets",
+            "owner",
+            f"codex/{number}",
+            sha,
+            updated_at=recent,
+        )
+        for number in range(716, 728)
+    ) + (oldest,)
+    github = FakeGitHub(oldest, (), pull_requests=pulls)
+    github.actions_are_enabled = False
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(
+        policy, ledger, github, kanban, RecordingLocalGit()
+    ).scan()
+
+    assert result.created == 12
+    assert any(task.evidence["pr_number"] == 715 for task in kanban.tasks)
+    ledger.close()
+
+
+def test_scan_reports_failed_local_ci_backoff_without_spending_dispatch_slot(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    pull = admitted_pull_request(sha)
+    github = FakeGitHub(pull, ())
+    github.actions_are_enabled = False
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    receipt = FeedbackReceipt(
+        "acme/widgets", 17, "pr_local_ci", _local_ci_feedback_id(pull), sha
+    )
+    claimed = ledger.claim(
+        receipt,
+        owner="old-auditor",
+        claimed_at=datetime(2026, 8, 30, 12, tzinfo=UTC),
+        stale_before=datetime(2026, 8, 30, 11, tzinfo=UTC),
+    )
+    assert claimed is not None
+    ledger.fail(
+        receipt,
+        "worktree pool was full",
+        claimed,
+        failed_at=datetime(2026, 9, 1, 11, 58, tzinfo=UTC),
+    )
+
+    result = ScanController(
+        policy,
+        ledger,
+        github,
+        RecordingKanban(),
+        RecordingLocalGit(),
+        clock=lambda: datetime(2026, 9, 1, 12, tzinfo=UTC),
+    ).scan()
+
+    assert result.created == 0
+    assert result.skipped["retry_backoff"] == 1
+    assert receipt_status(ledger, receipt) == "failed"
     ledger.close()
 
 

@@ -523,6 +523,41 @@ class FeedbackLedger:
             raise LedgerStateError("stored feedback receipt status is invalid")
         return status, int(row[1] or 0)
 
+    def failed_receipt_retry_state(
+        self,
+        receipt: FeedbackReceipt,
+        *,
+        claimed_at: datetime,
+        retry_after: timedelta,
+        max_attempts: int | None,
+    ) -> str:
+        """Classify whether a failed receipt may be retried without mutating it."""
+
+        claimed_at = _aware_utc(claimed_at, "claimed_at")
+        if retry_after < timedelta(0):
+            raise ValueError("retry_after must not be negative")
+        if max_attempts is not None and max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        row = self._connection.execute(
+            "SELECT status, attempts, claimed_at FROM feedback_receipts "
+            "WHERE repository = ? AND pr_number = ? AND feedback_kind = ? "
+            "AND feedback_id = ? AND head_sha = ?",
+            receipt.key,
+        ).fetchone()
+        if row is None or row[0] != "failed":
+            return "not_failed"
+        attempts = int(row[1] or 0)
+        if max_attempts is not None and attempts >= max_attempts:
+            return "exhausted"
+        if row[2] is not None:
+            try:
+                failed_at = datetime.fromisoformat(str(row[2])).astimezone(UTC)
+            except (TypeError, ValueError):
+                failed_at = claimed_at
+            if failed_at + retry_after > claimed_at:
+                return "backoff"
+        return "due"
+
     def local_ci_selection_cursor(self, repository: str) -> int:
         """Return the durable round-robin offset for one repository catalogue."""
 

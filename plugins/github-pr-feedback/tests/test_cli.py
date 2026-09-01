@@ -2054,6 +2054,8 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
             "handoff_status": "pending",
         },
         {
+            "handoff_reason": "rejected",
+            "repair_status": "rejected",
             "receipt_id": receipt.receipt_id,
             "retryable": True,
             "status": "audit_handoff_retryable",

@@ -837,13 +837,18 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
                     )
                 except RuntimeError:
                     pass
+            handoff_reason = repair_status or str(error) or "transient_handoff_failure"
+            retryable_payload: dict[str, object] = {
+                "status": "audit_handoff_retryable",
+                "receipt_id": receipt.receipt_id,
+                "retryable": True,
+                "handoff_reason": handoff_reason,
+            }
+            if repair_status is not None:
+                retryable_payload["repair_status"] = repair_status
             print(
                 json.dumps(
-                    {
-                        "status": "audit_handoff_retryable",
-                        "receipt_id": receipt.receipt_id,
-                        "retryable": True,
-                    },
+                    retryable_payload,
                     sort_keys=True,
                 ),
                 flush=True,

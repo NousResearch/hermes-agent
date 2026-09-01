@@ -428,7 +428,10 @@ class FeedbackLedger:
         with self._transaction():
             serialized_repair = not (
                 receipt.feedback_kind == "pr_repair"
-                and receipt.feedback_id.startswith("report:")
+                and (
+                    receipt.feedback_id.startswith("report:")
+                    or receipt.feedback_id.startswith("ci-receipt:")
+                )
             )
             if serialized_repair:
                 active_repair = self._connection.execute(
@@ -1036,6 +1039,7 @@ class FeedbackLedger:
 
         if not isinstance(receipt, CIAuditReceipt):
             raise TypeError("receipt must be a CIAuditReceipt")
+        receipt.validate()
         payload = json.dumps(
             receipt.to_payload(), sort_keys=True, separators=(",", ":")
         )
@@ -1059,6 +1063,87 @@ class FeedbackLedger:
                     payload,
                 ),
             )
+
+    def finalize_ci_run(
+        self,
+        lease: CIRunLease,
+        receipt: object,
+        *,
+        status: str,
+        completed_at: datetime,
+        error: str | None = None,
+    ) -> None:
+        """Persist receipt and terminalize its lease in one SQLite transaction."""
+
+        from .ci_runner import CIAuditReceipt
+
+        if not isinstance(receipt, CIAuditReceipt):
+            raise TypeError("receipt must be a CIAuditReceipt")
+        if status not in {"completed", "failed"}:
+            raise ValueError("CI run terminal status is invalid")
+        receipt.validate()
+        completed = _aware_utc(completed_at, "completed_at")
+        payload = json.dumps(receipt.to_payload(), sort_keys=True, separators=(",", ":"))
+        if len(payload.encode("utf-8")) > 1_000_000:
+            raise ValueError("CI receipt evidence exceeds its bounded limit")
+        row_values = (
+            receipt.receipt_id,
+            receipt.identity.repository,
+            receipt.identity.pr_number,
+            receipt.identity.base_sha,
+            receipt.identity.head_sha,
+            receipt.manifest_digest,
+            receipt.status,
+            receipt.started_at.isoformat(),
+            receipt.completed_at.isoformat(),
+            payload,
+        )
+        with self._transaction():
+            existing = self._connection.execute(
+                "SELECT receipt_id, repository, pr_number, base_sha, head_sha, "
+                "manifest_digest, status, started_at, completed_at, evidence_json "
+                "FROM ci_audit_receipts WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            ).fetchone()
+            if existing is None:
+                collision = self._connection.execute(
+                    "SELECT receipt_id FROM ci_audit_receipts WHERE repository = ? "
+                    "AND pr_number = ? AND head_sha = ? AND manifest_digest = ? "
+                    "AND completed_at = ?",
+                    (
+                        receipt.identity.repository,
+                        receipt.identity.pr_number,
+                        receipt.identity.head_sha,
+                        receipt.manifest_digest,
+                        receipt.completed_at.isoformat(),
+                    ),
+                ).fetchone()
+                if collision is not None:
+                    raise LedgerStateError("CI receipt identity collision")
+                self._connection.execute(
+                    "INSERT INTO ci_audit_receipts "
+                    "(receipt_id, repository, pr_number, base_sha, head_sha, manifest_digest, status, "
+                    "started_at, completed_at, evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    row_values,
+                )
+            elif tuple(existing) != row_values:
+                raise LedgerStateError("CI receipt is immutable")
+            result = self._connection.execute(
+                "UPDATE ci_audit_runs SET status = ?, updated_at = ?, receipt_id = ?, "
+                "last_error = ? WHERE run_id = ? AND status = 'running' AND lease_version = ? "
+                "AND supervisor_pid = ?",
+                (
+                    status,
+                    completed.isoformat(),
+                    receipt.receipt_id,
+                    (error or "")[:1000] or None,
+                    lease.run_id,
+                    lease.version,
+                    lease.supervisor_pid,
+                ),
+            )
+            if result.rowcount != 1:
+                raise LedgerStateError("CI run lease is not held")
 
     def claim_ci_run(
         self,

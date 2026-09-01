@@ -51,6 +51,19 @@ def _make_python_environment(environment: Path) -> None:
     python.chmod(0o755)
 
 
+@pytest.mark.parametrize(
+    "key, expected",
+    [
+        ("research-lab-intake-20260826-12", True),
+        ("research-lab-intake-20260826-12-garbage", False),
+        ("research-lab-intake-foo", False),
+        ("research-lab-intake-20260826-0", False),
+    ],
+)
+def test_research_intake_key_has_typed_schema(key, expected):
+    assert kb.is_governed_research_intake(idempotency_key=key) is expected
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

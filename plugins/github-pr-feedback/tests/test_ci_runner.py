@@ -280,6 +280,36 @@ def test_local_ci_runner_executes_only_required_lanes_and_records_exact_head_rec
     ledger.close()
 
 
+def test_fresh_exact_head_rerun_reconciles_identical_receipt(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    github = FakeGitHub(merge_state())
+    github.states = [merge_state(), merge_state(), merge_state(), merge_state()]
+    github.checks = [
+        CheckState(actions_enabled=False, all_green=True, check_count=0)
+    ] * 4
+    inspector = FakeInspector()
+    inspector.heads = [HEAD_SHA, HEAD_SHA, HEAD_SHA, HEAD_SHA]
+    inspector.clean = [True, True, True, True]
+    runner, ledger, _commands = build_runner(
+        tmp_path, github=github, inspector=inspector
+    )
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+
+    first = runner.run(identity, worktree)
+    second = runner.run(identity, worktree)
+
+    assert second == first
+    lifecycle = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert lifecycle is not None
+    assert lifecycle["status"] == "completed"
+    assert lifecycle["lease_version"] == 2
+    assert lifecycle["receipt_id"] == first.receipt_id
+    ledger.close()
+
+
 def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     prepare_repository(worktree)
@@ -478,6 +508,30 @@ def test_missing_ci_executable_is_classified_environment_blocked(tmp_path: Path)
     ledger.close()
 
 
+def test_repo_pinned_python_mismatch_is_environment_blocked(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    (worktree / ".python-version").write_text("3.13\n", encoding="utf-8")
+    executable = worktree / ".venv/bin/python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    runner, ledger, commands = build_runner(tmp_path)
+    runner._python_argv = (".venv/bin/python",)
+
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert receipt.status == "failed"
+    assert "Python interpreter mismatch" in (receipt.failure_reason or "")
+    assert receipt.commands[0].classification == "environment-blocked"
+    assert commands.calls[0][0] == (
+        str(executable),
+        "-c",
+        "import sys; print('.'.join(map(str, sys.version_info[:3])))",
+    )
+    ledger.close()
+
+
 def test_ci_receipt_round_trip_rejects_coerced_or_dropped_evidence(
     tmp_path: Path,
 ) -> None:
@@ -496,5 +550,16 @@ def test_ci_receipt_round_trip_rejects_coerced_or_dropped_evidence(
     payload = receipt.to_payload()
     payload["commands"].append("not-a-command")  # type: ignore[union-attr]
     with pytest.raises(ValueError, match="invalid command"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["receipt_id"] = "not-a-sha"
+    with pytest.raises(ValueError, match="receipt_id"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["commands"] = []
+    payload["receipt_id"] = "0" * 64
+    with pytest.raises(ValueError, match="no command evidence"):
         CIAuditReceipt.from_payload(payload)
     ledger.close()

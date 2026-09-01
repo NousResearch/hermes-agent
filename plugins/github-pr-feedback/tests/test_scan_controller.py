@@ -26,7 +26,12 @@ from github_pr_feedback.controller import (
     _is_self_resolution_receipt,
     _task,
 )
-from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt, CommandEvidence
+from github_pr_feedback.ci_runner import (
+    CIAuditIdentity,
+    CIAuditReceipt,
+    CommandEvidence,
+    _receipt_id,
+)
 from github_pr_feedback.github_client import MAX_FEEDBACK_BODY_CHARS, CheckState, Feedback
 from github_pr_feedback.ledger import FeedbackLedger
 from github_pr_feedback.policy import (
@@ -822,6 +827,16 @@ def test_failed_exact_head_static_receipt_immediately_dispatches_one_typed_fixer
         ),
     )
     ledger.record_ci_receipt(receipt)
+    unrelated_repair = FeedbackReceipt(
+        "acme/widgets", 17, "pr_repair", "actions-not-green", head_sha
+    )
+    unrelated_lease = ledger.claim(
+        unrelated_repair,
+        owner="existing-repair",
+        claimed_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        stale_before=datetime(2026, 8, 25, 11, 55, tzinfo=UTC),
+    )
+    assert unrelated_lease is not None
     controller = ScanController(
         load_policy(raw), ledger, github, kanban, local_git, control_home=tmp_path
     )
@@ -2174,18 +2189,32 @@ def test_required_local_ci_backlog_signal_ignores_read_cap_when_receipts_are_cur
     ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
     recorded_at = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
     for pull in pulls:
+        completed_at = recorded_at + timedelta(minutes=1)
+        commands = (
+            CommandEvidence(
+                argv=("python3", "scripts/run_test_lane.py"),
+                cwd=str(local_path),
+                returncode=0,
+                duration_ms=1,
+                timed_out=False,
+                stdout_sha256="0" * 64,
+                stderr_sha256="0" * 64,
+                classification="passed",
+            ),
+        )
+        identity = CIAuditIdentity("acme/widgets", pull.number, base_sha, pull.head_sha)
         ledger.record_ci_receipt(
             CIAuditReceipt(
-                receipt_id=f"{pull.number - 16}" * 64,
-                identity=CIAuditIdentity(
-                    "acme/widgets", pull.number, base_sha, pull.head_sha
+                receipt_id=_receipt_id(
+                    identity, manifest_digest, "passed", completed_at, commands
                 ),
+                identity=identity,
                 manifest_digest=manifest_digest,
                 status="passed",
                 started_at=recorded_at,
-                completed_at=recorded_at + timedelta(minutes=1),
+                completed_at=completed_at,
                 actions_state=CheckState(True, True, 1),
-                commands=(),
+                commands=commands,
             )
         )
         feedback_receipt = FeedbackReceipt(

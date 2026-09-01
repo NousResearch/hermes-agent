@@ -292,6 +292,22 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+def test_dispatch_fails_closed_when_config_cannot_be_loaded(kanban_home, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("invalid config")),
+    )
+    args = argparse.Namespace(
+        dry_run=True, max=None, json=True, failure_limit=3,
+    )
+
+    assert kc._cmd_dispatch(args) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "RuntimeError",
+        "status": "config_unavailable",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------

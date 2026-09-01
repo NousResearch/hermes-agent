@@ -103,6 +103,41 @@ class CIAuditReceipt:
     commands: tuple[CommandEvidence, ...]
     failure_reason: str | None = None
 
+    def validate(self) -> None:
+        """Validate the receipt's self-authenticating identity and evidence."""
+
+        if not re.fullmatch(r"[0-9a-f]{64}", self.receipt_id, re.IGNORECASE):
+            raise ValueError("CI receipt payload has invalid receipt_id")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.manifest_digest, re.IGNORECASE):
+            raise ValueError("CI receipt payload has invalid manifest digest")
+        if self.completed_at < self.started_at:
+            raise ValueError("CI receipt payload has inverted timestamps")
+        for command in self.commands:
+            if not re.fullmatch(r"[0-9a-f]{64}", command.stdout_sha256, re.IGNORECASE):
+                raise ValueError("CI receipt payload has invalid stdout digest")
+            if not re.fullmatch(r"[0-9a-f]{64}", command.stderr_sha256, re.IGNORECASE):
+                raise ValueError("CI receipt payload has invalid stderr digest")
+        if self.status == "passed":
+            if not self.commands:
+                raise ValueError("passed CI receipt has no command evidence")
+            if any(
+                command.returncode != 0
+                or command.timed_out
+                or command.classification != "passed"
+                for command in self.commands
+            ):
+                raise ValueError("passed CI receipt has incomplete command evidence")
+        if self.status == "passed":
+            expected_id = _receipt_id(
+                self.identity,
+                self.manifest_digest,
+                self.status,
+                self.completed_at,
+                self.commands,
+            )
+            if self.receipt_id.casefold() != expected_id:
+                raise ValueError("CI receipt payload receipt_id does not match its evidence")
+
     def to_payload(self) -> dict[str, object]:
         return {
             "receipt_id": self.receipt_id,
@@ -193,7 +228,7 @@ class CIAuditReceipt:
         failure_reason = payload.get("failure_reason")
         if failure_reason is not None:
             failure_reason = _required_text(failure_reason, "failure reason", 1000)
-        return cls(
+        receipt = cls(
             receipt_id=receipt_id,
             identity=CIAuditIdentity(
                 _required_text(identity.get("repository"), "repository", 255),
@@ -218,6 +253,8 @@ class CIAuditReceipt:
             commands=tuple(parsed_commands),
             failure_reason=failure_reason,
         )
+        receipt.validate()
+        return receipt
 
 
 def _required_text(value: object, field: str, max_length: int) -> str:
@@ -416,20 +453,19 @@ class LocalCIRunner:
                 error,
                 commands=getattr(error, "command_evidence", ()),
             )
-            self._ledger.record_ci_receipt(receipt)
-            self._ledger.finish_ci_run(
+            self._ledger.finalize_ci_run(
                 lease,
+                receipt,
                 status="completed",
                 completed_at=completed_at,
-                receipt_id=receipt.receipt_id,
                 error=type(error).__name__,
             )
             return receipt
-        self._ledger.finish_ci_run(
+        self._ledger.finalize_ci_run(
             lease,
+            receipt,
             status="completed",
             completed_at=receipt.completed_at,
-            receipt_id=receipt.receipt_id,
         )
         return receipt
 
@@ -553,7 +589,6 @@ class LocalCIRunner:
                 + f" rc={failed_commands[0].returncode}"
             ),
         )
-        self._ledger.record_ci_receipt(receipt)
         return receipt
 
     def _ensure_python_environment(self, worktree: Path) -> CommandEvidence | None:
@@ -562,6 +597,42 @@ class LocalCIRunner:
             return None
         resolved = worktree / executable
         if resolved.is_file() and os.access(resolved, os.X_OK):
+            expected_path = worktree / ".python-version"
+            if expected_path.is_file():
+                expected = expected_path.read_text(encoding="utf-8").strip().splitlines()[0]
+                if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", expected):
+                    raise CIValidationError("worktree Python version pin is invalid")
+                probe = (
+                    str(resolved),
+                    "-c",
+                    "import sys; print('.'.join(map(str, sys.version_info[:3])))",
+                )
+                result = self._commands.run(
+                    probe,
+                    cwd=worktree,
+                    env=dict(os.environ),
+                    timeout=30,
+                )
+                actual = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+                matches = actual == expected or (
+                    expected.count(".") == 1 and actual.startswith(expected + ".")
+                )
+                if result.returncode != 0 or result.timed_out or not matches:
+                    evidence = _command_evidence(probe, worktree, worktree, result)
+                    evidence = CommandEvidence(
+                        argv=evidence.argv,
+                        cwd=evidence.cwd,
+                        returncode=evidence.returncode,
+                        duration_ms=evidence.duration_ms,
+                        timed_out=evidence.timed_out,
+                        stdout_sha256=evidence.stdout_sha256,
+                        stderr_sha256=evidence.stderr_sha256,
+                        classification="environment-blocked",
+                    )
+                    raise CIValidationError(
+                        f"Python interpreter mismatch: expected {expected}, got {actual or 'unavailable'}",
+                        command_evidence=(evidence,),
+                    )
             return None
         bootstrap = worktree / "scripts/bootstrap_agent_workspace.py"
         if not bootstrap.is_file():
@@ -706,7 +777,7 @@ def _failed_receipt(
     """Persist typed failure evidence when validation aborts before lane output."""
 
     reason = f"{type(error).__name__}: {error}"[:1000]
-    receipt_id = _receipt_id(identity, manifest_digest, "failed", completed_at, ())
+    receipt_id = _receipt_id(identity, manifest_digest, "failed", completed_at, commands)
     return CIAuditReceipt(
         receipt_id=receipt_id,
         identity=identity,

@@ -1375,6 +1375,7 @@ class ScanController:
             owner=self._claim_owner,
             claimed_at=claimed_at,
             stale_before=claimed_at - self._claim_lease,
+            exact_dispatch_only=True,
         )
         if lease is None:
             return "duplicate"

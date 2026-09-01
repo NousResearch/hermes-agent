@@ -6,7 +6,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
+from github_pr_feedback.ci_runner import (
+    CIAuditIdentity,
+    CIAuditReceipt,
+    CommandEvidence,
+    _receipt_id,
+)
 from github_pr_feedback.cli import _run_merge_scan
 from github_pr_feedback.github_client import (
     CheckState,
@@ -182,16 +187,31 @@ def prepare_receipt(repository: Path, ledger: FeedbackLedger) -> None:
     manifest.write_text('[lanes.unit]\nci_status = "required"\n', encoding="utf-8")
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     now = datetime.now(UTC)
+    started_at = now - timedelta(minutes=2)
+    completed_at = now - timedelta(minutes=1)
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    commands = (
+        CommandEvidence(
+            argv=("python3", "scripts/run_test_lane.py"),
+            cwd=str(repository),
+            returncode=0,
+            duration_ms=1,
+            timed_out=False,
+            stdout_sha256="0" * 64,
+            stderr_sha256="0" * 64,
+            classification="passed",
+        ),
+    )
     ledger.record_ci_receipt(
         CIAuditReceipt(
-            receipt_id="d" * 64,
-            identity=CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA),
+            receipt_id=_receipt_id(identity, digest, "passed", completed_at, commands),
+            identity=identity,
             manifest_digest=digest,
             status="passed",
-            started_at=now - timedelta(minutes=2),
-            completed_at=now - timedelta(minutes=1),
+            started_at=started_at,
+            completed_at=completed_at,
             actions_state=CheckState(False, True, 0),
-            commands=(),
+            commands=commands,
         )
     )
 

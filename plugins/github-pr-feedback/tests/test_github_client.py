@@ -112,6 +112,23 @@ def test_request_gate_spaces_shared_requests_at_a_conservative_rate(tmp_path) ->
     assert sleeps == [1.0]
 
 
+def test_request_gate_recovers_conservatively_from_nonfinite_state(tmp_path) -> None:
+    path = tmp_path / "github-request-gate.json"
+    path.write_text('{"cooldown_until": NaN}\n', encoding="utf-8")
+    sleeps: list[float] = []
+    now = [100.0]
+
+    with GitHubRequestGate(
+        path, sleeper=lambda seconds: sleeps.append(seconds), clock=lambda: now[0]
+    ):
+        pass
+
+    assert sleeps == [5.0]
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["cooldown_until"] == 105.0
+    assert all(value == value and abs(value) != float("inf") for value in stored.values())
+
+
 @pytest.mark.parametrize(
     "stderr",
     (
@@ -750,6 +767,19 @@ def test_github_client_gets_the_current_pull_request_with_fixed_argv() -> None:
     assert runner.calls == [argv]
 
 
+def test_github_client_rejects_pull_request_identity_mismatch() -> None:
+    argv = ("gh", "api", "repos/acme/widgets/pulls/17")
+    payload = canonical_pull()
+    payload["number"] = 99
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: payload})).get_pull_request("acme/widgets", 17)
+
+    payload = canonical_pull()
+    payload["base"]["sha"] = "short"
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: payload})).get_pull_request("acme/widgets", 17)
+
+
 def test_github_client_reads_repository_actions_enabled_with_fixed_argv() -> None:
     argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
     runner = RecordingRunner({argv: {"enabled": False, "sha_pinning_required": False}})
@@ -761,6 +791,32 @@ def test_github_client_reads_repository_actions_enabled_with_fixed_argv() -> Non
     assert enabled is False
     assert cached is False
     assert runner.calls == [argv]
+
+
+def test_github_client_refreshes_actions_enabled_after_cache_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    responses = iter(({"enabled": False}, {"enabled": True}))
+
+    class ChangingRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, command: list[str]) -> str:
+            self.calls.append(tuple(command))
+            return json.dumps(next(responses))
+
+    now = [100.0]
+    monkeypatch.setattr("github_pr_feedback.github_client.time.monotonic", lambda: now[0])
+    runner = ChangingRunner()
+    client = GitHubClient(runner)
+
+    assert client.actions_enabled("acme/widgets") is False
+    assert client.actions_enabled("acme/widgets") is False
+    now[0] += 61.0
+    assert client.actions_enabled("acme/widgets") is True
+    assert runner.calls == [argv, argv]
 
 
 def test_github_client_reads_private_repository_and_canonical_merge_state() -> None:

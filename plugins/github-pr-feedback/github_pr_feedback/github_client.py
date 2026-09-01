@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import AbstractContextManager
@@ -83,10 +85,12 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
     ) -> None:
         root = get_default_hermes_root() / "github-pr-feedback"
         self._path = Path(path or root / "github-request-gate.json")
+        self._lock_path = self._path.with_name(self._path.name + ".lock")
         self._sleeper = sleeper
         self._clock = clock
         self._min_interval = max(0.0, float(min_interval_seconds))
         self._handle: Any = None
+        self._lock_handle: Any = None
         self._state: dict[str, float] = {}
         self._process_lock_held = False
 
@@ -94,18 +98,33 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         _PROCESS_REQUEST_LOCK.acquire()
         self._process_lock_held = True
-        self._handle = self._path.open("a+", encoding="utf-8")
-        if fcntl is not None:
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
-        self._state = self._read_state()
-        now = self._clock()
-        ready_at = max(
-            self._state.get("next_request_at", 0.0),
-            self._state.get("cooldown_until", 0.0),
-        )
-        if ready_at > now:
-            self._sleeper(ready_at - now)
-        return self
+        try:
+            self._lock_handle = self._lock_path.open("a+", encoding="utf-8")
+            if fcntl is not None:
+                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
+            self._handle = self._path.open("a+", encoding="utf-8")
+            self._state = self._read_state()
+            now = self._clock()
+            ready_at = max(
+                self._state.get("next_request_at", 0.0),
+                self._state.get("cooldown_until", 0.0),
+            )
+            if ready_at > now:
+                self._sleeper(ready_at - now)
+            return self
+        except BaseException:
+            if self._handle is not None:
+                self._handle.close()
+                self._handle = None
+            if self._lock_handle is not None:
+                if fcntl is not None:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+                self._lock_handle.close()
+                self._lock_handle = None
+            if self._process_lock_held:
+                self._process_lock_held = False
+                _PROCESS_REQUEST_LOCK.release()
+            raise
 
     def defer(self, seconds: float) -> None:
         """Hold every cooperating client after one secondary-limit response."""
@@ -122,12 +141,15 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
                 self._state.get("next_request_at", 0.0), now + self._min_interval
             )
             self._write_state(self._state)
-            if fcntl is not None and self._handle is not None:
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None and self._lock_handle is not None:
+                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
         finally:
             if self._handle is not None:
                 self._handle.close()
                 self._handle = None
+            if self._lock_handle is not None:
+                self._lock_handle.close()
+                self._lock_handle = None
             if self._process_lock_held:
                 self._process_lock_held = False
                 _PROCESS_REQUEST_LOCK.release()
@@ -141,20 +163,48 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
             return {}
         if not isinstance(raw, dict):
             return {}
-        return {
-            key: float(value)
-            for key, value in raw.items()
-            if key in {"next_request_at", "cooldown_until"}
-            and isinstance(value, (int, float))
-        }
+        state: dict[str, float] = {}
+        for key in ("next_request_at", "cooldown_until"):
+            if key not in raw:
+                continue
+            value = raw[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return {"cooldown_until": self._clock() + 5.0}
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                return {"cooldown_until": self._clock() + 5.0}
+            state[key] = value
+        return state
 
     def _write_state(self, state: dict[str, float]) -> None:
         assert self._handle is not None
-        self._handle.seek(0)
-        self._handle.truncate()
-        json.dump(state, self._handle, sort_keys=True)
-        self._handle.flush()
-        os.fsync(self._handle.fileno())
+        clean_state: dict[str, float] = {}
+        for key in ("next_request_at", "cooldown_until"):
+            value = state.get(key)
+            if value is None:
+                continue
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("GitHub request gate state must be finite and nonnegative")
+            clean_state[key] = value
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._path.parent,
+                prefix=f".{self._path.name}.", suffix=".tmp", delete=False,
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(clean_state, output, sort_keys=True)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self._path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 class CommandRunner(Protocol):
@@ -357,7 +407,7 @@ class GitHubClient:
 
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self._runner = runner or SubprocessCommandRunner()
-        self._actions_enabled_cache: dict[str, bool] = {}
+        self._actions_enabled_cache: dict[str, tuple[bool, float]] = {}
 
     def list_open_pull_requests(
         self, repository: str, owner_login: str
@@ -434,21 +484,24 @@ class GitHubClient:
             raise GitHubClientError("GitHub branch head was unavailable") from error
 
     def get_pull_request(self, repository: str, number: int) -> PullRequest:
+        repository = _validated_repository(repository)
+        number = _positive_number(number)
         row = self._read_object(f"repos/{repository}/pulls/{number}")
-        return _pull_request(row)
+        return _pull_request(row, expected_repository=repository, expected_number=number)
 
     def actions_enabled(self, repository: str) -> bool:
         repository = _validated_repository(repository)
+        now = time.monotonic()
         cached = self._actions_enabled_cache.get(repository)
-        if cached is not None:
-            return cached
+        if cached is not None and now - cached[1] < 60.0:
+            return cached[0]
         payload = self._json(["gh", "api", f"repos/{repository}/actions/permissions"])
         if not isinstance(payload, dict) or not isinstance(
             payload.get("enabled"), bool
         ):
             raise GitHubClientError("GitHub Actions permissions had an invalid shape")
         enabled = payload["enabled"]
-        self._actions_enabled_cache[repository] = enabled
+        self._actions_enabled_cache[repository] = (enabled, now)
         return enabled
 
     def repository_is_private(self, repository: str) -> bool:
@@ -988,7 +1041,12 @@ class GitHubClient:
             raise GitHubClientError("GitHub response was not valid JSON") from error
 
 
-def _pull_request(row: dict[str, Any]) -> PullRequest:
+def _pull_request(
+    row: dict[str, Any],
+    *,
+    expected_repository: str | None = None,
+    expected_number: int | None = None,
+) -> PullRequest:
     try:
         base = row["base"]
         head = row["head"]
@@ -998,17 +1056,26 @@ def _pull_request(row: dict[str, Any]) -> PullRequest:
             for label in raw_labels
         ):
             raise TypeError("labels must be a list of named objects")
+        number = _positive_number(row["number"])
+        base_repository = _validated_repository(base["repo"]["full_name"])
+        head_repository = _validated_repository(head["repo"]["full_name"])
+        head_sha = _validated_sha(head["sha"])
+        base_sha = _validated_sha(base["sha"])
+        if expected_number is not None and number != expected_number:
+            raise ValueError("GitHub pull request number did not match the request")
+        if expected_repository is not None and base_repository != expected_repository:
+            raise ValueError("GitHub pull request repository did not match the request")
         return PullRequest(
-            number=row["number"],
+            number=number,
             state=row["state"],
-            base_repository=base["repo"]["full_name"],
-            head_repository=head["repo"]["full_name"],
+            base_repository=base_repository,
+            head_repository=head_repository,
             author_login=row["user"]["login"],
             head_ref_name=head["ref"],
-            head_sha=head["sha"],
+            head_sha=head_sha,
             labels=tuple(label["name"] for label in raw_labels),
             base_branch=base["ref"],
-            base_sha=base["sha"],
+            base_sha=base_sha,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise GitHubClientError(

@@ -11130,18 +11130,61 @@ def _claude_code_only_status() -> Dict[str, Any]:
 def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp — credentials are owned by the Copilot CLI.
 
-    There is no cheap programmatic credential probe for the ACP subprocess, so
-    this is a read-only "managed by the Copilot CLI" card (like claude-code):
-    Hermes never claims a login state it can't verify.
+    ``logged_in`` is claimed only on positive evidence (a supported env token
+    or a known on-disk GitHub Copilot credential store, via
+    ``auth.get_external_process_provider_status``). The Copilot CLI may also
+    hold its session in an OS keychain Hermes can't read, so the unverified
+    state is presented as "managed by the Copilot CLI" — never as signed out.
     """
+    try:
+        from hermes_cli.auth import get_external_process_provider_status
+        status = get_external_process_provider_status("copilot-acp") or {}
+    except Exception:
+        status = {}
+    verified = bool(status.get("auth_verified"))
+    configured = bool(status.get("configured"))
+    if verified:
+        source_label = status.get("auth_source") or "Copilot credentials detected"
+    elif configured:
+        found = status.get("resolved_command") or status.get("command") or "copilot"
+        source_label = f"Managed by the GitHub Copilot CLI ({found})"
+    else:
+        source_label = "GitHub Copilot CLI not found on PATH"
     return {
-        "logged_in": False,
+        "logged_in": verified,
         "source": "copilot_cli",
-        "source_label": "Managed by the GitHub Copilot CLI",
+        "source_label": source_label,
         "token_preview": None,
         "expires_at": None,
         "has_refresh_token": False,
+        "configured": configured,
     }
+
+
+def _external_process_cli_command(provider_id: str, default: str) -> str:
+    """Render an external-process provider's sign-in command with the CLI the
+    user actually has configured.
+
+    The static catalog assumes the default executable name; users who point
+    Hermes at a custom binary (``HERMES_COPILOT_ACP_COMMAND`` /
+    ``COPILOT_CLI_PATH``) would otherwise be told to run a command that isn't
+    the one Hermes spawns. Non-external-process providers get ``default`` back
+    untouched.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return default
+        status = get_external_process_provider_status(provider_id) or {}
+        command = str(status.get("command") or "").strip()
+        if command:
+            parts = default.split(" ", 1)
+            tail = f" {parts[1]}" if len(parts) > 1 else ""
+            return f"{command}{tail}"
+    except Exception:
+        pass
+    return default
 
 
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
@@ -11209,7 +11252,11 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "id": "copilot-acp",
         "name": "GitHub Copilot (ACP)",
         "flow": "external",
-        "cli_command": "copilot /login",
+        # `copilot login` is the CLI's non-interactive device-code login
+        # subcommand; the previous `copilot /login` form is not a valid
+        # invocation (slash-commands only exist inside an interactive
+        # session, reachable as `copilot -i /login`).
+        "cli_command": "copilot login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
     },
@@ -11468,7 +11515,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
                     "id": p["id"],
                     "name": p["name"],
                     "flow": p["flow"],
-                    "cli_command": p["cli_command"],
+                    "cli_command": _external_process_cli_command(p["id"], p["cli_command"]),
                     "docs_url": p["docs_url"],
                     "disconnect_hint": disconnect_hint,
                     "disconnect_command": _oauth_provider_disconnect_command(p),

@@ -138,15 +138,6 @@ _SESSION_START_LIST_PARAMS = {
     "node_limit": 512,
 }
 
-# Maps the viking_remember `category` enum to a viking:// subdirectory.
-# Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
-_CATEGORY_SUBDIR_MAP = {
-    "preference": "preferences",
-    "entity": "entities",
-    "event": "events",
-    "case": "cases",
-    "pattern": "patterns",
-}
 _DEFAULT_MEMORY_SUBDIR = "preferences"
 
 # Maps the built-in memory tool's `target` ("user" vs "memory") to a subdir
@@ -623,9 +614,9 @@ BROWSE_SCHEMA = {
 REMEMBER_SCHEMA = {
     "name": "viking_remember",
     "description": (
-        "Explicitly store a fact or memory in the OpenViking knowledge base. "
+        "Explicitly submit a fact or memory to the OpenViking memory pipeline. "
         "Use for important information the agent should remember long-term. "
-        "The system automatically categorizes and indexes the memory."
+        "OpenViking automatically categorizes, merges, and indexes the memory."
     ),
     "parameters": {
         "type": "object",
@@ -634,7 +625,9 @@ REMEMBER_SCHEMA = {
             "category": {
                 "type": "string",
                 "enum": ["preference", "entity", "event", "case", "pattern"],
-                "description": "Memory category (default: auto-detected).",
+                "description": (
+                    "Optional extraction hint. OpenViking makes the final classification."
+                ),
             },
         },
         "required": ["content"],
@@ -5267,30 +5260,41 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        category = args.get("category", "")
-        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
         client = self._ensure_client()
         if not client:
             return tool_error("OpenViking server not connected")
-        uri = self._build_memory_uri(subdir, client=client)
 
-        # Write directly via content/write API.
-        # This creates the file, stores the content, and queues vector indexing
-        # in a single call — no dependency on session commit / VLM extraction.
+        category = str(args.get("category") or "").strip()
+        message_content = f"[Remember — {category}] {content}" if category else content
+        session_id = f"hermes-remember-{uuid.uuid4().hex[:12]}"
+        message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [self._text_part(message_content)],
+        }
+
+        # Use a dedicated session so explicit remember does not commit or
+        # otherwise alter the live Hermes conversation session.
         try:
-            result = client.post("/api/v1/content/write", {
-                "uri": uri,
-                "content": content,
-                "mode": "create",
-            })
-            written = result.get("result", {}).get("written_bytes", 0)
-            return json.dumps({
+            client.post(f"/api/v1/sessions/{session_id}/messages", message)
+            commit = self._unwrap_result(client.post(
+                f"/api/v1/sessions/{session_id}/commit",
+                {"keep_recent_count": 0},
+            ))
+            commit = commit if isinstance(commit, dict) else {}
+            result: Dict[str, Any] = {
                 "status": "stored",
-                "message": f"Memory stored ({written}b) and queued for vector indexing.",
-            })
+                "session_id": session_id,
+                "extraction_status": str(commit.get("status") or "accepted"),
+                "message": "Memory stored in an OpenViking session and committed for extraction.",
+            }
+            if commit.get("task_id"):
+                result["task_id"] = commit["task_id"]
+            if commit.get("trace_id"):
+                result["trace_id"] = commit["trace_id"]
+            return json.dumps(result)
         except Exception as e:
-            logger.error("OpenViking content/write failed: %s", e)
-            return tool_error(f"Failed to store memory: {e}")
+            logger.error("OpenViking remember session failed for %s: %s", session_id, e)
+            return tool_error(f"Failed to store memory in session {session_id}: {e}")
 
     def _tool_forget(self, args: dict) -> str:
         uri, error = _validate_forget_memory_uri(args.get("uri"))

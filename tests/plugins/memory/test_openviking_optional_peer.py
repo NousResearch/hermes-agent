@@ -321,11 +321,25 @@ def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
         payload for path, _, payload in records if path == "/api/v1/content/write"
     ]
     prefix = f"peers/{peer}/" if peer else ""
-    assert {write["content"] for write in writes} == {"I like tea", "I like coffee"}
+    assert {write["content"] for write in writes} == {"I like coffee"}
     assert all(
         write["uri"].startswith(f"viking://user/alice/{prefix}memories/")
         for write in writes
     )
+    remember_messages = [
+        (path, payload)
+        for path, _, payload in records
+        if path.startswith("/api/v1/sessions/hermes-remember-")
+        and path.endswith("/messages")
+    ]
+    assert len(remember_messages) == 1
+    remember_path, remember_message = remember_messages[0]
+    remember_session = remember_path.removesuffix("/messages")
+    assert remember_message == {
+        "role": "user",
+        "parts": [{"type": "text", "text": "I like tea"}],
+    }
+    assert any(path == f"{remember_session}/commit" for path, _, _ in records)
     batches = [
         payload["messages"]
         for path, _, payload in records

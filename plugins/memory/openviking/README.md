@@ -120,23 +120,24 @@ changes future writes, not the location of existing memories.
 | `viking_search` | Semantic search with fast/deep/auto modes |
 | `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
 | `viking_browse` | Filesystem-style navigation (list/tree/stat) |
-| `viking_remember` | Store a fact directly with OpenViking `content/write` |
+| `viking_remember` | Submit a fact through OpenViking session memory extraction |
 | `viking_forget` | Delete one exact `viking://` memory file URI |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |
 
 ## Memory Writes And Deletes
 
-`viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
-and `mode=create`. By default it creates files under explicit-uid
-`viking://user/<user>/memories/...` URIs. When a peer ID is configured, it keeps
-the existing `viking://user/<user>/peers/<peer>/memories/...` path. In both cases,
-`<user>` is resolved client-side from `/api/v1/system/status` (server-asserted
-current user). Hermes caches a confirmed user only for the active connection.
-If the probe fails, Hermes uses the configured user, or `default`, for that
-operation and retries the probe later. Explicit-uid URIs are canonical and
-work under every OpenViking auth mode and version; the `viking://~` alias only
-expands for USER/ADMIN roles, not the default dev mode.
-Explicit remembers do not depend on session commit extraction.
+`viking_remember` creates a one-shot `hermes-remember-<random>` OpenViking
+session, adds the fact as one message, and commits the session with no retained
+tail. The session remains available in OpenViking for audit. OpenViking then
+categorizes, merges, deduplicates, and indexes the result through its normal
+memory extraction pipeline. The tool returns the one-shot session ID and the
+extraction task ID when the server provides one. Extraction continues
+asynchronously after the tool returns.
+
+The optional category is an extraction hint. The fact is stored as a `user`
+message so `viking_remember` produces user memory. The one-shot session is
+separate from the live Hermes conversation, so an explicit remember does not
+commit or rotate the active conversation session.
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the
 local memory operation succeeds:

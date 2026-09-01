@@ -1746,6 +1746,10 @@ class MatrixAdapter(BasePlatformAdapter):
         max_cursor_resets = 3
 
         def _sync_error_status(error: Any) -> Optional[int]:
+            # Successful sync payloads are dicts. Never regex-scan room history
+            # for "401"/"403" strings that can appear in ordinary message text.
+            if isinstance(error, dict):
+                return None
             for attr in ("http_status", "status", "status_code"):
                 value = getattr(error, attr, None)
                 if value is None:
@@ -1753,7 +1757,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     return int(value)
                 except (TypeError, ValueError):
-                    return None
+                    continue
             message = getattr(error, "message", None)
             text = message if isinstance(message, str) else str(error)
             for pattern in (
@@ -1769,10 +1773,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
 
         def _sync_error_code(error: Any) -> str:
+            if isinstance(error, dict):
+                return ""
             value = getattr(error, "errcode", None) or getattr(error, "err_code", None)
             return str(value or "").upper()
 
         def _is_permanent_sync_auth_error(error: Any) -> bool:
+            if isinstance(error, dict):
+                return False
             status = _sync_error_status(error)
             errcode = _sync_error_code(error)
             if status == 401:
@@ -1780,16 +1788,17 @@ class MatrixAdapter(BasePlatformAdapter):
             if errcode in {"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_UNAUTHORIZED"}:
                 return True
             message = getattr(error, "message", None)
-            if isinstance(message, str):
-                lower = message.lower()
-                return (
-                    "m_unknown_token" in lower
-                    or "unknown_token" in lower
-                    or "unauthorized" in lower
-                )
-            return False
+            text = message if isinstance(message, str) else str(error)
+            lower = text.lower()
+            return (
+                "m_unknown_token" in lower
+                or "unknown_token" in lower
+                or "unauthorized" in lower
+            )
 
         def _is_forbidden_sync_error(error: Any) -> bool:
+            if isinstance(error, dict):
+                return False
             status = _sync_error_status(error)
             errcode = _sync_error_code(error)
             return status == 403 or errcode == "M_FORBIDDEN"

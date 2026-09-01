@@ -1559,6 +1559,107 @@ class TestMatrixSyncLoop:
         sleep_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_string_only_unknown_token(self):
+        """Raised M_UNKNOWN_TOKEN without .message/.errcode must stay fatal."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=RuntimeError("M_UNKNOWN_TOKEN"))
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once()
+        mock_sync_store.put_next_batch.assert_not_awaited()
+        fake_client.handle_sync.assert_not_called()
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_ignores_http_error_text_inside_successful_sync_dict(self):
+        """Chat text quoting HTTP 401/403 must not stop sync or reset a cursor."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        payload = {
+            "next_batch": "s-ok",
+            "rooms": {
+                "join": {
+                    "!room:example.org": {
+                        "timeline": {
+                            "events": [
+                                {
+                                    "type": "m.room.message",
+                                    "content": {
+                                        "body": "login failed: HTTP 401 Unauthorized / 403: Forbidden",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+        }
+
+        async def _sync(**kwargs):
+            adapter._closing = True
+            return payload
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()):
+            await adapter._sync_loop()
+
+        fake_client.handle_sync.assert_called_once_with(payload)
+        mock_sync_store.put_next_batch.assert_awaited_once_with("s-ok")
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_uses_later_status_code_when_first_attr_is_malformed(self):
+        """A junk http_status must not hide a later numeric status_code=401."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        class MixedStatusAuthError(Exception):
+            http_status = "n/a"
+            status_code = 401
+            errcode = "M_UNKNOWN_TOKEN"
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=MixedStatusAuthError("revoked"))
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once()
+        mock_sync_store.put_next_batch.assert_not_awaited()
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_sync_loop_stops_after_cursor_reset_budget(self):
         """Repeated rejected cursors eventually stop instead of spinning."""
         adapter = _make_adapter()

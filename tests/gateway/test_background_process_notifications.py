@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +301,52 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
     synth_event = adapter.handle_message.await_args.args[0]
     assert synth_event.message_id == "777"
     assert synth_event.source.thread_id == "24296"
+
+
+def test_process_event_source_strips_persisted_event_reply_anchor(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:dm:123:24296"
+    persisted_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="pre-upgrade-100",
+    )
+    runner.session_store._entries[session_key] = SimpleNamespace(
+        origin=persisted_source
+    )
+
+    source = runner._build_process_event_source({"session_key": session_key})
+
+    assert source is not persisted_source
+    assert source.message_id is None
+    assert source.chat_id == "123"
+    assert source.thread_id == "24296"
+    assert persisted_source.message_id == "pre-upgrade-100"
+
+
+def test_process_event_source_strips_cached_event_reply_anchor(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:dm:123:24296"
+    cached_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="last-live-200",
+    )
+    runner._cache_session_source(session_key, cached_source)
+
+    source = runner._build_process_event_source({"session_key": session_key})
+
+    assert source is not cached_source
+    assert source.message_id is None
+    assert source.chat_id == "123"
+    assert source.thread_id == "24296"
+    assert cached_source.message_id == "last-live-200"
 
 
 @pytest.mark.asyncio

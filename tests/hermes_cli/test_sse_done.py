@@ -110,3 +110,36 @@ def test_content_type_is_sse():
     assert content_type_is_sse({"Content-Type": "text/event-stream"}) is True
     assert content_type_is_sse({"content-type": "text/event-stream; charset=utf-8"}) is True
     assert content_type_is_sse({"Content-Type": "application/json"}) is False
+
+
+def test_multiline_data_event_joins_per_sse_spec():
+    """One JSON event split across consecutive data: lines (spec-legal) must
+    parse as a single event, not two malformed fragments."""
+    tracker = SseDoneTracker()
+    tracker.feed(
+        b'data: {"choices":[{"delta":{},\n'
+        b'data: "finish_reason":"stop"}]}\n'
+        b"\n"
+    )
+    assert tracker.saw_malformed_event is False
+    assert tracker.should_append_done() is True
+
+
+def test_multiline_malformed_event_still_disables_synthesis():
+    tracker = SseDoneTracker()
+    tracker.feed(b"data: {broken\ndata: json!\n\n")
+    tracker.feed(_data_line({"choices": [{"delta": {}, "finish_reason": "stop"}]}))
+    assert tracker.should_append_done() is False
+
+
+def test_truthy_integer_last_one_counts_as_terminal():
+    tracker = SseDoneTracker()
+    tracker.feed(_data_line({"choices": [], "lastOne": 1, "usage": {}}))
+    assert tracker.should_append_done() is True
+
+
+def test_final_event_without_trailing_blank_line_still_dispatches():
+    """Clean EOF right after the last data: line (no blank-line boundary)."""
+    tracker = SseDoneTracker()
+    tracker.feed(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n')
+    assert tracker.should_append_done() is True

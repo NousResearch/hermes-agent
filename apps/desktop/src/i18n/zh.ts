@@ -3272,7 +3272,17 @@ export const zh: Translations = {
       loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: '无法访问预览页面。',
       openTarget: url => `打开 ${url}`,
-      fallbackTitle: '预览'
+      fallbackTitle: '预览',
+      annotate: '标注',
+      annotateOn: '停止标注',
+      annotateNeedPage: '请先在内置浏览器中打开页面。',
+      annotateFailed: '无法开始标注',
+      commenting: '标注中',
+      addComments: count => (count === 1 ? '添加 1 条批注' : `添加 ${count} 条批注`),
+      commentPlaceholder: '添加批注…',
+      commentTitle: n => `批注 ${n}`,
+      saveComment: '保存',
+      cancelComment: '取消批注'
     }
   },
 

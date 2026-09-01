@@ -2674,6 +2674,16 @@ export interface Translations {
       unreachableDescription: string
       openTarget: (url: string) => string
       fallbackTitle: string
+      annotate: string
+      annotateOn: string
+      annotateNeedPage: string
+      annotateFailed: string
+      commenting: string
+      addComments: (count: number) => string
+      commentPlaceholder: string
+      commentTitle: (n: number) => string
+      saveComment: string
+      cancelComment: string
     }
   }
 

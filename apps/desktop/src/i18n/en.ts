@@ -3111,7 +3111,17 @@ export const en: Translations = {
       loadFailedConsole: (code, message) => `Load failed${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'The preview page could not be reached.',
       openTarget: url => `Open ${url}`,
-      fallbackTitle: 'Preview'
+      fallbackTitle: 'Preview',
+      annotate: 'Annotate',
+      annotateOn: 'Stop annotating',
+      annotateNeedPage: 'Open a page in the in-app browser first.',
+      annotateFailed: 'Could not start annotation mode',
+      commenting: 'Commenting',
+      addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
+      commentPlaceholder: 'Add a comment...',
+      commentTitle: n => `Comment ${n}`,
+      saveComment: 'Save',
+      cancelComment: 'Cancel comment'
     }
   },
 

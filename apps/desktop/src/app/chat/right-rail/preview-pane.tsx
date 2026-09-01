@@ -6,6 +6,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
@@ -15,6 +16,16 @@ import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import {
+  addAnnotatePin,
+  beginAnnotateMode,
+  clearAnnotatePins,
+  compactIdentity,
+  emptyAnnotateSession,
+  emptyAnnotateStack,
+  endAnnotateMode,
+  flushAnnotateStack
+} from '@/lib/preview-annotate'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -27,8 +38,21 @@ import {
   popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
+import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
+import {
+  bindPreviewExecuteJavaScript,
+  captureAnnotateCrop,
+  hideAnnotateDraft,
+  installAnnotateOverlay,
+  showAnnotateDraft,
+  syncAnnotatePins,
+  teardownAnnotateOverlay,
+  waitAnnotateEvent,
+  type PreviewAnnotateGuest
+} from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
 import {
@@ -235,6 +259,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const liveUrlRef = useRef(currentUrl)
   liveUrlRef.current = currentUrl
@@ -243,6 +268,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const [annotate, setAnnotate] = useState(emptyAnnotateSession)
+  const [draftNote, setDraftNote] = useState('')
+  const annotateRef = useRef(annotate)
+  const annotateLoopRef = useRef(0)
+  const annotateConversationRef = useRef(selectedStoredSessionId)
+  annotateRef.current = annotate
 
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
@@ -368,6 +399,221 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webviewRef.current?.reload?.()
     }
   }, [isWebPreview])
+
+  const annotateGuest = useCallback((): null | PreviewAnnotateGuest => {
+    const webview = webviewRef.current
+
+    if (!webview?.executeJavaScript) {
+      return null
+    }
+
+    return {
+      capture: async rect => {
+        const webContentsId = webview.getWebContentsId?.()
+
+        if (typeof webContentsId !== 'number') {
+          throw new Error('preview guest has no webContents')
+        }
+
+        const viewport = (await bindPreviewExecuteJavaScript(webview)(
+          '({ width: window.innerWidth, height: window.innerHeight })'
+        )) as { height: number; width: number }
+        const dataUrl = await window.hermesDesktop.capturePreview?.({ rect, viewport, webContentsId })
+
+        if (!dataUrl) {
+          throw new Error('preview capture is unavailable')
+        }
+
+        return dataUrl
+      },
+      executeJavaScript: bindPreviewExecuteJavaScript(webview)
+    }
+  }, [])
+
+  const stopAnnotate = useCallback(async () => {
+    annotateLoopRef.current += 1
+    const guest = annotateGuest()
+
+    if (guest) {
+      await teardownAnnotateOverlay(guest).catch(() => undefined)
+    }
+
+    setDraftNote('')
+    setAnnotate(endAnnotateMode)
+  }, [annotateGuest])
+
+  useEffect(() => {
+    if (annotateConversationRef.current === selectedStoredSessionId) {
+      return
+    }
+
+    annotateConversationRef.current = selectedStoredSessionId
+    annotateLoopRef.current += 1
+    setDraftNote('')
+    setAnnotate(emptyAnnotateSession())
+
+    const guest = annotateGuest()
+    if (guest) {
+      void teardownAnnotateOverlay(guest).catch(() => undefined)
+    }
+  }, [annotateGuest, selectedStoredSessionId])
+
+  const saveAnnotateDraft = useCallback(async () => {
+    const session = annotateRef.current
+    if (!session.draft) {
+      return
+    }
+
+    const draft = { ...session.draft, note: draftNote.trim() }
+    const guest = annotateGuest()
+
+    const stack = addAnnotatePin(session.stack, draft)
+    setAnnotate({ ...session, draft: null, stack })
+    setDraftNote('')
+
+    if (guest) {
+      await syncAnnotatePins(
+        guest,
+        stack.pins.map(pin => ({
+          kind: pin.kind,
+          number: pin.number,
+          rect: pin.rect,
+          selector: pin.identity?.selector
+        }))
+      ).catch(() => undefined)
+      await hideAnnotateDraft(guest).catch(() => undefined)
+    }
+  }, [annotateGuest, draftNote])
+
+  const cancelAnnotateDraft = useCallback(async () => {
+    setDraftNote('')
+    setAnnotate(session => ({ ...session, draft: null }))
+
+    const guest = annotateGuest()
+
+    if (guest) {
+      await hideAnnotateDraft(guest).catch(() => undefined)
+    }
+  }, [annotateGuest])
+
+  const flushComments = useCallback(async () => {
+    const pins = annotateRef.current.stack.pins
+
+    if (!pins.length) {
+      return
+    }
+
+    const guest = annotateGuest()
+
+    await flushAnnotateStack(
+      pins,
+      {
+        attachImage: blob => {
+          requestComposerAttachImages([blob])
+        },
+        insertText: text => requestComposerInsert(text, { mode: 'block' })
+      },
+      currentUrl
+    )
+    requestComposerFocus()
+    setAnnotate(session => ({ ...session, draft: null, stack: clearAnnotatePins(session.stack) }))
+    setDraftNote('')
+
+    if (guest) {
+      await hideAnnotateDraft(guest).catch(() => undefined)
+      await syncAnnotatePins(guest, []).catch(() => undefined)
+    }
+  }, [annotateGuest, currentUrl])
+
+  const startAnnotate = useCallback(async () => {
+    const guest = annotateGuest()
+
+    if (!guest) {
+      notify({ kind: 'warning', title: copy.annotate, message: copy.annotateNeedPage })
+
+      return
+    }
+
+    const generation = ++annotateLoopRef.current
+    setAnnotate(beginAnnotateMode)
+
+    try {
+      await installAnnotateOverlay(guest)
+      await syncAnnotatePins(
+        guest,
+        annotateRef.current.stack.pins.map(pin => ({
+          kind: pin.kind,
+          number: pin.number,
+          rect: pin.rect,
+          selector: pin.identity?.selector
+        }))
+      )
+    } catch (error) {
+      setAnnotate(endAnnotateMode)
+      notifyError(error, copy.annotateFailed)
+
+      return
+    }
+
+    while (annotateLoopRef.current === generation) {
+      let event
+
+      try {
+        event = await waitAnnotateEvent(guest)
+      } catch {
+        break
+      }
+
+      if (annotateLoopRef.current !== generation) {
+        break
+      }
+
+      if (event.type === 'end') {
+        await stopAnnotate()
+        break
+      }
+
+      if (event.type === 'reposition') {
+        setAnnotate(session =>
+          session.draft ? { ...session, draft: { ...session.draft, rect: event.rect } } : session
+        )
+        continue
+      }
+
+      const page = guestPage(webviewRef.current, liveUrlRef.current)
+      const nextNumber = annotateRef.current.stack.nextNumber
+      await showAnnotateDraft(guest, event.rect, nextNumber).catch(() => undefined)
+
+      let imageDataUrl = ''
+
+      try {
+        imageDataUrl = await captureAnnotateCrop(guest, event.rect)
+      } catch {
+        imageDataUrl = ''
+      }
+
+      const draft = {
+        imageDataUrl,
+        identity: event.type === 'pick-element' ? compactIdentity(event.identity) : undefined,
+        kind: event.type === 'pick-element' ? ('element' as const) : ('area' as const),
+        note: '',
+        pageTitle: page.title,
+        pageUrl: page.url,
+        rect: event.rect
+      }
+
+      setDraftNote('')
+      setAnnotate(session => ({ ...session, draft }))
+    }
+  }, [annotateGuest, copy.annotate, copy.annotateFailed, copy.annotateNeedPage, stopAnnotate])
+
+  const toggleAnnotate = useCallback(() => {
+    if (annotateRef.current.mode) {
+      void stopAnnotate()
+    } else {
+      void startAnnotate()
+    }
+  }, [startAnnotate, stopAnnotate])
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -961,6 +1207,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webviewRef.current = webview
 
     return () => {
+      annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
@@ -972,6 +1219,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-stop-loading', onStop)
       webview.removeEventListener('page-title-updated', notePage)
       webview.remove()
+      setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
   }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
 
@@ -1023,12 +1271,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
         {isWebPreview && !isRemoteHtml && (
           <PreviewBrowserBar
+            annotateMode={annotate.mode}
             canGoBack={history.back}
             canGoForward={history.forward}
+            commentCount={annotate.stack.pins.length}
             consoleOpen={consoleOpen}
             devToolsOpen={devtoolsOpen}
             loading={loading}
             onBack={goBack}
+            onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
             onOpenExternal={
@@ -1041,6 +1292,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
+            onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             url={currentUrl}
@@ -1087,6 +1339,24 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               restarting={restartingServer}
             />
           )}
+
+          {annotate.draft ? (
+            <PreviewAnnotateCard
+              {...placeAnnotateCard({
+                paneHeight: previewContentRef.current?.clientHeight || 360,
+                paneWidth: previewContentRef.current?.clientWidth || 360,
+                rect: annotate.draft.rect
+              })}
+              note={draftNote}
+              number={annotate.stack.nextNumber}
+              onCancel={() => void cancelAnnotateDraft()}
+              onChange={setDraftNote}
+              onSave={() => void saveAnnotateDraft()}
+              placeholder={copy.commentPlaceholder}
+              saveLabel={copy.saveComment}
+              title={copy.commentTitle(annotate.stack.nextNumber)}
+            />
+          ) : null}
 
           {isWebPreview && !isRemoteHtml && consoleOpen && (
             <PreviewConsolePanel

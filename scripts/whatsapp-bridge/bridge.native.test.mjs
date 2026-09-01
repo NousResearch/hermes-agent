@@ -13,6 +13,7 @@ import path from 'node:path';
 import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 
 import {
+  addMentions,
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
@@ -81,6 +82,16 @@ import {
   assert.deepEqual(content, { text: 'plain text' });
   assert.deepEqual(options, {});
   console.log('  ✓ unresolved replyTo falls back to plain text');
+}
+
+{
+  const mentions = ['15550001111@s.whatsapp.net'];
+  const { content } = buildTextSendPayload('hello @15550001111', { mentions });
+  const media = addMentions({ image: Buffer.from('png'), caption: 'hello @15550001111' }, mentions);
+
+  assert.deepEqual(content.mentions, mentions);
+  assert.deepEqual(media.mentions, mentions);
+  console.log('  ✓ outbound text and media payloads preserve native mention JIDs');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

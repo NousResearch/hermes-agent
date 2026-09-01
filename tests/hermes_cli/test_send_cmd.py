@@ -64,6 +64,143 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_whatsapp_mentions_validate_and_reach_native_text_and_media_payloads(monkeypatch, tmp_path, capsys):
+    """The CLI-only option stays scoped, normalizes JIDs, and pings once per logical send."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import aiohttp
+
+    from gateway.config import Platform
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import discover_plugins
+
+    calls = []
+    bridge_state = {"supports_mentions": True}
+
+    class BridgeResponse:
+        status = 200
+
+        def __init__(self, *, health=False):
+            self.health = health
+
+        async def json(self):
+            if self.health:
+                return {"capabilities": {"outboundMentions": bridge_state["supports_mentions"]}}
+            return {"messageId": f"m{len(calls)}"}
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class BridgeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, *, timeout):
+            return BridgeResponse(health=True)
+
+        def post(self, url, *, json, timeout):
+            calls.append((url, json))
+            return BridgeResponse()
+
+    discover_plugins()
+    whatsapp_config = SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000})
+    config = SimpleNamespace(
+        platforms={Platform.WHATSAPP: whatsapp_config},
+        get_home_channel=lambda _platform: None,
+    )
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
+
+    for argv in (
+        ["--to", "telegram", "--mention", "15550000001", "hello"],
+        ["--to", "whatsapp:120363000000000000@g.us", "--mention", "not-a-phone", "hello"],
+        ["--to", "whatsapp:120363000000000000@g.us", "--mention", "١٥٥٥٠٠٠٠٠٠١", "hello"],
+        [
+            "--to", "whatsapp:120363000000000000@g.us",
+            "--mention", "١٥٥٥٠٠٠٠٠٠١@s.whatsapp.net", "hello",
+        ],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse(argv))
+        assert exc.value.code == 2
+    assert calls == []
+    capsys.readouterr()
+
+    async def legacy_sender(_config, _chat_id, _message, *, thread_id=None):
+        return {"success": True}
+
+    whatsapp_entry = platform_registry.get("whatsapp")
+    assert whatsapp_entry is not None
+    current_sender = whatsapp_entry.standalone_sender_fn
+    whatsapp_entry.standalone_sender_fn = legacy_sender
+    try:
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(_parse([
+                "--to", "whatsapp:120363000000000000@g.us",
+                "--mention", "15550000001", "hello @15550000001",
+            ]))
+        assert exc.value.code == 1
+        assert "does not support native mentions" in capsys.readouterr().err
+    finally:
+        whatsapp_entry.standalone_sender_fn = current_sender
+    assert calls == []
+
+    bridge_state["supports_mentions"] = False
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse([
+            "--to", "whatsapp:120363000000000000@g.us",
+            "--mention", "15550000001", "hello @15550000001",
+        ]))
+    assert exc.value.code == 1
+    assert "does not support native mentions" in capsys.readouterr().err
+    bridge_state["supports_mentions"] = True
+    calls.clear()
+
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    long_message = "@15550000001 " + "word " * 1000
+    text_args = _parse([
+        "--to", "whatsapp:120363000000000000@g.us",
+        "--mention", "+1 (555) 000-0001",
+        "--mention", "15550000001@s.whatsapp.net",
+        f"{long_message} MEDIA:{image}",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(text_args)
+    assert exc.value.code == 0
+    text_payloads = [payload for url, payload in calls if url.endswith("/send")]
+    assert len(text_payloads) >= 2
+    assert text_payloads[0]["mentions"] == ["15550000001@s.whatsapp.net"]
+    assert calls[-1][0].endswith("/send-media")
+    assert all("mentions" not in payload for _, payload in calls[1:])
+
+    calls.clear()
+    media_args = _parse([
+        "--to", "whatsapp:120363000000000000@g.us",
+        "--mention", "15550000001",
+        f"hello @15550000001 MEDIA:{image}",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(media_args)
+    assert exc.value.code == 0
+    assert len(calls) == 1 and calls[0][0].endswith("/send-media")
+    assert calls[0][1]["mentions"] == ["15550000001@s.whatsapp.net"]
+
+
 
 
 
@@ -213,7 +350,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n")
+    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n", encoding="utf-8")
     (hermes_home / "config.yaml").write_text(
         "TELEGRAM_HOME_CHANNEL: '5550001111'\nnested:\n  ignored: true\n"
     )

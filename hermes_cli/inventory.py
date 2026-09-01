@@ -59,12 +59,9 @@ def _provider_order_identity(provider: str) -> str:
     raw = str(provider or "").strip().lower()
     if not raw:
         return ""
-    try:
-        from hermes_cli.models import normalize_provider
+    from hermes_cli.models import normalize_provider
 
-        return normalize_provider(raw) or raw
-    except Exception:
-        return raw
+    return normalize_provider(raw) or raw
 
 
 def order_provider_slugs(
@@ -208,7 +205,7 @@ def build_models_payload(
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
     fast_custom_probe: bool | None = None,
 ) -> dict:
-    """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
+    """Build ``{providers, model, provider, preferred_models}`` for every consumer. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
     in process caches (normal picker opens, while a background worker warms cold endpoints).

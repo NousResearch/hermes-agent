@@ -112,6 +112,26 @@ def test_prompt_model_selection_fallback_uses_line_editor_for_custom_model(
     assert _prompt_model_selection(["vendor/default-model"]) == "vendor/edited-model"
 
 
+def test_prompt_model_selection_logs_config_read_failure(monkeypatch, caplog):
+    from hermes_cli.auth import _prompt_model_selection
+
+    def unreadable_config():
+        raise OSError("unreadable picker config")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", unreadable_config)
+    monkeypatch.setattr(
+        "hermes_cli.curses_ui.curses_radiolist",
+        lambda _title, choices, **_kwargs: len(choices) - 1,
+    )
+    caplog.set_level("DEBUG", logger="hermes_cli.auth")
+
+    assert _prompt_model_selection(["catalog-model"], confirm_provider="openai") is None
+    records = [record for record in caplog.records if "configured model order" in record.message]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+    assert "unreadable picker config" in caplog.text
+
+
 def test_prompt_model_selection_orders_models_from_primary_fallback_chain(
     tmp_path,
     monkeypatch,

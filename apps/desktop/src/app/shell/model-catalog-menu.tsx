@@ -1318,6 +1318,30 @@ function DownloadingModelRow({
   )
 }
 
+function preferredFamilyRank(
+  preferredRanks: ReadonlyMap<string, number>,
+  provider: string,
+  family: ModelFamily
+): number | undefined {
+  let rank: number | undefined
+
+  // A rendered row represents both the base model and its optional -fast
+  // sibling. Rank the row by whichever configured member appears first.
+  for (const model of [family.id, family.fastId]) {
+    if (!model) {
+      continue
+    }
+
+    const candidate = preferredRanks.get(modelVisibilityKey(provider, normalize(model)))
+
+    if (candidate !== undefined && (rank === undefined || candidate < rank)) {
+      rank = candidate
+    }
+  }
+
+  return rank
+}
+
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
@@ -1404,10 +1428,11 @@ function groupModels(
       family =>
         (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
     )
+    const providerId = normalize(provider.slug)
 
     families.sort((a, b) => {
-      const aRank = preferredRanks.get(modelVisibilityKey(normalize(provider.slug), normalize(a.id)))
-      const bRank = preferredRanks.get(modelVisibilityKey(normalize(provider.slug), normalize(b.id)))
+      const aRank = preferredFamilyRank(preferredRanks, providerId, a)
+      const bRank = preferredFamilyRank(preferredRanks, providerId, b)
 
       if (aRank === undefined && bRank === undefined) {
         return 0

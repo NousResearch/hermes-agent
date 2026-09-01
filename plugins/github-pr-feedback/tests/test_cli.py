@@ -9,6 +9,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,72 @@ from github_pr_feedback.policy import (
     codex_review_trigger_comment,
 )
 from github_pr_feedback.repair_controller import pr_repair_attribution_line
+
+
+def test_grouped_audit_opens_sqlite_ledger_in_worker_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
+    from github_pr_feedback.cli import _run_grouped_exact_head_audit
+
+    worktree = tmp_path / "worktree"
+    manifest = worktree / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        "[lanes.fast]\nci_status = 'required'\nargv = ['pytest']\n",
+        encoding="utf-8",
+    )
+    identity = CIAuditIdentity("acme/widgets", 17, "b" * 40, "a" * 40)
+    receipt = CIAuditReceipt(
+        receipt_id="f" * 64,
+        identity=identity,
+        manifest_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        status="failed",
+        started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
+        actions_state=CheckState(False, True, 0),
+        commands=(),
+    )
+    caller_thread = threading.get_ident()
+    opened_threads: list[int] = []
+    closed_threads: list[int] = []
+
+    class OuterLedger:
+        def latest_ci_receipt_for_head(self, *_args: object) -> None:
+            return None
+
+    class WorkerLedger:
+        def close(self) -> None:
+            closed_threads.append(threading.get_ident())
+
+    class Runner:
+        def __init__(self, _github: object, _ledger: WorkerLedger) -> None:
+            assert opened_threads[-1] == threading.get_ident()
+
+        def run(self, _identity: CIAuditIdentity, _worktree: Path) -> CIAuditReceipt:
+            return receipt
+
+    def open_worker_ledger() -> WorkerLedger:
+        opened_threads.append(threading.get_ident())
+        return WorkerLedger()
+
+    monkeypatch.setattr(
+        "github_pr_feedback.cli.FeedbackLedger.for_current_profile",
+        open_worker_ledger,
+    )
+    monkeypatch.setattr("github_pr_feedback.cli.LocalCIRunner", Runner)
+
+    result = _run_grouped_exact_head_audit(
+        object(),  # type: ignore[arg-type]
+        OuterLedger(),  # type: ignore[arg-type]
+        identity,
+        worktree,
+        force_fresh=True,
+    )
+
+    assert result == receipt
+    assert opened_threads and opened_threads[0] != caller_thread
+    assert closed_threads == opened_threads
 
 
 def _plugin_module():

@@ -8,13 +8,15 @@ export interface MessageActionsProps {
   messageRole: MessageRole;
   onUseAsPrompt: (message: string) => void;
   onSpeak?: (message: string) => Promise<void> | void;
+  onEdit?: (message: string) => void;
+  onRegenerate?: () => void;
 }
 
 type FeedbackState = "copied" | "copy-failed" | "prompt-filled" | "spoken" | "speak-failed";
 
 const FEEDBACK_DURATION_MS = 1800;
 
-export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak }: MessageActionsProps) {
+export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, onEdit, onRegenerate }: MessageActionsProps) {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
 
@@ -88,6 +90,26 @@ export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak }:
       >
         Use as prompt
       </button>
+      {messageRole === "user" && onEdit && (
+        <button
+          type="button"
+          aria-label="Edit user message"
+          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => onEdit(message)}
+        >
+          Edit draft
+        </button>
+      )}
+      {messageRole === "assistant" && onRegenerate && (
+        <button
+          type="button"
+          aria-label="Run assistant message again"
+          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={onRegenerate}
+        >
+          Run again
+        </button>
+      )}
       {messageRole === "assistant" && onSpeak && (
         <button
           type="button"

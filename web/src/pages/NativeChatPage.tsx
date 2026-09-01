@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -102,9 +103,8 @@ type PendingPrompt = { id: string; text: string; mode: "retry" | "queued" };
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-// Native-chat-specific copy is kept local because the existing web i18n
-// contract does not have a chat namespace yet. Keep this list short until
-// those keys can be added for every locale together.
+// Keep the few quick prompts local until every locale has a translated
+// command-palette/chat namespace.
 const QUICK_PROMPTS = [
   "Summarize this text",
   "Explain a concept simply",
@@ -167,9 +167,69 @@ interface NativeChatPageProps {
   onOpenNavigation?: () => void;
 }
 
+const TranscriptBubble = memo(function TranscriptBubble({
+  message,
+  onUseAsPrompt,
+  onSpeak,
+  onEdit,
+  onRegenerate,
+}: {
+  message: TranscriptMessage;
+  onUseAsPrompt: (message: string) => void;
+  onSpeak: (message: string) => Promise<void>;
+  onEdit: (message: string) => void;
+  onRegenerate?: () => void;
+}) {
+  return (
+    <article
+      data-slot="transcript-message"
+      data-message-id={message.id}
+      data-message-role={message.role}
+      data-message-streaming={message.streaming ? "true" : "false"}
+      aria-label={message.role === "user" ? "Your message" : "Hermes message"}
+      className={cn(
+        "w-fit max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-2 text-sm",
+        message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted text-foreground",
+      )}
+    >
+      {message.role === "assistant"
+        ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} streaming={message.streaming} />
+        : message.text}
+      {message.text && (
+        <MessageActions
+          message={message.text}
+          messageRole={message.role}
+          onUseAsPrompt={onUseAsPrompt}
+          onEdit={message.role === "user" ? onEdit : undefined}
+          onRegenerate={message.role === "assistant" ? onRegenerate : undefined}
+          onSpeak={message.role === "assistant" ? onSpeak : undefined}
+        />
+      )}
+    </article>
+  );
+});
+
 export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps) {
   const { profile } = useProfileScope();
   const { t } = useI18n();
+  const chat = {
+    title: t.chat?.title ?? "Chat",
+    subtitle: t.chat?.subtitle ?? "Native gateway chat",
+    startConversation: t.chat?.startConversation ?? "Start a conversation.",
+    tryPrompt: t.chat?.tryPrompt ?? "Try a prompt",
+    messagePlaceholder: t.chat?.messagePlaceholder ?? "Message Hermes… (drop or paste files)",
+    dropPasteAttach: t.chat?.dropPasteAttach ?? "Drop files or paste to attach",
+    send: t.chat?.send ?? "Send",
+    queue: t.chat?.queue ?? "Queue",
+    stop: t.chat?.stop ?? "Stop",
+    recordVoice: t.chat?.recordVoice ?? "Record voice",
+    stopVoiceRecording: t.chat?.stopVoiceRecording ?? "Stop voice recording",
+    requestingMicrophone: t.chat?.requestingMicrophone ?? "Requesting microphone…",
+    transcribing: t.chat?.transcribing ?? "Transcribing…",
+    syncing: t.chat?.syncing ?? "Syncing",
+    ready: t.chat?.ready ?? "Ready",
+    working: t.chat?.working ?? "Working",
+  };
   const [searchParams, setSearchParams] = useSearchParams();
   const resumeParam = searchParams.get("resume");
   const routeModel = searchParams.get("model");
@@ -686,6 +746,19 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     void submit(undefined, next).finally(() => { queueDrainInFlightRef.current = false; });
   }, [connectionState, queuedPrompts, sessionId, streaming, submitting, submit, tools, turnStartedAt]);
 
+  const runLastPromptAgain = useCallback(() => {
+    const lastUser = [...transcript].reverse().find((message) => message.role === "user");
+    if (!lastUser || !sessionId || connectionState !== "open") return;
+    const pending: PendingPrompt = { id: `rerun-${Date.now()}`, text: lastUser.text, mode: "queued" };
+    const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
+    if (turnActive) {
+      setQueuedPrompts((current) => [...current, pending]);
+      setStatus("Queued");
+      return;
+    }
+    void submit(undefined, pending);
+  }, [connectionState, sessionId, streaming, submit, tools, transcript, turnStartedAt]);
+
   const applyMessageAsPrompt = useCallback((message: string) => {
     setDraft(message);
     const textarea = textareaRef.current;
@@ -832,10 +905,10 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const pageStatus = connectionState !== "open"
     ? connectionLabel(connectionState)
     : resyncState === "syncing"
-      ? "Syncing"
+      ? chat.syncing
       : isWorking
-        ? "Working"
-        : "Ready";
+        ? chat.working
+        : chat.ready;
   const sessionActivityStatus: SessionActivityStatus = error
     ? "error"
     : connectionState !== "open"
@@ -882,6 +955,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           onFocusComposer={focusComposer}
           onNewChat={startNewChat}
           onToggleSessions={toggleSessionNavigator}
+          onInsertPrompt={applyQuickPrompt}
           queuedCount={queuedPrompts.length}
           onClearQueue={() => setQueuedPrompts([])}
         />
@@ -917,8 +991,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             <MessageSquare />
           </Button>
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold">Chat</h1>
-            <p className="truncate text-sm text-text-secondary">Native gateway chat</p>
+            <h1 className="truncate text-lg font-semibold">{chat.title}</h1>
+            <p className="truncate text-sm text-text-secondary">{chat.subtitle}</p>
           </div>
         </div>
         <div
@@ -1062,15 +1136,17 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             data-testid="native-chat-transcript"
             data-slot="transcript"
             className="min-h-0 flex-1 space-y-3 overflow-y-auto py-4 pr-1"
+            role="log"
             aria-live="polite"
+            aria-relevant="additions text"
           >
             {approval && <ApprovalCard request={approval} onRespond={respondApproval} />}
             {clarify && <ClarificationCard request={clarify} onRespond={respondClarify} />}
             {transcript.length === 0 && !approval && !clarify && (
               <div data-slot="chat-empty-state" className="max-w-2xl space-y-3 py-8 text-sm text-text-secondary">
-                <p>Start a conversation.</p>
-                <div className="space-y-2" role="group" aria-label="Quick prompts">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Try a prompt</p>
+                <p>{chat.startConversation}</p>
+                <div className="space-y-2" role="group" aria-label={chat.tryPrompt}>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{chat.tryPrompt}</p>
                   <div className="flex flex-wrap gap-2">
                     {QUICK_PROMPTS.map((prompt) => (
                       <button
@@ -1095,37 +1171,18 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                     className="mb-1 flex w-fit max-w-[85%] items-center gap-2 border-l-2 border-primary px-2 py-1 text-sm text-primary"
                     aria-label="Agent activity"
                   >
-                    <span aria-hidden className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
+                    <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full bg-primary motion-safe:animate-pulse" />
                     <span>{activityStatus}</span>
                     <span className="font-mono text-xs text-text-secondary">{elapsedSeconds}s</span>
                   </div>
                 )}
-                <article
-                  data-slot="transcript-message"
-                  data-message-id={message.id}
-                  data-message-role={message.role}
-                  data-message-streaming={message.streaming ? "true" : "false"}
-                  aria-label={message.role === "user" ? "Your message" : "Hermes message"}
-                  className={cn(
-                    "w-fit max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-2 text-sm",
-                    message.role === "user"
-                      ? "ml-auto bg-primary text-primary-foreground"
-                      : "bg-muted text-foreground",
-                  )}
-                >
-                  {message.role === "assistant"
-                    ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} streaming={message.streaming}
-                    />
-                    : message.text}
-                  {message.text && (
-                    <MessageActions
-                      message={message.text}
-                      messageRole={message.role}
-                      onUseAsPrompt={applyMessageAsPrompt}
-                      onSpeak={message.role === "assistant" ? speakMessage : undefined}
-                    />
-                  )}
-                </article>
+                <TranscriptBubble
+                  message={message}
+                  onUseAsPrompt={applyMessageAsPrompt}
+                  onEdit={applyMessageAsPrompt}
+                  onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}
+                  onSpeak={speakMessage}
+                />
                 {message.id === lastAssistantId && tools.length > 0 && (
                   <div
                     data-testid="tool-timeline"
@@ -1291,7 +1348,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
               ghost
               size="icon"
               type="button"
-              aria-label={voiceState === "recording" ? "Stop voice recording" : "Record voice"}
+              aria-label={voiceState === "recording" ? chat.stopVoiceRecording : chat.recordVoice}
               className={cn("shrink-0", voiceState === "recording" && "text-destructive")}
               disabled={voiceState === "starting" || voiceState === "transcribing"}
               onClick={() => voiceState === "recording" ? stopVoiceRecording() : void startVoiceRecording()}
@@ -1312,7 +1369,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 className="min-h-20 w-full resize-y border border-border bg-background/40 px-3 py-2 font-courier text-[16px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40 sm:text-sm"
                 value={draft}
                 disabled={connectionState !== "open" || !sessionId}
-                placeholder="Message Hermes… (drop or paste files)"
+                placeholder={chat.messagePlaceholder}
                 onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } }}
                 onChange={(event) => setDraft(event.target.value)}
                 onCompositionStart={() => { composingRef.current = true; }}
@@ -1330,7 +1387,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
               className="shrink-0"
               disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId}
             >
-              {submitting ? "Sending…" : isWorking ? "Queue" : "Send"}
+              {submitting ? "Sending…" : isWorking ? chat.queue : chat.send}
             </Button>
             {streaming && (
               <Button
@@ -1344,7 +1401,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 disabled={stopping || connectionState !== "open"}
                 onClick={() => void stop()}
               >
-                {stopping ? "Stopping…" : "Stop"}
+                {stopping ? "Stopping…" : chat.stop}
               </Button>
             )}
           </div>
@@ -1352,20 +1409,20 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         <div data-slot="composer-meta" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
           <span id="native-chat-composer-hint" data-slot="composer-attachment-hint" className="inline-flex items-center gap-1.5">
             <Paperclip aria-hidden className="h-3.5 w-3.5" />
-            Drop files or paste to attach
+            {chat.dropPasteAttach}
           </span>
           <span data-slot="composer-status" role="status" aria-live="polite">
             {voiceState === "starting"
-              ? "Requesting microphone…"
+              ? chat.requestingMicrophone
               : voiceState === "recording"
                 ? "Recording… tap the microphone to stop"
                 : voiceState === "transcribing"
-                  ? "Transcribing…"
+                  ? chat.transcribing
                   : submitting
                     ? "Sending…"
                     : connectionState !== "open"
                       ? "Waiting for connection…"
-                      : status ?? (streaming ? "Working…" : "Ready")}
+                      : status ?? (streaming ? chat.working : chat.ready)}
           </span>
         </div>
       </form>

@@ -56,7 +56,7 @@ export function ToolActivity({ item }: { item: ToolActivityItem }) {
       className="rounded-md border border-border bg-background px-3 py-2 text-xs"
     >
       <div className="flex items-center gap-2 font-medium">
-        <span role="status" aria-label={`${item.name} ${item.state}`} className={cn("inline-block h-2 w-2 rounded-full", item.state === "running" ? "animate-pulse bg-primary" : "bg-success")} />
+        <span role="status" aria-label={`${item.name} ${item.state}`} className={cn("inline-block h-2 w-2 rounded-full", item.state === "running" ? "motion-safe:animate-pulse bg-primary" : "bg-success")} />
         <span>{item.name}</span>
         <span className="text-muted-foreground">{stateLabel}</span>
         {elapsed && <span className="ml-auto font-mono text-muted-foreground">{elapsed}</span>}

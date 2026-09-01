@@ -6,6 +6,7 @@ export type ChatCommandPaletteProps = {
   onFocusComposer: () => void;
   onNewChat: () => void;
   onToggleSessions: () => void;
+  onInsertPrompt: (prompt: string) => void;
   queuedCount: number;
   onClearQueue: () => void;
 };
@@ -15,6 +16,7 @@ export function CommandPalette({
   onFocusComposer,
   onNewChat,
   onToggleSessions,
+  onInsertPrompt,
   queuedCount,
   onClearQueue,
 }: ChatCommandPaletteProps) {
@@ -23,10 +25,12 @@ export function CommandPalette({
 
   const commands = useMemo(() => [
     { id: "focus", label: "Focus composer", hint: "Jump to the message box", action: onFocusComposer },
+    { id: "heartbeat", label: "Draft heartbeat command", hint: "Fill /heartbeat every 10m …", action: () => onInsertPrompt("/heartbeat every 10m ") },
+    { id: "loop", label: "Draft recurring loop command", hint: "Fill /loop 10m …", action: () => onInsertPrompt("/loop 10m ") },
     { id: "new", label: "New chat", hint: "Start a fresh session", action: onNewChat },
     { id: "sessions", label: "Toggle sessions", hint: "Show or hide the session navigator", action: onToggleSessions },
     ...(queuedCount > 0 ? [{ id: "clear-queue", label: "Clear prompt queue", hint: `${queuedCount} queued prompt${queuedCount === 1 ? "" : "s"}`, action: onClearQueue }] : []),
-  ], [onClearQueue, onFocusComposer, onNewChat, onToggleSessions, queuedCount]);
+  ], [onClearQueue, onFocusComposer, onInsertPrompt, onNewChat, onToggleSessions, queuedCount]);
 
   const visibleCommands = commands.filter((command) => `${command.label} ${command.hint}`.toLowerCase().includes(query.trim().toLowerCase()));
 

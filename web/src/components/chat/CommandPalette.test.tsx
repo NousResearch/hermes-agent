@@ -15,6 +15,7 @@ describe("CommandPalette", () => {
     onFocusComposer: vi.fn(),
     onNewChat: vi.fn(),
     onToggleSessions: vi.fn(),
+    onInsertPrompt: vi.fn(),
     queuedCount: 0,
     onClearQueue: vi.fn(),
   });
@@ -53,5 +54,13 @@ describe("CommandPalette", () => {
     expect(host.textContent).toContain("2 queued prompts");
     await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Clear prompt queue']")?.click());
     expect(callbacks.onClearQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers automation slash-command drafts", async () => {
+    const callbacks = props();
+    await act(async () => root.render(createElement(CommandPalette, callbacks)));
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Draft heartbeat command']")?.click());
+    expect(callbacks.onInsertPrompt).toHaveBeenCalledWith("/heartbeat every 10m ");
+    expect(callbacks.onClose).toHaveBeenCalledTimes(1);
   });
 });

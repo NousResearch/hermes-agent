@@ -88,4 +88,18 @@ describe("MessageActions", () => {
     expect(onSpeak).toHaveBeenCalledWith("Read this aloud");
     expect(host.querySelector("[role='status']")?.textContent).toContain("Spoken");
   });
+
+  it("delegates edit and run-again actions to the parent", async () => {
+    const onEdit = vi.fn();
+    const onRegenerate = vi.fn();
+    await act(async () => root.render(createElement("div", null,
+      createElement(MessageActions, { message: "edit me", messageRole: "user", onUseAsPrompt: vi.fn(), onEdit }),
+      createElement(MessageActions, { message: "run me", messageRole: "assistant", onUseAsPrompt: vi.fn(), onRegenerate }),
+    )));
+
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.click());
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Run assistant message again']")?.click());
+    expect(onEdit).toHaveBeenCalledWith("edit me");
+    expect(onRegenerate).toHaveBeenCalledTimes(1);
+  });
 });

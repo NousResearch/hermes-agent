@@ -109,6 +109,25 @@ export const en: Translations = {
     dismiss: "Dismiss",
   },
 
+  chat: {
+    title: "Chat",
+    subtitle: "Native gateway chat",
+    startConversation: "Start a conversation.",
+    tryPrompt: "Try a prompt",
+    messagePlaceholder: "Message Hermes… (drop or paste files)",
+    dropPasteAttach: "Drop files or paste to attach",
+    send: "Send",
+    queue: "Queue",
+    stop: "Stop",
+    recordVoice: "Record voice",
+    stopVoiceRecording: "Stop voice recording",
+    requestingMicrophone: "Requesting microphone…",
+    transcribing: "Transcribing…",
+    syncing: "Syncing",
+    ready: "Ready",
+    working: "Working",
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",

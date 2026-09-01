@@ -125,6 +125,26 @@ export interface Translations {
     dismiss?: string;
   };
 
+  /** Optional native-chat copy; locales without these keys use English fallback. */
+  chat?: {
+    title?: string;
+    subtitle?: string;
+    startConversation?: string;
+    tryPrompt?: string;
+    messagePlaceholder?: string;
+    dropPasteAttach?: string;
+    send?: string;
+    queue?: string;
+    stop?: string;
+    recordVoice?: string;
+    stopVoiceRecording?: string;
+    requestingMicrophone?: string;
+    transcribing?: string;
+    syncing?: string;
+    ready?: string;
+    working?: string;
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;

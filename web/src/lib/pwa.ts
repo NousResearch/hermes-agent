@@ -2,7 +2,7 @@ import { HERMES_BASE_PATH } from "@/lib/api";
 
 export function serviceWorkerUrl(basePath: string): string {
   const normalized = basePath.replace(/\/+$/, "");
-  return `${normalized}/sw.js` || "/sw.js";
+  return normalized ? `${normalized}/sw.js` : "/sw.js";
 }
 
 export function serviceWorkerScope(basePath: string): string {

@@ -156,6 +156,25 @@ describe("NativeChatPage", () => {
     expect(assistantMessage?.getAttribute("aria-label")).toBe("Hermes message");
   });
 
+  it("supports edit-as-draft and rerunning the latest prompt", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(textarea, "original prompt");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      host.querySelector<HTMLButtonElement>("button[type='submit']")?.click();
+      gateway.instance?.emit("message.start");
+      gateway.instance?.emit("message.delta", { text: "answer" });
+      gateway.instance?.emit("message.complete");
+    });
+
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.click());
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("original prompt");
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Run assistant message again']")?.click());
+    expect(gateway.instance?.requests.filter(({ method, params }) => method === "prompt.submit" && params.text === "original prompt")).toHaveLength(2);
+  });
+
   it("keeps Enter inside Thai IME composition and submits only after composition ends", () => {
     expect(shouldSubmitComposerKey("Enter", false, true)).toBe(false);
     expect(shouldSubmitComposerKey("Enter", true, false)).toBe(false);

@@ -1870,15 +1870,31 @@ display:
 # =============================================================================
 # Shared metrics are disabled by default. When enabled, Hermes writes only
 # allowlisted aggregate counters and immutable JSON
-# packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
+# packages under $HERMES_HOME/telemetry/shared_metrics.
 # Packages include a random profile-scoped ID that stays stable until this
 # directory is deleted. It is not derived from hardware, account, or host data.
 # Successfully exported local history is retained for 30 days; pending deltas
 # are retained until they can be exported.
 # This profile-owned choice is not overridden by managed-scope configuration.
+#
+# Nothing is uploaded unless you also set `send: true`. That is a separate
+# opt-in and requires `enabled`; it never turns collection on by itself.
+# When sending is on:
+#   * only packages whose entire collection period falls within one
+#     continuous recorded consent window are ever sent. Consent windows open
+#     when you enable sending and close when you disable it, so data
+#     collected before you opted in — or during any gap between opt-ins —
+#     stays on this machine;
+#   * each package carries the profile-scoped ID as-is. It is a random UUID
+#     with no hardware, account, or host-derived content, and deleting the
+#     shared-metrics directory resets it.
+# See docs/observability/relay-shared-metrics.md (Appendix A) for the full
+# consent, identity, retention, and deletion decisions.
 telemetry:
   shared_metrics:
     enabled: false
+    send: false
+    # endpoint: https://telemetry.nousresearch.com/v1/telemetry
 
 
 # =============================================================================

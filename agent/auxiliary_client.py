@@ -10814,7 +10814,38 @@ def _call_llm_impl(
         raise
 
 
-def extract_content_or_reasoning(response) -> str:
+def _coerce_llm_message(response):
+    """Pull a message (dict, object, or str) out of a response-or-message value.
+
+    Compression and some OpenAI-compatible proxies hand us a dict-shaped
+    response or a bare message; vision/oneshot callers pass a ChatCompletion
+    object. MagicMock ``reasoning_*`` attrs are not strings — callers that
+    want the empty-content failure path rely on that.
+    """
+    if response is None or isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        if "choices" not in response:
+            return response
+        choices = response.get("choices") or []
+        if not choices:
+            return None
+        first = choices[0]
+        return first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return response
+    first = choices[0]
+    return first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+
+
+def _message_field(msg, name):
+    if isinstance(msg, dict):
+        return msg.get(name)
+    return getattr(msg, name, None)
+
+
+def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = None) -> str:
     """Extract content from an LLM response, falling back to reasoning fields.
 
     Mirrors the main agent loop's behavior when a reasoning model (DeepSeek-R1,
@@ -10827,12 +10858,24 @@ def extract_content_or_reasoning(response) -> str:
          structured reasoning fields (DeepSeek, Moonshot, NovitaAI, etc.).
       3. ``message.reasoning_details`` — OpenRouter unified array format.
 
+    Accepts a full response or a bare message (dict or object). When
+    ``max_reasoning_chars`` is set, a reasoning-field fallback is truncated
+    so an unbounded chain-of-thought cannot become the compaction summary.
+
     Returns the best available text, or ``""`` if nothing found.
     """
     import re
 
-    msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    msg = _coerce_llm_message(response)
+    if msg is None:
+        return ""
+    if isinstance(msg, str):
+        return msg.strip()
+
+    raw = _message_field(msg, "content")
+    if not isinstance(raw, str):
+        raw = str(raw) if raw else ""
+    content = raw.strip()
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
@@ -10848,11 +10891,11 @@ def extract_content_or_reasoning(response) -> str:
     # Content is empty or reasoning-only — try structured reasoning fields
     reasoning_parts: list[str] = []
     for field in ("reasoning", "reasoning_content"):
-        val = getattr(msg, field, None)
+        val = _message_field(msg, field)
         if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
             reasoning_parts.append(val.strip())
 
-    details = getattr(msg, "reasoning_details", None)
+    details = _message_field(msg, "reasoning_details")
     if details and isinstance(details, list):
         for detail in details:
             if isinstance(detail, dict):
@@ -10864,10 +10907,18 @@ def extract_content_or_reasoning(response) -> str:
                 if summary and summary not in reasoning_parts:
                     reasoning_parts.append(summary.strip() if isinstance(summary, str) else str(summary))
 
-    if reasoning_parts:
-        return "\n\n".join(reasoning_parts)
+    if not reasoning_parts:
+        return ""
 
-    return ""
+    text = "\n\n".join(reasoning_parts)
+    if max_reasoning_chars is not None and len(text) > max_reasoning_chars:
+        logger.warning(
+            "fell back to reasoning fields (%d chars); truncating to %d",
+            len(text),
+            max_reasoning_chars,
+        )
+        return text[:max_reasoning_chars]
+    return text
 
 
 @_relay_auxiliary_call_async

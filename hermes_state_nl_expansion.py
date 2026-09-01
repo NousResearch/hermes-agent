@@ -60,6 +60,130 @@ _NL_LANG_PACKS: Dict[str, Dict[str, Any]] = {
         "min_stem": 4,
         "fallback": "keep",
     },
+    # --- Latin-script language packs (pure data) --------------------------
+    "es": {
+        "stopwords": frozenset(
+            """
+            el la los las un una unos unas y o u pero si no de del al en con
+            por para sin sobre entre como que qué cuál cuáles cuándo dónde
+            quién quiénes cuánto cuántos mi mis tu tus su sus nuestro nuestra
+            nuestros nuestras vuestro vuestra vuestros vuestras es son era
+            eran será serán estar está están este esta estos estas ese esa
+            esos esas aquel aquella hay habia han he has hemos hacer haz
+            dime muestra explicar comprueba revisar decir porfavor
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            el los las unos unas del al que qué cuál cuándo dónde cómo
+            por para con sin sobre y o u pero es son está están hay
+            """.split()
+        ),
+        "suffixes": ("ando", "iendo", "aron", "ción", "ciones", "mente", "es", "s", "o", "a"),
+        "endings": frozenset({"ar", "er", "ir", "os", "as", "es", "ón", "an", "en", "ía"}),
+        "vowels": "aeiouáéíóúü",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "fr": {
+        "stopwords": frozenset(
+            """
+            le la les un une des du au aux et ou mais si ne pas de en dans sur
+            sous avec sans pour par comme que quoi quel quelle quels quelles
+            quand où qui combien mon ma mes ton ta tes son sa ses notre nos
+            votre vos leur leurs est sont était était sera seront ce cet cette
+            ces il elle ils elles je tu nous vous on faire dis disons montre
+            explique vérifie dis-moi s'il
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            le les des du au aux et ou mais ne pas que quoi quel quelle
+            quand où qui est sont cette ces pour par sur dans avec sans
+            """.split()
+        ),
+        "suffixes": ("ement", "ation", "eux", "eaux", "ent", "ante", "ants", "es", "e", "s"),
+        "endings": frozenset({"nt", "ez", "ai", "oi", "on", "ie", "ux", "eau", "ée", "és"}),
+        "vowels": "aeiouàâäéèêëîïôöùûüÿ",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "de": {
+        "stopwords": frozenset(
+            """
+            der die das ein eine einen einem einer eines und oder aber wenn
+            von vom zu zum zur im in an am auf aus bei mit nach über unter
+            für um durch gegen ohne wie was wer wen wem wo wann warum welche
+            welcher welches welchen meinem meiner mein meine dein deine sein
+            seine ihr ihre unser unsere ist sind war waren wird werden würde
+            würden hat haben hatte hatten kann müssen soll soll
+            machen sag sagst zeig erkläre prüfe bitte
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            der die das ein eine einen dem den des und oder aber wie was
+            wer wo wann warum mit von zu zum zur im in auf aus bei für
+            ist sind war wird werden kann nicht auch noch schon
+            """.split()
+        ),
+        "suffixes": ("ung", "ungen", "keit", "heit", "lich", "isch", "end", "er", "es", "en", "em", "e", "n", "s"),
+        "endings": frozenset({"en", "er", "es", "em", "st", "te", "un", "ig", "ich"}),
+        "vowels": "aeiouäöü",
+        "trailing_vowel_drop": False,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "pt": {
+        "stopwords": frozenset(
+            """
+            o a os as um uma uns umas e ou mas se não de do da dos das no na
+            nos nas em por pelo pela com sem sob sobre entre como que qual
+            quais quando onde quem quanto meu minha meus minhas teu tua seu
+            sua nosso nossa é são era eram será estar está estão este esta
+            esses essas aquele aquela há fazer diz mostra explica verifica
+            porfavor
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            os as uns umas do da dos das no na nos nas em pelo pela com sem
+            que qual quando onde quem é são não e ou mas mas sobre está estão
+            """.split()
+        ),
+        "suffixes": ("ando", "endo", "ção", "ções", "mente", "aram", "eria", "aria", "es", "s", "o", "a"),
+        "endings": frozenset({"ar", "er", "ir", "os", "as", "es", "ão", "am", "em", "ia"}),
+        "vowels": "aeiouáâãàéêíóôõú",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "it": {
+        "stopwords": frozenset(
+            """
+            il lo la i gli le un uno una di del della dei degli delle in nel
+            nella con sul sulla su per tra fra senza come che cosa quale quali
+            quando dove chi quanto mio mia miei mie tuo tua suo sua nostro
+            nostra è sono era erano sarà stare sta stanno fare dimmi mostra
+            spiega controlla per favore
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            i il lo gli le un uno una di del della dei degli delle nel nella
+            sul sulla che cosa quale quando dove chi è sono non e o ma per
+            con su tra fra senza come
+            """.split()
+        ),
+        "suffixes": ("ando", "endo", "zione", "zioni", "mente", "ato", "ata", "iti", "ate", "ono", "ano", "i", "e", "o", "a"),
+        "endings": frozenset({"re", "si", "ci", "gi", "io", "ia", "ua", "uo", "ò", "à"}),
+        "vowels": "aeiouàèéìòù",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
 }
 
 

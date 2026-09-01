@@ -1,5 +1,15 @@
 """P4.1 — Deterministic shadow risk classification (non-mutating).
 
+Corrected per audit correction handoff (C5):
+
+  * Human provenance FAILS CLOSED: only trusted human creation seams
+    (dashboard, idea-box, cli) and REGISTRY-VERIFIED interactive profile
+    authors are eligible.  Unknown/missing/malformed/automation stamps
+    produce no suggestion — never inferred from token shape.
+  * Per-version idempotence searches ALL prior suggestion events, not
+    only the latest.
+  * No duplicate kind:* reason tokens.
+
 Pure deterministic SUGGESTION contract for human-created tasks:
 
     kind: risk_classification_suggested
@@ -9,44 +19,39 @@ Pure deterministic SUGGESTION contract for human-created tasks:
         reasons: [<bounded structured token>]
         classifier_version: <token>
 
-Hard invariants:
+Hard invariants (unchanged):
   * NEVER modifies persisted task tier, routing, assignee, reviewer or
     status; only inserts a ``risk_classification_suggested`` event.
-  * Never overwrites a human tier/task-kind choice (suggestions are
-    informational; humans own the columns).
-  * Same normalised task contract → same suggestion (sha256-stable).
-  * ONLY caller-proven human-created tasks are eligible.  "Human" is
-    proven by a structured origin seam (human-originated creator set),
-    NEVER inferred from title/body prose.  When source identity is
-    unavailable the function records no suggestion and reports the
-    integration gap.
+  * Never overwrites a human tier/task-kind choice.
+  * Same normalised task contract → same suggestion.
   * Event insertion is idempotent per (task_id, classifier_version).
   * Reasons are bounded structured tokens; no prompt/body text copied.
-  * Default runtime behaviour unchanged: nothing calls this unless a
-    future (separately approved) integration does.
+  * Default runtime behaviour unchanged.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sqlite3
 import time
+from pathlib import Path
 from typing import Any, Optional
 
-CLASSIFIER_VERSION = "shadow-classifier-1"
+CLASSIFIER_VERSION = "shadow-classifier-2"
 EVENT_KIND = "risk_classification_suggested"
 
-# Structured human-origin seams (created_by values that prove human
-# creation).  Anything outside this set (feature-pipeline, swarm,
-# governance, decompose children, etc.) is NOT eligible.
-HUMAN_CREATED_BY = {
-    "dashboard", "ideabox", "idea-box", "cli",
-}
-# Profile-author stamps (kanban CLI _profile_author()) are human sessions.
-_SYSTEM_CREATED_BY = {
-    "feature-pipeline", "denji-governance", "system",
+# C5: trusted human creation seams.  Anything outside this set (or not
+# registry-verified as an interactive profile author) is NOT eligible.
+TRUSTED_HUMAN_CREATED_BY = {"dashboard", "ideabox", "idea-box", "cli"}
+
+# Automation/derived-origin stamps that must never classify as human,
+# even if they later appear in a registry by mistake.
+_AUTOMATION_STAMPS = {
+    "feature-pipeline", "feature-pipeline", "denji-governance", "system",
+    "swarm", "cron", "webhook", "job", "automation", "scheduler",
+    "worker", "pipeline", "governance", "decompose", "triage-router",
+    "orchestrator", "market-scanner", "skill-broker", "skill-research",
 }
 
 _BOUNDARY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_\-.:]{0,63}$")
@@ -58,29 +63,62 @@ def _bounded(token: str) -> str:
     return token
 
 
-def is_human_created(task_row: sqlite3.Row | dict) -> bool:
-    """Prove human creation ONLY from structured seams.
-
-    A task is human-created when created_by is a human origin: the
-    dashboard, idea-box, an explicit 'cli' stamp, or a profile-author
-    stamp from an interactive Kanban session (created_by values that are
-    profile names in the roster).  Automation stamps are excluded.
-    Returns False when identity is unavailable.
+def _registry_profile_names(hermes_home: Optional[Path] = None) -> Optional[set[str]]:
+    """Registry-verified profile names, or None when the registry is
+    absent/unreadable (provenance then cannot be verified → fail closed).
     """
-    created_by = task_row["created_by"] if not isinstance(task_row, dict) else task_row.get("created_by")
+    home = hermes_home or Path(
+        __import__("os").environ.get("HERMES_HOME", "") or
+        Path.home() / ".hermes"
+    )
+    path = home / "governance" / "profile-registry.yaml"
+    if not path.exists():
+        return None
+    try:
+        import yaml
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), list):
+        return None
+    return {
+        e["name"] for e in raw["profiles"]
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+
+def is_human_created(
+    task_row: "sqlite3.Row | dict",
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    """Prove human creation ONLY from structured seams (fail closed).
+
+    Eligible origins:
+      * trusted creation seams: dashboard / idea-box / cli;
+      * an interactive profile-author stamp that is VERIFIED present in
+        the deployed profile registry.
+
+    Everything else — unknown tokens, automation stamps, missing or
+    malformed identity — is NOT human.  Token shape is never evidence.
+    """
+    created_by = (
+        task_row["created_by"] if not isinstance(task_row, dict)
+        else task_row.get("created_by")
+    )
     if not isinstance(created_by, str) or not created_by.strip():
         return False
     created_by = created_by.strip()
-    if created_by in _SYSTEM_CREATED_BY:
+    if not _BOUNDARY_TOKEN_RE.match(created_by):
         return False
-    if created_by in HUMAN_CREATED_BY:
+    if created_by in _AUTOMATION_STAMPS or created_by in _AUTOMATION_STAMPS:
+        return False
+    if created_by in TRUSTED_HUMAN_CREATED_BY:
         return True
-    # Interactive kanban-CLI creation stamps a profile author (e.g.
-    # "kensei", "misa-misa"); automation stamps are the known system
-    # tokens filtered above.  A profile-name token is human-origin.
-    if _BOUNDARY_TOKEN_RE.match(created_by):
-        return True
-    return False
+    # Profile-author stamps: only registry-verified names qualify.
+    names = _registry_profile_names(hermes_home)
+    if names is None:
+        return False  # no registry → cannot verify → fail closed
+    return created_by in names
 
 
 def suggest(
@@ -89,6 +127,7 @@ def suggest(
     *,
     classifier_version: str = CLASSIFIER_VERSION,
     now: Optional[int] = None,
+    hermes_home: Optional[Path] = None,
 ) -> Optional[dict[str, Any]]:
     """Compute a deterministic suggestion for an eligible human task.
 
@@ -102,34 +141,30 @@ def suggest(
     ).fetchone()
     if row is None:
         return None
-    if not is_human_created(row):
+    if not is_human_created(row, hermes_home=hermes_home):
         return None
 
-    # Idempotence: one suggestion per task + classifier version.
-    existing = conn.execute(
-        "SELECT id, payload FROM task_events WHERE task_id = ? AND kind = ? "
-        "ORDER BY id DESC LIMIT 1",
+    # C5: idempotence — search ALL prior events for this classifier
+    # version, not only the latest.
+    prior = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ?",
         (task_id, EVENT_KIND),
-    ).fetchone()
-    if existing:
+    ).fetchall()
+    for p in prior:
         try:
-            payload = json.loads(existing["payload"] or "{}")
-            if payload.get("classifier_version") == classifier_version:
-                return None  # already classified by this version
+            payload = json.loads(p[0] or "{}")
         except (json.JSONDecodeError, TypeError):
-            pass
+            continue
+        if payload.get("classifier_version") == classifier_version:
+            return None  # already classified by this version
 
-    title = row["title"] or ""
     kind = row["task_kind"] or "task"
     priority = int(row["priority"] or 0)
     budget = row["max_runtime_seconds"]
 
     reasons: list[str] = []
-    # Deterministic fast/full heuristic (bounded structured values only):
-    # heavy signals push 'full' — multi-repo work, tight budgets, elevated
-    # priority, bug/gate kinds; everything else suggests 'fast'.
     if kind in ("bug", "gate"):
-        reasons.append("kind:" + _bounded(kind))
+        reasons.append("kind:" + _bounded(str(kind)))
         tier = "full"
     elif priority >= 2:
         reasons.append("priority:high")
@@ -141,7 +176,6 @@ def suggest(
         tier = "fast"
     if not reasons:
         reasons.append("default:light")
-    reasons.append("kind:" + _bounded(str(kind)))
 
     suggestion = {
         "kind": EVENT_KIND,
@@ -161,21 +195,20 @@ def insert_shadow_event(
     """Insert the shadow suggestion event idempotently (task+version).
 
     Never modifies the tasks row.  Returns the event row id, or None when
-    this task+version was already classified.
+    this task+version was already classified (searches ALL prior events).
     """
     version = suggestion["classifier_version"]
-    existing = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
-        "ORDER BY id DESC LIMIT 1",
+    prior = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ?",
         (task_id, EVENT_KIND),
-    ).fetchone()
-    if existing:
+    ).fetchall()
+    for p in prior:
         try:
-            payload = json.loads(existing["payload"] or "{}")
-            if payload.get("classifier_version") == version:
-                return None
+            payload = json.loads(p[0] or "{}")
         except (json.JSONDecodeError, TypeError):
-            pass
+            continue
+        if payload.get("classifier_version") == version:
+            return None
     cur = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, NULL, ?, ?, ?)",
@@ -190,7 +223,7 @@ def insert_shadow_event(
 
 
 def classification_disagreement(
-    task_row: sqlite3.Row | dict, suggestion: Optional[dict[str, Any]],
+    task_row: "sqlite3.Row | dict", suggestion: Optional[dict[str, Any]],
 ) -> Optional[dict[str, Any]]:
     """Report suggestion vs human choice for later shadow comparison.
 

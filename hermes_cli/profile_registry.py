@@ -205,7 +205,7 @@ def render_registry_markdown(registry: dict[str, Any]) -> str:
     lines.append("")
 
     def _row(p: dict[str, Any]) -> str:
-        parent = p["parent"] or (root["name"] if p["parent"] is None and p["kind"] == "lead" else root["name"])
+        parent = p["parent"] or root["name"]
         return (
             f"| {p['name']} | {p['kind']} | {parent} | {p['lifecycle']} | "
             f"{', '.join(p['domains'])} | {p['gateway_unit'] or '—'} |"

@@ -208,3 +208,32 @@ class TestParseRetryAfterSeconds:
                 raise RuntimeError("boom")
 
         assert parse_retry_after_seconds(Explosive()) is None
+
+
+# ── Local endpoint restart window ───────────────────────────────────────
+
+
+def test_local_endpoint_down_backoff_is_flat_and_jittered():
+    """Flat ~30s waits, jittered — not the 2s-base exponential that burned
+    all three default attempts inside ~20s during a LiteLLM proxy restart."""
+    from agent.retry_utils import (
+        _LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS,
+        local_endpoint_down_backoff,
+    )
+
+    waits = [local_endpoint_down_backoff() for _ in range(50)]
+    lo = _LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS * 0.8
+    hi = _LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS * 1.2
+    assert all(lo <= w <= hi for w in waits), waits
+    assert len(set(waits)) > 1, "backoff must be jittered, not constant"
+
+
+def test_local_endpoint_down_window_covers_a_cold_boot():
+    """Ceiling x backoff must span well past the measured ~60s cold boot."""
+    from agent.retry_utils import (
+        _LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS,
+        local_endpoint_down_retry_ceiling,
+    )
+
+    span = local_endpoint_down_retry_ceiling() * _LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS
+    assert span >= 300, f"retry window {span}s is too short for a proxy restart"

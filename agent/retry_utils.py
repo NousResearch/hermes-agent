@@ -163,3 +163,43 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     because the loop gives up when ``retry_count >= ceiling`` BEFORE computing the attempt's
     backoff (the default ``api_max_retries`` of 3 equals ``short_attempts``)."""
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# ── Local endpoint restart window ───────────────────────────────────────
+# A connection failure against a loopback / LAN endpoint means the local
+# process is restarting, not that a provider is unreachable. Measured on the
+# LiteLLM proxy that fronts Ollama Cloud: a cold boot is ~60s (prisma
+# toolchain + per-model registration), and a ``docker restart`` on a loaded
+# host has taken up to ~8min just to start the replacement container. The
+# generic 2s-base backoff burns all three default attempts inside ~20s, so a
+# routine proxy restart kills every in-flight agent turn instead of pausing
+# it. These two knobs widen the retry window to cover a normal restart.
+_LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS = 30.0
+_LOCAL_ENDPOINT_DOWN_ATTEMPTS = 12
+
+
+def local_endpoint_down_backoff() -> float:
+    """Flat (jittered) wait between retries while a local endpoint restarts.
+
+    Flat rather than exponential: the wait is bounded by a process boot, not
+    by a server-side quota that needs progressively longer cooling. Jitter
+    keeps concurrent Hermes sessions from stampeding the port the instant it
+    reopens.
+    """
+    return jittered_backoff(
+        1,
+        base_delay=_LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS,
+        max_delay=_LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS,
+        jitter_ratio=0.2,
+    )
+
+
+def local_endpoint_down_retry_ceiling() -> int:
+    """Retry-loop ceiling covering a local endpoint's restart window.
+
+    ``_LOCAL_ENDPOINT_DOWN_ATTEMPTS`` attempts at
+    ``_LOCAL_ENDPOINT_DOWN_BACKOFF_SECONDS`` apart spans ~6min, which covers
+    the observed cold boot with wide margin. Beyond that the endpoint is not
+    restarting, it is down, and failing the turn is the honest outcome.
+    """
+    return _LOCAL_ENDPOINT_DOWN_ATTEMPTS

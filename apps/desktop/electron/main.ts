@@ -17556,6 +17556,7 @@ app.on('before-quit', event => {
 
     if (!sshQuitTeardownPromise) {
       const scopes = [...sshConnections.keys()]
+
       const pending = Promise.allSettled([
         ...scopes.map(scope => teardownSshConnection(scope || null)),
         ...sshBootstrapCoordinator.promises()
@@ -17565,12 +17566,11 @@ app.on('before-quit', event => {
       // The previous 4s race could close SSH first and leave serve --isolated
       // reparented to pid 1. Latch this promise BEFORE those deletes land so
       // a re-entrant quit still waits.
-      sshQuitTeardownPromise = Promise.race([
-        pending,
-        new Promise<void>(resolve => setTimeout(resolve, 6_000))
-      ]).then(async () => {
-        await sshBootstrapCoordinator.forceCleanupAll()
-      })
+      sshQuitTeardownPromise = Promise.race([pending, new Promise<void>(resolve => setTimeout(resolve, 6_000))]).then(
+        async () => {
+          await sshBootstrapCoordinator.forceCleanupAll()
+        }
+      )
     }
 
     void sshQuitTeardownPromise.then(() => {

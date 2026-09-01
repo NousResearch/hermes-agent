@@ -197,9 +197,11 @@ describe('session owner hints', () => {
   })
 
   it('pins only connection-tagged rows and leaves primary SSH rows ambient', () => {
-    expect(
-      sessionOwnerRouteFromRow(session({ connection_id: 'source-a', profile: 'worker' }))
-    ).toEqual({ connectionId: 'source-a', profile: 'worker', targetProfile: 'worker' })
+    expect(sessionOwnerRouteFromRow(session({ connection_id: 'source-a', profile: 'worker' }))).toEqual({
+      connectionId: 'source-a',
+      profile: 'worker',
+      targetProfile: 'worker'
+    })
     expect(sessionOwnerRouteFromRow(session({ profile: 'default' }))).toBeUndefined()
     expect(sessionOwnerRouteFromRow(session({ connection_id: '  ', profile: 'default' }))).toBeUndefined()
   })

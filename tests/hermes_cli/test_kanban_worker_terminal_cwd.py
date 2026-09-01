@@ -129,3 +129,23 @@ def test_worker_spawn_rejects_malformed_profile_config(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="invalid profile config"):
         kb._default_spawn(_make_task(kb), str(workspace))
+
+def test_worker_path_prefers_workspace_venv_for_terminal_commands(monkeypatch, tmp_path):
+    """A worker's literal ``python`` commands use its project interpreter."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    (workspace / ".venv" / "bin").mkdir(parents=True)
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+
+    assert captured["env"]["PATH"].split(":")[:3] == [
+        str(workspace / ".venv" / "bin"),
+        "/usr/bin",
+        "/bin",
+    ]

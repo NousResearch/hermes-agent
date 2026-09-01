@@ -2548,6 +2548,15 @@ async def _reclaim_stale(runner: object) -> None:
         )
 
 
+def _staged_write_delivery_adapter(runner: Any, ctx: Any) -> Any:
+    """Resolve a live transport for a durable staged-write approval card."""
+    try:
+        current = runner._adapter_for_source(ctx.source)
+    except Exception:
+        current = None
+    return current or ctx._status_adapter
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -3058,6 +3067,7 @@ from gateway.shutdown_watchdog import (
     resolve_shutdown_watchdog_delay,
     start_loop_liveness_watchdog,
 )
+from gateway.write_approval_interactions import WriteApprovalReply
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT,
@@ -6366,6 +6376,44 @@ class TurnRunner:
         _bg_review_pending: list[str] = []
         _bg_review_pending_lock = threading.Lock()
 
+        def _pending_staged_write_events() -> list[dict]:
+            lock = ctx.staged_write_events_lock
+            if lock is None:
+                snapshot = list(ctx.staged_write_events)
+            else:
+                with lock:
+                    snapshot = list(ctx.staged_write_events)
+            return [
+                event for event in snapshot
+                if str(event.get("pending_id") or "")
+                and str(event.get("pending_id") or "") not in ctx.delivered_staged_write_ids
+            ]
+
+        async def _deliver_staged_write_events() -> None:
+            if not ctx._status_adapter or not ctx._run_still_current():
+                return
+            delivery_lock = ctx.staged_write_delivery_lock
+            if delivery_lock is None:
+                return
+            async with delivery_lock:
+                events = _pending_staged_write_events()
+                if not events:
+                    return
+                from gateway.write_approval_interactions import deliver_staged_write_cards
+                delivery_adapter = _staged_write_delivery_adapter(self._runner, ctx)
+                if not delivery_adapter:
+                    return
+                delivered = await deliver_staged_write_cards(
+                    adapter=delivery_adapter,
+                    source=ctx.source,
+                    reply_to_message_id=ctx.event_message_id,
+                    events=events,
+                )
+                if delivered:
+                    ctx.delivered_staged_write_ids.update(
+                        str(event.get("pending_id") or "") for event in events
+                    )
+
         def _deliver_bg_review_message(message: str) -> None:
             if not ctx._status_adapter or not ctx._run_still_current():
                 return
@@ -6387,6 +6435,12 @@ class TurnRunner:
                 _bg_review_pending.clear()
             for queued in pending:
                 _deliver_bg_review_message(queued)
+            safe_schedule_threadsafe(
+                _deliver_staged_write_events(),
+                ctx._loop_for_step,
+                logger=logger,
+                log_message="staged-write card scheduling error",
+            )
 
         # Background review delivery — send "💾 Memory updated" etc. to user
         def _bg_review_send(message: str) -> None:
@@ -6938,6 +6992,23 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        from tools import write_approval as _write_approval
+
+        def _capture_staged_write(event: dict) -> None:
+            lock = ctx.staged_write_events_lock
+            if lock is None:
+                ctx.staged_write_events.append(dict(event))
+            else:
+                with lock:
+                    ctx.staged_write_events.append(dict(event))
+            if _bg_review_release.is_set():
+                safe_schedule_threadsafe(
+                    _deliver_staged_write_events(),
+                    ctx._loop_for_step,
+                    logger=logger,
+                    log_message="late staged-write card scheduling error",
+                )
+
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -7002,7 +7073,13 @@ class TurnRunner:
             # inbound id (NOT event_message_id, which is the reply anchor).
             if ctx.inbound_message_id is not None:
                 _conversation_kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+            with _write_approval.capture_staged_writes(
+                session_key=ctx.session_key or "",
+                run_generation=ctx.run_generation,
+                profile=str(getattr(ctx.source, "profile", None) or "default"),
+                callback=_capture_staged_write,
+            ):
+                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
@@ -20194,6 +20271,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
+                if (
+                    event.message_type == MessageType.VOICE
+                    and len(_successful_transcripts) == 1
+                    and not (event.text or "").strip()
+                ):
+                    _handled, _approval_response = (
+                        await self._dispatch_write_approval_reply_intent(
+                            event,
+                            _successful_transcripts[0],
+                        )
+                    )
+                    if _handled:
+                        return _approval_response or WriteApprovalReply(
+                            "Write-approval action produced no response."
+                        )
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
                 # while allowing quiet STT for users who only want the agent to
@@ -31091,6 +31183,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            staged_write_events_lock=threading.Lock(),
+            staged_write_delivery_lock=asyncio.Lock(),
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to

@@ -17,6 +17,7 @@ import html as _html
 import re
 import threading
 import time
+from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
@@ -232,7 +233,16 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
+    _thread_metadata_for_source,
     utf16_len,
+)
+from gateway.write_approval_interactions import (
+    WRITE_APPROVAL_METADATA_KEY,
+    WRITE_APPROVAL_REPLY_KEY,
+    command_for_callback_data,
+    command_for_reply_intent,
+    merge_response_delivery_metadata,
+    normalize_surface,
 )
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
@@ -891,6 +901,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Only replies to message IDs recorded here may become natural-language
+        # write-approval actions. Text matching alone is never sufficient.
+        self._write_approval_surfaces: OrderedDict[tuple[str, str], dict] = OrderedDict()
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -1217,6 +1230,108 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
+    @staticmethod
+    def _callback_source(
+        user_id: str,
+        *,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ):
+        from gateway.session import SessionSource
+
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(chat_id or user_id),
+            chat_type=normalized_chat_type,
+            user_id=str(user_id),
+            user_name=str(user_name).strip() if user_name else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+        )
+
+    def _write_approval_keyboard(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> tuple[Optional[dict], Optional[Any]]:
+        surface = normalize_surface(
+            (metadata or {}).get(WRITE_APPROVAL_METADATA_KEY)
+        )
+        if surface is None:
+            return None, None
+
+        rows = []
+        for subsystem in surface["subsystems"]:
+            code = "m" if subsystem == "memory" else "s"
+            ids = surface["items"][subsystem]
+            for pending_id in ids[:8]:
+                item_row = [
+                    InlineKeyboardButton(
+                        f"Approve {pending_id}",
+                        callback_data=f"wa:{code}:a:{pending_id}",
+                    ),
+                    InlineKeyboardButton(
+                        f"Reject {pending_id}",
+                        callback_data=f"wa:{code}:r:{pending_id}",
+                    ),
+                ]
+                if subsystem == "skills":
+                    item_row.append(
+                        InlineKeyboardButton(
+                            f"Diff {pending_id}",
+                            callback_data=f"wa:s:d:{pending_id}",
+                        )
+                    )
+                rows.append(item_row)
+            rows.append([
+                InlineKeyboardButton(
+                    f"Show pending {subsystem}", callback_data=f"wa:{code}:p:all"
+                )
+            ])
+        return surface, InlineKeyboardMarkup(rows)
+
+    def _remember_write_approval_surface(
+        self, chat_id: str, message_id: str, surface: dict
+    ) -> None:
+        store = getattr(self, "_write_approval_surfaces", None)
+        if not isinstance(store, OrderedDict):
+            store = OrderedDict()
+            self._write_approval_surfaces = store
+        key = (str(chat_id), str(message_id))
+        store[key] = dict(surface)
+        store.move_to_end(key)
+        while len(store) > 256:
+            store.popitem(last=False)
+
+    def _lookup_write_approval_surface(
+        self, chat_id: str, message_id: str
+    ) -> Optional[dict]:
+        store = getattr(self, "_write_approval_surfaces", None)
+        if not isinstance(store, OrderedDict):
+            return None
+        key = (str(chat_id), str(message_id))
+        surface = store.get(key)
+        if surface is not None:
+            store.move_to_end(key)
+            return dict(surface)
+        return None
+
+    @staticmethod
+    def _rewrite_write_approval_reply(event: MessageEvent) -> bool:
+        surface = (getattr(event, "metadata", None) or {}).get(
+            WRITE_APPROVAL_REPLY_KEY
+        )
+        command = command_for_reply_intent(event.text, surface)
+        if command is None:
+            return False
+        event.text = command
+        event.message_type = MessageType.COMMAND
+        return True
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -1231,27 +1346,27 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(self, "_authorization_check", None)
+        auth_uses_source = False
+        if not callable(auth_fn):
+            auth_fn = getattr(runner, "_is_user_authorized", None)
+            auth_uses_source = callable(auth_fn)
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
-
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
-
-                source = SessionSource(
-                    platform=Platform.TELEGRAM,
-                    chat_id=str(chat_id or normalized_user_id),
-                    chat_type=normalized_chat_type,
-                    user_id=normalized_user_id,
-                    user_name=str(user_name).strip() if user_name else None,
+                source = self._callback_source(
+                    normalized_user_id,
+                    chat_id=str(chat_id) if chat_id is not None else None,
+                    chat_type=chat_type,
                     thread_id=str(thread_id) if thread_id is not None else None,
+                    user_name=user_name,
                 )
-                return bool(auth_fn(source))
+                if auth_uses_source:
+                    return bool(auth_fn(source))
+                callback_chat_type = str(chat_type or source.chat_type)
+                return bool(auth_fn(normalized_user_id, callback_chat_type, source.chat_id))
             except Exception:
                 logger.debug(
                     "[Telegram] Falling back to env-only callback auth for user %s",
@@ -5675,12 +5790,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
         
         try:
+            approval_surface, approval_markup = self._write_approval_keyboard(
+                metadata
+            )
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if approval_markup is None and self._should_attempt_rich(
+                content, metadata=metadata
+            ):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -5775,6 +5895,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs = dict(thread_kwargs)
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
+                interactive_kwargs = (
+                    {"reply_markup": approval_markup}
+                    if i == 0 and approval_markup is not None
+                    else {}
+                )
 
                 msg = None
                 for _send_attempt in range(3):
@@ -5787,6 +5912,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
+                                **interactive_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
@@ -5801,6 +5927,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
+                                    **interactive_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
@@ -5942,7 +6069,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await asyncio.sleep(wait)
                                 continue
                         raise
-                message_ids.append(str(msg.message_id))
+                message_id = str(msg.message_id)
+                message_ids.append(message_id)
+                if i == 0 and approval_surface is not None:
+                    self._remember_write_approval_surface(
+                        str(chat_id), message_id, approval_surface
+                    )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -7651,6 +7783,158 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
 
+    async def _handle_write_approval_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch a scoped staged-write button through the slash-command rail."""
+        command_text = command_for_callback_data(data)
+        if command_text is None:
+            await query.answer(text="Invalid write-approval action.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to review staged writes.")
+            return
+        if not callable(getattr(self, "_message_handler", None)):
+            await query.answer(text="Gateway command handler is unavailable.")
+            return
+
+        prompt_message_id = getattr(query.message, "message_id", None)
+        approval_surface = self._lookup_write_approval_surface(
+            str(query_chat_id or ""), str(prompt_message_id or "")
+        )
+        normalized_surface = normalize_surface(approval_surface)
+        if normalized_surface is None:
+            await query.answer(text="⚠️ This approval card expired — open /memory pending.")
+            return
+
+        command_parts = command_text.split()
+        pending_id = command_parts[-1].lower() if command_parts else ""
+        subsystem = "memory" if command_text.startswith("/memory ") else "skills"
+        scope = normalized_surface.get("scope") or {}
+        scoped_ids = normalized_surface["items"].get(subsystem, [])
+        chat_matches = not scope.get("chat_id") or str(scope["chat_id"]) == str(query_chat_id or "")
+        thread_matches = not scope.get("thread_id") or str(scope["thread_id"]) == str(query_thread_id or "")
+        pending_matches = pending_id in scoped_ids
+        if not (chat_matches and thread_matches and pending_matches):
+            await query.answer(text="⚠️ This approval card expired or belongs to another topic.")
+            return
+
+        source = self._callback_source(
+            caller_id,
+            chat_id=str(query_chat_id or caller_id),
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        )
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        profile_fn = getattr(runner, "_profile_name_for_source", None)
+        if callable(profile_fn):
+            source.profile = profile_fn(source)
+        try:
+            source._transport_adapter_ref = __import__("weakref").ref(self)
+        except Exception:
+            pass
+        source.message_id = str(prompt_message_id) if prompt_message_id is not None else None
+        if scope.get("session_key"):
+            from gateway.session import build_session_key
+
+            actual_session_key = build_session_key(
+                source,
+                group_sessions_per_user=self.config.extra.get(
+                    "group_sessions_per_user", True
+                ),
+                thread_sessions_per_user=self.config.extra.get(
+                    "thread_sessions_per_user", False
+                ),
+                profile=source.profile,
+            )
+            key_fn = getattr(runner, "_session_key_for_source", None)
+            if callable(key_fn):
+                actual_session_key = key_fn(source)
+            if actual_session_key != str(scope["session_key"]):
+                await query.answer(text="⚠️ This approval card expired or belongs to another session.")
+                return
+
+        event = MessageEvent(
+            text=command_text,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=query.message,
+            message_id=source.message_id,
+            reply_to_message_id=source.message_id,
+        )
+
+        await query.answer(text="Processing write-approval action…")
+        try:
+            response = await self._message_handler(event)
+        except Exception as exc:
+            logger.error(
+                "[%s] write-approval callback dispatch failed: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return
+        if not response or query_chat_id is None:
+            return
+
+        response_text = str(response)
+        action_code = data.split(":", 3)[2].lower()
+        resolved = (
+            (action_code == "a" and response_text.startswith("Approved "))
+            or (action_code == "r" and response_text.startswith("Rejected "))
+        )
+        if resolved:
+            status = "✅ Approved" if action_code == "a" else "❌ Rejected"
+            original_text = str(getattr(query.message, "text", "") or "").strip()
+            edited_text = f"{original_text}\n\n{status}" if original_text else status
+            try:
+                await query.edit_message_text(text=edited_text, reply_markup=None)
+                store = getattr(self, "_write_approval_surfaces", None)
+                if isinstance(store, OrderedDict):
+                    store.pop((str(query_chat_id), str(prompt_message_id)), None)
+                return
+            except Exception:
+                logger.debug(
+                    "[%s] failed to edit resolved write-approval card",
+                    self.name,
+                    exc_info=True,
+                )
+
+        metadata = _thread_metadata_for_source(source, source.message_id)
+        metadata = merge_response_delivery_metadata(metadata, response)
+        metadata = dict(metadata or {})
+        metadata["notify"] = True
+        await self.send(
+            str(query_chat_id),
+            response_text,
+            reply_to=source.message_id,
+            metadata=metadata,
+        )
+
+        if resolved:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -7665,6 +7949,18 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Staged memory/skill write callbacks (wa:subsystem:action:target) ---
+        if data.startswith("wa:"):
+            await self._handle_write_approval_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
@@ -10368,6 +10664,9 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
+        if self._rewrite_write_approval_reply(event):
+            await self.handle_message(event)
+            return
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
@@ -11330,6 +11629,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        event_metadata: Dict[str, Any] = {}
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             quote = getattr(message, "quote", None)
@@ -11355,6 +11655,11 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                     except Exception:
                         reply_to_text = None
+            approval_surface = self._lookup_write_approval_surface(
+                str(chat.id), reply_to_id
+            )
+            if approval_surface is not None:
+                event_metadata[WRITE_APPROVAL_REPLY_KEY] = approval_surface
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -11376,6 +11681,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            metadata=event_metadata,
             timestamp=message.date,
         )
 

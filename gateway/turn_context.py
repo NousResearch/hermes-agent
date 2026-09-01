@@ -120,6 +120,13 @@ class TurnContext:
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
+    # Exact staged-write records emitted while this turn context is active.
+    # Background-review threads inherit the ContextVar and append to this same
+    # turn-owned collection; the gateway never scans the global pending folder.
+    staged_write_events: list = field(default_factory=list)
+    staged_write_events_lock: Any = None
+    staged_write_delivery_lock: Any = None
+    delivered_staged_write_ids: set = field(default_factory=set)
 
     # --- voice-ack wiring --------------------------------------------------
     _voice_ack_fired: list = field(default_factory=lambda: [False])

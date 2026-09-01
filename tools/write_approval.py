@@ -47,12 +47,18 @@ import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_STAGED_WRITE_CAPTURE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "_STAGED_WRITE_CAPTURE", default=None
+)
 
 # Subsystem identifiers
 MEMORY = "memory"
@@ -111,6 +117,108 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _safe_preview(payload: Dict[str, Any], summary: str, *, limit: int = 700) -> str:
+    """Build a compact, redacted preview for a user approval card."""
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "batch":
+        parts = []
+        for operation in payload.get("operations") or []:
+            if not isinstance(operation, dict):
+                continue
+            op = str(operation.get("action") or "change")
+            if op == "replace":
+                parts.append(
+                    f"replace {operation.get('old_text') or ''} → "
+                    f"{operation.get('content') or ''}"
+                )
+            elif op == "remove":
+                parts.append(f"remove {operation.get('old_text') or ''}")
+            else:
+                parts.append(f"{op} {operation.get('content') or ''}")
+        raw = "\n".join(parts)
+    elif action == "replace":
+        raw = (
+            f"{payload.get('old_text') or ''} → "
+            f"{payload.get('content') or ''}"
+        )
+    elif action == "remove":
+        raw = str(payload.get("old_text") or "")
+    else:
+        raw = str(payload.get("content") or summary or "")
+    try:
+        from agent.redact import redact_sensitive_text
+
+        raw = redact_sensitive_text(raw, force=True)
+    except Exception:
+        pass
+    compact = " ".join(raw.strip().split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+
+def event_for_record(
+    record: Dict[str, Any],
+    *,
+    session_key: str,
+    run_generation: Optional[int],
+    profile: str,
+) -> Dict[str, Any]:
+    """Build the turn-owned event emitted for one newly staged record."""
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    return {
+        "pending_id": str(record.get("id") or "").lower(),
+        "subsystem": str(record.get("subsystem") or "").lower(),
+        "operation": str(record.get("action") or payload.get("action") or ""),
+        "target": str(payload.get("target") or payload.get("name") or ""),
+        "preview": _safe_preview(payload, str(record.get("summary") or "")),
+        "session_key": str(session_key or ""),
+        "run_generation": run_generation,
+        "profile": str(profile or "default"),
+    }
+
+
+@contextmanager
+def capture_staged_writes(
+    *,
+    session_key: str,
+    run_generation: Optional[int],
+    profile: str,
+    callback: Callable[[Dict[str, Any]], None],
+) -> Iterator[None]:
+    """Bind a turn-scoped sink for records staged by this context and its children."""
+    token = _STAGED_WRITE_CAPTURE.set(
+        {
+            "session_key": str(session_key or ""),
+            "run_generation": run_generation,
+            "profile": str(profile or "default"),
+            "callback": callback,
+        }
+    )
+    try:
+        yield
+    finally:
+        _STAGED_WRITE_CAPTURE.reset(token)
+
+
+def _emit_staged_write(record: Dict[str, Any]) -> None:
+    capture = _STAGED_WRITE_CAPTURE.get()
+    if not capture:
+        return
+    callback = capture.get("callback")
+    if not callable(callback):
+        return
+    try:
+        callback(
+            event_for_record(
+                record,
+                session_key=capture.get("session_key") or "",
+                run_generation=capture.get("run_generation"),
+                profile=capture.get("profile") or "default",
+            )
+        )
+    except Exception:
+        logger.warning("Failed to emit staged-write event", exc_info=True)
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -148,6 +256,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         os.replace(tmp, path)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    else:
+        _emit_staged_write(record)
     return record
 
 

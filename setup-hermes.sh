@@ -153,7 +153,8 @@ if is_termux; then
         if command -v python >/dev/null 2>&1; then
             PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
             echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
-            echo "    Install a compatible Termux Python (for example python3.11) and re-run this script"
+            echo "    Install a supported interpreter and re-run this script:"
+            echo "      pkg install tur-repo && pkg install python3.13"
         else
             echo -e "${RED}✗${NC} Python not found in Termux"
             echo "    Run: pkg install python"

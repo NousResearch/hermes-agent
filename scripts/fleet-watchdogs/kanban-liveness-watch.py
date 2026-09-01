@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 
 HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
@@ -39,7 +40,17 @@ if not os.path.isdir(os.path.join(HERMES_HOME, "profiles")):
         HERMES_HOME = _up
 
 KANBAN_DB = os.path.join(HERMES_HOME, "kanban.db")
-WORKSPACE = "/Users/werolloperator/Projects/Meeting notes transcription tool"
+# Stale-diagnosis workspace (symbol-on-disk verification). Deploy sets
+# KANBAN_LIVENESS_WORKSPACE; default None -> symbols_on_disk() no-ops (we never
+# guess a host-local path that would be wrong on another machine).
+WORKSPACE = os.environ.get("KANBAN_LIVENESS_WORKSPACE") or None
+
+# Photon iMessage wake for the restart-did-not-revive escalation (costcap-watch
+# pattern). imsg CLI (brew install steipete/tap/imsg), recipient Richie's
+# iMessage. Overridable for tests/dev. Absent imsg => escalation noise still
+# lands on stdout/Slack via problems, never silently dropped.
+PHOTON_RECIPIENT = os.environ.get("KANBAN_LIVENESS_PHOTON") or "+6421970173"
+IMSG_BIN = os.environ.get("KANBAN_LIVENESS_IMSG") or "imsg"
 
 # How long a `ready`/`todo` card may sit with a live dispatcher and no run
 # before we call it dead. 90s is tight enough to catch a stall early, loose
@@ -106,6 +117,8 @@ def active_cards(con):
 def symbols_on_disk(symbols, root=WORKSPACE):
     """Return {symbol: [paths]} for each symbol that resolves on disk."""
     hits = {}
+    if not root:
+        return hits  # no workspace configured; stale-diagnosis no-ops
     try:
         for dirpath, dirnames, filenames in os.walk(root):
             # skip heavy/vendored dirs
@@ -178,15 +191,42 @@ def dispatcher_heartbeat_stale(now=NOW):
     return True, "dispatcher heartbeat stale (%ds > %ds window)" % (int(age), DISPATCHER_STALE_SECONDS)
 
 
+def _process_start_time(pid):
+    """Return a stable per-process start-time fingerprint (centiseconds), or None.
+
+    Fail-closed PID-reuse guard mirroring gateway/status._get_process_start_time:
+    a (pid, start_time) pair is stable across a reboot only if the SAME process
+    is alive. Mirrors the takeover card's precedent: never signal a pid whose
+    live create_time does not match the pidfile's recorded start_time. Trying
+    /proc first (Linux) then psutil (macOS/Windows). psutil missing => None =>
+    we REFUSE to signal (fail-closed): an an unverified pid is never bounced.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            return int(f.read().split()[21])
+    except Exception:  # noqa: BLE001  (missing /proc on macOS/Windows -> psutil)
+        pass
+    try:
+        import psutil  # type: ignore
+        return int(round(psutil.Process(pid).create_time() * 100))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def root_gateway_pid(now=NOW):
     """Resolve the dispatcher-owner (root) gateway pid from its pidfile.
 
     Never signal a pid whose pidfile is fresher than the stall window — a fresh
     pidfile means the gateway just restarted (possibly by us) and we must not
-    bounce a process that is booting. Returns (pid|None, detail). Guards:
-      * pidfile must exist, be a JSON object with a numeric ``pid``.
-      * pidfile mtime must not be fresher than STALL_SECONDS (a just-started
-        gateway would have a pidfile written seconds ago).
+    bounce a process that is booting. ALSO never signal a pid whose live
+    create_time does not match the pidfile's recorded start_time — a hard crash
+    leaves an old pidfile whose pid can be recycled by the OS, and SIGUSR1
+    on an unrelated process terminates it (CRCICAL, PID-reuse class the takeover
+    card fixed). Returns (pid|None, detail). Guards, in order:
+      * pidfile must exist and its mtime must not be fresher than STALL_SECONDS.
+      * pidfile must be a JSON object with a numeric ``pid`` AND a ``start_time``.
+      * live create_time (via _process_start_time) must equal pidfile start_time.
+    Any doubt => None (refuse to signal).
     """
     try:
         st = os.stat(ROOT_GATEWAY_PIDFILE)
@@ -198,12 +238,27 @@ def root_gateway_pid(now=NOW):
         rec = read_json_state(ROOT_GATEWAY_PIDFILE)
         raw = rec.get("pid")
         pid = int(raw) if raw is not None and str(raw).strip().lstrip("-").isdigit() else None
-    except Exception:
+        start = rec.get("start_time")
+        if isinstance(start, int):
+            start_centis = start
+        elif isinstance(start, str) and str(start).strip().isdigit():
+            start_centis = int(str(start).strip())
+        else:
+            start_centis = None
+    except Exception:  # noqa: BLE001
         raw = None
         pid = None
+        start_centis = None
     if not pid or pid <= 0:
         return None, "invalid root gateway pid (%r)" % raw
-    return pid, "root gateway pid=%s" % pid
+    if start_centis is None or start_centis <= 0:
+        return None, "root gateway pidfile (%s) has no verifiable start_time; refusing to signal unverified pid" % os.path.basename(ROOT_GATEWAY_PIDFILE)
+    live = _process_start_time(pid)
+    if live is None:
+        return None, "cannot confirm live create_time for gateway pid %s (process inspect unavailable); refusing to signal" % pid
+    if live != start_centis:
+        return None, "gateway pid %s has been REUSED (live create_time %s != pidfile %s); refusing to signal an unrelated process" % (pid, live, start_centis)
+    return pid, "root gateway pid=%s (create_time verified)" % pid
 
 
 def _in_cooldown(state, now=NOW):
@@ -211,6 +266,23 @@ def _in_cooldown(state, now=NOW):
     if not last:
         return False
     return (now - last) < RESTART_COOLDOWN_SECONDS
+
+
+def _photon_wake(text):
+    """Send an iMessage via imsg (costcap-watch pattern); never raises.
+
+    Best-effort. If imsg is absent or the send fails we return the error string
+    so run() can route the ESCALATE noise onto stdout/Slack (never silently
+    dropped). Returns None on success.
+    """
+    try:
+        subprocess.run(
+            [IMSG_BIN, "send", "--to", PHOTON_RECIPIENT, "--text", text],
+            capture_output=True, timeout=30, check=False,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001  (FileNotFoundError, TimeoutExpired, OSError)
+        return "photon escalate failed (%s); escalation already on stdout" % exc
 
 
 def _pending_pass(state):
@@ -271,7 +343,11 @@ def evaluate_restart(existing_state, stalled_ready, now=NOW):
         return RestartDecision(False, "cannot resolve dispatcher-owner pid: %s" % detail), state
 
     state["confirmed_stall_passes"] = 0
-    state["last_restart_at"] = now
+    # NOTE: last_restart_at is NOT committed here. The signal has not been sent
+    # yet; committing it would claim a restart even if os.kill fails or the
+    # pid is gone. run() commits last_restart_at ONLY after a confirmed
+    # successful SIGUSR1 — until then the cooldown stays open so the next pass
+    # retries (correct behavior per "will not claim a restart").
     evidence = {"pid": pid, "pid_detail": detail, "stalled_ready": len(stalled_ready)}
     return RestartDecision(
         True,
@@ -286,25 +362,28 @@ def _send_restart(decision, problems):
 
     SIGUSR1 is the gateway's graceful drain-and-restart signal (cleanup-20260902
     precedent, gateway/restart.py). If the signal fails (process gone), we log a
-    problem but do NOT let it masquerade as a successful restart — the next pass
-    re-evaluates. If the restart does not revive dispatch, the next stale pass
-    after the cooldown would normally hold; here we instead escalate to photon
-    iMessage (costcap-watch pattern) so Richie is woken rather than us looping.
-    """
+    problem but do NOT let it masquerade as a successful restart — return False
+    so the next pass re-evaluates (the cooldown is not committed on failure).
+    If the restart does not revive dispatch, the next stale pass after the
+    cooldown escalates to photon iMessage (costcap-watch pattern) so Richie is
+    woken rather than us looping.
+
+    Returns True iff the signal was sent (last_restart_at may be committed)."""
     pid = decision.evidence.get("pid")
     try:
         os.kill(pid, SIGUSR1)
     except ProcessLookupError:
         problems.append(
-            "RESTART SIGNAL FAILED: dispatcher-owner pid %s no longer exists; will not claim a restart." % pid
+            "[kanban-liveness-watch] RESTART SIGNAL FAILED: dispatcher-owner pid %s no longer exists; will not claim a restart." % pid
         )
-        return
+        return False
     except Exception as exc:  # noqa: BLE001
         problems.append(
-            "RESTART SIGNAL FAILED: could not SIGUSR1 pid %s: %s" % (pid, exc)
+            "[kanban-liveness-watch] RESTART SIGNAL FAILED: could not SIGUSR1 pid %s: %s" % (pid, exc)
         )
-        return
+        return False
     problems.append(decision.line)
+    return True
 
 
 def run(audit=False):
@@ -524,7 +603,22 @@ def run(audit=False):
     existing_state = read_json_state(RESTART_STATE)
     decision, new_state = evaluate_restart(existing_state, stalled_ready, NOW)
     if decision.should_restart:
-        _send_restart(decision, problems)
+        # Commits last_restart_at ONLY on a confirmed os.kill success — a failed
+        # signal leaves the cooldown open so the next pass retries (Major (a)).
+        if _send_restart(decision, problems):
+            new_state["last_restart_at"] = NOW
+    elif decision.evidence.get("escalate"):
+        # The ESCALATE arm (restart already happened within cooldown yet dispatch
+        # is still stalled). Survive past run()'s should_restart gate: surface the
+        # line and wake Richie via photon iMessage (costcap-watch pattern).
+        problems.append(decision.line)
+        _err = _photon_wake(decision.line)
+        if _err:
+            problems.append("[kanban-liveness-watch] " + _err)
+    elif decision.reason.startswith("cannot resolve dispatcher-owner pid"):
+        # We want to restart but cannot resolve the owner gateway to signal —
+        # surface it (keep the counter so it retries when the pid appears).
+        problems.append(decision.line)
     write_json_state(RESTART_STATE, new_state)
 
     if audit and not problems:

@@ -23,6 +23,7 @@ the script lives in the repo worktree or in the live scripts dir.
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -45,14 +46,20 @@ def check(name, got, want):
     return ok
 
 
-def _write_pidfile(path, pid, mtime_offset, now):
+def _write_pidfile(path, pid, mtime_offset, now, start_time=None):
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
+    rec = {"pid": pid, "kind": "hermes-gateway"}
+    if start_time is not None:
+        rec["start_time"] = start_time  # _build_pid_record's centisecond fingerprint
     with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps({"pid": pid, "kind": "hermes-gateway"}))
+        f.write(json.dumps(rec))
     ts = now - mtime_offset
     os.utime(path, (ts, ts))
+
+
+FAKE_START_TIME = 987654321  # centisecond fingerprint for the fake gateway pid
 
 
 def _write_heartbeat(path, age, now):
@@ -115,18 +122,23 @@ def test_single_pass_no_fire():
         hb = os.path.join(d, ".dispatcher.heartbeat")
         pf = os.path.join(d, "gateway.pid")
         _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)  # stale
-        _write_pidfile(pf, 12345, 200, now)
-        saved = {k: getattr(kliw, k) for k in ("DISPATCHER_HEARTBEAT", "ROOT_GATEWAY_PIDFILE")}
+        _write_pidfile(pf, 12345, 200, now, start_time=FAKE_START_TIME)
+        saved = {k: getattr(kliw, k) for k in ("DISPATCHER_HEARTBEAT", "ROOT_GATEWAY_PIDFILE",
+                                               "_process_start_time")}
         setattr(kliw, "DISPATCHER_HEARTBEAT", hb)
         setattr(kliw, "ROOT_GATEWAY_PIDFILE", pf)
+        kliw._process_start_time = lambda pid: FAKE_START_TIME  # live create_time matches pidfile
         try:
             dec, state = kliw.evaluate_restart({}, ["t1"], now)
             check("pass 1 of 2 does not fire", dec.should_restart, False)
             check("pass counter incremented to 1", state.get("confirmed_stall_passes"), 1)
-            # pass 2 fires
+            # pass 2 fires (decision is made here; last_restart_at is committed
+            # by run() only after a confirmed os.kill, not in evaluate_restart)
             dec2, state2 = kliw.evaluate_restart(state, ["t1"], now)
             check("pass 2 of 2 fires restart", dec2.should_restart, True)
-            check("last_restart_at recorded", state2.get("last_restart_at"), now)
+            check("last_restart_at NOT claimed by evaluate_restart",
+                  state2.get("last_restart_at", None), None)
+            check("fire resets arm counter", state2.get("confirmed_stall_passes"), 0)
         finally:
             for k, v in saved.items():
                 setattr(kliw, k, v)
@@ -146,7 +158,8 @@ def test_signal_sent_once():
     orig_kill = kliw.os.kill
     kliw.os.kill = lambda pid, sig: kills.append((pid, sig))
     try:
-        kliw._send_restart(_D(), problems)
+        ok = kliw._send_restart(_D(), problems)
+        check("send reports success", ok, True)
         check("exactly one problem line", len(problems), 1)
         check("one SIGUSR1 sent", kills, [(12345, kliw.SIGUSR1)])
     finally:
@@ -183,15 +196,21 @@ def test_cooldown_enforced_and_escalated():
         hb = os.path.join(d, ".dispatcher.heartbeat")
         pf = os.path.join(d, "gateway.pid")
         _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)
-        _write_pidfile(pf, 12345, 200, now)
-        saved = {k: getattr(kliw, k) for k in ("DISPATCHER_HEARTBEAT", "ROOT_GATEWAY_PIDFILE")}
+        _write_pidfile(pf, 12345, 200, now, start_time=FAKE_START_TIME)
+        saved = {k: getattr(kliw, k) for k in ("DISPATCHER_HEARTBEAT", "ROOT_GATEWAY_PIDFILE",
+                                               "_process_start_time")}
         setattr(kliw, "DISPATCHER_HEARTBEAT", hb)
         setattr(kliw, "ROOT_GATEWAY_PIDFILE", pf)
+        kliw._process_start_time = lambda pid: FAKE_START_TIME
         try:
             # first restart at t0 (needs two confirming passes)
             _, state = kliw.evaluate_restart({}, ["t1"], now)      # pass 1
             dec, state = kliw.evaluate_restart(state, ["t1"], now)  # pass 2 -> fires
             check("first restart fires", dec.should_restart, True)
+            # simulate run() committing last_restart_at ONLY after a confirmed
+            # successful os.kill (that is run()'s job now, not evaluate_restart's
+            # — per Major (a), a failed signal must NOT claim a restart).
+            state["last_restart_at"] = now
             # board still stalled 60s later (within cooldown) => escalate, not loop.
             # Note: the fire resets the counter, so escalation needs two more
             # confirming passes after the restart before the cooldown branch.
@@ -244,6 +263,191 @@ def test_escalation_is_single_line():
     check("escalation says ESCALATE", "ESCALATE" in reason, True)
 
 
+def _make_live_db(path, ready_cards):
+    """Build a minimal kanban DB schema + seed ``ready`` cards. run() reads the
+    tasks / task_links / task_runs tables the same way the real board does."""
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT, body TEXT, assignee TEXT, status TEXT,
+            priority INTEGER, created_at INTEGER, created_by TEXT, tenant TEXT
+        );
+        CREATE TABLE task_links (
+            parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
+            PRIMARY KEY (parent_id, child_id)
+        );
+        CREATE TABLE task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL, profile TEXT, status TEXT, outcome TEXT,
+            summary TEXT, created_at INTEGER
+        );
+        """
+    )
+    for cid in ready_cards:
+        con.execute(
+            "INSERT INTO tasks (id,title,body,assignee,status,priority,created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cid, "ready", "", "bob", "ready", 1, 1),  # created_at=1 -> very stale
+        )
+    con.commit()
+    con.close()
+
+
+def _patch_watch_globals(**kv):
+    saved = {k: getattr(kliw, k) for k in kv}
+    for k, v in kv.items():
+        setattr(kliw, k, v)
+    return saved
+
+
+def test_run_escalation_surfaces_to_problems():
+    """run() end-to-end: the ESCALATE decision (restart within cooldown, still
+    stalled) must surface its line to stdout/problems — no dead code — and wake
+    the WATCHDOG through the evaluator's evidence, not be dropped."""
+    print("test_run_escalation_surfaces_to_problems")
+    now = time.time()
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "kanban.db")
+        hb = os.path.join(d, ".dispatcher.heartbeat")
+        pf = os.path.join(d, "gateway.pid")
+        rst = os.path.join(d, "restart-state.json")
+        _make_live_db(db, ["t_ready"])
+        _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)  # stale
+        _write_pidfile(pf, 12345, 200, now, start_time=FAKE_START_TIME)
+        # Seed state so this pass is INSIDE the cooldown with an accrued counter:
+        # a prior restart happened recently yet dispatch is still stalled.
+        with open(rst, "w", encoding="utf-8") as f:
+            json.dump({"confirmed_stall_passes": kliw.RESTART_REQUIRED_PASSES,
+                       "last_restart_at": now - 10}, f)
+        # hard-block iMessage so the test is hermetic; run() must still
+        # surface the ESCALATE line even when photon is unavailable.
+        wakes = []
+        kliw._photon_wake = lambda line: wakes.append(line) or None
+        kliw._process_start_time = lambda pid: FAKE_START_TIME
+        saved = _patch_watch_globals(
+            KANBAN_DB=db, DISPATCHER_HEARTBEAT=hb, ROOT_GATEWAY_PIDFILE=pf,
+            RESTART_STATE=rst, NOW=now, WORKSPACE=None,
+        )
+        try:
+            out = kliw.run(audit=True)
+            check("ESCALATE line reaches stdout/problems", "ESCALATE" in out, True)
+            check("photon wake invoked once", len(wakes), 1)
+            check("photon iMessage mentioned", "photon iMessage" in out, True)
+        finally:
+            for k, v in saved.items():
+                setattr(kliw, k, v)
+
+
+def test_run_successful_restart_commits_last_restart_at():
+    """run() end-to-end: on a confirmed os.kill success, last_restart_at IS
+    committed to state (Major (a) — commit only on success)."""
+    print("test_run_successful_restart_commits_last_restart_at")
+    now = time.time()
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "kanban.db")
+        hb = os.path.join(d, ".dispatcher.heartbeat")
+        pf = os.path.join(d, "gateway.pid")
+        rst = os.path.join(d, "restart-state.json")
+        _make_live_db(db, ["t_ready"])
+        _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)
+        _write_pidfile(pf, 12345, 200, now, start_time=FAKE_START_TIME)
+        kills = []
+        kliw._process_start_time = lambda pid: FAKE_START_TIME
+        saved = _patch_watch_globals(
+            KANBAN_DB=db, DISPATCHER_HEARTBEAT=hb, ROOT_GATEWAY_PIDFILE=pf,
+            RESTART_STATE=rst, NOW=now, WORKSPACE=None,
+        )
+        kliw.os.kill = lambda pid, sig: kills.append((pid, sig))
+        try:
+            # Seed passes so this run's single evaluate_restart call fires
+            # (needs REQ-1 prior confirmed passes on disk).
+            with open(rst, "w", encoding="utf-8") as f:
+                json.dump({"confirmed_stall_passes": kliw.RESTART_REQUIRED_PASSES - 1}, f)
+            out = kliw.run(audit=True)
+            state = {}
+            if os.path.exists(rst):
+                with open(rst, encoding="utf-8") as f:
+                    state = json.load(f)
+            check("kill sent", kills == [(12345, kliw.SIGUSR1)], True)
+            check("last_restart_at committed on success", state.get("last_restart_at"), now)
+            check("restart line surfaced", "dispatcher-owner gateway restart" in out, True)
+        finally:
+            for k, v in saved.items():
+                setattr(kliw, k, v)
+            kliw.os.kill = os.kill
+
+
+def read_json_state_temp(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def test_run_failed_restart_does_not_commit_last_restart_at():
+    """run() end-to-end: when os.kill fails (process gone), last_restart_at is
+    NOT committed — the cooldown stays open so the next pass retries (Major (a))."""
+    print("test_run_failed_restart_does_not_commit_last_restart_at")
+    now = time.time()
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "kanban.db")
+        hb = os.path.join(d, ".dispatcher.heartbeat")
+        pf = os.path.join(d, "gateway.pid")
+        rst = os.path.join(d, "restart-state.json")
+        _make_live_db(db, ["t_ready"])
+        _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)
+        _write_pidfile(pf, 12345, 200, now, start_time=FAKE_START_TIME)
+        with open(rst, "w", encoding="utf-8") as f:
+            json.dump({"confirmed_stall_passes": kliw.RESTART_REQUIRED_PASSES - 1}, f)
+        saved = _patch_watch_globals(
+            KANBAN_DB=db, DISPATCHER_HEARTBEAT=hb, ROOT_GATEWAY_PIDFILE=pf,
+            RESTART_STATE=rst, NOW=now, WORKSPACE=None,
+        )
+        kliw._process_start_time = lambda pid: FAKE_START_TIME
+        kliw.os.kill = lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError(pid))
+        try:
+            out = kliw.run(audit=True)
+            state = {}
+            with open(rst, encoding="utf-8") as f:
+                state = json.load(f)
+            check("signal failure surfaced", "RESTART SIGNAL FAILED" in out, True)
+            check("last_restart_at NOT committed on failure",
+                  state.get("last_restart_at", None), None)
+        finally:
+            for k, v in saved.items():
+                setattr(kliw, k, v)
+            kliw.os.kill = os.kill
+
+
+def test_run_cannot_resolve_pid_surfaces():
+    """run() end-to-end: cannot-resolve-dispatcher-owner-pid decision must
+    surface to stdout/problems, not be silently dropped (dead-code blocker)."""
+    print("test_run_cannot_resolve_pid_surfaces")
+    now = time.time()
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "kanban.db")
+        hb = os.path.join(d, ".dispatcher.heartbeat")
+        rst = os.path.join(d, "restart-state.json")
+        _make_live_db(db, ["t_ready"])
+        _write_heartbeat(hb, kliw.DISPATCHER_STALE_SECONDS + 1000, now)
+        with open(rst, "w", encoding="utf-8") as f:
+            json.dump({"confirmed_stall_passes": kliw.RESTART_REQUIRED_PASSES - 1}, f)
+        saved = _patch_watch_globals(
+            KANBAN_DB=db, DISPATCHER_HEARTBEAT=hb,
+            ROOT_GATEWAY_PIDFILE=os.path.join(d, "missing", "gateway.pid"),
+            RESTART_STATE=rst, NOW=now, WORKSPACE=None,
+        )
+        try:
+            out = kliw.run(audit=True)
+            check("cannot-resolve line surfaced", "cannot resolve dispatcher-owner pid" in out, True)
+        finally:
+            for k, v in saved.items():
+                setattr(kliw, k, v)
+
+
 def main():
     print("=== kanban-liveness-watch auto-restart arms tests ===")
     test_healthy_board_no_restart()
@@ -253,6 +457,10 @@ def main():
     test_cooldown_enforced_and_escalated()
     test_fresh_pidfile_never_signaled()
     test_escalation_is_single_line()
+    test_run_escalation_surfaces_to_problems()
+    test_run_successful_restart_commits_last_restart_at()
+    test_run_failed_restart_does_not_commit_last_restart_at()
+    test_run_cannot_resolve_pid_surfaces()
     print("")
     if FAILURES:
         print(f"{len(FAILURES)} FAILURE(S):")

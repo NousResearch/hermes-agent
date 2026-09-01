@@ -8484,6 +8484,8 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
                 and _parse_boolish(cfg.get("enabled", True), default=True)
             ]
 
+        with _lock:
+            prior_lazy = set(_lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if not new_server_names:
             return tool_names
@@ -8498,10 +8500,31 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
                 len(getattr(_servers[name], "_registered_tool_names", []))
                 for name in connected_server_names
             )
+            # Lazily registered servers (#56832) have no entry in ``_servers``
+            # — the process is spawned on first use — so counting them as
+            # failed reported a healthy all-lazy startup as
+            # "0 tool(s) from 0 server(s) (N failed)". A server that was
+            # already lazy before this call is not new; it is only skipped.
+            lazy_server_names = [
+                name for name in new_server_names if name in _lazy_server_configs
+            ]
+            newly_lazy = [n for n in lazy_server_names if n not in prior_lazy]
+            lazy_tool_count = sum(
+                len(_lazy_server_tool_names.get(name, [])) for name in newly_lazy
+            )
 
-        failed_count = len(new_server_names) - len(connected_server_names)
-        if new_tool_count or failed_count:
-            summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
+        failed_count = (
+            len(new_server_names)
+            - len(connected_server_names)
+            - len(lazy_server_names)
+        )
+        if new_tool_count or lazy_tool_count or failed_count:
+            summary = (
+                f"  MCP: {new_tool_count + lazy_tool_count} tool(s) from "
+                f"{len(connected_server_names) + len(newly_lazy)} server(s)"
+            )
+            if newly_lazy:
+                summary += f" ({len(newly_lazy)} lazy, not spawned yet)"
             if failed_count:
                 summary += f" ({failed_count} failed)"
             logger.info(summary)
@@ -8535,8 +8558,10 @@ def get_mcp_status() -> List[dict]:
 
     Returns a list of dicts with keys: name, transport, tools, connected,
     disabled, and status. Includes connected servers, disabled servers,
-    in-flight connection attempts, recorded failures, and servers that are
-    configured but have not been started in this process yet.
+    in-flight connection attempts, recorded failures, lazily registered
+    servers (tools registered from the schema cache, process not spawned
+    until first use — ``status: "lazy"``), and servers that are configured
+    but have not been started in this process yet.
     """
     result: List[dict] = []
 
@@ -8549,6 +8574,11 @@ def get_mcp_status() -> List[dict]:
         active_servers = dict(_servers)
         connecting = set(_server_connecting)
         connect_errors = dict(_server_connect_errors)
+        lazy_tool_names = {
+            name: list(names)
+            for name, names in _lazy_server_tool_names.items()
+            if name in _lazy_server_configs
+        }
 
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
@@ -8596,6 +8626,21 @@ def get_mcp_status() -> List[dict]:
                 "disabled": False,
                 "status": "failed",
                 "error": connect_errors[name],
+            })
+        elif name in lazy_tool_names:
+            # Lazy startup (#56832): the tools are registered from the schema
+            # cache and callable right now; the child process is spawned on
+            # the first call. Without this branch such a server fell through
+            # to "configured" with 0 tools — indistinguishable from a server
+            # that never started — and every consumer counting
+            # ``connected`` treated an all-lazy discovery as a failure.
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": len(lazy_tool_names[name]),
+                "connected": False,
+                "disabled": False,
+                "status": "lazy",
             })
         else:
             result.append({

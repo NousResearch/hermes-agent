@@ -1183,6 +1183,14 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
                     f"[dim {dim}]— configured[/]"
                 )
+            elif status == "lazy":
+                # Tools registered from the schema cache; the process starts
+                # on first use. Not a failure — keep it out of the red branch.
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
+                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/] "
+                    f"[dim {dim}](lazy, starts on first use)[/]"
+                )
             else:
                 right_lines.append(
                     f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "

@@ -61,6 +61,24 @@ def _has_configured_mcp_servers() -> bool:
         return True
 
 
+def _discovery_registered_servers(status) -> bool:
+    """True when a discovery run left at least one server usable.
+
+    A live session counts, and so does a lazily registered server: its tools
+    are in the registry from the schema cache and the process spawns on first
+    use (#56832). Counting only ``connected`` made an all-lazy configuration
+    — the memory-saving one — look like a run that connected nothing, so
+    every startup logged the zero-connected warning and every later call
+    re-spawned the discovery thread.
+    """
+    for entry in status or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("connected") or entry.get("status") == "lazy":
+            return True
+    return False
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one shared background MCP discovery thread for this process.
 
@@ -80,7 +98,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                 from tools.mcp_tool import get_mcp_status
 
                 status = get_mcp_status() or []
-                if any(entry.get("connected") for entry in status):
+                if _discovery_registered_servers(status):
                     return
             except Exception:
                 return
@@ -122,7 +140,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                 try:
                     from tools.mcp_tool import get_mcp_status
                     status = get_mcp_status() or []
-                    if not any(entry.get("connected") for entry in status):
+                    if not _discovery_registered_servers(status):
                         logger.warning(
                             "Background MCP discovery completed with zero connected servers"
                         )

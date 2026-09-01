@@ -643,6 +643,33 @@ def test_namespaced_context_preserves_auto_dispatch_and_local_ci_audit_settings(
     assert policy.local_ci_audit.assignee == "pr-local-ci-auditor"
 
 
+def test_namespaced_context_preserves_agent_label_settings(tmp_path: Path) -> None:
+    from github_pr_feedback.cli import _load_policy_from_context
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    settings = enabled_settings(repository)
+    settings["agent_labels"] = {
+        "enabled": True,
+        "max_updates_per_scan": 25,
+        "create_missing": True,
+        "mappings": [
+            {
+                "branch_prefix": "codex/",
+                "label": "codex",
+                "color": "1f6feb",
+                "description": "PR authored by Codex",
+            }
+        ],
+    }
+
+    policy = _load_policy_from_context(RecordingContext(settings))
+
+    assert policy.agent_labels is not None
+    assert policy.agent_labels.max_updates_per_scan == 25
+    assert policy.agent_labels.label_for_branch("codex/fix") == "codex"
+
+
 def test_namespaced_context_preserves_strict_merge_maintainer_settings(
     tmp_path: Path,
 ) -> None:

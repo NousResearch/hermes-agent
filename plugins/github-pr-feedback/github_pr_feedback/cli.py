@@ -1165,6 +1165,7 @@ def _load_policy_from_context(ctx: Any) -> PluginPolicy:
         "assignee_rules",
         "routing_rules",
         "local_ci_audit",
+        "agent_labels",
         "merge_maintainer",
         "repair_steward",
         "release_maintenance",

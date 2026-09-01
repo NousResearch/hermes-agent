@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { atom, get } from 'nanostores'
+import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -216,7 +216,7 @@ describe('SidebarSessionRow running arc', () => {
       publishSessionState('s1', { ...createClientSessionState('s1'), busy: true, storedSessionId: 's1' })
     })
 
-    const states = get($sessionDotStateById)
+    const states = $sessionDotStateById.get()
     expect(states.s1).toBe('working')
     expect(states.s2).toBeUndefined()
   })

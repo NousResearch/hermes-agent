@@ -1691,6 +1691,10 @@ DEFAULT_CONFIG = {
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,
+        # Stop an agent cron run after this many seconds with no model or tool
+        # activity. Active jobs may run indefinitely. 0 disables the watchdog.
+        # HERMES_CRON_TIMEOUT remains a backward-compatible env override.
+        "inactivity_timeout_seconds": 600,
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,

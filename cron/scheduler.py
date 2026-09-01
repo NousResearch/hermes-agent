@@ -266,15 +266,27 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # failure). Mirrors the same reordering fix upstream issue #59549 applied for script timeouts vs
     # provider timeouts — check the more specific, deterministic signature first.
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
+        activity_match = re.search(r"last activity:\s*(.+)", text, re.IGNORECASE)
+        activity_context = ""
+        if activity_match:
+            activity = " ".join(activity_match.group(1).split())
+            if len(activity) > 100:
+                activity = activity[:97].rstrip() + "..."
+            activity_context = f" Last activity: {activity}."
         return (
             f"⚠️ Cron '{job_name}' failed: the job itself stalled — no tool/API "
             "activity for the configured inactivity window. Not a provider or "
             "fallback-chain issue; check what the job was doing when it went "
-            "quiet. Full details saved in cron output."
+            f"quiet.{activity_context} Full details saved in cron output."
         )
 
     if provider_reachable and (
-        "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+        "readtimeout" in lower
+        or "apitimeouterror" in lower
+        or "provider timeout" in lower
+        or "provider timed out" in lower
+        or "upstream timed out" in lower
+        or "request timed out" in lower
     ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
@@ -464,7 +476,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    resolve_cron_inactivity_timeout, save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
     mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
@@ -933,18 +945,13 @@ def _inactivity_watchdog_loop(
     return False
 
 
-def _cron_inactivity_seconds() -> float:
-    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600. Shared by the
-    inactivity monitor and the cwd-lock bound so they can't drift: the lock bound must stay >= the
-    inactivity limit or waiters fail while a healthy holder runs."""
-    raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
-    if not raw:
-        return 600.0
-    try:
-        return float(raw)
-    except (ValueError, TypeError):
-        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
-        return 600.0
+def _cron_inactivity_seconds(config: Optional[dict] = None) -> float:
+    """Resolve cron inactivity seconds. 0 = unlimited; bad input = 600.
+
+    Shared with the one-shot claim TTL calculation so the scheduler watchdog
+    and stale-claim recovery horizon cannot drift apart.
+    """
+    return resolve_cron_inactivity_timeout(config)
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:

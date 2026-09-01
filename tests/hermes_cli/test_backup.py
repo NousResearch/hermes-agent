@@ -1777,6 +1777,161 @@ class TestRestoreCronJobsIfEmptied:
         assert len(restored["jobs"]) == 19
 
 
+# ---------------------------------------------------------------------------
+# config.yaml model/provider + MoA auto-restore after silent update rewrite
+# (issue #64160)
+# ---------------------------------------------------------------------------
+
+class TestRestoreConfigModelSettingsIfRewritten:
+    """Desktop update/repair cycles have rewritten user-set model.provider /
+    model.default and dropped the moa: section (#64160).
+    `restore_config_model_settings_if_rewritten` is the post-update safety net
+    that restores only the protected keys from the pre-update snapshot."""
+
+    USER_CONFIG = (
+        "_config_version: 39\n"
+        "model:\n"
+        "  provider: custom\n"
+        "  default: zyphra/zamba-3-large\n"
+        "  base_url: https://api.zyphra.example/v1\n"
+        "moa:\n"
+        "  enabled: true\n"
+        "  presets:\n"
+        "    council:\n"
+        "      aggregator: {provider: custom, model: zyphra/zamba-3-large}\n"
+        "custom_unknown_key:\n"
+        "  hello: world\n"
+    )
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def _seed(self, hermes_home: Path) -> Path:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(self.USER_CONFIG, encoding="utf-8")
+        return cfg
+
+    def test_restores_rewritten_provider_and_dropped_moa(self, tmp_path):
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # The update flow rewrites config.yaml with defaults: provider flips
+        # to deepseek, MoA section is gone (the #64160 field report).
+        cfg.write_text(
+            "_config_version: 39\nmodel:\n  provider: deepseek\n  default: deepseek-chat\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert result["restored"] is True
+        assert result["snapshot_id"] == snap_id
+        assert "model.provider" in result["keys"]
+        assert "model.default" in result["keys"]
+        assert "moa" in result["keys"]
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["model"]["provider"] == "custom"
+        assert after["model"]["default"] == "zyphra/zamba-3-large"
+        assert after["model"]["base_url"] == "https://api.zyphra.example/v1"
+        assert after["moa"]["enabled"] is True
+        assert after["moa"]["presets"]["council"]["aggregator"]["model"] == (
+            "zyphra/zamba-3-large"
+        )
+
+    def test_noop_when_config_untouched(self, tmp_path):
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+        before = cfg.read_text(encoding="utf-8")
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+        assert cfg.read_text(encoding="utf-8") == before
+
+    def test_preserves_legitimate_update_writes(self, tmp_path):
+        """Only protected keys are restored — a version bump or a new section
+        the migration legitimately wrote must survive the restore."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(
+            "_config_version: 40\n"      # legitimate migration bump
+            "new_section:\n  added: true\n"  # legitimate new default
+            "model:\n  provider: deepseek\n",  # illegitimate rewrite
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["model"]["provider"] == "custom"          # restored
+        assert after["_config_version"] == 40                   # kept
+        assert after["new_section"] == {"added": True}          # kept
+
+    def test_noop_when_user_never_set_protected_keys(self, tmp_path):
+        """A config that never had model.provider/moa set gets no restore even
+        if the update writes those keys fresh — nothing of the user's was lost."""
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text("_config_version: 39\nagent: {}\n", encoding="utf-8")
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(
+            "_config_version: 39\nmodel:\n  provider: deepseek\n", encoding="utf-8"
+        )
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+
+    def test_noop_on_unreadable_live_config(self, tmp_path):
+        """An unparseable live config is a different failure the user must see;
+        the safety net leaves it alone (mirrors the cron net's posture)."""
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(": not [valid yaml", encoding="utf-8")
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+        assert cfg.read_text(encoding="utf-8") == ": not [valid yaml"
+
+    def test_noop_without_snapshot_id(self, tmp_path):
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        assert restore_config_model_settings_if_rewritten(
+            "", hermes_home=tmp_path / ".hermes"
+        ) is None
+
+
+
 
 
 

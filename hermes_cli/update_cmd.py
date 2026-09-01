@@ -497,6 +497,28 @@ def _check_and_apply_config_migration(
         # Never let the cron safety net break an otherwise-good update.
         logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
+    # #64160: config.yaml model/provider + MoA safety net. Desktop
+    # update/repair cycles have rewritten user-set model.provider /
+    # model.default and dropped the moa: section — settings the gateway
+    # and cron jobs also consume. Compare the live config against the
+    # same pre-update snapshot and restore only the protected keys.
+    try:
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        cfg_restore = restore_config_model_settings_if_rewritten(
+            pre_update_snapshot_id
+        )
+        if cfg_restore:
+            print()
+            print(
+                "  ⚠️  config.yaml user model settings were rewritten during "
+                f"this update — restored {', '.join(cfg_restore['keys'])} "
+                f"from pre-update snapshot {cfg_restore['snapshot_id']}."
+            )
+    except Exception as exc:
+        # Never let the config safety net break an otherwise-good update.
+        logger.debug("Config model-settings auto-restore check failed: %s", exc)
+
     # #66140: run the same cron-jobs safety net for every sibling
     # profile against ITS OWN pre-update snapshot (same-generation by
     # construction — both taken by this run).
@@ -515,6 +537,23 @@ def _check_and_apply_config_migration(
             )
     except Exception as exc:
         logger.debug("Sibling cron auto-restore check failed: %s", exc)
+
+    # #64160: same config model-settings safety net for sibling profiles.
+    try:
+        from hermes_cli.backup import restore_config_model_settings_all_profiles
+
+        for _cfg_restored in restore_config_model_settings_all_profiles(
+            _LAST_SIBLING_SNAPSHOTS
+        ):
+            print()
+            print(
+                f"  ⚠️  Profile '{_cfg_restored['profile']}': config.yaml "
+                f"user model settings were rewritten during this update — "
+                f"restored {', '.join(_cfg_restored['keys'])} from "
+                f"pre-update snapshot {_cfg_restored['snapshot_id']}."
+            )
+    except Exception as exc:
+        logger.debug("Sibling config auto-restore check failed: %s", exc)
 
 
 # Critical files that Hermes must be able to import immediately after an

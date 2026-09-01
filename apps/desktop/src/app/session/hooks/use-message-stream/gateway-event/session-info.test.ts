@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $currentCwd,
   $selectedStoredSessionId,
@@ -104,5 +106,44 @@ describe('handleSessionInfoEvent workspace ownership', () => {
 
     expect($currentCwd.get()).toBe('/repo/mine')
     expect($workspaceCwdOwner.get()).toBe('selected-session')
+  })
+
+  it('keeps runtime state identity when a heartbeat only restates cached fields', () => {
+    const original = {
+      ...createClientSessionState('stored-1'),
+      cwd: '/repo/mine',
+      fast: true,
+      model: 'model-1',
+      provider: 'provider-1'
+    }
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '/repo/mine',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+
+    let next: ClientSessionState | undefined
+
+    ctx.payload = {
+      ...ctx.payload,
+      fast: true,
+      model: 'model-1',
+      provider: 'provider-1'
+    }
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', original)
+    ctx.deps.updateSessionState = vi.fn(
+      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const updated = updater(original)
+        next = updated
+
+        return updated
+      }
+    )
+
+    handleSessionInfoEvent(ctx)
+
+    expect(next).toBe(original)
   })
 })

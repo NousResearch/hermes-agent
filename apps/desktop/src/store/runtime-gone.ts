@@ -1,15 +1,74 @@
 import { $activeSessionId, requestSessionResume } from './session'
 import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-states'
 
+/** Session ids the gateway has told us are gone. A session-scoped RPC against a
+ *  runtime the gateway no longer holds fails 4001 "session not found" — terminal
+ *  for THIS runtime id, not a transient socket loss.
+ *
+ *  Shared by every background poller (process.list, approval.pending, goal
+ *  status). One set, one clear path: a fresh-runtime rebind calls
+ *  {@link resetBackgroundPollingGuard} and every poller resumes. */
+const goneSessions = new Set<string>()
+
+/** Gateway JSON-RPC code for "session not found" (tui_gateway `_sess_nowait`). */
+const GATEWAY_SESSION_NOT_FOUND_CODE = 4001
+
+/** A gone session is unrecoverable for THIS runtime id; a timeout or transport
+ *  blip is not. Only the former may stop a poll — misclassifying a transient
+ *  failure would silently freeze a healthy session.
+ *
+ *  Match the gateway's 4001 code when the error carries one. The message
+ *  fallback survives only for errors with no numeric code at all. */
+export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number'
+      ? (error as { code: number }).code
+      : undefined
+
+  if (code !== undefined) {
+    return code === GATEWAY_SESSION_NOT_FOUND_CODE
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /session not found/i.test(message)
+}
+
+export function isSessionGone(sid: string): boolean {
+  return goneSessions.has(sid)
+}
+
+/** Latch `sid` off and heal the bound view. Safe to call on every 4001. */
+export function markSessionGone(sid: string): void {
+  if (!sid) {
+    return
+  }
+
+  goneSessions.add(sid)
+  markRuntimeGone(sid)
+}
+
+/** Clear the gone-latch. Called with a session id when a fresh runtime binds to
+ *  it (so polling resumes), or with no argument to reset everything (tests /
+ *  gateway reconnect). */
+export function resetBackgroundPollingGuard(sid?: string): void {
+  if (sid) {
+    goneSessions.delete(sid)
+
+    return
+  }
+
+  goneSessions.clear()
+}
+
 /** Heal a session view whose bound runtime id the gateway no longer holds.
  *
- *  The desktop learns a runtime is gone through two channels, and only one of
- *  them ever repaired anything:
+ *  The desktop learns a runtime is gone through two channels:
  *
- *  - PUSH — `session.reclaimed`. `gateway-event/lifecycle.ts` drops the cached
- *    state and calls `unbindTileRuntime`, which re-arms SessionTilePane's
- *    resume effect (gated on `!runtimeId`) so the tile rebinds a fresh runtime
- *    from the intact stored row.
+ *  - PUSH — `session.reclaimed`. `gateway-event/lifecycle.ts` calls
+ *    {@link markRuntimeGone} (same levers as the pull path) before dropping
+ *    the cached state, so the primary chat resumes instead of sitting on the
+ *    dead runtime until the user types.
  *  - PULL — a session-scoped RPC rejected `4001 "session not found"`. The
  *    gateway logs "client should resume the stored session" precisely because
  *    this is the terminal verdict; `_sess_nowait` has no other way to say it.
@@ -21,14 +80,9 @@ import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-stat
  *  id forever or (with the gone-latch) went silent against it, and in both cases
  *  the view stayed bound to a phantom runtime for the rest of its life.
  *
- *  That gap is only reachable through the pull channel. The push channel cannot
- *  cover a runtime that died with a previous app process (boot-restore), was
- *  reaped while this client was disconnected, or was reaped by a remote gateway
- *  this renderer had not yet dialled — the broadcast has no live listener. In
- *  those cases the 4001 is the *only* notice that ever arrives.
- *
- *  So route it to the same recovery the broadcast drives. Both surfaces that can
- *  hold a binding get their existing re-arm lever pulled:
+ *  The pull channel is the only notice when the client missed the broadcast
+ *  (boot-restore, disconnect, remote gateway). Both surfaces that can hold a
+ *  binding get their existing re-arm lever pulled:
  *
  *  - Tiles: `unbindTileRuntime` (SessionTilePane's resume effect refires).
  *  - The primary chat: `requestSessionResume`, the explicit-request lever. Its

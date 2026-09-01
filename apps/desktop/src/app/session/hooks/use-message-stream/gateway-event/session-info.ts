@@ -28,7 +28,12 @@ import {
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
-import { hasSessionInfoStatePatch, PRE_TURN_LIVE_SETTLE_GRACE_MS, sessionInfoStatePatch } from '../utils'
+import {
+  applySessionInfoStatePatch,
+  hasSessionInfoStatePatch,
+  PRE_TURN_LIVE_SETTLE_GRACE_MS,
+  sessionInfoStatePatch
+} from '../utils'
 
 import type { GatewayEventContext } from './types'
 
@@ -253,12 +258,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     if (sessionId && hasStatePatch) {
       updateSessionState(
         sessionId,
-        state => ({
-          ...state,
-          ...statePatch,
-          branch: statePatch.branch ?? state.branch,
-          cwd: statePatch.cwd ?? state.cwd
-        }),
+        state => applySessionInfoStatePatch(state, statePatch),
         payload?.stored_session_id || undefined
       )
     }

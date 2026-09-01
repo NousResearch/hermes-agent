@@ -4997,7 +4997,15 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
-            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            # WARNING, not INFO: the "Connecting to Telegram (attempt N/8)…"
+            # line above is emitted at WARNING and reaches the terminal (the
+            # gateway's default stderr handler is WARNING-only), but this
+            # success line was INFO and went to the log file only. A healthy
+            # startup therefore looked permanently stalled at "attempt 1/8"
+            # on the console — the logging illusion in #90835. Both sides of
+            # the connect transition must share a terminal-visible level so a
+            # real hang is the *absence* of this line, not ambiguity.
+            logger.warning("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
             # Start the persistent heartbeat loop in polling mode. Webhook mode
             # receives updates via incoming pushes — there is no long-poll

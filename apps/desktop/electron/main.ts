@@ -197,6 +197,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
+import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
@@ -3624,6 +3625,20 @@ async function releaseBackendLock(updateRoot, tag) {
     stopAllPoolBackends
   })
 
+  // Stop separately-running messaging gateways (all profiles) BEFORE the
+  // release gate. The gateway is launched by the gateway-launcher desktop
+  // plugin via /api/gateway/start and is NOT in backendConnectionState or
+  // backendPool, so the tree-kills above never see it — on Windows its
+  // launcher (venv\Scripts\python.exe) keeps the venv mandatory-locked and
+  // the 15s gate aborts the hand-off before the venv-blocker scan's
+  // pausable-gateway exemption ever gets a chance (#70337). Delegate to
+  // `hermes gateway stop --all`: the CLI discovers every profile's gateway
+  // (launcher + worker — gateway.pid records only the uv WORKER, and
+  // taskkill /T from the worker never reaches its parent), drains in-flight
+  // agents, and force-kills survivors. Best-effort; abort paths restore via
+  // startGatewaysAfterUpdateAbort. No-op off Windows.
+  stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+
   // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
   // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
   // backend) yet runs off venv\Scripts\pythonw.exe, keeping venv files
@@ -3815,6 +3830,12 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
 
+      if (IS_WINDOWS) {
+        // The pre-gate `gateway stop --all` (#70337) took every profile's
+        // gateway down for an update that never happened — bring them back.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
+
       return { ok: false, error: message }
     }
 
@@ -3864,6 +3885,9 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
+        // Restore the gateways the pre-gate stop took down (#70337 drain
+        // semantics): the update aborted, so nothing else will relaunch them.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
       }
@@ -3874,6 +3898,8 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
+        // Same drain-semantics restore as the venv-blocked abort above.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-probe-failed', message }
       }
@@ -4001,6 +4027,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
+
+      if (IS_WINDOWS) {
+        // Same drain-semantics restore as the earlier abort paths (#70337).
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
 
       return { ok: false, error: 'updater-spawn-failed', message }
     }

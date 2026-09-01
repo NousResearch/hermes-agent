@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { ChatSessionList, type SessionActivityStatus } from "@/components/ChatSessionList";
 import { SlashPopover, type SlashPopoverHandle } from "@/components/SlashPopover";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { mergeSnapshotTranscript, snapshotHasField, snapshotMatchesSession } from "@/lib/native-chat-reconcile";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
@@ -71,19 +72,6 @@ function snapshotTranscript(messages: ResumeMessage[] | undefined): TranscriptMe
   });
 }
 
-function mergeSnapshotTranscript(snapshot: TranscriptMessage[], current: TranscriptMessage[]): TranscriptMessage[] {
-  const result = [...snapshot];
-  const represented = new Set(snapshot.map((message) => `${message.role}:${message.id}`));
-  for (const message of current) {
-    const same = result.some((item) => item.id === message.id
-      || (item.role === message.role && item.text === message.text)
-      || (item.role === "assistant" && message.role === "assistant" && item.text && message.text
-        && (item.text.startsWith(message.text) || message.text.startsWith(item.text))));
-    if (!same && !represented.has(`${message.role}:${message.id}`)) result.push(message);
-  }
-  return result;
-}
-
 function approvalFromSnapshot(snapshot?: ApprovalSnapshot): ApprovalRequest | null {
   if (!snapshot || typeof snapshot.request_id !== "string") return null;
   return { request_id: snapshot.request_id, command: typeof snapshot.command === "string" ? snapshot.command : undefined, description: typeof snapshot.description === "string" ? snapshot.description : undefined, choices: Array.isArray(snapshot.choices) ? snapshot.choices.filter((x): x is string => typeof x === "string") : undefined, allow_permanent: snapshot.allow_permanent !== false };
@@ -93,7 +81,9 @@ function clarifyFromSnapshot(snapshot?: ClarifySnapshot): ClarificationRequest |
   if (!snapshot || typeof snapshot.request_id !== "string") return null;
   return { request_id: snapshot.request_id, question: typeof snapshot.question === "string" ? snapshot.question : undefined, choices: Array.isArray(snapshot.choices) ? snapshot.choices.filter((x): x is string => typeof x === "string") : null, multi_select: snapshot.multi_select === true, questions: Array.isArray(snapshot.questions) ? snapshot.questions as ClarificationRequest["questions"] : undefined, answers: snapshot.answers };
 }
-type TextPayload = { text?: unknown; message?: unknown; kind?: unknown; running?: unknown; turn_started_at?: unknown; status?: unknown; request_id?: unknown; answer?: unknown; question?: unknown; choices?: unknown; command?: unknown; description?: unknown; tool_id?: unknown; name?: unknown; context?: unknown; args?: unknown; result?: unknown; summary?: unknown; progress?: unknown; questions?: unknown; multi_select?: unknown; allow_permanent?: unknown; seq?: unknown };
+type TextPayload = { text?: unknown; message?: unknown; kind?: unknown; running?: unknown; turn_started_at?: unknown; status?: unknown; request_id?: unknown; answer?: unknown; question?: unknown; choices?: unknown; command?: unknown; description?: unknown; tool_id?: unknown; name?: unknown; context?: unknown; args?: unknown; result?: unknown; summary?: unknown; progress?: unknown; questions?: unknown; multi_select?: unknown; allow_permanent?: unknown; seq?: unknown; event_id?: unknown; eventId?: unknown };
+
+type ResyncState = "idle" | "syncing" | "synced" | "partial" | "error";
 
 type PendingAttachment = {
   id: string;
@@ -180,6 +170,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resyncState, setResyncState] = useState<ResyncState>("idle");
   const [errorAction, setErrorAction] = useState<"reconnect" | "resend" | null>(null);
   const [failedPrompt, setFailedPrompt] = useState<FailedPrompt | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -210,6 +201,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const reconnectAttemptRef = useRef(0);
   const reconnectInFlightRef = useRef(false);
   const seenSeqRef = useRef(new Map<string, number>());
+  const seenEventIdsRef = useRef(new Set<string>());
   const reconnectingRef = useRef(false);
 
   const clearReconnectTimer = useCallback(() => {
@@ -311,25 +303,48 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         if (previous !== undefined && seq <= previous) return null;
         seenSeqRef.current.set(event.session_id, seq);
       }
+      const eventId = (event as GatewayEvent & { event_id?: unknown }).event_id
+        ?? payload.event_id
+        ?? payload.eventId;
+      if (typeof eventId === "string" && eventId) {
+        const eventKey = `${event.session_id ?? sessionIdRef.current ?? "global"}:${eventId}`;
+        if (seenEventIdsRef.current.has(eventKey)) return null;
+        seenEventIdsRef.current.add(eventKey);
+      }
       return payload;
     };
-    const applySessionSnapshot = (snapshot: ResumeResponse) => {
+    const applySessionSnapshot = (snapshot: ResumeResponse): boolean => {
+      if (cancelled || !snapshotMatchesSession(snapshot, sessionIdRef.current)) return false;
       const info = snapshot.info ?? snapshot;
-      const running = info.running === true || snapshot.running === true;
-      setStreaming(running);
-      setTurnStartedAt(typeof info.turn_started_at === "number" ? info.turn_started_at * 1000 : null);
+      const running = typeof info.running === "boolean"
+        ? info.running
+        : typeof snapshot.running === "boolean" ? snapshot.running : undefined;
+      const hasRunning = snapshotHasField(info, "running") || snapshotHasField(snapshot, "running");
+      if (running !== undefined) setStreaming(running);
+      if (snapshotHasField(info, "turn_started_at") || snapshotHasField(snapshot, "turn_started_at")) {
+        const startedAt = info.turn_started_at ?? snapshot.turn_started_at;
+        setTurnStartedAt(typeof startedAt === "number" ? startedAt * 1000 : null);
+      }
       if (typeof info.status === "string" && info.status) setStatus(info.status);
-      else if (!running) setStatus("Ready");
+      else if (hasRunning && running === false) setStatus("Ready");
       if (Array.isArray(snapshot.messages) && snapshot.messages_omitted !== true) {
         const next = snapshotTranscript(snapshot.messages);
         setTranscript((current) => mergeSnapshotTranscript(next, current));
       }
-      // session.activate/resume explicitly expose these registries. They are
-      // read-only recovery state; responses still go through the normal RPC.
-      setApproval(approvalFromSnapshot(snapshot.pending_approval));
-      setClarify(clarifyFromSnapshot(snapshot.pending_clarify));
+      if (snapshot.messages_omitted === true) setResyncState("partial");
+      else setResyncState("synced");
+      // Only replace pending registries when the backend explicitly sends the
+      // field. An older snapshot without these fields must not erase a live
+      // approval/clarification that arrived after the snapshot was requested.
+      if (snapshotHasField(snapshot, "pending_approval")) {
+        setApproval(approvalFromSnapshot(snapshot.pending_approval));
+      }
+      if (snapshotHasField(snapshot, "pending_clarify")) {
+        setClarify(clarifyFromSnapshot(snapshot.pending_clarify));
+      }
       // The current backend does not include tool activity in the session
       // snapshot, so retain live tool cards rather than fabricating history.
+      return true;
     };
     let cancelled = false;
     const scheduleReconnect = () => {
@@ -381,12 +396,26 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       const sid = sessionIdRef.current;
       if (!sid || reconnectingRef.current) return;
       reconnectingRef.current = true;
-      void gateway.request<ResumeResponse>("session.activate", { session_id: sid, omit_messages: false })
-        .then((snapshot) => applySessionSnapshot(snapshot))
-        .catch(() => gateway.request<ResumeResponse>("session.resume", { session_id: durableSessionIdRef.current ?? sid, omit_messages: false, ...(profile ? { profile } : {}) }))
-        .then((snapshot) => { if (snapshot) applySessionSnapshot(snapshot); })
-        .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
-        .finally(() => { reconnectingRef.current = false; });
+      setResyncState("syncing");
+      setStatus("Syncing…");
+      void (async () => {
+        try {
+          let snapshot: ResumeResponse;
+          try {
+            snapshot = await gateway.request<ResumeResponse>("session.activate", { session_id: sid, omit_messages: false });
+          } catch {
+            snapshot = await gateway.request<ResumeResponse>("session.resume", { session_id: durableSessionIdRef.current ?? sid, omit_messages: false, ...(profile ? { profile } : {}) });
+          }
+          applySessionSnapshot(snapshot);
+        } catch (reason: unknown) {
+          setResyncState("error");
+          setError(reason instanceof Error ? reason.message : String(reason));
+          setErrorAction("reconnect");
+          setStatus("Resync failed");
+        } finally {
+          reconnectingRef.current = false;
+        }
+      })();
     });
     const offStart = gateway.on("message.start", (event) => { const payload = accept(event, true); if (!payload) return; const id = `assistant-${++messageSequenceRef.current}`; assistantIdRef.current = id; setStreaming(true); setTurnStartedAt((started) => started ?? Date.now()); setStatus("Thinking…"); setTranscript((messages) => [...messages, { id, role: "assistant", text: "", streaming: true }]); });
     const offDelta = gateway.on("message.delta", (event) => { const payload = accept(event, true); if (!payload) return; const text = eventText(event); if (!text) return; setTranscript((messages) => { const id = assistantIdRef.current; if (!id) return [...messages, { id: `assistant-${++messageSequenceRef.current}`, role: "assistant", text, streaming: true }]; return messages.map((message) => message.id === id ? { ...message, text: message.text + text } : message); }); });
@@ -430,10 +459,12 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       setShowScrollToBottom(false);
       updateAttachments([]);
       seenSeqRef.current.clear();
+      seenEventIdsRef.current.clear();
       messageSequenceRef.current = 0;
       setStatus(null);
       setError(null);
       setErrorAction(null);
+      setResyncState("idle");
       setFailedPrompt(null);
       setSubmitting(false);
       setStopping(false);
@@ -621,9 +652,11 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     : null;
   const pageStatus = connectionState !== "open"
     ? connectionLabel(connectionState)
-    : isWorking
-      ? "Working"
-      : "Ready";
+    : resyncState === "syncing"
+      ? "Syncing"
+      : isWorking
+        ? "Working"
+        : "Ready";
   const sessionActivityStatus: SessionActivityStatus = error
     ? "error"
     : connectionState !== "open"
@@ -773,6 +806,21 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 Retry
               </Button>
             )}
+          </div>
+        )}
+        {resyncState === "syncing" && (
+          <div data-slot="chat-resync" role="status" className="border-l-2 border-primary px-3 py-2 text-sm text-primary">
+            Syncing conversation…
+          </div>
+        )}
+        {resyncState === "partial" && (
+          <div data-slot="chat-resync" role="status" className="border-l-2 border-warning px-3 py-2 text-sm text-text-secondary">
+            Conversation synced; some older history is unavailable.
+          </div>
+        )}
+        {resyncState === "error" && !error && (
+          <div data-slot="chat-resync" role="alert" className="border-l-2 border-destructive px-3 py-2 text-sm text-destructive">
+            Conversation sync failed. Retry the connection to continue.
           </div>
         )}
       </div>

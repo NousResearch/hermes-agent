@@ -351,6 +351,32 @@ describe("NativeChatPage", () => {
     expect(gateway.instance?.requests.at(-1)).toEqual({ method: "clarify.respond", params: { answer: "A", request_id: "clarify-1", session_id: "session-1" } });
   });
 
+  it("deduplicates seq-less replay events by event id", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => {
+      gateway.instance?.emit("message.start", { event_id: "start-1" });
+      gateway.instance?.emit("message.delta", { text: "once", event_id: "delta-1" });
+      gateway.instance?.emit("message.delta", { text: "once", event_id: "delta-1" });
+    });
+
+    expect(host.textContent).toContain("once");
+    expect(host.textContent).not.toContain("onceonce");
+  });
+
+  it("does not let a snapshot without pending fields erase a live approval", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => gateway.instance?.emit("approval.request", { request_id: "approval-live", command: "rm file", choices: ["once"] }));
+    expect(host.textContent).toContain("rm file");
+
+    gateway.instance!.snapshot = { messages: [{ id: 9, role: "assistant", text: "history" }] };
+    await act(async () => gateway.instance?.stateHandler?.("closed"));
+    await act(async () => gateway.instance?.stateHandler?.("open"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(host.textContent).toContain("rm file");
+    expect(host.querySelector("[aria-label='Approval required']")).toBeTruthy();
+  });
+
   it("stops a streaming session and deduplicates replayed deltas", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     await act(async () => { gateway.instance?.emit("message.start", undefined); gateway.instance?.emit("message.delta", { text: "one", seq: 2 }); gateway.instance?.emit("message.delta", { text: "one", seq: 2 }); });

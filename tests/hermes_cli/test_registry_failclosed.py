@@ -46,7 +46,7 @@ class TestC10DashboardFailClosed:
         (home / "profiles").mkdir(parents=True)
         (home / "governance").mkdir()
         import sys
-        sys.path.insert(0, "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-dashboard")
+        sys.path.insert(0, "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
         from backend import profile_docs
         monkeypatch.setattr(profile_docs, "HERMES_HOME", home)
         monkeypatch.setattr(profile_docs, "PROFILES_DIR", home / "profiles")

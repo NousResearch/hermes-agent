@@ -10814,6 +10814,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             node_failures, already_restarted_units=set(restarted_services)
         )
 
+        # Check if any pre-update serve/dashboard runtimes survived on
+        # pre-update code generations (#100479).
+        try:
+            _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
+            if _stale_serve_rows:
+                _warn_stale_serve_runtimes(_stale_serve_rows)
+        except Exception as _serve_warn_exc:
+            logger.debug("Failed to check for surviving serve runtimes: %s", _serve_warn_exc)
+
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")

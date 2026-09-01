@@ -102,16 +102,21 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_finish_dashboard_update_cleanup", lambda *a, **k: None
     )
+    monkeypatch.setattr(
+        update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+    )
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
     monkeypatch.setattr(
         update_cmd, "_venv_core_imports_healthy", lambda: (True, "")
     )
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
     import hermes_cli.gateway as hermes_gateway
 
     monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
+        hermes_gateway, "find_gateway_pids", lambda **_kwargs: []
     )
     monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(
@@ -300,6 +305,33 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
+
+
+def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
+    monkeypatch, tmp_path, capsys
+):
+    """The successful update path must surface an inventoried stale serve."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    monkeypatch.setattr(
+        update_cmd,
+        "_surviving_pre_update_serve_runtimes",
+        lambda _plan: [
+            {
+                "pid": 5555,
+                "kind": "serve",
+                "profile": "default",
+                "supervisor": "manual-serve",
+            }
+        ],
+    )
+
+    hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "pid 5555" in out
+    assert "serve" in out
+    assert "pre-update code" in out
 
 
 def test_interrupt_between_pull_and_restart_leaves_marker(

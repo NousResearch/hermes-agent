@@ -128,6 +128,39 @@ describe('StatusRule session title', () => {
   })
 })
 
+describe('StatusRule footer hierarchy', () => {
+  it('separates runtime identity and reasoning visually without vertical-bar noise', () => {
+    const element = StatusRule({
+      ...baseProps,
+      modelProvider: 'openai-codex',
+      modelReasoningEffort: 'max'
+    })
+
+    const rendered = textContent(element)
+    const identity = findElementWithText(element, 'openai-codex/opus 4.8')
+    const effort = findElementWithText(element, 'max')
+
+    expect(rendered).toContain('openai-codex/opus 4.8 max')
+    expect(rendered).toContain('50k/200k')
+    expect(rendered).toContain(' · ')
+    expect(rendered).not.toContain(' │ ')
+    expect(identity?.props.color).toBe(DEFAULT_THEME.color.label)
+    expect(effort?.props.color).toBe(DEFAULT_THEME.color.accent)
+  })
+
+  it('labels the compact context read-out when the meter is hidden', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 60
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('ctx 50k tok')
+    expect(rendered).not.toContain('[███')
+  })
+})
+
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
     const element = StatusRule({

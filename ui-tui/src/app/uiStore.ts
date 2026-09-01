@@ -15,6 +15,7 @@ const buildUiState = (): UiState => ({
   busyInputMode: 'queue',
   compact: false,
   compacting: false,
+  devContext: true,
   destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,

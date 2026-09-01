@@ -14,6 +14,7 @@ import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { devContextRailWidth } from '../domain/devContext.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -28,6 +29,7 @@ import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { DevContextRail } from './devContextRail.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
@@ -143,7 +145,8 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
-  const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
+  const ambientRailCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
+  const railCols = ambientRailCols + devContextRailWidth(ui.devContext, composer.cols, ambientRailCols)
 
   // Keep transcript text clear of the floating pet, responsively:
   //  - wide terminals: reserve a right gutter so lines wrap to the pet's left
@@ -501,7 +504,9 @@ const StatusRulePane = memo(function StatusRulePane({
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+        modelProvider={ui.info?.provider}
         modelReasoningEffort={ui.info?.reasoning_effort}
+        modelServiceTier={ui.info?.service_tier}
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
@@ -513,6 +518,7 @@ const StatusRulePane = memo(function StatusRulePane({
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
         voiceLabel={status.voiceLabel}
+        workspace={status.workspace}
       />
     </Box>
   )
@@ -554,6 +560,9 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!overlay.agents && !overlay.journey && (
+            <DevContextRail cols={composer.cols} queuedCount={composer.queuedDisplay.length} status={status} />
+          )}
         </Box>
 
         {!overlay.agents && !overlay.journey && (

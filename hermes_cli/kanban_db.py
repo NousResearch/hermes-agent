@@ -6247,6 +6247,47 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+def _wip_commit_worktree(worktree_path: str, task_id: str) -> bool:
+    """Commit all staged/unstaged changes in a task worktree onto its branch.
+
+    ``git add -A && git commit -m 'WIP: force-finalized <task_id>'`` — run
+    from inside the worktree (``-C`` its path) so the commit lands on the
+    task branch as the current HEAD is the worktree's checked-out branch.
+    Only ever commits real, user/agent-authored changes; a commit with
+    nothing to add is a no-op (``git commit`` refuses on an empty tree).
+
+    Runs BEFORE any teardown step so the branch is the durable owner of a
+    half-done diff. Returns True when a WIP commit was created (or nothing
+    was dirty); False when the commit failed or the tree could not be
+    committed — callers preserve the worktree in that case.
+    """
+    try:
+        add = subprocess.run(
+            ["git", "-C", worktree_path, "add", "-A"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=60, check=False,
+        )
+        if add.returncode != 0:
+            _log.warning("git add -A failed for worktree %s: %s",
+                         worktree_path, (add.stderr or add.stdout or "").strip())
+            return False
+        commit = subprocess.run(
+            ["git", "-C", worktree_path, "commit", "-m",
+             f"WIP: force-finalized {task_id}"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=60, check=False,
+        )
+        # rc 0 = committed; rc 1 = nothing staged (clean/no-op) — both fine.
+        if commit.returncode not in (0, 1):
+            _log.warning("git commit failed for worktree %s: %s",
+                         worktree_path, (commit.stderr or commit.stdout or "").strip())
+            return False
+        return True
+    except Exception as exc:
+        _log.warning("_wip_commit_worktree failed for %s: %s", worktree_path, exc)
+        return False
+
+
 def _cleanup_worktree_workspace(
     task_id: str, path: str, branch_name: Optional[str] = None
 ) -> None:
@@ -6258,6 +6299,14 @@ def _cleanup_worktree_workspace(
     files, unpushed commits, unresolvable repo, failing git — preserves the
     worktree. The task's auto-generated ``wt/<task-id>`` branch is deleted
     with it; custom branches are kept. Best-effort like the scratch path.
+
+    Before any removal judgment runs, a worktree with staged or unstaged
+    changes is WIP-committed onto its task branch FIRST, so the branch
+    always holds the only copy of an in-progress diff. Never teardown git
+    metadata while the branch is the sole owner of uncommitted work: a
+    force-finalize (runtime/cost-cap SIGTERM or reclaim) that removes the
+    worktree could otherwise destroy the half-done diff along with the
+    only tree that contained it (2026-09-01 t_296c6855).
     """
     try:
         from cli import _worktree_has_unpushed_commits, _worktree_is_dirty
@@ -6273,6 +6322,13 @@ def _cleanup_worktree_workspace(
         repo_root = common.parent
         if wp.resolve(strict=False) == repo_root.resolve(strict=False):
             return  # never remove the main checkout
+        if _worktree_is_dirty(str(wp)):
+            # Persist the in-progress diff onto the task branch BEFORE any
+            # teardown decision. The branch is the only durable copy of a
+            # half-done diff; removal may follow for unpushed-but-dirty work
+            # only after it is safe in a commit. Fail-soft: if the WIP
+            # commit cannot land, preserve the worktree rather than risk it.
+            _wip_commit_worktree(str(wp), task_id)
         if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
             _log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",

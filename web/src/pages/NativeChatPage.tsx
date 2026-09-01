@@ -11,11 +11,13 @@ import {
 import { GatewayClient, type ConnectionState, type GatewayEvent } from "@/lib/gatewayClient";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useI18n } from "@/i18n";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ChatSessionList, type SessionActivityStatus } from "@/components/ChatSessionList";
 import { SlashPopover, type SlashPopoverHandle } from "@/components/SlashPopover";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { mergeSnapshotTranscript, snapshotHasField, snapshotMatchesSession } from "@/lib/native-chat-reconcile";
+import { appendVoiceTranscript, canRecordVoice, chooseRecordingMimeType } from "@/lib/voice";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
@@ -23,7 +25,7 @@ import { MessageActions } from "@/components/chat/MessageActions";
 import { CommandPalette } from "@/components/chat/CommandPalette";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { ArrowDown, Menu, MessageSquare, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
+import { ArrowDown, Menu, MessageSquare, Mic, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import {
   nativeChatModelChoices,
@@ -85,6 +87,7 @@ function clarifyFromSnapshot(snapshot?: ClarifySnapshot): ClarificationRequest |
 type TextPayload = { text?: unknown; message?: unknown; kind?: unknown; running?: unknown; turn_started_at?: unknown; status?: unknown; request_id?: unknown; answer?: unknown; question?: unknown; choices?: unknown; command?: unknown; description?: unknown; tool_id?: unknown; name?: unknown; context?: unknown; args?: unknown; result?: unknown; summary?: unknown; progress?: unknown; questions?: unknown; multi_select?: unknown; allow_permanent?: unknown; seq?: unknown; event_id?: unknown; eventId?: unknown; elapsed_ms?: unknown; elapsedMs?: unknown };
 
 type ResyncState = "idle" | "syncing" | "synced" | "partial" | "error";
+type VoiceState = "idle" | "starting" | "recording" | "transcribing";
 
 type PendingAttachment = {
   id: string;
@@ -122,6 +125,10 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function stopMediaStream(stream: MediaStream | null): void {
+  stream?.getTracks().forEach((track) => track.stop());
 }
 
 export function attachmentPromptText(text: string, attachments: PendingAttachment[]): string {
@@ -191,6 +198,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [queuedPrompts, setQueuedPrompts] = useState<PendingPrompt[]>([]);
   const queueDrainInFlightRef = useRef(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const submitInFlightRef = useRef(false);
@@ -200,6 +209,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const stagingRef = useRef(new Set<string>());
   const uploadControllersRef = useRef(new Map<string, AbortController>());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const messageSequenceRef = useRef(0);
   const composingRef = useRef(false);
   const assistantIdRef = useRef<string | null>(null);
@@ -688,6 +700,86 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     textareaRef.current?.focus();
   }, []);
 
+  const stopVoiceRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  }, []);
+
+  const startVoiceRecording = useCallback(async () => {
+    if (voiceState !== "idle") return;
+    const recorderConstructor = typeof MediaRecorder === "undefined" ? undefined : MediaRecorder;
+    if (typeof navigator === "undefined" || !canRecordVoice(navigator.mediaDevices, recorderConstructor)) {
+      setVoiceError("Voice input is not available in this browser");
+      return;
+    }
+    setVoiceError(null);
+    setVoiceState("starting");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const supported = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+        .filter((type) => recorderConstructor?.isTypeSupported(type));
+      const preferredMime = chooseRecordingMimeType(supported);
+      const recorder = preferredMime ? new MediaRecorder(stream, { mimeType: preferredMime }) : new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      });
+      recorder.addEventListener("stop", () => {
+        stream.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        const blob = new Blob(chunks, { type: recorder.mimeType || preferredMime || "audio/webm" });
+        if (!blob.size) {
+          setVoiceState("idle");
+          setVoiceError("No audio was captured");
+          return;
+        }
+        setVoiceState("transcribing");
+        void fileDataUrl(blob)
+          .then((dataUrl) => api.transcribeAudio(dataUrl, blob.type || "audio/webm", profile || undefined))
+          .then((result) => {
+            const transcript = result.transcript?.trim() ?? "";
+            if (transcript) {
+              setDraft((current) => appendVoiceTranscript(current, transcript));
+              textareaRef.current?.focus();
+            }
+            setVoiceError(transcript ? null : "No speech was detected");
+          })
+          .catch((reason: unknown) => setVoiceError(reason instanceof Error ? reason.message : String(reason)))
+          .finally(() => setVoiceState("idle"));
+      }, { once: true });
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setVoiceState("recording");
+    } catch (reason: unknown) {
+      stopMediaStream(mediaStreamRef.current);
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setVoiceError(reason instanceof Error ? reason.message : "Microphone permission was denied");
+      setVoiceState("idle");
+    }
+  }, [profile, voiceState]);
+
+  const speakMessage = useCallback(async (message: string) => {
+    const result = await api.speakText(message, profile || undefined);
+    if (!result.data_url) throw new Error("Speech audio was not returned");
+    audioRef.current?.pause();
+    const audio = new Audio(result.data_url);
+    audioRef.current = audio;
+    await audio.play();
+  }, [profile]);
+
+  useEffect(() => () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    stopMediaStream(mediaStreamRef.current);
+    mediaStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    audioRef.current?.pause();
+    audioRef.current = null;
+  }, []);
+
   const onComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashPopoverRef.current?.handleKey(event)) return;
     if (shouldSubmitComposerKey(event.key, event.shiftKey, composingRef.current || event.nativeEvent.isComposing)) {
@@ -920,6 +1012,12 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             Conversation sync failed. Retry the connection to continue.
           </div>
         )}
+        {voiceError && (
+          <div data-slot="voice-error" role="alert" className="flex items-center gap-2 border-l-2 border-warning px-3 py-2 text-sm text-warning">
+            <span className="min-w-0 flex-1 wrap-break-word">{voiceError}</span>
+            <Button ghost size="sm" type="button" onClick={() => setVoiceError(null)}>Dismiss</Button>
+          </div>
+        )}
       </div>
 
       <div
@@ -1024,6 +1122,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                       message={message.text}
                       messageRole={message.role}
                       onUseAsPrompt={applyMessageAsPrompt}
+                      onSpeak={message.role === "assistant" ? speakMessage : undefined}
                     />
                   )}
                 </article>
@@ -1188,6 +1287,17 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             >
               <Paperclip />
             </Button>
+            <Button
+              ghost
+              size="icon"
+              type="button"
+              aria-label={voiceState === "recording" ? "Stop voice recording" : "Record voice"}
+              className={cn("shrink-0", voiceState === "recording" && "text-destructive")}
+              disabled={voiceState === "starting" || voiceState === "transcribing"}
+              onClick={() => voiceState === "recording" ? stopVoiceRecording() : void startVoiceRecording()}
+            >
+              <Mic aria-hidden />
+            </Button>
             <div className="relative min-w-0 flex-1">
               <SlashPopover
                 ref={slashPopoverRef}
@@ -1245,11 +1355,17 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             Drop files or paste to attach
           </span>
           <span data-slot="composer-status" role="status" aria-live="polite">
-            {submitting
-              ? "Sending…"
-              : connectionState !== "open"
-                ? "Waiting for connection…"
-                : status ?? (streaming ? "Working…" : "Ready")}
+            {voiceState === "starting"
+              ? "Requesting microphone…"
+              : voiceState === "recording"
+                ? "Recording… tap the microphone to stop"
+                : voiceState === "transcribing"
+                  ? "Transcribing…"
+                  : submitting
+                    ? "Sending…"
+                    : connectionState !== "open"
+                      ? "Waiting for connection…"
+                      : status ?? (streaming ? "Working…" : "Ready")}
           </span>
         </div>
       </form>

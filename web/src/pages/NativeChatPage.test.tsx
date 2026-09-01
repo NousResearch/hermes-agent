@@ -123,6 +123,14 @@ describe("NativeChatPage", () => {
     }
   });
 
+  it("exposes a voice control and reports a clear fallback when recording is unavailable", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const record = host.querySelector<HTMLButtonElement>("button[aria-label='Record voice']");
+    expect(record).toBeTruthy();
+    await act(async () => record?.click());
+    expect(host.querySelector("[data-slot='voice-error']")?.textContent).toContain("Voice input is not available");
+  });
+
   it("hides sender names from message bubbles while preserving accessible labels", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });

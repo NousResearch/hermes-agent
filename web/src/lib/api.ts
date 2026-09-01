@@ -88,6 +88,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/audio",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
@@ -341,6 +342,20 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  transcribeAudio: (dataUrl: string, mimeType: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; transcript?: string; provider?: string }>(appendProfileParam("/api/audio/transcribe", profile), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data_url: dataUrl, mime_type: mimeType }),
+    }),
+  speakText: (text: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; data_url?: string; mime_type?: string; provider?: string }>(appendProfileParam("/api/audio/speak", profile), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
+  getVoiceConfig: (profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; mode?: string; stt?: Record<string, unknown>; tts?: Record<string, unknown> }>(appendProfileParam("/api/audio/voice-config", profile)),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *

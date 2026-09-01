@@ -89,6 +89,25 @@ describe("fetchJSON", () => {
   });
 });
 
+describe("api audio helpers", () => {
+  it("scopes transcription and speech requests and preserves their payloads", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "voice-token" });
+    const fetchMock = jsonFetchMock({ ok: true, transcript: "hello", data_url: "data:audio/mpeg;base64,AA==" });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("thai-profile");
+
+    await api.transcribeAudio("data:audio/webm;base64,YQ==", "audio/webm");
+    await api.speakText("สวัสดี ั");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/audio/transcribe?profile=thai-profile",
+      "/api/audio/speak?profile=thai-profile",
+    ]);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe(JSON.stringify({ data_url: "data:audio/webm;base64,YQ==", mime_type: "audio/webm" }));
+    expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe(JSON.stringify({ text: "สวัสดี ั" }));
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

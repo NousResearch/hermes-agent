@@ -7,13 +7,14 @@ export interface MessageActionsProps {
   message: string;
   messageRole: MessageRole;
   onUseAsPrompt: (message: string) => void;
+  onSpeak?: (message: string) => Promise<void> | void;
 }
 
-type FeedbackState = "copied" | "copy-failed" | "prompt-filled";
+type FeedbackState = "copied" | "copy-failed" | "prompt-filled" | "spoken" | "speak-failed";
 
 const FEEDBACK_DURATION_MS = 1800;
 
-export function MessageActions({ message, messageRole, onUseAsPrompt }: MessageActionsProps) {
+export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak }: MessageActionsProps) {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
 
@@ -47,13 +48,27 @@ export function MessageActions({ message, messageRole, onUseAsPrompt }: MessageA
     showFeedback("prompt-filled");
   }, [message, onUseAsPrompt, showFeedback]);
 
+  const speakMessage = useCallback(async () => {
+    if (!onSpeak) return;
+    try {
+      await onSpeak(message);
+      showFeedback("spoken");
+    } catch {
+      showFeedback("speak-failed");
+    }
+  }, [message, onSpeak, showFeedback]);
+
   const feedbackText = feedback === "copied"
     ? "Copied"
     : feedback === "copy-failed"
       ? "Copy failed"
       : feedback === "prompt-filled"
         ? "Draft filled"
-        : "";
+        : feedback === "spoken"
+          ? "Spoken"
+          : feedback === "speak-failed"
+            ? "Speak failed"
+            : "";
 
   return (
     <div data-slot="message-actions" className="mt-2 flex items-center gap-1 text-xs text-current/70">
@@ -73,6 +88,16 @@ export function MessageActions({ message, messageRole, onUseAsPrompt }: MessageA
       >
         Use as prompt
       </button>
+      {messageRole === "assistant" && onSpeak && (
+        <button
+          type="button"
+          aria-label="Speak assistant message"
+          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => void speakMessage()}
+        >
+          Speak
+        </button>
+      )}
       {feedbackText && (
         <span data-testid="message-action-feedback" role="status" aria-live="polite" aria-atomic="true" className="ml-1 text-[0.7rem]">
           {feedbackText}

@@ -1,0 +1,17 @@
+{
+  "name": "Hermes Agent Dashboard",
+  "short_name": "Hermes",
+  "description": "Native Hermes Agent dashboard",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "/hermes-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -72,4 +72,20 @@ describe("MessageActions", () => {
 
     expect(host.querySelector("[role='status']")?.textContent).toContain("Copy failed");
   });
+
+  it("speaks assistant messages through the optional callback", async () => {
+    const onSpeak = vi.fn().mockResolvedValue(undefined);
+    await act(async () => root.render(createElement(MessageActions, {
+      message: "Read this aloud",
+      messageRole: "assistant",
+      onUseAsPrompt: vi.fn(),
+      onSpeak,
+    })));
+
+    const speak = host.querySelector<HTMLButtonElement>("button[aria-label='Speak assistant message']");
+    expect(speak).toBeTruthy();
+    await act(async () => speak?.click());
+    expect(onSpeak).toHaveBeenCalledWith("Read this aloud");
+    expect(host.querySelector("[role='status']")?.textContent).toContain("Spoken");
+  });
 });

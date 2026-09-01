@@ -16741,6 +16741,15 @@ ipcMain.on('hermes:translucency:support', event => {
   event.returnValue = { glass: GLASS_SUPPORTED, translucency: TRANSLUCENCY_SUPPORTED }
 })
 
+// Launch-flag facts the renderer needs before first paint (same sendSync
+// pattern as translucency). `--local` gates every local-models GUI surface;
+// it arrives from `hermes desktop --local` or directly on Hermes.exe (a
+// shortcut edit), and survives self-relaunches because collectRelaunchArgs
+// only strips internal flags.
+ipcMain.on('hermes:launch-flags', event => {
+  event.returnValue = { localModels: process.argv.includes('--local') }
+})
+
 ipcMain.on('hermes:translucency', (_event, payload) => {
   const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
   const previous = translucencyState

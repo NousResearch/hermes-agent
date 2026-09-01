@@ -1129,6 +1129,34 @@ def build_turn_context(
                     except Exception:
                         _compress_block_reason = None
         if _should_compress_now:
+            # Managed local runtime: growing the window beats compressing —
+            # the ladder's design order (same seam as the conversation
+            # loop's pre-API gate; see _maybe_grow_local_window there).
+            try:
+                from agent.conversation_loop import _maybe_grow_local_window
+
+                _grown = _maybe_grow_local_window(
+                    agent, _compressor, _preflight_tokens
+                )
+            except Exception:
+                _grown = None
+            if _grown:
+                _compressor.update_model(
+                    agent.model,
+                    _grown,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+                agent._buffer_status(
+                    f"📈 Context window grown to {_grown // 1024}K "
+                    f"(local model; conversation continues uncompressed)"
+                )
+                _should_compress_now = _compressor.should_compress(
+                    _preflight_tokens
+                )
+        if _should_compress_now:
             _preflight_compressed = True
             # Compression is actually running (block cleared / was never
             # blocked) — reset the dedup so a future blocked-over-threshold

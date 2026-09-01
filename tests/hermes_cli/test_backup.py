@@ -158,6 +158,94 @@ class TestShouldExclude:
         # The .db itself is still included (and safe-copied separately)
         assert not _should_exclude(Path("state.db"))
 
+    def test_excludes_managed_runtime_trees_at_root(self):
+        """models/, runtimes/, and node/ at a profile-home root hold
+        re-downloadable GGUF weights and runtime binaries that reach
+        hundreds of GB — zipping them is the 20-minute-hang symptom."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("models/Qwen3.6-27B-Q4_K_M.gguf"))
+        assert _should_exclude(Path("models/assets/mmproj.gguf"))
+        assert _should_exclude(Path("runtimes/llamacpp/b10362/cuda/ggml-cuda.dll"))
+        assert _should_exclude(Path("node/node.exe"))
+        # Named profiles download their own copies.
+        assert _should_exclude(Path("profiles/clean/models/big.gguf"))
+        assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
+
+    def test_keeps_nested_dirs_named_like_runtime_trees(self):
+        """A deeper directory that happens to be called models/ or node/ is
+        user data (a skill's assets, project files) and must survive."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path("skills/mlops/models/notes.md"))
+        assert not _should_exclude(Path("scratch/node/index.js"))
+        assert not _should_exclude(Path("profiles/clean/skills/x/models/a.txt"))
+
+    def test_excludes_desktop_emergency_state_db_baks(self):
+        """The desktop updater's pre-flight drops timestamped
+        state.db.pre-update-emergency-*.bak files at the HERMES_HOME root —
+        backup artifacts in the same class as backups/, so a full backup
+        must not re-ship them."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(
+            Path("state.db.pre-update-emergency-2026-08-15T04-55-33-619Z.bak")
+        )
+        assert _should_exclude(
+            Path("profiles/coder/state.db.pre-update-emergency-2026-08-15T04-55-33-619Z.bak")
+        )
+        # Other .bak files are user data and stay.
+        assert not _should_exclude(Path("config.yaml.bak"))
+
+
+# ---------------------------------------------------------------------------
+# _iter_backup_files tests
+# ---------------------------------------------------------------------------
+
+class TestIterBackupFiles:
+    def test_manual_and_automatic_paths_share_one_walk(self, tmp_path):
+        """Both backup entry points must select the identical file set.
+
+        Before the walks were unified, the automatic pre-update path pruned
+        ``hermes-agent`` at ANY depth, silently dropping nested skill dirs
+        like ``skills/autonomous-ai-agents/hermes-agent/`` that the manual
+        path preserved. One shared iterator makes that drift impossible;
+        this test pins the contract."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+
+        # The case the old automatic walk got wrong: a nested dir named
+        # hermes-agent holding real skill content.
+        nested = root / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("# nested skill\n")
+
+        # A root-level managed runtime tree that both paths must prune.
+        (root / "models").mkdir()
+        (root / "models" / "big.gguf").write_bytes(b"\x00" * 64)
+
+        out_path = tmp_path / "out.zip"
+        selected = {str(rel) for _, rel in _iter_backup_files(root, out_path)}
+
+        rel_nested = str(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
+        assert rel_nested in selected
+        assert str(Path("models/big.gguf")) not in selected
+        assert not any(s.startswith("hermes-agent") for s in selected)
+
+    def test_skipped_dirs_collected_for_summary(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        (root / "models").mkdir()
+        (root / "models" / "big.gguf").write_bytes(b"\x00")
+
+        skipped: set = set()
+        list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
+        assert "models" in skipped
+        assert "hermes-agent" in skipped
+
 
 # ---------------------------------------------------------------------------
 # Backup tests

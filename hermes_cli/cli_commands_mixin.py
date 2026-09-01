@@ -3013,6 +3013,7 @@ class CLICommandsMixin:
                 review_memory=True,
                 review_skills=review_skills,
                 focus=focus or None,
+                explicit=True,
             )
         except Exception as exc:
             _cprint(f"  /refine failed to start: {exc}")

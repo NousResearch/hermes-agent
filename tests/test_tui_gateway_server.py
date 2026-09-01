@@ -13688,7 +13688,13 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
 def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     """When the build itself FAILS (agent_error set when ready fires), the
     prompt must not run and the failure must reach the client as a visible
-    error event — never a silent drop."""
+    error event — never a silent drop.
+
+    prompt.submit retries a completed failed build once (fresh provider
+    resolution un-wedges sessions whose failure cause was fixed), so the
+    build stub here is a faithful failing build: it sets agent_error and
+    fires the session's CURRENT ready event (the retry installs a new one).
+    A no-op stub would leave that event unset and hang the patient wait."""
     threads = []
     emitted = []
     calls = {"run_prompt": 0}
@@ -13711,12 +13717,16 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     session["agent_error"] = "No LLM provider configured"  # ...but failed
     server._sessions["sid"] = session
 
+    def _failing_build(sid, session):
+        session["agent_error"] = "No LLM provider configured"
+        session["agent_ready"].set()
+
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
-        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_start_agent_build", _failing_build)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",

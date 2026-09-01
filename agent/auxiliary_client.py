@@ -9239,6 +9239,14 @@ def _build_call_kwargs(
             _provider_norm == "openrouter"
             or base_url_host_matches(_effective_base, "openrouter.ai")
         )
+        # The managed local llama-server honors explicit caps too: a local
+        # decode burns the user's own GPU at full tilt, so a caller that
+        # says "this is a 64-token task" must be believed — an uncapped
+        # local generation whose EOS never comes runs to the full context
+        # window. No wire-format quirks apply (llama.cpp accepts
+        # max_tokens), and the no-default-cap policy is unchanged: this
+        # only forwards caps callers explicitly set.
+        _is_managed_local = _is_managed_local_endpoint(_effective_base)
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _nous_on_messages
@@ -9246,6 +9254,7 @@ def _build_call_kwargs(
             or _is_moa
             or _is_gemini_native
             or _is_openrouter
+            or _is_managed_local
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right
@@ -9591,6 +9600,49 @@ def _is_streaming_rejected_error(exc: Exception) -> bool:
     )
 
 
+_MANAGED_LOCAL_STATE_TTL_S = 15.0
+_managed_local_cache: "tuple[float, str]" = (0.0, "")
+
+
+def _managed_local_netloc() -> str:
+    """host:port of the managed local llama-server, or "" when none.
+
+    Read from the supervisor's state file (written at spawn, removed on
+    stop) with a short TTL so per-request checks don't hit the disk. The
+    state file is the same source provider resolution uses, so the match
+    is exact — no false positives on other localhost endpoints.
+    """
+    global _managed_local_cache
+    now = time.monotonic()
+    ts, cached = _managed_local_cache
+    if now - ts < _MANAGED_LOCAL_STATE_TTL_S:
+        return cached
+    netloc = ""
+    try:
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        raw = state_path().read_text(encoding="utf-8")
+        base = str((json.loads(raw) or {}).get("base_url", ""))
+        netloc = urlparse(base).netloc.lower()
+    except Exception:
+        netloc = ""
+    _managed_local_cache = (now, netloc)
+    return netloc
+
+
+def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
+    """True when *base_url* targets the llama-server this Hermes manages."""
+    if not base_url:
+        return False
+    managed = _managed_local_netloc()
+    if not managed:
+        return False
+    try:
+        return urlparse(str(base_url)).netloc.lower() == managed
+    except Exception:
+        return False
+
+
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     """Detect providers that only accept streaming (non-stream = HTTP 400).
 
@@ -9606,12 +9658,27 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     Beyond the known-host list, users can mark ANY custom endpoint as
     stream-only via ``auxiliary.stream_only_base_urls`` in config.yaml
     (list of substrings matched against the endpoint URL).
+
+    The managed local llama-server is always streamed for a different
+    reason: cancellation. llama-server only notices a dead client when it
+    writes to the socket. A non-streamed request writes once — after the
+    FULL generation — so an abandoned call (client timeout, retry, app
+    exit) keeps the GPU decoding to the end of the context window with
+    nobody listening; requests that queue behind a model load are the
+    worst case, since the client is long gone before decode even starts.
+    Streaming writes every few tokens, so an abandoned decode dies at the
+    first post-disconnect chunk (verified against llama-server b10362:
+    streamed disconnect cancels in <1s through the router; non-streamed
+    survives until the server's next incidental socket poll, if ever).
     """
     _url = str(base_url or "").lower()
     if not _url:
         return False
     # Tencent Copilot — "Non-stream chat request is currently not supported"
     if base_url_host_matches(_url, "copilot.tencent.com"):
+        return True
+    # Managed local llama-server — streamed so abandonment cancels decode.
+    if _is_managed_local_endpoint(_url):
         return True
     try:
         from hermes_cli.config import load_config

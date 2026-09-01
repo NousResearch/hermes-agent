@@ -92,7 +92,13 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   const flight = (async () => {
     const epoch = profileListEpoch
-    const MAX_RETRIES = 2
+    // A busy remote host resets in-flight requests for several seconds at a
+    // time. The old 500ms + 1000ms schedule gave up 1.5s in, which left the
+    // rail on a loading state until some later poll happened to succeed. Five
+    // attempts over ~7.5s outlast that burst while still failing fast enough
+    // to surface a genuinely dead backend.
+    const MAX_RETRIES = 4
+    const MAX_RETRY_DELAY_MS = 4000
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -113,10 +119,12 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
           throw error
         }
 
-        // Back off before retrying: 500ms, then 1000ms. Gives the remote proxy
-        // a window to finish routing after WebSocket-ready but pre-HTTP-proxy
-        // states (global remote mode, #70679).
-        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+        // Back off before retrying: 500ms, 1s, 2s, then 4s. The first two
+        // steps are unchanged — they give the remote proxy a window to finish
+        // routing after WebSocket-ready but pre-HTTP-proxy states (global
+        // remote mode, #70679) — and the capped doubling covers a host-event
+        // reset burst without letting one refresh hang on indefinitely.
+        await new Promise(resolve => setTimeout(resolve, Math.min(500 * 2 ** attempt, MAX_RETRY_DELAY_MS)))
       }
     }
 

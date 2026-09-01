@@ -14291,6 +14291,27 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   return remoteRevalidation.run(connectionPromise, async () => {
     const [result] = await Promise.all([
       revalidateRemoteConnection({
+        // The primary connection is alone on its gateway, so it cannot use the
+        // pooled host-event vote. Give it the same grace by other means: pause,
+        // confirm the SSH master is still up, and re-probe once. A backend that
+        // answers after the pause was busy, not dead — and keeping it avoids a
+        // whole-app reload for a load spike.
+        confirmDrop: {
+          backoff: async () => {
+            await sleep(HOST_EVENT_BACKOFF_MS)
+          },
+          transportAlive: async () => {
+            const conn = await connectionPromise.catch(() => null)
+
+            if (conn?.remoteKind !== 'ssh') {
+              return true
+            }
+
+            const state = sshConnections.get(sshScopeKey(primaryProfileKey()))
+
+            return state?.ssh ? await state.ssh.isAlive().catch(() => false) : false
+          }
+        },
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,

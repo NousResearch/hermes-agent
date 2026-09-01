@@ -35,7 +35,23 @@ interface RemoteConnectionDescriptor {
   mode?: null | string
 }
 
+/**
+ * Last look before the primary connection is dropped.
+ *
+ * The pooled path can recognise a busy host because many profiles miss at
+ * once. The primary connection is alone on its gateway, so it has no siblings
+ * to vote with — its only evidence is its own streak, and on a saturated host
+ * that streak expires in a few seconds of quick probes. Dropping it is a
+ * visible whole-app reload, so it is worth one pause plus one recheck first.
+ */
+export interface RemoteDropConfirmation {
+  backoff: () => Promise<void>
+  /** Cheap transport-level check (SSH master liveness), when one applies. */
+  transportAlive?: () => Promise<boolean>
+}
+
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
+  confirmDrop?: RemoteDropConfirmation
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   log: (message: string) => void
@@ -645,6 +661,7 @@ export function attachPowerResumeRemoteRevalidation({
  * old async result cannot mutate or reset a replacement connection.
  */
 export async function revalidateRemoteConnection<TConnection extends RemoteConnectionDescriptor>({
+  confirmDrop,
   connectionPromise,
   currentConnectionPromise,
   log,
@@ -696,9 +713,48 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
       return { ok: true, rebuilt: false }
     }
 
+    if (confirmDrop) {
+      log(
+        `Cached remote Hermes backend hit its liveness failure limit; confirming with a transport check and one re-probe after ${HOST_EVENT_BACKOFF_MS}ms before dropping.`
+      )
+      await confirmDrop.backoff()
+
+      if (currentConnectionPromise() !== connectionPromise) {
+        return { ok: true, rebuilt: false }
+      }
+
+      if (await cachedRemoteConnectionSurvivedBackoff(connection, confirmDrop, probe)) {
+        // recordFailure already consumed the streak when it tripped the limit,
+        // so the kept connection restarts from a clean slate.
+        tracker.recordSuccess(baseUrl)
+        log('Cached remote Hermes backend answered after the confirmation backoff; keeping the connection.')
+
+        return { ok: true, rebuilt: false }
+      }
+    }
+
     log('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
     resetConnection()
 
     return { ok: true, rebuilt: true }
+  }
+}
+
+/** Transport first (cheap), then one real re-probe. Either failure drops. */
+async function cachedRemoteConnectionSurvivedBackoff<TConnection extends RemoteConnectionDescriptor>(
+  connection: TConnection,
+  confirmDrop: RemoteDropConfirmation,
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+): Promise<boolean> {
+  try {
+    if (confirmDrop.transportAlive && !(await confirmDrop.transportAlive())) {
+      return false
+    }
+
+    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+
+    return true
+  } catch {
+    return false
   }
 }

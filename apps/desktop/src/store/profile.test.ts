@@ -225,10 +225,35 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     const rejection = expect(refresh).rejects.toThrow('backend unavailable')
     await vi.advanceTimersByTimeAsync(500)
     await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(4000)
     await rejection
 
-    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(5)
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+
+  it('rides out an ECONNRESET burst that outlasts the first three attempts', async () => {
+    // A busy remote host resets every in-flight request for several seconds.
+    // The old 500ms + 1000ms schedule gave up 1.5s in and left the rail on a
+    // loading state until some later poll; the backoff must span the burst.
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const refresh = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(4000)
+    await expect(refresh).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(5)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
   })
 })
 

@@ -263,6 +263,82 @@ describe('revalidateRemoteConnection', () => {
     await expect(revalidateRemoteConnection(rejected.options)).resolves.toEqual({ ok: true, rebuilt: false })
     expect(rejected.probe).not.toHaveBeenCalled()
   })
+
+  // The primary connection has no pool sibling to vote with, so it cannot use
+  // the pooled host-event signal. A busy host still makes its quick streak
+  // expire, and dropping it is a visible whole-app reload.
+  describe('drop confirmation', () => {
+    function confirmation(overrides: Record<string, unknown> = {}) {
+      return {
+        backoff: vi.fn(async () => undefined),
+        transportAlive: vi.fn(async () => true),
+        ...overrides
+      }
+    }
+
+    it('keeps a connection that answers the re-probe after the backoff', async () => {
+      const probe = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockResolvedValueOnce({ ok: true })
+
+      const confirmDrop = confirmation()
+      const test = harness({ confirmDrop, probe })
+
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+
+      expect(confirmDrop.backoff).toHaveBeenCalledOnce()
+      expect(confirmDrop.transportAlive).toHaveBeenCalledOnce()
+      expect(probe).toHaveBeenCalledTimes(4)
+      expect(test.resetConnection).not.toHaveBeenCalled()
+      expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining('answered after'))
+    })
+
+    it('still drops a connection whose re-probe fails after the backoff', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('ECONNRESET'))
+      const confirmDrop = confirmation()
+      const test = harness({ confirmDrop, probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      expect(confirmDrop.backoff).toHaveBeenCalledOnce()
+      expect(probe).toHaveBeenCalledTimes(4)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+      expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining('dropping stale connection'))
+    })
+
+    it('drops without a re-probe when the transport itself is gone', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('ECONNRESET'))
+      const confirmDrop = confirmation({ transportAlive: vi.fn(async () => false) })
+      const test = harness({ confirmDrop, probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      // Three liveness probes and no fourth: a dead transport needs no re-probe.
+      expect(probe).toHaveBeenCalledTimes(3)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+    })
+
+    it('drops on the unchanged fast path when no confirmation is wired', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('offline'))
+      const test = harness({ probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      expect(probe).toHaveBeenCalledTimes(3)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+    })
+  })
 })
 
 describe('ensureHealthyPooledRemoteBackendForDispatch', () => {

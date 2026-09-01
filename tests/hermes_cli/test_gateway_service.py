@@ -361,6 +361,31 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
+    def test_gateway_start_clears_stale_desktop_drain_request(
+        self, tmp_path, monkeypatch
+    ):
+        """A desktop-close drain marker must not wedge the next gateway start."""
+        marker = tmp_path / ".drain_request.json"
+        marker.write_text('{"action":"drain"}', encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False
+        )
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="start", all=False, system=False)
+        )
+
+        assert not marker.exists()
+        assert calls == ["start"]
+
     def test_stop_all_drain_waits_before_stopping_service(self, tmp_path, monkeypatch):
         """Desktop drain must finish before a supervisor or gateway is stopped."""
         unit_path = tmp_path / "hermes-gateway.service"

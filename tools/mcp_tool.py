@@ -8344,6 +8344,7 @@ def refresh_agent_mcp_tools(
     disabled_override=None,
     quiet_mode: bool = True,
     content_aware: bool = False,
+    preserve_prefix: bool = False,
 ) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 
@@ -8371,6 +8372,22 @@ def refresh_agent_mcp_tools(
     surface.  The new ``(tools, valid_tool_names)`` pair is published together
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
+
+    ``preserve_prefix`` is for the callers that rebuild inside a live
+    conversation (the between-turns prologue).  There the tool array is a
+    cached request prefix: every provider that renders ``tools`` ahead of the
+    messages re-prefills the entire history behind any byte that moves.  A
+    plain rebuild moves two kinds of bytes — it drops a tool whose ``check_fn``
+    merely flapped (a headless browser probe, an expired credential, a docker
+    blip), and it splices a late-landing tool into sorted position, which can
+    be index 0.  With ``preserve_prefix`` the live order is authoritative:
+    existing tools keep their slot (schemas still refresh), a tool that is
+    still *registered* but momentarily unavailable is carried forward, a tool
+    that genuinely left the registry is still dropped, and new tools are
+    appended at the tail so the prefix only ever grows.  Carrying an
+    unavailable tool forward changes nothing about dispatch — ``check_fn``
+    gates exposure at snapshot time, never invocation, and every handler
+    already owns its own unavailability error.
 
     Returns the set of newly-added tool names (empty when nothing changed), so
     callers can decide whether to notify the user / re-emit session info.  The
@@ -8427,6 +8444,18 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Snapshot registry membership OUTSIDE ``_agent_tools_lock`` — it is the
+    # only input ``preserve_prefix`` needs beyond the two tool lists, and
+    # taking ``registry._lock`` under the tools lock would be the first place
+    # in the process to nest those two.
+    registered_names: set = set()
+    if preserve_prefix:
+        try:
+            registered_names = {entry.name for entry in registry.get_all_entries()}
+        except Exception:  # noqa: BLE001
+            # Fail open to the plain rebuild rather than pinning a stale list.
+            preserve_prefix = False
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
@@ -8440,10 +8469,12 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
-        current = {
-            t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
-        }
+        current_defs = list(getattr(agent, "tools", None) or [])
+        current = {t["function"]["name"] for t in current_defs}
+        if preserve_prefix:
+            new_defs, new_names = _merge_preserving_prefix(
+                current_defs, new_defs, registered_names,
+            )
         if new_names == current:
             # Same NAME set. For MCP-reload callers that is "no change" —
             # leave the live snapshot untouched (no churn). Content-aware
@@ -8479,6 +8510,40 @@ def refresh_agent_mcp_tools(
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         return new_names - current
+
+
+def _merge_preserving_prefix(
+    current_defs: list, new_defs: list, registered_names: set,
+) -> tuple[list, set]:
+    """Fold a fresh tool snapshot into a live one without moving existing bytes.
+
+    The live tool array is a cached request prefix, so the merge is ordered by
+    ``current_defs``, not by the fresh list:
+
+    * a name in both keeps its slot and takes the fresh schema (dynamic
+      overrides — delegate_task limits, execute_code stubs — still land);
+    * a name only in the live list is carried forward when it is still
+      registered (its ``check_fn`` flapped) and dropped when it is not (the
+      MCP server or plugin genuinely went away);
+    * a name only in the fresh list is appended at the tail, so a late-landing
+      MCP tool extends the prefix instead of splicing into sorted position.
+    """
+    fresh = {}
+    for entry in new_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        if name:
+            fresh[name] = entry
+
+    merged = []
+    for entry in current_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        replacement = fresh.pop(name, None)
+        if replacement is not None:
+            merged.append(replacement)
+        elif name and name in registered_names:
+            merged.append(entry)
+    merged.extend(fresh.values())
+    return merged, {(t.get("function") or {}).get("name", "") for t in merged}
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

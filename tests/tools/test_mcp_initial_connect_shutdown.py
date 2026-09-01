@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fakes.mcp_oauth_peer import capture_oauth_state, seed_old_oauth_state
+
 
 def _reset_mcp_state(mcp_tool) -> None:
     mcp_tool.shutdown_mcp_servers()
@@ -242,6 +244,52 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
 
         mcp_tool.shutdown_mcp_servers()
         assert server._task.done()
+    finally:
+        _cleanup_mcp_state(mcp_tool, created)
+
+
+def test_oauth_http_parking_reconnect_and_shutdown_preserve_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import mcp_tool
+
+    _reset_mcp_state(mcp_tool)
+    before = seed_old_oauth_state(tmp_path, "oauth-parking")
+    created = []
+    second_attempt = threading.Event()
+
+    class _OAuthFailingServerTask(mcp_tool.MCPServerTask):
+        def __init__(self, name):
+            super().__init__(name)
+            self.attempts = 0
+            created.append(self)
+
+        async def _run_http(self, config):
+            del config
+            self.attempts += 1
+            if self.attempts == 1:
+                raise PermissionError("deterministic OAuth authentication failure")
+            second_attempt.set()
+            raise ConnectionError("deterministic transient reconnect failure")
+
+    monkeypatch.setattr(mcp_tool, "MCPServerTask", _OAuthFailingServerTask)
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 0)
+    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
+    monkeypatch.setattr(mcp_tool, "_is_auth_error", lambda exc: isinstance(exc, PermissionError))
+
+    try:
+        assert mcp_tool.register_mcp_servers({"oauth-parking": {"url": "https://mcp.invalid/mcp", "auth": "oauth", "connect_timeout": 5}}) == []
+        server = created[0]
+        assert server._task is not None and not server._task.done()
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
+
+        assert mcp_tool.reconnect_mcp_server("oauth-parking") is True
+        assert second_attempt.wait(timeout=5), "parked OAuth server did not retry"
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
+
+        mcp_tool.shutdown_mcp_servers()
+        assert server._task.done()
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
     finally:
         _cleanup_mcp_state(mcp_tool, created)
 

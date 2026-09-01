@@ -224,3 +224,22 @@ def test_turn_level_auto_appended_tool_media_emits_on_serve_path(
     assert len(events) == 1
     assert events[0][1]["path"] == str(f)
     assert events[0][1]["mime"] == "audio/wav"
+
+
+def test_emit_noop_without_live_transport(tmp_path):
+    """Routing-safety contract: no client transport → silent no-op.
+
+    emit_media_deliverable must return False for a session id that was never
+    registered (no transport to receive the frame) and must never raise into
+    the reply path. Guards the no-stdio-fallback rule from the module
+    docstring — the messaging gateway's stdout stays protocol-free.
+    """
+    from gateway.media_events import emit_media_deliverable
+
+    f = tmp_path / "no-transport.wav"
+    f.write_bytes(b"RIFF")
+
+    assert emit_media_deliverable("no-such-session-id", str(f), origin="gateway") is False
+    # Empty-arg legs: also no-ops, not errors.
+    assert emit_media_deliverable("", str(f), origin="gateway") is False
+    assert emit_media_deliverable("any-session", "", origin="gateway") is False

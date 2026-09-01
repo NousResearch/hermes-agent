@@ -14,8 +14,7 @@ import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { openFolderAsProject } from '@/store/projects'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $workspaceCwdOwner, sessionMatchesStoredId } from '@/store/session'
-import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -31,29 +30,8 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
-  const currentCwd = useStore($currentCwd).trim()
-  const selectedStoredSessionId = useStore($selectedStoredSessionId)
-  const workspaceCwdOwner = useStore($workspaceCwdOwner)
-  const focusedStoredSessionId = useStore($focusedStoredSessionId)
-  const focusedSessionState = useStore($focusedSessionState)
-  const sessions = useStore($sessions)
-
-  // When a tile tab is focused, use the focused tile's workspace cwd;
-  // otherwise fall back to the primary session's cwd.
-  const isTileFocused = Boolean(focusedStoredSessionId && focusedStoredSessionId !== selectedStoredSessionId)
-  const tileCwd =
-    isTileFocused && focusedStoredSessionId
-      ? (
-          focusedSessionState?.cwd ||
-          sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.cwd ||
-          ''
-        ).trim()
-      : ''
-
-  const targetCwd = isTileFocused ? tileCwd : currentCwd
-  const hasWorkspace = isTileFocused
-    ? Boolean(tileCwd)
-    : Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  const targetCwd = useStore($focusedWorkspaceCwd)
+  const hasWorkspace = Boolean(targetCwd)
 
   const {
     collapseAll,

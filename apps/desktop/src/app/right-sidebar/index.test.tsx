@@ -98,4 +98,32 @@ describe('RightSidebarPane', () => {
     fireEvent.click(refresh)
     await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo-tile'))
   })
+
+  it('keeps the focused tile workspace cwd even when clicking into the sidebar group', async () => {
+    $selectedStoredSessionId.set('main-session')
+    $workspaceCwdOwner.set('main-session')
+    setCurrentCwd('/repo-main')
+
+    $sessions.set([
+      { cwd: '/repo-tile', id: 'tile-session' } as any
+    ])
+    $sessionTiles.set([
+      { storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any
+    ])
+    $layoutTree.set({
+      id: 'grp-main',
+      type: 'group',
+      panes: ['workspace', 'session-tile:tile-session'],
+      active: 'session-tile:tile-session'
+    } as any)
+    // User clicks into the files sidebar group:
+    $activeTreeGroup.set('grp-files')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
+    readDir.mockClear()
+    fireEvent.click(refresh)
+    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo-tile'))
+  })
 })

@@ -22,7 +22,7 @@ import { atom, computed } from 'nanostores'
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
@@ -51,9 +51,11 @@ import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait
 import {
   $activeSessionId,
   $connection,
+  $currentCwd,
   $lastReadAtBySessionId,
   $selectedStoredSessionId,
   $sessions,
+  $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
   knownSessionOwner,
@@ -3021,8 +3023,29 @@ export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )
 
-export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
-  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
+export const $focusedStoredSessionId = computed(
+  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId],
+  (groupId, tree, selected) => {
+    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
+
+    if (active?.startsWith(TILE_PANE_PREFIX)) {
+      return active.slice(TILE_PANE_PREFIX.length)
+    }
+
+    // The interaction tracker can point at sidebar or tool CHROME (files,
+    // terminal, sessions list, bots roster) while a chat still holds the main
+    // zone's active tab. In both sessions and Bot Mode, the main zone's active
+    // tile answers so clicks in side chrome do not drop the on-screen session.
+    if (tree) {
+      const mainActive = findGroupOfPane(tree, 'workspace')?.active
+
+      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
+        return mainActive.slice(TILE_PANE_PREFIX.length)
+      }
+    }
+
+    return selected
+  }
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus
@@ -3050,6 +3073,36 @@ export const $focusedRuntimeId = computed(
 /** The focused session's state slice (undefined while unresolved/unbound). */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
   runtimeId ? states[runtimeId] : undefined
+)
+
+/** The workspace CWD of the currently focused session (the focused tile's cwd,
+ *  else the primary session's confirmed workspace cwd). */
+export const $focusedWorkspaceCwd = computed(
+  [
+    $focusedStoredSessionId,
+    $selectedStoredSessionId,
+    $focusedSessionState,
+    $sessions,
+    $currentCwd,
+    $workspaceCwdOwner
+  ],
+  (focusedStoredId, selectedStoredId, focusedSessionState, sessions: readonly SessionInfo[], currentCwd, workspaceCwdOwner) => {
+    const isTile = Boolean(focusedStoredId && focusedStoredId !== selectedStoredId)
+
+    if (isTile && focusedStoredId) {
+      const tileCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      return tileCwd
+    }
+
+    const hasPrimaryWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredId ?? null)
+
+    return hasPrimaryWorkspace ? currentCwd.trim() : ''
+  }
 )
 
 /** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to

@@ -395,19 +395,19 @@ def _ensure_codex_session(agent) -> None:
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> None:
+def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB.
 
     Bypasses conversation_loop's per-step _persist_session(); the flush dedups via _DB_PERSISTED_MARKER so
     only the new codex rows are written. The agent stays the sole persister (agent_persisted=True): a
     gateway re-write would re-INSERT the user turn."""
     if not turn.projected_messages:
-        return
+        return True
     from agent.message_metadata import append_message
     for projected_message in turn.projected_messages:
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
-        return
+        return True
     flush_ok = False
     try:
         flush_ok = agent._flush_messages_to_session_db(messages)
@@ -417,6 +417,7 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
         # Output already streamed and agent_persisted cannot flip to False: surface the gap loudly.
         logger.warning("codex app-server turn was delivered but could NOT be persisted to the session DB "
                        "(session=%s) — this turn will be missing after restart/resume", getattr(agent, "session_id", None))
+    return flush_ok is not False
 
 
 def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
@@ -469,7 +470,17 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
-    _persist_projected_messages(agent, turn, messages)
+    if not _persist_projected_messages(agent, turn, messages):
+        cause = getattr(agent, "_last_persistence_error_cause", None)
+        return _turn_result(
+            interrupt, messages, api_calls=1, completed=False,
+            error="Codex app-server turn could not be persisted to the session database.",
+            final_response="", failed=True,
+            failure_reason="session_persistence_failed:" + (cause or "unknown"),
+            # The inbound user row may already be durable. Never ask a gateway fallback to append
+            # the whole turn again.
+            agent_persisted=True,
+        )
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )

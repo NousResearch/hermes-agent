@@ -212,6 +212,7 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
     "chat_completions": true,
     "responses_api": true,
     "run_submission": true,
+    "runs_session_history": true,
     "run_status": true,
     "run_events_sse": true,
     "run_stop": true
@@ -220,6 +221,16 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
 ```
 
 在集成仪表板、浏览器 UI 或控制平面时使用此端点，以便它们能够发现当前运行的 Hermes 版本是否支持 runs、流式传输、取消和 session 连续性，而无需依赖私有 Python 内部实现。
+
+`runs_session_history` 表示：经过身份验证的 `POST /v1/runs` 在请求体中提供
+已有的 `session_id`，且请求没有提供优先级更高的历史来源时，会加载该会话的
+规范服务端历史；成功的轮次也会持久化回同一会话。因此，即使 API 服务器重启，
+后续 run 仍可继续该对话，客户端无需自行重建或重新发送完整记录。
+
+该标志描述 Hermes 规范 SessionDB 的加载/持久化契约。`codex_app_server`
+运行时还拥有独立的提供方原生线程；进程重启后从 SessionDB 恢复该线程尚不属于
+此能力的保证范围。需要模型可见重启连续性的客户端必须使用会消费所提供会话历史的
+运行时，或等待持久化 Codex `thread/resume` 集成。
 
 ### GET /health
 

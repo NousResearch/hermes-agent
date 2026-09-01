@@ -32,6 +32,90 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
     )
 
 
+def _create_blocked(conn, title="stuck card", assignee="orchestrator"):
+    return kb.create_task(
+        conn,
+        title=title,
+        assignee=assignee,
+        initial_status="blocked",
+    )
+
+
+def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
+    """Regression for the 2026-09-01 resume fan-out deadlock.
+
+    A blocked card (an operator split a stuck card into children) must fan
+    out into children that run IMMEDIATELY — children as parents of the
+    closing card, never children linked UNDER the blocked root. Split a
+    blocked card into 3 independent children and assert at least one is
+    immediately claimable (ready) and none waits on the root.
+    """
+    with kb.connect() as conn:
+        tid = _create_blocked(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+    children = [
+        {"title": "child A", "assignee": "researcher", "parents": []},
+        {"title": "child B", "assignee": "engineer", "parents": []},
+        {"title": "child C", "assignee": "default", "parents": []},
+    ]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None
+    assert len(child_ids) == 3
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        kids = [kb.get_task(conn, cid) for cid in child_ids]
+        # At least one child is immediately claimable.
+        assert any(k.status == "ready" for k in kids), (
+            "no child is immediately claimable — resume fan-out deadlocked"
+        )
+        # NO child may be parent-gated under the root (the 2026-09-01 bug).
+        gated_under_root = [
+            cid for cid in child_ids
+            if root.id in {p for p in kb.parent_ids(conn, cid)}
+        ]
+        assert gated_under_root == [], (
+            f"children {gated_under_root} gated under blocked root — deadlock"
+        )
+        # The root waits on the whole graph: it is a child of every child.
+        for cid in child_ids:
+            assert root.id in set(kb.child_ids(conn, cid))
+        # Root flipped to todo (gated, promote on children completion).
+        assert root.status == "todo"
+
+
+def test_decompose_all_triage_parked_children_refused(kanban_home):
+    """Creation-time readiness assertion: refuse a graph with no dispatchable
+    child. If every child parks in triage (decision-shaped / unknown
+    assignee), the root — now waiting on the whole graph — could never
+    promote, so the fan-out must be refused at creation time rather than
+    deadlock silently.
+    """
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+    children = [
+        {"title": "decision A", "assignee": "researcher", "triage": True, "parents": []},
+        {"title": "decision B", "assignee": "engineer", "triage": True, "parents": []},
+    ]
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="no immediately-dispatchable member"):
+            kb.decompose_triage_task(
+                conn,
+                tid,
+                root_assignee="orchestrator",
+                children=children,
+                author="decomposer",
+            )
+
+
 def test_decompose_creates_children_and_promotes_root(kanban_home):
     # No ``all_assignees_spawnable`` needed: the autouse assignee neutralizer
     # (root conftest) already patches profile_exists->True for kanban tests.
@@ -149,7 +233,15 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
     incident produced 12 'engineer' + 12 'orchestrator' junk children)."""
     with kb.connect() as conn:
         tid = _create_triage(conn)
-    children = [{"title": "build it", "assignee": "engineer", "parents": []}]
+    # A dispatchable sibling keeps the fan-out legal; the phantom child still
+    # parks in triage with the routing comment. (2026-09-01: a decomposition
+    # whose link set has NO dispatchable member is refused outright — see
+    # test_decompose_all_triage_parked_children_refused.) ``default`` is a
+    # real spawnable profile; ``engineer`` is phantom under real_assignees.
+    children = [
+        {"title": "build it", "assignee": "engineer", "parents": []},
+        {"title": "parallel real", "assignee": "default", "parents": []},
+    ]
     with kb.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn,

@@ -142,6 +142,23 @@ class TestReconcileOrphanedRunning:
 
         assert kbd.reconcile_orphaned_running(conn) == [tid]
 
+    def test_remote_claim_is_never_reconciled_from_local_pid(self, conn, monkeypatch):
+        """A local process cannot decide that a remote claim is orphaned.
+
+        The PID namespace is host-local, so even a dead-looking local PID is
+        not evidence that the remote owner stopped.  Requeueing here could
+        create two workers for one task.
+        """
+        tid = kb.create_task(conn, title="remote-claim", assignee="w")
+        _orphan_running(conn, tid, claim_lock="remote-host:123", worker_pid=123)
+        monkeypatch.setattr(kb, "_claim_is_host_local", lambda *args, **kwargs: False)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+        assert kb.reconcile_orphaned_running(conn) == []
+        assert conn.execute(
+            "SELECT status, claim_lock FROM tasks WHERE id=?", (tid,)
+        ).fetchone()["status"] == "running"
+
     def test_non_running_statuses_ignored(self, conn):
         for status in ("todo", "ready", "blocked", "done"):
             tid = kb.create_task(conn, title=f"s-{status}", assignee="w")

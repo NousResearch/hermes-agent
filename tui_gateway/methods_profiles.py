@@ -95,10 +95,13 @@ def _(rid, params: dict) -> dict:
 
         Exact-lookup semantics, deliberately different from the listing:
         hidden rows still resolve (canonical chats are always hidden),
-        compression lineages resolve to the live tip with the same resolver
-        ``session.resume`` uses, and denied internal sources (tool/kanban)
-        count as absent. The reported ``id`` stays the durable registry row
-        while ``resolved_id`` names the live tip. Best-effort: any failure
+        compression lineages resolve to the live tip via
+        ``get_compression_tip`` (not the generic resume walker, whose
+        unmarked-child fallback can select an ordinary child).
+        ``session.resume`` uses that same tip resolver when the target is
+        titled ``Bot Chat``. Denied internal sources (tool/kanban) count as
+        absent. The reported ``id`` stays the durable registry row while
+        ``resolved_id`` names the live tip. Best-effort: any failure
         degrades to None rather than failing the whole profiles.list call.
         """
         if db is None:
@@ -172,7 +175,7 @@ def _(rid, params: dict) -> dict:
                 return False
             tip = row
             try:
-                tip_id = db.resolve_resume_session_id(session_id) or session_id
+                tip_id = db.get_compression_tip(session_id) or session_id
                 if tip_id != session_id:
                     tip = db.get_session(tip_id) or row
             except Exception:

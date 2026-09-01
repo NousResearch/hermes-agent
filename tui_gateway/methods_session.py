@@ -560,10 +560,18 @@ def _(rid, params: dict) -> dict:
         # here also re-anchors the fast path below so a still-live rotated session
         # is reused (by its new key) instead of rebuilding a duplicate agent on the
         # stale parent. Skipped for lazy watch windows, which intentionally attach
-        # to the exact child branch they were opened on.
+        # to the exact child branch they were opened on. Bot Chat is a named
+        # registry row — stay on a proven compression edge so an unmarked
+        # side chat cannot steal the open (the title-lookup / profiles.list
+        # contract). Other sessions keep the legacy unmarked-child walker.
         if found and not is_truthy_value(params.get("lazy", False)):
             try:
-                tip = db.resolve_resume_session_id(target)
+                from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+                if (found.get("title") or "").strip() == BOT_CHAT_TITLE:
+                    tip = db.get_compression_tip(target) or target
+                else:
+                    tip = db.resolve_resume_session_id(target)
             except Exception:
                 tip = target
             if tip and tip != target:

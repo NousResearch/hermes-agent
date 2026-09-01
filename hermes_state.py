@@ -10679,7 +10679,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # the tip (== the row itself when uncompressed).
         tip = row
         try:
-            tip_id = self.resolve_resume_session_id(session_id) or session_id
+            tip_id = self.get_compression_tip(session_id) or session_id
             if tip_id != session_id:
                 tip = self.get_session(tip_id) or row
         except Exception:

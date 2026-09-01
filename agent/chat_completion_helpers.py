@@ -4309,7 +4309,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     extra = getattr(chunk, "model_extra", None)
                     if isinstance(extra, dict):
                         last_one = extra.get("lastOne")
-                if last_one is True and finish_reason is None:
+                # Integer/string-truthy sentinels included — relabelled
+                # upstreams have been seen sending 1 / "true".
+                if last_one in (True, 1, "true") and finish_reason is None:
                     finish_reason = "stop"
                 continue
 

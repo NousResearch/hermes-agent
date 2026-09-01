@@ -41,6 +41,7 @@ class SseDoneTracker:
     saw_malformed_event: bool = False
     interrupted: bool = False
     _buf: bytearray = field(default_factory=bytearray, repr=False)
+    _data_lines: list = field(default_factory=list, repr=False)
 
     def feed(self, chunk: bytes) -> None:
         """Observe a forwarded chunk (bytes are not modified)."""
@@ -68,10 +69,12 @@ class SseDoneTracker:
             or self.saw_malformed_event
         ):
             return False
-        # Flush any trailing line without a final newline (rare but valid).
+        # Flush any trailing line without a final newline (rare but valid),
+        # then dispatch a final event that never saw its blank-line boundary.
         if self._buf:
             self._consume_line(bytes(self._buf))
             self._buf.clear()
+        self._dispatch_event()
         if self.saw_done or self.saw_error_event or self.saw_malformed_event:
             return False
         return self.saw_terminal_finish or self.saw_last_one
@@ -80,9 +83,24 @@ class SseDoneTracker:
         # Strip CR from CRLF-delimited SSE.
         if line.endswith(b"\r"):
             line = line[:-1]
+        if not line:
+            # Blank line = SSE event boundary: dispatch accumulated data.
+            self._dispatch_event()
+            return
         if not line.startswith(b"data:"):
             return
-        payload = line[5:].strip()
+        # Per the SSE spec one event may span several consecutive ``data:``
+        # lines whose payloads are joined with "\n" at dispatch time.
+        # Parsing each line independently would misread a split JSON event
+        # as two malformed fragments.
+        self._data_lines.append(line[5:].strip())
+
+    def _dispatch_event(self) -> None:
+        if not self._data_lines:
+            return
+        payload = b"\n".join(self._data_lines)
+        self._data_lines = []
+        payload = payload.strip()
         if payload == b"[DONE]":
             self.saw_done = True
             return
@@ -103,7 +121,9 @@ class SseDoneTracker:
         if event.get("error") is not None:
             self.saw_error_event = True
             return
-        if event.get("lastOne") is True:
+        # Accept integer-truthy sentinels too — relabelled upstreams have
+        # been observed sending ``"lastOne": 1`` / ``"true"``.
+        if event.get("lastOne") in (True, 1, "true"):
             self.saw_last_one = True
         for choice in event.get("choices") or []:
             if not isinstance(choice, dict):

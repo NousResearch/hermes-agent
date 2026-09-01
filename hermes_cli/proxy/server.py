@@ -248,8 +248,11 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                         done_tracker.feed(chunk)
                     await resp.write(chunk)
             if done_tracker is not None and done_tracker.should_append_done():
-                await resp.write(DONE_SSE_FRAME)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+                try:
+                    await resp.write(DONE_SSE_FRAME)
+                except Exception as exc:  # client hung up at EOF — harmless
+                    logger.debug("proxy: DONE append skipped: %s", exc)
+        except (aiohttp.ClientError, asyncio.CancelledError, OSError) as exc:
             if done_tracker is not None:
                 done_tracker.mark_interrupted()
             logger.warning("proxy: streaming interrupted: %s", exc)

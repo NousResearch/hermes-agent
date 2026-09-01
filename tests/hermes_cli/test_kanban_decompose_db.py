@@ -92,12 +92,16 @@ def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
         assert root.status == "todo"
 
 
-def test_decompose_all_triage_parked_children_refused(kanban_home):
-    """Creation-time readiness assertion: refuse a graph with no dispatchable
-    child. If every child parks in triage (decision-shaped / unknown
-    assignee), the root — now waiting on the whole graph — could never
-    promote, so the fan-out must be refused at creation time rather than
-    deadlock silently.
+def test_decompose_all_triage_parked_children_is_pm_recoverable(kanban_home):
+    """An all-triage-parked fan-out is PM-recoverable, not a deadlock.
+
+    A fan-out whose children all park in triage (decision-shaped / unknown
+    assignee) is NOT refused: the root flips to ``todo`` and waits on the
+    graph, and the PM can accept the parked children to make the graph
+    runnable (``unblock_task``/``specify_triage_task``). The true cycle guard
+    is the sibling Kahn check earlier — an all-parked fan-out has a legal link
+    set. (Regression: e1d27f786d wrongly raised ValueError here and broke
+    test_list_triage_ids_excludes_auto_decomposer_created.)
     """
     with kb.connect() as conn:
         tid = _create_triage(conn)
@@ -106,14 +110,22 @@ def test_decompose_all_triage_parked_children_refused(kanban_home):
         {"title": "decision B", "assignee": "engineer", "triage": True, "parents": []},
     ]
     with kb.connect() as conn:
-        with pytest.raises(ValueError, match="no immediately-dispatchable member"):
-            kb.decompose_triage_task(
-                conn,
-                tid,
-                root_assignee="orchestrator",
-                children=children,
-                author="decomposer",
-            )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None
+    assert len(child_ids) == 2
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        kids = [kb.get_task(conn, cid) for cid in child_ids]
+    # Root flips to todo and waits on the (parked) graph.
+    assert root.status == "todo"
+    # The decision children stay parked in triage for PM acceptance.
+    assert all(k.status == "triage" for k in kids)
 
 
 def test_decompose_creates_children_and_promotes_root(kanban_home):

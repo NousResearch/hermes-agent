@@ -202,6 +202,9 @@ def test_default_spawn_bridges_process_local_provider_into_profile_worker(
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][provider_index + 1] == "ollama"
     assert captured["env"]["CUSTOM_BASE_URL"] == "http://127.0.0.1:11434/v1"
+    toolsets = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
+    assert "terminal" in toolsets
+    assert "code_execution" not in toolsets
 
 
 def test_default_spawn_honors_explicit_remote_pin_when_local_first_is_enabled(

@@ -675,6 +675,57 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
+def _migrate_to_52(results: Dict[str, Any], quiet: bool) -> None:
+    # 51 → 52: move custom-endpoint secrets out of config.yaml.
+    _c = _cfg()
+    config = _c.read_raw_config()
+    moved = 0
+
+    def migrate_entry(entry: Any, identity: str) -> None:
+        nonlocal moved
+        if not isinstance(entry, dict):
+            return
+        secret = str(entry.get("api_key") or "").strip()
+        if not secret or (secret.startswith("${") and secret.endswith("}")):
+            return
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        key_env = key_env or _c.custom_endpoint_key_env(identity)
+        _c.save_env_value(key_env, secret)
+        if (_c.get_env_value(key_env) or "").strip() != secret:
+            raise RuntimeError(f"failed to persist {key_env} to .env")
+        entry["key_env"] = key_env
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+        moved += 1
+
+    model = config.get("model")
+    if isinstance(model, dict):
+        base_url = str(model.get("base_url") or "").strip()
+        if base_url:
+            migrate_entry(model, base_url)
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for provider_id, entry in providers.items():
+            if isinstance(entry, dict) and (entry.get("base_url") or entry.get("api")):
+                migrate_entry(entry, str(provider_id))
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if isinstance(entry, dict) and entry.get("base_url"):
+                identity = str(entry.get("name") or entry.get("id") or entry["base_url"])
+                migrate_entry(entry, identity)
+
+    if moved:
+        _persist_migration(config)
+        results["config_added"].append(
+            f"moved {moved} custom-endpoint api_key value(s) to .env via key_env"
+        )
+        if not quiet:
+            print(f"  Moved {moved} custom endpoint API key(s) from config.yaml to .env")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -804,8 +855,6 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
         extra_guard=lambda raw: "ttl_minutes" not in raw)),
     (41, _migrate_to_41),
-    # 41 → 42: cron.model_drift_guard is gone. Unpinned jobs now run on their creation snapshot
-    # instead of failing closed when the global model changes, so the toggle has nothing to gate.
     (42, functools.partial(
         _rewrite_key, section="cron", key="model_drift_guard", new=None,
         match=lambda cur: cur is not None,
@@ -879,6 +928,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         section="agent", key="clarify_timeout", old=3600, new=90,
         added="agent.clarify_timeout=90",
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
+    # 53 → 54: move custom-endpoint secrets out of config.yaml (see _migrate_to_52).
+    (54, _migrate_to_52),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -890,7 +941,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52, 54})
 
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch

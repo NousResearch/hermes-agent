@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from hermes_cli.model_switch import ModelSwitchResult
+from hermes_cli.config import custom_endpoint_key_env, get_env_value, save_env_value
 
 # The dashboard's logger, as before the move: hermes_logging routes it to gui.log.
 logger = logging.getLogger("hermes_cli.web_server")
@@ -161,7 +162,9 @@ def validated_main_model_selection(
     return result
 
 
-def apply_main_model_assignment(model_cfg: Any, result: ModelSwitchResult, api_key: str = "") -> dict:
+def apply_main_model_assignment(
+    model_cfg: Any, result: ModelSwitchResult, api_key: str = "", key_env: str = ""
+) -> dict:
     """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
     (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
     the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
@@ -175,7 +178,12 @@ def apply_main_model_assignment(model_cfg: Any, result: ModelSwitchResult, api_k
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
     model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
-    if api_key.strip():
+    if key_env.strip():
+        model_cfg["key_env"] = key_env.strip()
+        drop_model_key(model_cfg, "api_key_env")
+        drop_model_key(model_cfg, "api_key")
+        drop_model_key(model_cfg, "api")
+    elif api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         drop_model_key(model_cfg, "api")
     remote_model_selection_guard(before, model_cfg)
@@ -195,3 +203,24 @@ def drop_model_key(model_cfg: dict, key: str) -> None:
         model_cfg.pop(key, None)
     else:
         model_cfg[key] = None
+
+
+def persist_custom_endpoint_secret(provider: str, base_url: str, api_key: str) -> str:
+    """Write a custom/local API key to ``.env``. Returns the ``key_env`` name.
+
+    Empty string means this assignment has no custom-endpoint secret to stash
+    (named providers, missing URL, or empty key). Raises if the ``.env`` write
+    cannot be verified — callers must not persist a ``key_env`` pointer to a
+    secret that is not actually on disk.
+    """
+    if provider.strip().lower() not in {"custom", "local"}:
+        return ""
+    if not base_url or not api_key.strip():
+        return ""
+    secret = api_key.strip()
+    env_var = custom_endpoint_key_env(base_url)
+    save_env_value(env_var, secret)
+    if (get_env_value(env_var) or "").strip() != secret:
+        raise RuntimeError(f"failed to persist {env_var} to .env")
+    return env_var
+

@@ -17,6 +17,7 @@ from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
+from hermes_cli.model_assignment import persist_custom_endpoint_secret
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -578,7 +579,7 @@ def _endpoint_known_to_config(cfg: dict, base_url: str) -> bool:
     return False
 
 
-def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
+def _register_custom_endpoint(base_url: str, api_key: str, model: str, *, key_env: str = "") -> None:
     """Register a named ``custom_providers`` entry for a custom/local endpoint (mirrors the
     ``hermes model`` custom flow) so the picker gets a proper ready row instead of a "needs
     setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment.
@@ -592,7 +593,7 @@ def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
-        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url))
+        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url), key_env=key_env)
     except Exception:
         _log.debug("custom_providers registration skipped", exc_info=True)
 
@@ -672,11 +673,15 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_lc = provider.strip().lower()
     endpoint_already_known = (
         provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
-    model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, api_key)
-    if not (explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)):
-        # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
-        # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
-        # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
+    assignment_key_env = persist_custom_endpoint_secret(provider, base_url, api_key)
+    if assignment_key_env:
+        api_key = ""
+    model_cfg = apply_main_model_assignment(
+        cfg.get("model", {}), result, api_key, assignment_key_env
+    )
+    if not assignment_key_env and not api_key and not (
+        explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)
+    ):
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
@@ -687,7 +692,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     with refusing_locked_omissions("model"):
         save_config(cfg)
     if new_provider in BARE_CUSTOM_SELECTORS and base_url and not endpoint_already_known:
-        _register_custom_endpoint(base_url, api_key, model)
+        _register_custom_endpoint(base_url, api_key, model, key_env=assignment_key_env)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
 

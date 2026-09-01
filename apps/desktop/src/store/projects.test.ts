@@ -1162,25 +1162,34 @@ describe('tombstone pruning', () => {
 })
 
 describe('followActiveSessionCwd pin lock', () => {
-  const treeNode = (
-    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label' | 'path'>
-  ): SidebarProjectTree => ({
-    repos: [],
-    sessionCount: 0,
-    ...over
-  })
+  const treeProjects = [
+    { id: 'p1', label: 'Project 1', path: '/work/proj1', repos: [], sessionCount: 0 },
+    { id: 'p2', label: 'Project 2', path: '/work/proj2', repos: [], sessionCount: 0 }
+  ]
 
   beforeEach(() => {
     window.localStorage.clear()
+    vi.clearAllMocks()
     $projectScope.set('p1')
-    $projectTree.set([
-      treeNode({ id: 'p1', label: 'Project 1', path: '/work/proj1' }),
-      treeNode({ id: 'p2', label: 'Project 2', path: '/work/proj2' })
-    ])
+    $projectTree.set(treeProjects as SidebarProjectTree[])
     $selectedStoredSessionId.set('sess-1')
     $sessions.set([{ id: 'sess-1', cwd: '/work/proj1' } as never])
     $pinnedSessionIds.set([])
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
     setSidebarAgentsGrouped(true)
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.tree') {
+        return { active_id: null, projects: treeProjects, scoped_session_ids: [] }
+      }
+
+      return { active_id: null, projects: [] }
+    })
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
   })
 
   afterEach(() => {
@@ -1189,6 +1198,8 @@ describe('followActiveSessionCwd pin lock', () => {
     $selectedStoredSessionId.set(null)
     $sessions.set([])
     $pinnedSessionIds.set([])
+    activeGateway.mockReturnValue(null as never)
+    gatewayAtom.set(null)
   })
 
   it('refuses to drill into another project when the conversation is pinned', () => {

@@ -14,6 +14,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
   haptic,
   host,
@@ -62,6 +65,18 @@ import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
+import {
+  $botPickAnchor,
+  $botPicked,
+  $botSections,
+  $draggingBots,
+  $renamingSection,
+  BOT_DRAG_MIME,
+  botDragPayload,
+  botSectionId,
+  createBotSection,
+  moveBotsToSection
+} from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
@@ -207,15 +222,92 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)
 
+  // MULTI-SELECT AND DRAG live on the row button itself: it already takes
+  // pointer events, so the click that opens the bot, the cmd/shift click that
+  // picks it, and the drag that files it are one element's gestures. A PLAIN
+  // click clears the selection, which is what every list on the platform does.
+  const rosterKey = botRosterKey(bot)
+  const picked = useValue($botPicked)
+  const isPicked = picked.includes(rosterKey)
+  const sections = useValue($botSections)
+  const currentSectionId = botSectionId(bot, allMeta)
+
+  const onRowClick = (event: React.MouseEvent) => {
+    // SHIFT-CLICK RANGE SELECT, anchored at the last plain or cmd-click, the
+    // way Finder and Mail anchor a range: a second shift-click grows or shrinks
+    // the SAME range instead of re-anchoring wherever the pointer happens to be.
+    if (event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+
+      // DOCUMENT ORDER, not roster order. The roster renders grouped into
+      // section blocks (and gateway sections above those), so two rows adjacent
+      // in the flat list can be pages apart on screen. The rendered rows are
+      // the only source that cannot disagree with what the user saw.
+      const keys = Array.from(
+        event.currentTarget.closest('[data-slot="bots-roster"]')?.querySelectorAll('[data-roster-key]') ?? []
+      ).map(node => String((node as HTMLElement).dataset.rosterKey || ''))
+
+      const anchorKey = $botPickAnchor.get()
+      const anchorIdx = anchorKey ? keys.indexOf(anchorKey) : -1
+      const targetIdx = keys.indexOf(rosterKey)
+
+      if (anchorIdx === -1 || targetIdx === -1) {
+        $botPicked.set([rosterKey])
+        $botPickAnchor.set(rosterKey)
+
+        return
+      }
+
+      const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx]
+
+      $botPicked.set(keys.slice(lo, hi + 1))
+
+      return
+    }
+
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      $botPicked.set(isPicked ? picked.filter(key => key !== rosterKey) : [...picked, rosterKey])
+      $botPickAnchor.set(rosterKey)
+
+      return
+    }
+
+    $botPicked.set([])
+    $botPickAnchor.set(rosterKey)
+    open()
+  }
+
+  // What a section action applies to: the multi-selection when this row is in
+  // it, otherwise just this row. Never a selection this row is not part of.
+  const targets = (): RosterRow[] =>
+    isPicked ? $lastRoster.get().filter(row => picked.includes(botRosterKey(row))) : [bot]
+
   const row = (
     <RowButton
       aria-label={rowTooltip}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
-        isActive && 'bg-(--ui-row-active-background)'
+        isActive && 'bg-(--ui-row-active-background)',
+        isPicked && 'bg-(--ui-row-active-background) ring-1 ring-(--ui-accent)/60'
       )}
-      onClick={open}
+      data-roster-key={rosterKey}
+      draggable
+      onClick={onRowClick}
+      onDragEnd={() => $draggingBots.set([])}
+      onDragStart={event => {
+        // Drag the whole multi-selection when this row is part of it — the
+        // same rule `targets()` uses for the section submenu, so the two
+        // gestures can never disagree about what "this" means.
+        const keys = isPicked && picked.length ? picked : [rosterKey]
+
+        event.dataTransfer.setData(BOT_DRAG_MIME, botDragPayload(keys))
+        event.dataTransfer.effectAllowed = 'move'
+        $draggingBots.set(keys)
+      }}
       onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
@@ -381,6 +473,50 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
         >
           {b.bot.newChatWith}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
+            this is a one-field write and no list anywhere has to be kept in
+            sync with it. */}
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            {isPicked && picked.length > 1 ? `Move ${picked.length} bots to…` : 'Move to section…'}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {sections.map(section => (
+              <ContextMenuItem
+                disabled={section.id === currentSectionId}
+                key={section.id}
+                onSelect={() => {
+                  moveBotsToSection(targets(), section.id)
+                  $botPicked.set([])
+                }}
+              >
+                {section.name}
+              </ContextMenuItem>
+            ))}
+            {sections.length ? <ContextMenuSeparator /> : null}
+            <ContextMenuItem
+              onSelect={() => {
+                const section = createBotSection('New section', targets())
+
+                $botPicked.set([])
+                $renamingSection.set(section.id)
+              }}
+            >
+              New section…
+            </ContextMenuItem>
+            {currentSectionId ? (
+              <ContextMenuItem
+                onSelect={() => {
+                  moveBotsToSection(targets(), null)
+                  $botPicked.set([])
+                }}
+              >
+                Unassigned
+              </ContextMenuItem>
+            ) : null}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         {isDefaultBot(bot) ? null : <ContextMenuSeparator />}
         {isDefaultBot(bot) ? null : (
           <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">

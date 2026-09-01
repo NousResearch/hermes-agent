@@ -1517,6 +1517,11 @@ export {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  // Submenus: Bot Mode files a bot into a user section from its row menu, and
+  // a flat list of every folder would swamp the items already there.
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 export { CopyButton } from '@/components/ui/copy-button'

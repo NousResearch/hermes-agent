@@ -7025,6 +7025,40 @@ def resolve_provider_client(
                 custom_key = build_command_token_provider(
                     custom_key_cmd, custom_entry.get("name") or provider
                 ) or custom_key
+            if not custom_key:
+                try:
+                    from agent.credential_pool import (
+                        custom_provider_pool_key_candidates,
+                        load_pool,
+                    )
+
+                    pool_name = (
+                        custom_entry.get("provider_key")
+                        or custom_entry.get("name")
+                        or provider
+                    )
+                    for pool_key in custom_provider_pool_key_candidates(
+                        custom_base, pool_name
+                    ):
+                        try:
+                            pool = load_pool(pool_key)
+                        except Exception:
+                            continue
+                        if not pool.has_credentials():
+                            continue
+                        pool_entry = pool.select()
+                        if pool_entry is None:
+                            continue
+                        pool_api_key = (
+                            getattr(pool_entry, "runtime_api_key", None)
+                            or getattr(pool_entry, "access_token", "")
+                            or ""
+                        )
+                        if str(pool_api_key).strip():
+                            custom_key = str(pool_api_key).strip()
+                            break
+                except Exception:
+                    pass
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

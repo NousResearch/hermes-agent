@@ -3682,6 +3682,26 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
+    def maybe_seed_preflight_display_tokens(self, preflight_tokens: int) -> None:
+        """Seed ``last_prompt_tokens`` from a rough preflight estimate, display-only.
+
+        Policy (co-located with the rest of the speculative-seed lifecycle —
+        see ``snapshot_preflight_display_tokens`` /
+        ``rollback_interrupted_preflight_display_tokens``): seed ONLY from
+        the 0 state ("no reading yet", #34282). Any non-zero value is
+        preserved — the -1 post-compression sentinel (#36718) AND any real
+        provider reading (#81481: the rough estimate intentionally
+        over-counts CJK / reasoning replay, 1.4-2.5x on heavy sessions, and
+        must never overwrite a real measurement).
+
+        Accepted trade-off: a provider reporting partial usage (e.g.
+        excluding cache-discounted tokens) pins the meter low until its next
+        report — preferred over estimator inflation.
+        """
+        _last = self.last_prompt_tokens
+        if _last == 0 and preflight_tokens > _last:
+            self.last_prompt_tokens = preflight_tokens
+
     def snapshot_preflight_display_tokens(self) -> int:
         """Capture the display token count before a speculative preflight seed."""
         return self.last_prompt_tokens

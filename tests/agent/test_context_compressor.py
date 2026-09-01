@@ -2451,46 +2451,39 @@ class TestLazyContextResolution:
 
 
 class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+    """Regression guards for the preflight token-display seed
+    (ContextCompressor.maybe_seed_preflight_display_tokens, called from
+    build_turn_context).
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Policy: seed ONLY from the 0 state ("no reading yet", #34282 — the seed
+    keeps the status bar live when a provider reports no usage). Any
+    non-zero value is preserved: the -1 post-compression sentinel (#36718 —
+    compress_context parks it while awaiting real usage, and the seed must
+    not clobber it) AND any positive real provider reading (#81481 — the
+    rough estimate intentionally over-counts CJK / reasoning replay, so it
+    must never overwrite a real measurement).
     """
-
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/turn_context.py build_turn_context.
-        _last = last_prompt_tokens
-        if _last == 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
 
     def test_sentinel_preserved_after_compression(self, compressor):
         compressor.last_prompt_tokens = -1
         # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+        compressor.maybe_seed_preflight_display_tokens(250_000)
+        assert compressor.last_prompt_tokens == -1
 
     def test_zero_state_still_seeded(self, compressor):
         # 0 means "no reading yet" — the seed keeps the status bar live when
         # providers report no usage.
         compressor.last_prompt_tokens = 0
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+        compressor.maybe_seed_preflight_display_tokens(50_000)
+        assert compressor.last_prompt_tokens == 50_000
 
     def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
         # Regression for the 492K-vs-685K display jump: a real provider
         # reading must never be replaced by the schema/reasoning-inflated
         # rough preflight estimate (#81481 class inflation).
         compressor.last_prompt_tokens = 492_000
-        result = self._seed(compressor.last_prompt_tokens, 685_344)
-        assert result == 492_000
-
-
+        compressor.maybe_seed_preflight_display_tokens(685_344)
+        assert compressor.last_prompt_tokens == 492_000
 
 class TestTurnPairPreservation:
     """Causal Coupling guard (#22523): compaction must never orphan a user turn.

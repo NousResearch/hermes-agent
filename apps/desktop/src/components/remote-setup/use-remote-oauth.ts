@@ -16,6 +16,16 @@ interface RemoteOAuthOptions {
   invalidateTest: () => void
   reportError: (err: unknown, title?: string, kind?: 'error' | 'warning') => void
   notify: (notice: NotificationInput) => void
+  /**
+   * Registry-draft identity for a sign-in that runs BEFORE the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads. Absent on the
+   * first-run/settings hosts, which have no draft identity.
+   */
+  oauthLoginIdentity?: () => { connectionId: null | string; label: string } | undefined
+  /** Reports the settled id a pre-save sign-in wrote the session for. */
+  onOAuthLoginSettled?: (connectionId: string) => void
 }
 
 export interface RemoteOAuth {
@@ -41,7 +51,9 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
     setOAuthConnected,
     invalidateTest,
     reportError,
-    notify
+    notify,
+    oauthLoginIdentity,
+    onOAuthLoginSettled
   } = options
 
   const [signingIn, setSigningIn] = useState<boolean>(false)
@@ -74,10 +86,21 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
         return
       }
 
-      const result = await window.hermesDesktop.oauthLoginConnectionConfig(url)
+      // Absent identity (first-run/settings hosts) keeps the legacy single-arg
+      // call; the registry host always supplies one for its draft.
+      const identity = oauthLoginIdentity?.()
+      const result = identity
+        ? await window.hermesDesktop.oauthLoginConnectionConfig(url, identity)
+        : await window.hermesDesktop.oauthLoginConnectionConfig(url)
 
       if (!current()) {
         return
+      }
+
+      // A pre-save sign-in settles the id the later save will reuse; the
+      // registry host pins it into the draft so both agree on the jar.
+      if (result.connectionId) {
+        onOAuthLoginSettled?.(result.connectionId)
       }
 
       setOAuthConnected(Boolean(result.connected))

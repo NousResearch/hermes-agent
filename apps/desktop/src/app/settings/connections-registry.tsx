@@ -240,7 +240,15 @@ export function ConnectionsRegistrySection() {
   const remote = useRemoteSetup({
     host: 'registry',
     enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
-    onNotice: notify
+    onNotice: notify,
+    // The registry draft can sign in BEFORE it is saved: the login carries
+    // the draft's identity so the main process settles the id the save will
+    // reuse and writes the session into that connection's own cookie jar.
+    // Pin the settled id into the draft so Save reuses it.
+    oauthLoginIdentity: () => ({ connectionId: editor?.id ?? null, label: editor?.label ?? '' }),
+    onOAuthLoginSettled: settledId => {
+      setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
+    }
   })
 
   const bridge = window.hermesDesktop?.connections

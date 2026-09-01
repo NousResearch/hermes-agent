@@ -166,6 +166,7 @@ import {
   backendScopePrefix,
   buildAgentRoster,
   connectionDialFieldsChanged,
+  connectionIdForPendingLogin,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -7241,9 +7242,10 @@ function getOauthSession() {
 // shared partition; see oauth-partition.ts for the full rules.
 const oauthSessionsByPartition = new Map()
 
-function resolveOauthPartitionForUrl(url) {
+function resolveOauthPartitionForUrl(url, { connectionId = '' } = {}) {
   try {
     return resolveOauthPartition(url, {
+      connectionId,
       registry: readDesktopConnectionsRegistry(),
       v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
     })
@@ -7253,8 +7255,8 @@ function resolveOauthPartitionForUrl(url) {
   }
 }
 
-function getOauthSessionForUrl(url) {
-  const partition = resolveOauthPartitionForUrl(url)
+function getOauthSessionForUrl(url, { connectionId = '' } = {}) {
+  const partition = resolveOauthPartitionForUrl(url, { connectionId })
 
   if (partition === OAUTH_SESSION_PARTITION) {
     return getOauthSession()
@@ -7329,8 +7331,8 @@ function warmOauthCookieStore(url?) {
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
 
-async function hasOauthSessionCookie(baseUrl) {
-  const sess = getOauthSessionForUrl(baseUrl)
+async function hasOauthSessionCookie(baseUrl, { connectionId = '' } = {}) {
+  const sess = getOauthSessionForUrl(baseUrl, { connectionId })
 
   if (!sess) {
     return false
@@ -7452,7 +7454,7 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false, background = false } = {}) {
+function openOauthLoginWindow(baseUrl, { silent = false, background = false, connectionId = '' } = {}) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -7460,7 +7462,7 @@ function openOauthLoginWindow(baseUrl, { silent = false, background = false } = 
       return
     }
 
-    const sess = getOauthSessionForUrl(baseUrl)
+    const sess = getOauthSessionForUrl(baseUrl, { connectionId })
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7513,7 +7515,7 @@ function openOauthLoginWindow(baseUrl, { silent = false, background = false } = 
         return
       }
 
-      if (await hasOauthSessionCookie(baseUrl)) {
+      if (await hasOauthSessionCookie(baseUrl, { connectionId })) {
         finish(null)
       }
     }
@@ -16283,7 +16285,7 @@ async function fetchJsonForBackend(
 }
 
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
+ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
   // for supported auth_flows and /api/auth/providers for provider capabilities:
   //   - all providers support password → always use the embedded login window
@@ -16298,6 +16300,25 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
   // Order login attempts without interrupting rotation of the existing session.
   const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
+
+  // A registry-editor sign-in can run BEFORE the draft connection is saved:
+  // settle the id the save will reuse (returned so the renderer pins it into
+  // the draft) so the login window writes its session cookies into the
+  // per-connection jar the saved connection will actually read — not the
+  // legacy shared jar an unmatched URL would fall back to, where the session
+  // is both unreadable by the new connection and able to evict a same-host
+  // primary's cookie (#92183 isolation hole). '' → URL-matched behavior.
+  let loginConnectionId = ''
+
+  try {
+    loginConnectionId = connectionIdForPendingLogin({
+      connectionId: rawOpts?.connectionId,
+      label: rawOpts?.label,
+      registry: readDesktopConnectionsRegistry()
+    })
+  } catch {
+    loginConnectionId = ''
+  }
 
   let statusBody: any = null
 
@@ -16350,18 +16371,23 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
       // startHermes() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
 
-      return { ok: true, baseUrl, connected: true }
+      return { ok: true, baseUrl, connected: true, connectionId: loginConnectionId || undefined }
     } catch (error) {
       rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
 
-      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: false,
+        connectionId: loginConnectionId || undefined
+      }
     }
   }
 
   // Legacy embedded-webview cookie flow.
-  await openOauthLoginWindow(baseUrl)
+  await openOauthLoginWindow(baseUrl, { connectionId: loginConnectionId })
 
-  const connected = await hasOauthSessionCookie(baseUrl)
+  const connected = await hasOauthSessionCookie(baseUrl, { connectionId: loginConnectionId })
 
   // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
   // window must leave it set, or the overlay's "Sign in" button starts
@@ -16376,7 +16402,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
     remoteReauthFailure = null
   }
 
-  return { ok: true, baseUrl, connected }
+  return { ok: true, baseUrl, connected, connectionId: loginConnectionId || undefined }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)

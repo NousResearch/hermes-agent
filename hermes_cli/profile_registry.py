@@ -101,11 +101,17 @@ def _check_graph(profiles: list[dict[str, Any]], root_name: str) -> None:
     known = set(names) | {root_name}
     parent_map = {p["name"]: p["parent"] for p in profiles}
 
-    # No self-parent; every named parent resolves; no cycles.
+    # C10: no self-parent; every named parent resolves; no cycles; single tree.
     for profile in profiles:
         name, parent = profile["name"], profile["parent"]
         if parent is None:
-            continue  # only the root may (and only leads should) have null parent
+            # C10: null parent permitted ONLY for the single explicit root
+            # model — a non-root profile with null parent is invalid.
+            raise RegistryError(
+                f"profile {name!r} has null parent; only the explicit root "
+                f"({root_name!r}) may stand alone — every profile must resolve "
+                "to root/known parent"
+            )
         if parent == name:
             raise RegistryError(f"profile {name!r} cannot be its own parent")
         if parent != root_name and parent not in set(names):

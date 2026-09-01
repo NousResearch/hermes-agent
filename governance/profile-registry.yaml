@@ -6,7 +6,7 @@ profiles:
   # Tier 1 — active gateway leads
   - name: kensei
     kind: lead
-    parent: null
+    parent: KENSEI
     lifecycle: active
     domains: [orchestration, crons, mcp, approvals]
     gateway_unit: hermes-gateway

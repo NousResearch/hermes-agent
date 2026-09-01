@@ -74,6 +74,32 @@ def test_same_explicit_provider_model_is_capped(kanban_with_profiles):
     ]
 
 
+@pytest.mark.parametrize("global_cap", [None, 4])
+def test_local_provider_model_uses_safe_default_cap(kanban_with_profiles, global_cap):
+    """A global remote-friendly cap must not fan out a local model."""
+    kb = kanban_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        first = _create_overridden(
+            kb, conn, "first", provider="ollama-launch", model="devstral-small-2:24b"
+        )
+        second = _create_overridden(
+            kb, conn, "second", provider="ollama-launch", model="devstral-small-2:24b"
+        )
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: os.getpid(),
+            dry_run=True,
+            max_in_progress_per_model=global_cap,
+        )
+
+    assert [task_id for task_id, _who, _workspace in result.spawned] == [first]
+    assert result.skipped_per_model_capped == [
+        (second, "ollama-launch", "devstral-small-2:24b", 1)
+    ]
+
+
 def test_per_model_override_tightens_below_the_global_cap(kanban_with_profiles):
     """live incident, 2026-08-28: a global max_in_progress_per_model that
     suits remote providers (no real concurrency limit) is unsafe for a

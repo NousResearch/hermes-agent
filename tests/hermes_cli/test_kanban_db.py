@@ -354,6 +354,24 @@ def test_rate_limit_exit_requeues_without_counting_failure(
 
 
 
+def test_provider_egress_error_parser_requires_known_signature(
+    tmp_path, monkeypatch,
+):
+    """Only the known blocked payload is promoted to terminal attention."""
+    import hermes_cli.kanban_db as _kb
+
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+
+    log_path.write_text("LLM egress blocked: base64_payload\n", encoding="utf-8")
+    assert _kb._provider_egress_error_text("task") == (
+        "provider egress blocked: LLM egress blocked: base64_payload"
+    )
+
+    log_path.write_text("LLM egress blocked: another_payload\n", encoding="utf-8")
+    assert _kb._provider_egress_error_text("task") is None
+
+
 def test_respawn_guard_defers_rate_limited_within_cooldown(
     kanban_home, monkeypatch,
 ):

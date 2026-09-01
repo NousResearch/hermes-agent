@@ -636,6 +636,42 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
+def test_gc_events_retains_unacknowledged_terminal_events(kanban_home):
+    """Retention must not outrun a subscriber that has not acknowledged."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="terminal notification")
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (tid,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'completed', '{}', 0)",
+            (tid,),
+        )
+        event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
+            "VALUES (?, 'telegram', 'lagging', '', 'u', 0, 0)",
+            (tid,),
+        )
+        conn.commit()
+
+        assert kb.gc_events(conn, older_than_seconds=0) == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE id=?", (event_id,)
+        ).fetchone()[0] == 1
+
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id=? "
+            "WHERE task_id=? AND chat_id='lagging'",
+            (event_id, tid),
+        )
+        conn.commit()
+        assert kb.gc_events(conn, older_than_seconds=0) == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE id=?", (event_id,)
+        ).fetchone()[0] == 0
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

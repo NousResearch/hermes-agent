@@ -1631,6 +1631,10 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Show the read-only developer context rail in the Ink TUI when the terminal
+  # is wide enough. It hides automatically on narrow terminals.
+  dev_context: true
+
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

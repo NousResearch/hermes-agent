@@ -1462,6 +1462,9 @@ DEFAULT_CONFIG = {
         # starts delegating, nudging the user toward the live spawn-tree
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
+        # Show the read-only developer context rail in the Ink TUI when the
+        # terminal is wide enough. The rail hides itself on narrow terminals.
+        "dev_context": True,
         "bell_on_complete": False,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of

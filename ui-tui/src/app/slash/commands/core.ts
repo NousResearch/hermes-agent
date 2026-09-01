@@ -149,6 +149,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ devContext: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'dev_context', value: next ? 'on' : 'off' }).catch(() => {})
       ctx.transcript.sys(`developer context: ${next ? 'on' : 'off'}`)
     }
   },

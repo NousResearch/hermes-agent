@@ -14778,6 +14778,22 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_compact", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "dev_context":
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        cur_b = d0.get("dev_context", True) is not False
+        if raw in {"", "toggle"}:
+            nv_b = not cur_b
+        elif raw in {"on", "true", "yes"}:
+            nv_b = True
+        elif raw in {"off", "false", "no"}:
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown dev_context value: {value}")
+        _write_config_key("display.dev_context", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
     if key == "battery":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()

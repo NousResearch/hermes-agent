@@ -160,6 +160,57 @@ describe('the catalog owns model curation', () => {
     expect(indexOf(/Deepseek V4 Flash/i)).toBeLessThan(indexOf(/Deepseek V4 Pro/i))
   })
 
+  it('uses the canonical xai-oauth identity emitted for the grok-oauth config alias', async () => {
+    setVisibleModels(
+      new Set([modelVisibilityKey('xai-oauth', 'grok-4.6'), modelVisibilityKey('anthropic', 'claude-opus-5')])
+    )
+    getGlobalModelOptions.mockResolvedValue({
+      preferred_models: [
+        { provider: 'xai-oauth', model: 'grok-4.6' },
+        { provider: 'anthropic', model: 'claude-opus-5' }
+      ],
+      providers: [
+        { models: ['claude-opus-5'], name: 'Anthropic', slug: 'anthropic' },
+        { models: ['grok-4.6'], name: 'xAI', slug: 'xai-oauth' }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Grok 4\.6/i)
+
+    const labels = screen.getAllByRole('menuitem').map(row => row.textContent ?? '')
+    const indexOf = (needle: RegExp) => labels.findIndex(label => needle.test(label))
+
+    expect(indexOf(/Grok 4\.6/i)).toBeLessThan(indexOf(/Opus 5/i))
+  })
+
+  it('ranks a collapsed family by its preferred fast-model member', async () => {
+    setVisibleModels(
+      new Set([modelVisibilityKey('alibaba', 'qwen3.8-max'), modelVisibilityKey('alibaba', 'deepseek-v4-pro')])
+    )
+    getGlobalModelOptions.mockResolvedValue({
+      preferred_models: [
+        { provider: 'alibaba', model: 'qwen3.8-max-fast' },
+        { provider: 'alibaba', model: 'deepseek-v4-pro' }
+      ],
+      providers: [
+        {
+          models: ['qwen3.8-max-fast', 'deepseek-v4-pro', 'qwen3.8-max'],
+          name: 'Alibaba',
+          slug: 'alibaba'
+        }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Qwen3\.8 Max/i)
+
+    const labels = screen.getAllByRole('menuitem').map(row => row.textContent ?? '')
+    const indexOf = (needle: RegExp) => labels.findIndex(label => needle.test(label))
+
+    expect(indexOf(/Qwen3\.8 Max/i)).toBeLessThan(indexOf(/Deepseek V4 Pro/i))
+  })
+
   it('offers Edit Models without the host wiring it up', async () => {
     renderMenu()
     await screen.findByText(/Gemini 3\.1 Pro/i)

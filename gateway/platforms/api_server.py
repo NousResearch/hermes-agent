@@ -65,6 +65,7 @@ _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
+    "runs_session_history": True,
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
@@ -2732,6 +2733,27 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
+
+    async def _conversation_history_for_existing_session(
+        self, session_id: str,
+    ) -> tuple[List[Dict[str, Any]], Optional["web.Response"]]:
+        """Load required canonical Runs history, failing before agent admission on uncertainty."""
+        try:
+            session, error = await self._get_existing_session_or_404(session_id)
+        except Exception as exc:
+            logger.warning("Failed to resolve session before run admission for %s: %s", session_id, exc)
+            return [], self._session_db_unavailable()
+        if error is not None:
+            return [], error
+        assert session is not None
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return [], self._session_db_unavailable()
+        try:
+            return await asyncio.to_thread(db.get_messages_as_conversation, session_id), None
+        except Exception as exc:
+            logger.warning("Failed to load required run history for %s: %s", session_id, exc)
+            return [], self._session_db_unavailable()
 
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":

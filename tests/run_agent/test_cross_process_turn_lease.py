@@ -127,6 +127,112 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     )
 
 
+def test_contended_lease_preserves_explicit_caller_history(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    setattr(agent, "_preserve_caller_history_on_lease_wait", True)
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["session_id"] = _agent.session_id
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    explicit = []
+
+    AIAgent.run_conversation(agent, "new message", conversation_history=explicit)
+
+    assert observed == {"history": explicit, "session_id": "compressed-tip"}
+    assert [event[0] for event in db.events] == ["acquire", "resolve", "release"]
+
+
+def test_server_history_reloads_after_immediate_lease_admission(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    setattr(agent, "_reload_durable_history_after_lease", True)
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["session_id"] = _agent.session_id
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "stale API preload"}],
+    )
+
+    assert observed == {
+        "history": [{"role": "user", "content": "durable latest"}],
+        "session_id": "compressed-tip",
+    }
+    assert [event[0] for event in db.events] == [
+        "acquire",
+        "resolve",
+        "reload",
+        "release",
+    ]
+
+
+def test_server_history_fails_if_session_is_deleted_before_lease_admission(
+    monkeypatch,
+):
+    db = _DB()
+    probes = iter(({"id": "stale-parent"}, None))
+    db.get_session = lambda session_id: next(probes)
+    agent = _agent_with_db(db)
+    setattr(agent, "_reload_durable_history_after_lease", True)
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("deleted canonical session must not reach model work")
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", must_not_run)
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "stale API preload"}],
+    )
+
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["error"] == "session_not_found:stale-parent"
+    assert [event[0] for event in db.events] == ["acquire", "release"]
+
+
+def test_server_history_fails_if_session_is_deleted_before_initial_probe(monkeypatch):
+    db = _DB(session_exists=False)
+    agent = _agent_with_db(db)
+    setattr(agent, "_reload_durable_history_after_lease", True)
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("deleted canonical session must not reach model work")
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", must_not_run)
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "stale API preload"}],
+    )
+
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["error"] == "session_not_found:stale-parent"
+    assert db.events == []
+
+
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()

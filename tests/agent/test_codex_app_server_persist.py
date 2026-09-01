@@ -77,6 +77,27 @@ def test_codex_success_flushes_and_reports_persisted():
     assert result["agent_persisted"] is True
 
 
+def test_codex_projected_message_flush_failure_is_not_completed():
+    agent = _make_agent(session_db=MagicMock())
+    agent._flush_messages_to_session_db.return_value = False
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert result["failure_reason"].startswith("session_persistence_failed:")
+    assert "could not be persisted" in result["error"]
+    assert isinstance(result["messages"][-1]["timestamp"], float)
+    # With the agent as sole persister, the gateway must SKIP its DB write.
+    assert result["agent_persisted"] is True
+
+
 def test_codex_user_interrupt_is_reported_and_cleared():
     agent = _make_agent(session_db=None)
     turn = _make_turn()

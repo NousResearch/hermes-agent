@@ -250,6 +250,7 @@ Returns a machine-readable description of the API server's stable surface for ex
     "chat_completions": true,
     "responses_api": true,
     "run_submission": true,
+    "runs_session_history": true,
     "run_status": true,
     "run_events_sse": true,
     "run_stop": true
@@ -258,6 +259,20 @@ Returns a machine-readable description of the API server's stable surface for ex
 ```
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
+
+`runs_session_history` means that an authenticated `POST /v1/runs` with an
+existing body `session_id` loads that session's canonical server-side history
+when the request supplies no stronger history source, and a successful turn is
+persisted back to the same session. A later run can therefore continue the
+conversation after an API-server restart without the client reconstructing or
+resending the transcript.
+
+This flag describes Hermes's canonical SessionDB load/persist contract. The
+`codex_app_server` runtime also owns a separate provider-native thread; restoring
+that provider thread from SessionDB after a process restart is not yet covered
+by this capability. Clients that require model-visible restart continuity must
+use a runtime that consumes the supplied conversation history, or wait for
+durable Codex `thread/resume` integration.
 
 ## Browser-extension control
 

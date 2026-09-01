@@ -19,7 +19,7 @@ import {
   RowButton,
   useValue
 } from '@hermes/plugin-sdk'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { $botSections, $renamingSection, renameBotSection, setBotSectionIcon } from './user-sections'
 
@@ -48,11 +48,19 @@ export function UserSectionHeader({
   const showIcon = useValue($botSections).find(section => section.id === id)?.icon !== false
   const renaming = Boolean(id) && renamingId === id
   const [draft, setDraft] = useState(name)
+  // Escape must CANCEL. Closing the field unmounts the input, and an unmount
+  // can still fire its onBlur — which used to commit the draft the user had
+  // just asked to throw away. Enter goes through blur too, so the commit runs
+  // once whichever way the field closes.
+  const cancelled = useRef(false)
 
   const commit = () => {
+    const wasCancelled = cancelled.current
+
+    cancelled.current = false
     $renamingSection.set(null)
 
-    if (id && draft.trim() && draft.trim() !== name) {
+    if (!wasCancelled && id && draft.trim() && draft.trim() !== name) {
       renameBotSection(id, draft)
     }
   }
@@ -91,11 +99,14 @@ export function UserSectionHeader({
           onChange={event => setDraft(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter') {
-              commit()
+              // Blur commits; calling commit() here as well ran it twice.
+              event.currentTarget.blur()
             }
 
             if (event.key === 'Escape') {
-              $renamingSection.set(null)
+              cancelled.current = true
+              setDraft(name)
+              event.currentTarget.blur()
             }
           }}
           value={draft}

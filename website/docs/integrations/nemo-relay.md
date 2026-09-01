@@ -52,7 +52,7 @@ flowchart LR
 
 [Live middleware](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/middleware#what-middleware-is) can inspect, block, or change a call before Hermes returns it to the user. [Observability sanitizers](https://docs.nvidia.com/nemo/relay/v0.8.2/reference/event-sanitizers#sanitizer-surfaces) change only the copied event sent to [subscribers and exporters](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/subscribers#what-subscribers-are); they do not change the provider or tool payload.
 
-Relay exporters and [runtime plugins](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/plugins#what-plugins-can-register) are inactive by default. Hermes does not start Relay plugins or send Relay data to a remote service until you select a Relay [`plugins.toml` configuration file](https://docs.nvidia.com/nemo/relay/v0.8.2/configure-plugins/plugin-configuration-files#file-shape). The optional [shared metrics](#shared-metrics-are-separate) setting has its own consent and data boundary.
+Relay exporters and [runtime plugins](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/plugins#what-plugins-can-register) are inactive by default. To enable them, you must create a Relay [`plugins.toml` configuration file](https://docs.nvidia.com/nemo/relay/v0.8.2/configure-plugins/plugin-configuration-files#file-shape), add the components or plugins you want, and tell Hermes to use that file before it starts. Hermes does not create or select the file for you. The optional [shared metrics](#shared-metrics-are-separate) setting has its own consent and data boundary.
 
 ## Prerequisites
 

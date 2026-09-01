@@ -105,6 +105,7 @@ describe('PreviewBrowserBar', () => {
 
   it('flushes stacked comments from the bar without implying a send on save', () => {
     const onFlushComments = vi.fn()
+
     const rendered = render(
       <PreviewBrowserBar {...baseProps} commentCount={2} onFlushComments={onFlushComments} onToggleAnnotate={vi.fn()} />
     )

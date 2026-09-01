@@ -46,10 +46,12 @@ export function placeAnnotateCard({
   const pinRight = rect.x + ANNOTATE_MARKER_SIZE / 2
   const preferRight = pinRight + GAP
   const preferLeft = rect.x - ANNOTATE_MARKER_SIZE / 2 - GAP - width
+
   const left =
     preferRight + width + PAD <= paneWidth || preferLeft < PAD
       ? Math.min(Math.max(PAD, preferRight), maxLeft)
       : Math.min(Math.max(PAD, preferLeft), maxLeft)
+
   const top = Math.min(Math.max(PAD, rect.y - ANNOTATE_CARD_HEIGHT / 2), maxTop)
 
   return { left, top }

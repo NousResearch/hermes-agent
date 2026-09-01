@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { flushAnnotateStack } from './flush'
 import { compactIdentity } from './identity'
 import { annotateFlushPrompt, packageAnnotatePin, packageAnnotateStack } from './pack'
-import { addAnnotatePin, emptyAnnotateStack, type AnnotatePin } from './stack'
+import { addAnnotatePin, type AnnotatePin, emptyAnnotateStack } from './stack'
 
 const png =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -31,6 +31,7 @@ function pin(partial: Partial<AnnotatePin> = {}): AnnotatePin {
 describe('packageAnnotatePin', () => {
   it('describes text in a generic container without exposing DOM and style internals', () => {
     const text = 'גם בקיבוץ חולית הקטן יש ילד שעושה את הצעד הראשון במערכת החינוך'
+
     const packed = packageAnnotatePin(
       pin({
         identity: {

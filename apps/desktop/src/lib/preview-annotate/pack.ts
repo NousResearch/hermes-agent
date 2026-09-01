@@ -1,4 +1,4 @@
-import { formatIdentityLine, type CompactIdentity } from './identity'
+import { type CompactIdentity, formatIdentityLine } from './identity'
 import type { AnnotatePin } from './stack'
 
 export interface ComposerReadyAnnotation {
@@ -20,6 +20,7 @@ function identityBlock(pin: AnnotatePin): string {
 export function packageAnnotatePin(pin: AnnotatePin): ComposerReadyAnnotation {
   const target = identityBlock(pin)
   const note = pin.note.trim()
+
   const prompt = [
     `Comment ${pin.number}`,
     `Target: ${target}`,
@@ -45,6 +46,7 @@ export function packageAnnotateStack(pins: readonly AnnotatePin[]): ComposerRead
 export function annotateFlushPrompt(items: readonly ComposerReadyAnnotation[], pageUrl?: string): string {
   const where = pageUrl ? ` on ${pageUrl}` : ''
   const count = items.length
+
   const header =
     count === 1
       ? `I left a comment${where} in the in-app browser. Address it and keep the scope narrow.`

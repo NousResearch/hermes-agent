@@ -15,7 +15,6 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
-import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   addAnnotatePin,
   beginAnnotateMode,
@@ -26,6 +25,7 @@ import {
   endAnnotateMode,
   flushAnnotateStack
 } from '@/lib/preview-annotate'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -47,11 +47,11 @@ import {
   captureAnnotateCrop,
   hideAnnotateDraft,
   installAnnotateOverlay,
+  type PreviewAnnotateGuest,
   showAnnotateDraft,
   syncAnnotatePins,
   teardownAnnotateOverlay,
-  waitAnnotateEvent,
-  type PreviewAnnotateGuest
+  waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
@@ -418,6 +418,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         const viewport = (await bindPreviewExecuteJavaScript(webview)(
           '({ width: window.innerWidth, height: window.innerHeight })'
         )) as { height: number; width: number }
+
         const dataUrl = await window.hermesDesktop.capturePreview?.({ rect, viewport, webContentsId })
 
         if (!dataUrl) {
@@ -442,24 +443,34 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     setAnnotate(endAnnotateMode)
   }, [annotateGuest])
 
+  // Not an atom mirror: the ref records the last conversation the annotate
+  // stack was reset for, so the reset runs once per switch. Extracted into a
+  // callback so the effect body carries no `.current` writes (lint contract).
+  const resetAnnotateForConversation = useCallback(
+    (sessionId: typeof selectedStoredSessionId) => {
+      annotateConversationRef.current = sessionId
+      annotateLoopRef.current += 1
+      setDraftNote('')
+      setAnnotate(emptyAnnotateSession())
+
+      const guest = annotateGuest()
+
+      if (guest) {
+        void teardownAnnotateOverlay(guest).catch(() => undefined)
+      }
+    },
+    [annotateGuest]
+  )
+
   useEffect(() => {
-    if (annotateConversationRef.current === selectedStoredSessionId) {
-      return
+    if (annotateConversationRef.current !== selectedStoredSessionId) {
+      resetAnnotateForConversation(selectedStoredSessionId)
     }
-
-    annotateConversationRef.current = selectedStoredSessionId
-    annotateLoopRef.current += 1
-    setDraftNote('')
-    setAnnotate(emptyAnnotateSession())
-
-    const guest = annotateGuest()
-    if (guest) {
-      void teardownAnnotateOverlay(guest).catch(() => undefined)
-    }
-  }, [annotateGuest, selectedStoredSessionId])
+  }, [resetAnnotateForConversation, selectedStoredSessionId])
 
   const saveAnnotateDraft = useCallback(async () => {
     const session = annotateRef.current
+
     if (!session.draft) {
       return
     }
@@ -570,6 +581,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
       if (event.type === 'end') {
         await stopAnnotate()
+
         break
       }
 
@@ -577,6 +589,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         setAnnotate(session =>
           session.draft ? { ...session, draft: { ...session.draft, rect: event.rect } } : session
         )
+
         continue
       }
 

@@ -38,6 +38,7 @@ describe('PreviewAnnotateCard', () => {
     const onSave = vi.fn()
     const onCancel = vi.fn()
     const onChange = vi.fn()
+
     const rendered = render(
       <PreviewAnnotateCard
         left={24}

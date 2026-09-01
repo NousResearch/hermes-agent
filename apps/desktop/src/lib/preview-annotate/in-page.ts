@@ -58,6 +58,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   const fill = 'rgba(47, 128, 237, 0.14)'
   const markerSize = 22
   const stroke = '2px'
+
   const cssKeys = [
     'color',
     'background-color',
@@ -184,6 +185,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
 
       if (node.id) {
         parts.unshift(`#${cssEscape(node.id)}`)
+
         break
       }
 
@@ -194,6 +196,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
         .slice(0, 2)
         .map(name => `.${cssEscape(name)}`)
         .join('')
+
       let sel = tag + cls
       const parent: Element | null = node.parentElement
 
@@ -207,6 +210,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
 
       parts.unshift(sel)
       node = parent
+
       if (node && (node === doc.documentElement || tag === 'body')) {
         break
       }
@@ -276,9 +280,11 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   const relocate = () => {
     for (let i = 0; i < livePins.length; i++) {
       const pin = livePins[i]
+
       if (pin.el && pin.el.isConnected) {
         pin.page = toPage(box(pin.el))
       }
+
       place(pin.wrap, viewOf(pin))
     }
 
@@ -286,9 +292,11 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       if (liveDraft.el && liveDraft.el.isConnected) {
         liveDraft.page = toPage(box(liveDraft.el))
       }
+
       const rect = viewOf(liveDraft)
       place(draftBox, rect)
       const key = [rect.x, rect.y, rect.width, rect.height].join(',')
+
       if (key !== lastDraftKey) {
         lastDraftKey = key
         emit({ rect, type: 'reposition' })
@@ -304,6 +312,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     }
 
     relocate()
+
     if (win) {
       raf = win.requestAnimationFrame(loop)
     }
@@ -487,6 +496,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
         x: Math.min(start.x, event.clientX),
         y: Math.min(start.y, event.clientY)
       }
+
       liveDraft = { el: null, page: toPage(rect) }
       lastDraftKey = ''
       emit({ rect, type: 'pick-area' })
@@ -532,6 +542,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       root.scrollTop += event.deltaY
       root.scrollLeft += event.deltaX
     }
+
     relocate()
   }
 
@@ -570,6 +581,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     doc.removeEventListener('scroll', relocate, true)
     win?.visualViewport?.removeEventListener('scroll', relocate)
     win?.visualViewport?.removeEventListener('resize', relocate)
+
     if (win && raf) {
       win.cancelAnimationFrame(raf)
       raf = 0
@@ -634,15 +646,18 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     draftBox.replaceChildren(makeMarker(number))
     style(draftBox, { display: 'block' })
     place(draftBox, liveDraft.el && liveDraft.el.isConnected ? box(liveDraft.el) : viewOf(liveDraft))
+
     if (hoverBox) {
       style(hoverBox, { display: 'none' })
     }
+
     ensureLoop()
   }
 
   const hideDraft = () => {
     liveDraft = null
     lastDraftKey = ''
+
     if (draftBox) {
       style(draftBox, { display: 'none' })
     }

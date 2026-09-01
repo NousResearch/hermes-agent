@@ -198,12 +198,14 @@ describe('PreviewPane console state', () => {
     const selectedCrop = 'data:image/png;base64,c2VsZWN0ZWQ='
     const scrolledCrop = 'data:image/png;base64,ZGlmZmVyZW50LXZpc2libGU='
     const savedRect = { height: 20, width: 40, x: 10, y: 20 }
+
     const attached = new Promise<Blob>(resolve => {
       const unsubscribe = onComposerAttachImagesRequest(({ blobs }) => {
         unsubscribe()
         resolve(blobs[0]!)
       })
     })
+
     const previousDesktop = window.hermesDesktop
     let captureCount = 0
 

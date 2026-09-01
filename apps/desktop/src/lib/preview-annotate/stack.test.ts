@@ -2,15 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import {
   addAnnotatePin,
+  type AnnotatePinDraft,
   beginAnnotateMode,
-  clearAnnotateStack,
   clearAnnotatePins,
+  clearAnnotateStack,
   emptyAnnotateSession,
   emptyAnnotateStack,
   endAnnotateMode,
   removeAnnotatePin,
-  updateAnnotatePinNote,
-  type AnnotatePinDraft
+  updateAnnotatePinNote
 } from './stack'
 
 const png = 'data:image/png;base64,AAAA'

@@ -20,6 +20,7 @@ export interface CompactIdentity {
 const MAX_TEXT = 80
 const MAX_SELECTOR = 180
 const MAX_CSS_VALUE = 80
+
 const SEMANTIC_TAGS = new Set([
   'a',
   'button',

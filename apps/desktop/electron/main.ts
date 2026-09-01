@@ -31,7 +31,6 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { capturePreviewContents } from './preview-capture'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -282,6 +281,7 @@ import { selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -5866,14 +5866,17 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   await fs.promises.mkdir(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
   const random = crypto.randomBytes(3).toString('hex')
+
   const baseName = String(name || '')
     .split(/[\\/]/)
     .pop()
     ?.replace(/\.[^.]+$/, '')
+
   const safeName = (baseName || '')
     .replace(/[^\p{L}\p{N}._-]+/gu, '_')
     .replace(/^[._-]+|[._-]+$/g, '')
     .slice(0, 80)
+
   const fileName = safeName ? `${safeName}_${random}${safeExt}` : `composer_${stamp}_${random}${safeExt}`
   const filePath = path.join(dir, fileName)
   await fs.promises.writeFile(filePath, buffer)

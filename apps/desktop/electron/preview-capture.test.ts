@@ -26,6 +26,7 @@ test('mapViewportRectToImage scales CSS pixels onto a DPR bitmap and clamps', ()
 
 test('capturePreviewContents captures the visible page then crops in bitmap space', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+
   const dataUrl = await capturePreviewContents(
     {
       capturePage: async rect => {
@@ -55,6 +56,7 @@ test('capturePreviewContents captures the visible page then crops in bitmap spac
 
 test('capturePreviewContents keeps the visible page when the CSS rect misses the bitmap', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+
   const dataUrl = await capturePreviewContents(
     {
       capturePage: async () => ({

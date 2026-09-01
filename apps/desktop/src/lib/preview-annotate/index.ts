@@ -1,23 +1,30 @@
-export { compactIdentity, formatIdentityLine, type CompactIdentity, type ElementSnapshot } from './identity'
-export { flushAnnotateStack, type AnnotateFlushPorts, type AnnotateFlushResult } from './flush'
+export { type AnnotateFlushPorts, type AnnotateFlushResult, flushAnnotateStack } from './flush'
+export { compactIdentity, type CompactIdentity, type ElementSnapshot, formatIdentityLine } from './identity'
 export {
-  annotateInPage,
-  annotateInPageSource,
   ANNOTATE_HOST_TAG,
+  annotateInPage,
   type AnnotateInPage,
+  annotateInPageSource,
   type AnnotatePageEvent,
   type AnnotatePinChrome
 } from './in-page'
 export {
   annotateFlushPrompt,
+  type ComposerReadyAnnotation,
   dataUrlToBlob,
   dataUrlToFile,
   packageAnnotatePin,
-  packageAnnotateStack,
-  type ComposerReadyAnnotation
+  packageAnnotateStack
 } from './pack'
 export {
   addAnnotatePin,
+  type AnnotateIdentity,
+  type AnnotatePin,
+  type AnnotatePinDraft,
+  type AnnotatePinKind,
+  type AnnotateRect,
+  type AnnotateSession,
+  type AnnotateStack,
   beginAnnotateMode,
   clearAnnotatePins,
   clearAnnotateStack,
@@ -25,14 +32,7 @@ export {
   emptyAnnotateStack,
   endAnnotateMode,
   removeAnnotatePin,
-  updateAnnotatePinNote,
-  type AnnotateIdentity,
-  type AnnotatePin,
-  type AnnotatePinDraft,
-  type AnnotatePinKind,
-  type AnnotateRect,
-  type AnnotateSession,
-  type AnnotateStack
+  updateAnnotatePinNote
 } from './stack'
 export {
   ANNOTATE_BLUE,

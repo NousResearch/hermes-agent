@@ -135,6 +135,7 @@ describe('annotateInPage overlay', () => {
     const event = await pending
 
     expect(event.type).toBe('pick-element')
+
     if (event.type === 'pick-element') {
       expect(event.identity.tag).toBe('button')
       expect(event.identity.selector).toContain('go')

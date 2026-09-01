@@ -4,8 +4,8 @@
  */
 
 import {
-  annotateInPageSource,
   ANNOTATE_CROP_PAD,
+  annotateInPageSource,
   type AnnotatePageEvent,
   type AnnotatePinChrome
 } from '@/lib/preview-annotate'

@@ -2342,6 +2342,17 @@ def _emit_compression_auth_hint(agent: Any) -> None:
         if _pre_dispatch
         else "⚠ Compression auxiliary endpoint could not be reached "
     )
+    # Sanitize at the SINK, regardless of which producer filled _aux_base.
+    # The route_callback and config-layer captures strip the query at their
+    # sources, but the no-route/no-explicit-aux fallback above reads
+    # compressor.base_url (the MAIN model's URL) raw — and some proxies carry
+    # credentials as ?key=... (#72636 review, defect 2). A user-facing
+    # diagnostic must never be one forgetful producer away from leaking one.
+    try:
+        from agent.auxiliary_client import _extract_url_query_params
+        _aux_base, _ = _extract_url_query_params(_aux_base)
+    except Exception:
+        _aux_base = str(_aux_base).split("?", 1)[0]
     agent._emit_warning(
         f"{_headline}"
         f"({_guidance}). "

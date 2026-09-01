@@ -279,7 +279,6 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { canAdmitLocalBackend, isUnlimitedPoolCapacity, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
-import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
@@ -291,6 +290,7 @@ import {
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { createProductionPermitController } from './production-permit'
+import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,

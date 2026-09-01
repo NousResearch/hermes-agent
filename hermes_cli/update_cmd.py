@@ -8366,8 +8366,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if scripts_dir is not None:
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
-                print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                sys.exit(2)
+                # Same #37039 exception as the gate above: abort only on
+                # instances not positively identified as a gateway runtime.
+                # Gateways are paused (and resumed post-update) a few lines
+                # below; aborting here would blame PIDs the user need not
+                # kill and block an otherwise safe update.
+                non_gateway = _m()._filter_non_gateway_concurrent_instances(
+                    concurrent
+                )
+                if non_gateway:
+                    print(
+                        _format_concurrent_instances_message(
+                            non_gateway, scripts_dir
+                        )
+                    )
+                    sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.

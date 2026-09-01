@@ -133,7 +133,7 @@ curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.0
 
 获取论文元数据后，生成 BibTeX 条目：
 
-&#123;% raw %&#125;
+{% raw %}
 ```bash
 curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python3 -c "
 import sys, xml.etree.ElementTree as ET
@@ -148,7 +148,7 @@ raw_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
 cat = entry.find('arxiv:primary_category', ns)
 primary = cat.get('term') if cat is not None else 'cs.LG'
 last_name = entry.find('a:author', ns).find('a:name', ns).text.split()[-1]
-print(f'@article{{{last_name}{year}_{raw_id.replace(\".\", \"\")},')
+print(f'@article{{{last_name}{year}_{raw_id.replace(".", "")},')
 print(f'  title     = {{{title}}},')
 print(f'  author    = {{{authors}}},')
 print(f'  year      = {{{year}}},')
@@ -159,7 +159,7 @@ print(f'  url       = {{https://arxiv.org/abs/{raw_id}}}')
 print('}')
 "
 ```
-&#123;% endraw %&#125;
+{% endraw %}
 
 ## 阅读论文内容
 

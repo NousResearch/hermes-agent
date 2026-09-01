@@ -1,6 +1,6 @@
 ---
 name: systematic-debugging
-description: "4-phase root cause debugging: understand bugs before fixing." Use when working with systematic debugging.
+description: Debug non-trivial bugs with a 4-phase root-cause process.
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
-    related_skills: [test-driven-development, writing-plans, subagent-driven-development]
+    related_skills: [test-driven-development, requesting-code-review, subagent-driven-development]
 ---
 
 ## Use this skill

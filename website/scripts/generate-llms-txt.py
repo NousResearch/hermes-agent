@@ -17,8 +17,8 @@ use, web search, and 22 messaging platforms were absent from the index every
 LLM reads to learn what Hermes does.
 
 Both publish at:
-  https://hermes-agent.nousresearch.com/docs/llms.txt
-  https://hermes-agent.nousresearch.com/docs/llms-full.txt
+  https://recursiveintell.github.io/hermes-agent/docs/llms.txt
+  https://recursiveintell.github.io/hermes-agent/docs/llms-full.txt
 
 The `/docs/` prefix is not a mistake — Docusaurus serves `website/static/`
 at the `docs/` base path. Clients and IDE plugins that probe the classic

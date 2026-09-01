@@ -1,6 +1,6 @@
 ---
 name: claude-design
-description: Use when designing a one-off HTML landing page, prototype, deck, or visual study; turn a brief into a deliberate, verified artifact.
+description: Design one-off HTML pages, prototypes, or decks.
 version: 1.1.1
 author: BadTechBandit
 license: MIT

@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { expect, test } from 'vitest'
 
 import {
   DEFAULT_PROFILE_BACKEND_POOL_MAX,
@@ -26,7 +26,9 @@ test('settings round-trip preserves ten and zero without truthiness fallback', (
   const write = (filePath: string, content: string) => files.set(filePath, content)
   const rename = (from: string, to: string) => {
     const content = files.get(from)
-    if (content === undefined) throw new Error('temporary file missing')
+    if (content === undefined) {
+      throw new Error('temporary file missing')
+    }
     files.delete(from)
     files.set(to, content)
   }

@@ -1231,12 +1231,12 @@ def verify_archive(
         if actual != manifest["payload_files"]:
             raise RuntimeError("archive payload diverges from candidate core manifest")
         if (
-            json.loads((extracted / "candidate-core-manifest.json").read_text())
+            json.loads((extracted / "candidate-core-manifest.json").read_text(encoding="utf-8"))
             != manifest
         ):
             raise RuntimeError("archive core manifest mismatch")
         if (
-            json.loads((extracted / "certification-set-manifest.json").read_text())
+            json.loads((extracted / "certification-set-manifest.json").read_text(encoding="utf-8"))
             != certification_set
         ):
             raise RuntimeError("archive certification-set mismatch")
@@ -1346,7 +1346,7 @@ def fixture_evidence(
             "schema": "AresContextGovernorDryRunActivationV3",
             "canonicalization_version": CANONICALIZATION_VERSION,
             "activation_authorization_id": json.loads(
-                documents["activation-authorization.json"].read_text()
+                documents["activation-authorization.json"].read_text(encoding="utf-8")
             )["activation_authorization_id"],
             "sealed_candidate_id": sealed["sealed_candidate_id"],
             "candidate_id": manifest["candidate_id"],
@@ -1385,7 +1385,7 @@ def fixture_evidence(
             "schema": "AresContextGovernorDryRunRollbackV3",
             "sealed_candidate_id": sealed["sealed_candidate_id"],
             "candidate_id": manifest["candidate_id"],
-            "pass": json.loads(descriptor.read_text()) == previous,
+            "pass": json.loads(descriptor.read_text(encoding="utf-8")) == previous,
             "restored_descriptor": previous,
             "current_key_id_retained": binding.key_id,
             "old_secret_snapshot_restored": False,
@@ -1449,7 +1449,7 @@ def main() -> None:
     if args.staged_root:
         root = args.staged_root.resolve()
         payload, binary = root / "payload", root / "context-governor"
-        ledger = json.loads((payload / "scope-ledger.json").read_text())
+        ledger = json.loads((payload / "scope-ledger.json").read_text(encoding="utf-8"))
         if ledger["ares_head"] != git(
             Path("/home/sikmindz/Coding/hermes-agent"), "rev-parse", "HEAD"
         ) or ledger["context_governor_head"] != git(
@@ -1508,7 +1508,7 @@ def main() -> None:
             "verify_ares_context_governor_scope.py", "ares_cg_scope_verifier_run"
         )
         scope_proof = verifier.verify(
-            json.loads((first_payload / "scope-manifest.json").read_text()),
+            json.loads((first_payload / "scope-manifest.json").read_text(encoding="utf-8")),
             first_payload,
         )
         scope_proof.update({

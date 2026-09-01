@@ -86,10 +86,13 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     const initialRowsRef = mockVirtualListPropsHistory[0].rows
     expect(initialRowsRef.length).toBeGreaterThan(VIRTUALIZE_THRESHOLD)
 
-    // Re-render parent with the exact same sessions array and props
+    // Re-render with a different active selection. VirtualSessionList must
+    // receive the changed selection, while flatRows' memo inputs stay exactly
+    // the same — so this observes both the parent rerender and the stable
+    // rows-array contract.
     rerender(
       <SidebarSessionsSection
-        activeSessionId={null}
+        activeSessionId="not-in-list"
         emptyState={<div>Empty</div>}
         label="Sessions"
         onArchiveSession={noop}

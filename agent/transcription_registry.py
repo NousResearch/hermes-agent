@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # dependency (``tools.transcription_tools`` imports
 # ``agent.transcription_registry`` for dispatch).
 _BUILTIN_NAMES = frozenset({
+    "deepgram",
     "local",
     "local_command",
     "groq",

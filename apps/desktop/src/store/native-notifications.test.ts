@@ -15,8 +15,8 @@ import {
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, setApprovalRequest } from './prompts'
-import { $activeSessionId, setActiveSessionId } from './session'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { $activeSessionId, setActiveSessionId } from './session'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop

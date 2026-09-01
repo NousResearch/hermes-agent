@@ -125,12 +125,10 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
       const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
         gateway.request(method, params ?? {}) as Promise<T>
 
-      await requestForOwnedSession(
-        request.sessionId,
-        ambientRequest,
-        'approval.received',
-        { request_id: request.requestId, session_id: request.sessionId }
-      )
+      await requestForOwnedSession(request.sessionId, ambientRequest, 'approval.received', {
+        request_id: request.requestId,
+        session_id: request.sessionId
+      })
     } catch (error) {
       if (isSessionGoneForBackgroundPolling(error)) {
         markSessionGone(request.sessionId)
@@ -154,12 +152,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
       gateway.request(method, params ?? {}) as Promise<T>
 
-    rawResult = await requestForOwnedSession(
-      sessionId,
-      ambientRequest,
-      'approval.pending',
-      { session_id: sessionId }
-    )
+    rawResult = await requestForOwnedSession(sessionId, ambientRequest, 'approval.pending', { session_id: sessionId })
   } catch (error) {
     if (isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)

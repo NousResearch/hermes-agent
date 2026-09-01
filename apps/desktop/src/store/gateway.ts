@@ -530,7 +530,6 @@ async function openSecondary(entry: Secondary): Promise<void> {
         // Best effort for partial test/HMR graphs. Production always loads the
         // real store; a failed import must not make the transport unrecoverable.
       }
-
     }
 
     // Registry-scoped entries dial through getConnectionFor when the bridge has

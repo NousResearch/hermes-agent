@@ -8,13 +8,7 @@ import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
-import {
-  isSessionGone,
-  isSessionGoneForBackgroundPolling,
-  markSessionGone,
-  noteRuntimeAlive,
-  resetBackgroundPollingGuard
-} from './runtime-gone'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
 import { $sessions, lineageAliases } from './session'
 import { $sessionStates, requestForOwnedSession } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -409,6 +403,7 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   try {
     const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
       gateway.request<T>(method, params ?? {})
+
     const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
       sid,
       ambientRequest,
@@ -474,6 +469,7 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
   try {
     const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
       gateway.request<T>(method, params ?? {})
+
     await requestForOwnedSession(sid, ambientRequest, 'process.kill', { process_id: id, session_id: sid })
     dismissBackgroundProcess(sid, id)
   } catch (err) {
@@ -513,6 +509,7 @@ export function resetSessionBackground(sid: string) {
       if (gateway && !isSessionGone(sid)) {
         const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
           gateway.request<T>(method, params ?? {})
+
         void requestForOwnedSession(sid, ambientRequest, 'process.kill', {
           process_id: item.id,
           session_id: sid

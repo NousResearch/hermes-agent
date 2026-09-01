@@ -6,8 +6,8 @@ import { persistString, storedString } from '@/lib/storage'
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
-import { isSessionGoneForBackgroundPolling, isSessionGone, markSessionGone } from './runtime-gone'
 import { requestForOwnedSession } from './session-states'
 
 export type { HermesOpenTarget }
@@ -379,7 +379,7 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
     )
     clearApprovalRequest(sessionId)
   } catch (error) {
-    if (isSessionGoneForBackgroundPolling(error)) {
+    if (sessionId && isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)
     }
 

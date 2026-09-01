@@ -17,8 +17,8 @@ import {
   setSecretRequest,
   setSudoRequest
 } from './prompts'
-import { $activeSessionId, setActiveSessionId } from './session'
 import { isSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { $activeSessionId, setActiveSessionId } from './session'
 
 // Prompts are parked per-session; the exported $*Request views are scoped to the
 // active session, so each test focuses the session it's asserting on.
@@ -163,7 +163,10 @@ describe('approval prompt store', () => {
     $activeSessionId.set('dead-runtime')
 
     await expect(
-      receiveApprovalRequest({ request }, { command: 'x', description: 'd', requestId: 'r1', sessionId: 'dead-runtime' })
+      receiveApprovalRequest(
+        { request },
+        { command: 'x', description: 'd', requestId: 'r1', sessionId: 'dead-runtime' }
+      )
     ).resolves.toBeUndefined()
 
     expect(isSessionGone('dead-runtime')).toBe(true)
@@ -178,7 +181,10 @@ describe('approval prompt store', () => {
     setActiveSessionId('transient-runtime')
 
     await expect(
-      receiveApprovalRequest({ request }, { command: 'x', description: 'd', requestId: 'r2', sessionId: 'transient-runtime' })
+      receiveApprovalRequest(
+        { request },
+        { command: 'x', description: 'd', requestId: 'r2', sessionId: 'transient-runtime' }
+      )
     ).rejects.toThrow('gateway timed out')
 
     expect(isSessionGone('transient-runtime')).toBe(false)

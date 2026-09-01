@@ -172,12 +172,11 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
   try {
     const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
       gateway.request<T>(method, params ?? {})
-    const result = await requestForOwnedSession<{ output?: string }>(
-      sid,
-      ambientRequest,
-      'slash.exec',
-      { command: 'goal status', session_id: sid }
-    )
+
+    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequest, 'slash.exec', {
+      command: 'goal status',
+      session_id: sid
+    })
 
     applyGoalStatusText(sid, result?.output ?? '', { hydrate: true })
   } catch (error) {

@@ -162,9 +162,9 @@ describe('gone-latch classifier and rebind seam', () => {
     expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('gone', { code: 4001 }))).toBe(true)
     expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found', { code: 5007 }))).toBe(false)
     expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found'))).toBe(true)
-    expect(isSessionGoneForBackgroundPolling(new Error("Error invoking remote method 'x': Error: session not found"))).toBe(
-      true
-    )
+    expect(
+      isSessionGoneForBackgroundPolling(new Error("Error invoking remote method 'x': Error: session not found"))
+    ).toBe(true)
     expect(isSessionGoneForBackgroundPolling(new Error('tool failed: upstream said session not found'))).toBe(false)
   })
 

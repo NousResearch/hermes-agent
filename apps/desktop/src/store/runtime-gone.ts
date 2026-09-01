@@ -1,6 +1,4 @@
 import { $activeSessionId, requestSessionResume } from './session'
-import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-states'
-
 import {
   healsByStoredId,
   isSessionGone,
@@ -9,6 +7,7 @@ import {
   resetBackgroundPollingGuard,
   resetBackgroundPollingGuardAfterRebind
 } from './session-gone-latch'
+import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-states'
 
 export {
   isSessionGone,

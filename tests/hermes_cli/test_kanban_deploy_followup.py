@@ -82,6 +82,10 @@ def test_approved_platform_card_creates_one_deploy_followup(conn):
     assert "git merge" in (child.body or "")
     assert task_id in (child.body or "")
     assert child.idempotency_key == f"deploy-followup:{task_id}"
+    # Watchdog install step is wired into the deploy path.
+    assert "install_fleet_watchdogs.py" in (child.body or "")
+    assert "--dest ~/.hermes/scripts" in (child.body or "")
+    assert "scripts/fleet-watchdogs/" in (child.body or "")
 
 
 def test_repeat_approval_cannot_create_second_deploy_followup(conn):

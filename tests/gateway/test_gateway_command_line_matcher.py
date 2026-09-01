@@ -165,3 +165,14 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+
+
+def test_accepts_docker_hermes_upstream_entrypoint():
+    # Docker (s6) images v0.21.0+ launch the gateway via the `hermes.upstream`
+    # console script; its basename must count as a Hermes gateway entrypoint.
+    # Positive case via the same strict `matches` helper the other tests use
+    # (consistency + it guards the real dashboard liveness path,
+    # `_looks_like_gateway_process`).
+    assert matches("/opt/hermes/.venv/bin/hermes.upstream gateway run --replace") is True
+    # `gateway status` is a management subcommand and must stay rejected.
+    assert matches("hermes.upstream gateway status") is False

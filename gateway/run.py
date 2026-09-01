@@ -7863,7 +7863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         failure after recording that recoverable state so ``__init__`` can
         record ``_session_db_init_error`` for the #88235 broadcast.
         """
-        from hermes_state import AsyncSessionDB, SessionDB, _default_db_path
+        from hermes_state import AsyncSessionDB, SessionDB, _default_db_path, get_shared_session_db
         from gateway.session_db_recovery import RecoverableHandleCache
 
         path = Path(_default_db_path())
@@ -7905,7 +7905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # unavailability the store is already reporting.
                 raise RuntimeError("SessionStore SQLite handle unavailable")
             try:
-                return AsyncSessionDB(SessionDB())
+                return AsyncSessionDB(get_shared_session_db())
             except Exception as exc:
                 logger.warning("SQLite session store not available: %s", exc)
                 raise
@@ -7956,8 +7956,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             inner = getattr(db, "_db", db)
             if inner is None or not hasattr(inner, "close"):
                 return
+            from hermes_state import release_or_close
             try:
-                inner.close()
+                release_or_close(inner)
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 
@@ -9876,7 +9877,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         while self._running:
             try:
-                if drain_requested():
+                # drain_requested() does a synchronous read_text() on the
+                # marker file. At this 1s cadence that puts a blocking disk
+                # read on the event loop ~86k times a day; when the host is
+                # under I/O pressure a single read can stall for 30s+ and
+                # take every platform heartbeat down with it. Off-thread it.
+                if await asyncio.to_thread(drain_requested):
                     self._enter_external_drain()
                     # API and cron work live outside messaging's
                     # _running_agents map. Refresh the aggregate while an
@@ -16473,6 +16479,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 GatewayRunner.close_all_session_db_handles(self)
             except Exception as _e:
                 logger.debug("Runner SessionDB handle sweep error: %s", _e)
+            # Final sweep: close any shared SessionDB instances still held by
+            # the process-wide registry (in-process tools, cron, mirror, etc.
+            # that opened via get_shared_session_db but weren't released by
+            # the sweeps above).  This is the safety net that guarantees no
+            # WAL write lock survives past gateway shutdown (#90837).
+            try:
+                from hermes_state import close_shared_session_dbs
+                closed = close_shared_session_dbs()
+                if closed:
+                    logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
+            except Exception as _e:
+                logger.debug("Shared SessionDB close error: %s", _e)
             GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
@@ -27116,8 +27134,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raw_sid = _sk
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
-                from gateway.wake import adapter_supports_push, deliver_wake
+                from gateway.wake import (
+                    adapter_supports_push,
+                    deliver_wake,
+                    persist_delegation_delivery,
+                )
                 if adapter is not None and not adapter_supports_push(adapter):
+                    if evt.get("type") == "async_delegation":
+                        # #85957: after the parent turn's event.complete the
+                        # CLIENT owns the next turn on this stateless surface.
+                        # Persist the completion as a durable delivery row —
+                        # never self-post it as a new role=user prompt.
+                        try:
+                            logger.info(
+                                "Async delegation completion — persisting "
+                                "delivery row for api_server session %s "
+                                "(no wake turn)",
+                                raw_sid,
+                            )
+                            await persist_delegation_delivery(
+                                adapter, text=synth_text,
+                                session_id=raw_sid, evt=evt,
+                            )
+                            return True
+                        except Exception as e:
+                            logger.warning(
+                                "Async delegation delivery persist failed "
+                                "for session %s: %s",
+                                raw_sid, e,
+                            )
+                            return False
                     try:
                         logger.info(
                             "Watch pattern notification — waking api_server "
@@ -27183,8 +27229,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which binds chat_id = session_id). handle_message would run the
             # wake under a build_session_key()-derived key that never matches
             # the raw X-Hermes-Session-Id session — self-post instead.
-            from gateway.wake import deliver_wake
+            from gateway.wake import deliver_wake, persist_delegation_delivery
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
+            if evt.get("type") == "async_delegation":
+                # #85957: same client-owns-the-turn rule as the raw-key branch
+                # above — persist the completion as a delivery row, never
+                # self-post it as a new role=user prompt.
+                try:
+                    logger.info(
+                        "Async delegation completion — persisting delivery "
+                        "row for api_server session %s (no wake turn)",
+                        raw_sid,
+                    )
+                    await persist_delegation_delivery(
+                        adapter, text=synth_text, session_id=raw_sid, evt=evt,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Async delegation delivery persist failed for "
+                        "session %s: %s",
+                        raw_sid, e,
+                    )
+                    return False
             try:
                 logger.info(
                     "Watch pattern notification — waking api_server session "
@@ -32269,17 +32336,18 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         if tick_count % AUTO_ARCHIVE_EVERY == 0:
             try:
                 from hermes_cli.config import load_config as _load_full_config
-                from hermes_state import SessionDB
+                from hermes_state import get_shared_session_db, release_shared_session_db
                 _sess_cfg = (_load_full_config().get("sessions") or {})
                 if _sess_cfg.get("auto_archive", False):
-                    _adb = SessionDB()
+                    _adb = get_shared_session_db()
                     try:
                         _adb.maybe_auto_archive(
                             idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                             min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         )
                     finally:
-                        _adb.close()
+                        from hermes_state import release_or_close
+                        release_or_close(_adb)
             except Exception as e:
                 logger.debug("Auto-archive tick error: %s", e)
 
@@ -33424,8 +33492,34 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     return True
 
 
+def _guard_corrupt_user_config() -> None:
+    """Fail closed when the active profile's config.yaml cannot be parsed.
+
+    The gateway is a fully non-interactive surface: nobody is present to
+    repair a corrupt ``config.yaml``, and silently continuing on built-in
+    defaults lets provider auto-detection adopt credentials from ``.env``
+    that the config never named (issue #81952). Same policy and escape
+    hatch (``HERMES_IGNORE_USER_CONFIG=1``) as the non-interactive CLI
+    guard in ``hermes_cli/main.py``.
+    """
+    from hermes_cli.config import (
+        InvalidUserConfigError,
+        require_parseable_user_config,
+    )
+
+    try:
+        require_parseable_user_config()
+    except InvalidUserConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def main():
     """CLI entry point for the gateway."""
+    # Refuse to start on a corrupt config.yaml — before any config-dependent
+    # startup (watchdog, DB opens, provider resolution). See _guard docstring.
+    _guard_corrupt_user_config()
+
     # Advertise the agent harness to child processes (AI_AGENT is the
     # cross-agent standard; HERMES_AGENT the Hermes-specific marker — see
     # _advertise_agent_env in hermes_cli/main.py, kept inline here to avoid

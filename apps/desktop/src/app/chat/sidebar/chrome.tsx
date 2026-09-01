@@ -43,23 +43,55 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
 
 /**
  * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
- * the session list. One flat row — a small caption plus a hairline rule — so it
- * groups sessions by recency without adding a level of indentation.
+ * the session list. Caption-shaped — a small label plus a hairline — so it
+ * groups sessions by recency without adding a level of indentation. When
+ * `toggle` is set the whole caption collapses the sessions beneath it, same
+ * gesture as a repo header (the hover caret is the tell).
  */
 export function SidebarDateDivider({
   action,
   className,
   label,
+  toggle,
   ...props
-}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
+}: React.ComponentProps<'div'> & {
+  action?: React.ReactNode
+  label: string
+  toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
+}) {
+  const caption = (
+    <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+      {label}
+    </span>
+  )
+
+  const rule = <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-(--ui-stroke-tertiary)" />
+
   return (
     // group/workspace: a divider heads a group the same way a repo header does,
     // so it borrows the header's hover-revealed "+" verbatim.
     <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
-      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
-        {label}
-      </span>
-      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {toggle ? (
+        <button
+          aria-expanded={toggle.open}
+          aria-label={toggle.ariaLabel}
+          className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+          onClick={toggle.onToggle}
+          type="button"
+        >
+          {caption}
+          <DisclosureCaret
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+            open={toggle.open}
+          />
+          {rule}
+        </button>
+      ) : (
+        <>
+          {caption}
+          {rule}
+        </>
+      )}
       {action}
     </div>
   )
@@ -140,8 +172,9 @@ export interface SidebarGroupTotals {
 /**
  * Header for a group of sessions that hangs its rows underneath — a project, a
  * profile. Row-shaped rather than caption-shaped (that's {@link SidebarDateDivider},
- * for groupings that only separate), so a group header lines up with the session
- * rows it heads. `toggle` omitted keeps the caret's space with nothing to reveal.
+ * which still collapses, just without a lead glyph), so a group header lines up
+ * with the session rows it heads. `toggle` omitted keeps the caret's space with
+ * nothing to reveal.
  */
 export function SidebarGroupRow({
   actions,

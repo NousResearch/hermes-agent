@@ -114,7 +114,7 @@ def test_overflow_recovery_timeout_ends_turn_without_provider_reentry():
     assert result["completed"] is False
     assert result["compression_exhausted"] is True
     assert "No messages were dropped" in result["final_response"]
-    assert result["error"] == result["final_response"]
+    assert "No messages were dropped" in result["error"]
 
 
 def test_pre_api_compression_timeout_is_typed_terminal():

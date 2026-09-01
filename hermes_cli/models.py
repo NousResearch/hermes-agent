@@ -82,6 +82,7 @@ def _custom_provider_ssl_context(base_url: str):
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5.1",             ""),
     ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-5",                ""),
     ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
@@ -266,6 +267,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5.1",
         "anthropic/claude-fable-5",
         "anthropic/claude-opus-5",
         "anthropic/claude-opus-4.8",
@@ -2343,17 +2345,67 @@ def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
 
 
 def _cache_catalog(
-    cache_key: str, result: dict[str, dict[str, Any]]
+    cache_key: str,
+    result: dict[str, dict[str, Any]],
+    ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
-    """Cache a catalog result, giving an empty one an expiry."""
+    """Cache a catalog result, giving an empty one an expiry.
+
+    *ttl_seconds* expires a non-empty result too. Only a catalog whose contents
+    depend on server-side state the client cannot observe needs it — an org's
+    model policy can change while a long-lived process holds the entry.
+    """
     _pricing_cache[cache_key] = result
     if result:
-        _pricing_cache_retry_after.pop(cache_key, None)
+        if ttl_seconds:
+            _pricing_cache_retry_after[cache_key] = time.monotonic() + ttl_seconds
+        else:
+            _pricing_cache_retry_after.pop(cache_key, None)
     else:
         _pricing_cache_retry_after[cache_key] = (
             time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
         )
     return result
+
+
+# NUL cannot appear in a URL, so this cannot collide with a real base URL.
+_PRICING_AUTH_KEY_PREFIX = "\x00auth:"
+
+
+def _pricing_auth_fingerprint(api_key: str | None) -> str:
+    """Key suffix identifying the credential a catalog was read with.
+
+    A governed endpoint answers each token with the catalog its org may reach,
+    so two credentials cannot share an entry. blake2b for cache-key
+    fingerprinting only, same rationale as :func:`_custom_endpoint_fingerprint`.
+    """
+    if not api_key:
+        return ""
+    import hashlib
+
+    digest = hashlib.blake2b(api_key.encode("utf-8", errors="replace"), digest_size=8)
+    return _PRICING_AUTH_KEY_PREFIX + digest.hexdigest()
+
+
+def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
+    """Pricing already cached for *base_url*, or ``{}``. Never fetches.
+
+    Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the fetchers
+    key on, and prefers an authenticated catalog. Scans rather than rebuilding a
+    key, because callers hold a base URL but no credential — newest first, and
+    skipping expired entries, so a rotated credential does not keep answering
+    from the catalog its predecessor read.
+    """
+    root = (base_url or "").rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    authed_prefix = root + _PRICING_AUTH_KEY_PREFIX
+    for key in reversed(list(_pricing_cache)):
+        if key.startswith(authed_prefix):
+            cached = _cached_catalog(key)
+            if cached:
+                return cached
+    return _cached_catalog(root) or {}
 
 
 def _format_price_per_mtok(per_token_str: str) -> str:
@@ -2489,10 +2541,12 @@ def fetch_models_with_pricing(
     *,
     force_refresh: bool = False,
     include_sale_original: bool = False,
+    cache_ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
-    Results are cached per *base_url* so repeated calls are free.
+    Results are cached per *base_url* and per credential, so repeated calls are
+    free and one caller's catalog never answers another's read.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
 
     When *include_sale_original* is true (Nous Portal only) and the gateway
@@ -2503,13 +2557,14 @@ def fetch_models_with_pricing(
     ``{prompt, completion}`` shape even if a response happens to nest
     ``original``.
     """
-    cache_key = (base_url or "").rstrip("/")
+    url_root = (base_url or "").rstrip("/")
+    cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:
             return cached
 
-    url = cache_key + "/v1/models"
+    url = url_root + "/v1/models"
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": _HERMES_USER_AGENT,
@@ -2560,7 +2615,7 @@ def fetch_models_with_pricing(
                         entry["original"] = orig_entry
             result[mid] = entry
 
-    return _cache_catalog(cache_key, result)
+    return _cache_catalog(cache_key, result, cache_ttl_seconds)
 
 
 def fetch_ai_gateway_pricing(
@@ -2670,6 +2725,86 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     return (api_key, base_url)
 
 
+def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]]:
+    """The Nous model ids the caller's org may reach, or ``None`` to not filter.
+
+    The gateway omits policy-blocked rows from an authenticated
+    ``GET /v1/models``, so that response's keys are the reachable set.
+
+    ``None`` means "leave the caller's list alone", for the three states that
+    cannot support narrowing one: no policy (or a token too old to say), an
+    anonymous read whose catalog is unfiltered, and an empty read, which is a
+    fetch failure rather than an org that may reach nothing.
+    """
+    try:
+        from hermes_cli.nous_account import nous_policy_present
+
+        if nous_policy_present() is not True:
+            return None
+    except Exception:
+        return None
+
+    api_key, base_url = _resolve_nous_pricing_credentials()
+    if not api_key or not base_url:
+        return None
+
+    # Same arguments as get_pricing_for_provider's nous branch, so a caller
+    # asking for pricing too shares this entry instead of paying for a second
+    # request.
+    pricing = fetch_models_with_pricing(
+        api_key=api_key,
+        base_url=base_url,
+        force_refresh=force_refresh,
+        include_sale_original=True,
+        cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
+    )
+    return set(pricing) or None
+
+
+# Past this size an allowed set reads as a whole catalog rather than an
+# allowlist, and is not worth showing in place of an empty picker.
+_NOUS_POLICY_APPEND_MAX = 64
+
+# How long a Nous catalog stays trusted. Its contents depend on the org's
+# policy, which an admin can change at any time and the client cannot observe,
+# so a long-lived process must re-ask instead of holding the first answer for
+# its whole life. Other providers' catalogs carry no such state and keep the
+# default no-expiry caching.
+_NOUS_CATALOG_TTL_SECONDS = 300.0
+
+
+def restrict_to_nous_policy(
+    model_ids: list[str],
+    allowed: Optional[set[str]],
+    *,
+    rescue_empty: bool = False,
+) -> list[str]:
+    """*model_ids* narrowed to *allowed*, preserving the caller's order.
+
+    A ``None`` or empty *allowed* leaves the list untouched.
+
+    A ``:free`` sibling is kept when its base model is reachable, mirroring the
+    gateway, which admits a row when any of its requestable ids passes. Prefer
+    over-listing: that costs a 403 from the authoritative gate, while hiding a
+    row the gate would serve is unrecoverable from the client.
+    """
+    if not allowed:
+        return list(model_ids)
+    kept = [
+        mid
+        for mid in model_ids
+        if mid in allowed or mid.split(":", 1)[0] in allowed
+    ]
+
+    # An allowlist can name only models the curated manifest lacks, leaving an
+    # empty picker — worse than no filter, since the models the org may use are
+    # the ones dropped. Opt-in per list: an already-empty list (a paid tier's
+    # gated models) means "nothing to gate", not "nothing survived".
+    if rescue_empty and not kept and len(allowed) <= _NOUS_POLICY_APPEND_MAX:
+        return sorted(allowed)
+    return kept
+
+
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
     normalized = normalize_provider(provider)
@@ -2696,6 +2831,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 force_refresh=force_refresh,
                 # Sale chrome (pricing.original) is Nous Portal-only.
                 include_sale_original=True,
+                cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
             )
     return {}
 
@@ -3612,6 +3748,69 @@ def detect_static_provider_for_model(
     return None
 
 
+def _configured_provider_ids() -> set[str]:
+    """Provider ids defined in the user's config ``providers:`` block.
+
+    Includes both top-level ids (``ollama``, ``nous``) and ``custom:*``
+    profile ids. Returns an empty set when config is unreadable — callers
+    treat that as "no user-defined providers" and fall through to built-in
+    catalogs only.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            return set()
+        ids: set[str] = set()
+        for pid in providers:
+            key = str(pid).strip().lower()
+            if key:
+                ids.add(key)
+        return ids
+    except Exception:
+        return set()
+
+
+def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
+    """Resolve an explicit ``vendor/model`` prefix to a configured provider.
+
+    ``nous/deepseek-v4-pro`` or ``ollama/qwen3.5:4b`` should route to the
+    named provider instead of falling back to the configured default (which
+    silently sends non-default models to the wrong endpoint, #87189).
+
+    Only vendors the user actually defined in their ``providers:`` config
+    block (by raw name or alias) are routed here. Built-in vendor prefixes
+    (``google/gemini-2.5-flash``, ``deepseek/deepseek-chat``) deliberately
+    stay on the existing catalog / OpenRouter-slug / default-provider path:
+    those slug forms are aggregator-native, and rerouting them to the vendor
+    provider would change established provider-switch behavior (see
+    ``TestDenormalizeProviderSwitch`` in tests/hermes_cli/test_web_server.py).
+    The returned model is the suffix with the prefix stripped — the target
+    provider's API expects the bare id.
+    """
+    if "/" not in model_name:
+        return None
+    vendor, model = model_name.split("/", 1)
+    vendor = vendor.strip().lower()
+    model = model.strip()
+    if not vendor or not model:
+        return None
+    configured = _configured_provider_ids()
+    if not configured:
+        return None
+    # A provider block the user explicitly named (``ollama:``) wins over the
+    # built-in alias table, which may canonicalize the same name elsewhere
+    # (``ollama`` → ``custom``) and route to the wrong endpoint.
+    if vendor in configured:
+        return (vendor, model)
+    canonical = _PROVIDER_ALIASES.get(vendor, vendor)
+    if canonical in configured:
+        return (canonical, model)
+    return None
+
+
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -3647,6 +3846,16 @@ def detect_provider_for_model(
         if or_slug != name:
             return ("openrouter", or_slug)
         return None  # already on openrouter with matching name
+
+    # --- Step 3: explicit ``vendor/model`` prefix naming a configured provider ---
+    # Checked after the OpenRouter slug lookup so aggregator-native slugs
+    # (e.g. ``deepseek/deepseek-chat``) keep their existing routing; only
+    # vendors the user defined in their ``providers:`` block route here,
+    # so catalog/default behavior for built-in vendor prefixes is unchanged
+    # (#87189).
+    prefix_match = _resolve_provider_prefix(name)
+    if prefix_match is not None:
+        return prefix_match
 
     return None
 

@@ -24,6 +24,8 @@ import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelControlsOptions {
+  cacheOwnerConnectionId?: string
+  cacheProfile?: string
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
@@ -34,7 +36,12 @@ interface ModelSwitchResponse {
   deferred?: boolean
 }
 
-export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({
+  cacheOwnerConnectionId,
+  cacheProfile,
+  queryClient,
+  requestGateway
+}: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
   const profileRefreshEpochRef = useRef(0)
@@ -50,7 +57,8 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       provider: string,
       model: string,
       includeGlobal: boolean,
-      profile = $activeGatewayProfile.get()
+      profile = cacheProfile || $activeGatewayProfile.get(),
+      ownerConnectionId = cacheOwnerConnectionId
     ) => {
       const patch = (prev: ModelOptionsResponse | undefined) => {
         // Selection state can update before the catalog query has resolved.
@@ -65,13 +73,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return { ...prev, provider, model, providers }
       }
 
-      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId), patch)
+      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile), patch)
+        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
       }
     },
-    [queryClient]
+    [cacheOwnerConnectionId, cacheProfile, queryClient]
   )
 
   // Settings → Model writes the profile default, which the backend applies to
@@ -111,6 +119,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       }
 
       const profileRefreshEpoch = profileRefreshEpochRef.current
+      const profile = $activeGatewayProfile.get()
 
       try {
         if ($activeSessionId.get()) {
@@ -128,7 +137,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           }
 
           const options = queryClient.getQueryData<ModelOptionsResponse>(
-            modelOptionsQueryKey($activeGatewayProfile.get())
+            modelOptionsQueryKey(cacheProfile || $activeGatewayProfile.get(), null, cacheOwnerConnectionId)
           )
 
           return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
@@ -142,7 +151,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // that lands while getGlobalModelInfo is in flight wins over this older
         // default — value comparisons alone miss re-selecting the same row.
         const selectionGeneration = getComposerSelectionGeneration()
-        const result = await getGlobalModelInfo()
+        const result = await getGlobalModelInfo(profile)
 
         if (
           profileRefreshEpochRef.current !== profileRefreshEpoch ||
@@ -168,7 +177,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // The delayed session.info event still updates this once the agent is ready.
       }
     },
-    [queryClient]
+    [cacheOwnerConnectionId, cacheProfile, queryClient]
   )
 
   // Returns whether the switch was applied so callers can await it before
@@ -201,7 +210,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
       const prevSource = getCurrentModelSource()
-      const liveGatewayProfile = $activeGatewayProfile.get()
+      const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
       const paintSelection = () => {
         if (touchesPrimary) {
@@ -279,7 +288,9 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
-          void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
+          void queryClient.invalidateQueries({
+            queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
+          })
         }
       }
 
@@ -338,7 +349,15 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return false
       }
     },
-    [copy.modelSwitchFailed, queryClient, requestGateway, t.common.confirm, updateModelOptionsCache]
+    [
+      cacheOwnerConnectionId,
+      cacheProfile,
+      copy.modelSwitchFailed,
+      queryClient,
+      requestGateway,
+      t.common.confirm,
+      updateModelOptionsCache
+    ]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

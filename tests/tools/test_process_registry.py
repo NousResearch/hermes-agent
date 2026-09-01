@@ -2285,6 +2285,77 @@ class TestSystemdCgroupIsolation:
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
 
+    def test_darwin_never_takes_scope_path_even_with_systemd_run_on_path(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """macOS no-op guarantee (#70716 cross-platform audit).
+
+        With ``_IS_LINUX = False`` (darwin), the spawn path must be
+        byte-identical to the legacy path even when a ``systemd-run``
+        binary is somehow on PATH and the gateway identity checks pass:
+        no probe, no wrapping, no unit recorded.
+        """
+        import tools.process_registry as pr
+
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr(pr, "_IS_LINUX", False)
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process", lambda: True
+        )
+        # If any branch consults the probe or builds a scope argv on darwin,
+        # fail loudly.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/systemd-run")
+        scope_builds = []
+        real_build = pr._build_systemd_scope_argv
+        monkeypatch.setattr(
+            pr,
+            "_build_systemd_scope_argv",
+            lambda *a, **k: scope_builds.append(a) or real_build(*a, **k),
+        )
+        probe_runs = []
+
+        def fake_probe_run(argv, **kwargs):
+            probe_runs.append(argv)
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_probe_run)
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+        assert session.systemd_unit == ""
+        assert scope_builds == [], "darwin must never build a systemd scope argv"
+        assert probe_runs == [], "darwin must never run the systemd-run probe"
+
+    def test_probe_returns_false_off_linux(self, monkeypatch):
+        """``_systemd_run_user_scope_available`` is False on non-Linux even
+        when a ``systemd-run`` binary exists on PATH."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/systemd-run")
+        probe_runs = []
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda argv, **kwargs: probe_runs.append(argv)
+            or subprocess.CompletedProcess(args=argv, returncode=0),
+        )
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert probe_runs == [], "non-Linux must not exec the probe"
+
 
 class TestNotificationRedaction:
     """Background-process notification delivery (completion_queue) applies the

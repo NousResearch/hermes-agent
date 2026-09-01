@@ -114,23 +114,24 @@ class TestFormatTimestamp:
 # =========================================================================
 
 class TestBrowseShape:
-    def test_lazy_database_is_closed_after_search(self, monkeypatch):
+    def test_lazy_database_is_released_after_search(self, monkeypatch):
         class _DB:
-            closed = 0
+            released = 0
 
             def list_sessions_rich(self, **_kwargs):
                 return []
 
-            def close(self):
-                self.closed += 1
-
         db = _DB()
-        monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+        monkeypatch.setattr("hermes_state.get_shared_session_db", lambda: db)
+        monkeypatch.setattr(
+            "hermes_state.release_or_close",
+            lambda _: setattr(db, "released", db.released + 1),
+        )
 
         result = json.loads(session_search())
 
         assert result["success"] is True
-        assert db.closed == 1
+        assert db.released == 1
 
     def test_cross_profile_database_is_closed_but_shared_database_is_not(
         self, monkeypatch

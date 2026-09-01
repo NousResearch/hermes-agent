@@ -224,3 +224,142 @@ class TestSchemaPathAdmission:
         # Recovered: breadcrumb cleared, triggers restored.
         assert _meta_value(db_path, FTS_STALE_KEY) is None
         assert _base_fts_triggers(db_path) == set(_FTS_TRIGGERS)
+
+
+# ---------------------------------------------------------------------------
+# Orphaned-fd staleness break (issue #100108).
+#
+# flock belongs to the open file DESCRIPTION, which fork() duplicates into
+# children. A holder that forks (multiprocessing worker, daemonized helper)
+# and then crashes leaves the flock held by the child forever — the kernel's
+# holder-death release never fires, and every contender deferred forever
+# ("FTS rebuild lock ... held by another process for more than 120s").
+# The fix records the acquirer's pid + start time under the lock; a contender
+# that times out breaks the lock ONLY when that recorded holder is provably
+# dead, and fails closed on any indeterminate state.
+# ---------------------------------------------------------------------------
+
+_ORPHANING_HOLDER_SCRIPT = """
+import os, sys, time
+sys.path.insert(0, {repo!r})
+import hermes_state_common
+
+admission = hermes_state_common.fts_rebuild_admission({db!r})
+admitted = admission.__enter__()
+assert admitted is True
+pid = os.fork()
+if pid == 0:
+    # Forked child: shares the lock fd's open file description. Sleep far
+    # beyond the test, never releasing.
+    time.sleep(600)
+    os._exit(0)
+print("child", pid, flush=True)
+# Crash WITHOUT releasing (no __exit__): simulates the production holder
+# dying mid-rebuild after having forked.
+os._exit(1)
+"""
+
+
+@contextlib.contextmanager
+def _orphaned_fork_holder(db_path: Path):
+    """Real #100108 shape: acquirer records itself, forks, dies."""
+    import os
+    import signal
+
+    script = _ORPHANING_HOLDER_SCRIPT.format(
+        repo=str(Path(hermes_state_common.__file__).parent), db=str(db_path)
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True
+    )
+    line = proc.stdout.readline().strip()
+    assert line.startswith("child ")
+    grandchild = int(line.split()[1])
+    proc.wait(timeout=10)  # the acquirer is now dead; grandchild holds the fd
+    try:
+        yield grandchild
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(grandchild, signal.SIGKILL)
+
+
+class TestOrphanedHolderStalenessBreak:
+    @pytest.mark.live_system_guard_bypass
+    def test_rebuild_breaks_lock_of_dead_forker(self, db, fast_timeout):
+        """The #100108 repro: recorded holder dead, forked child holds the
+        flock. The contender must break the orphaned lock and rebuild."""
+        with _orphaned_fork_holder(db.db_path):
+            assert db.rebuild_fts() >= 1
+
+    def test_admission_still_fails_closed_for_live_unrecorded_holder(
+        self, db, fast_timeout
+    ):
+        """A live holder that wrote no record (pre-fix build, non-Hermes
+        tool) is indeterminate — must defer, never break."""
+        with _rebuild_lock_held_by_other_process(db.db_path):
+            assert db.rebuild_fts() == 0
+
+    def test_admission_fails_closed_for_live_recorded_holder(
+        self, db, fast_timeout, monkeypatch
+    ):
+        """A record naming a live pid must defer even after timeout."""
+        import json
+        import os
+
+        lock = _lock_file(db.db_path)
+        with _rebuild_lock_held_by_other_process(db.db_path) as proc:
+            record = {
+                "pid": proc.pid,
+                "start_ticks": hermes_state_common._proc_start_ticks(proc.pid),
+                "acquired_at": 0,
+            }
+            lock.write_bytes(json.dumps(record).encode())
+            assert db.rebuild_fts() == 0
+
+    def test_holder_record_cleared_on_normal_release(self, tmp_path):
+        lock = tmp_path / "x.db.fts_rebuild.lock"
+        with hermes_state_common.fts_rebuild_admission(tmp_path / "x.db") as ok:
+            assert ok is True
+            assert b"pid" in lock.read_bytes()
+        assert lock.read_bytes() == b""
+
+    @pytest.mark.live_system_guard_bypass
+    def test_repair_lock_breaks_orphaned_holder(self, tmp_path, monkeypatch):
+        """_cross_process_repair_lock shares the same staleness break."""
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+        db_path = tmp_path / "state.db"
+        db_path.touch()
+
+        script = """
+import os, sys, time
+sys.path.insert(0, {repo!r})
+from pathlib import Path
+import hermes_state
+
+lock_cm = hermes_state._cross_process_repair_lock(Path({db!r}))
+assert lock_cm.__enter__() is True
+pid = os.fork()
+if pid == 0:
+    time.sleep(600)
+    os._exit(0)
+print("child", pid, flush=True)
+os._exit(1)
+""".format(repo=str(Path(hermes_state_common.__file__).parent), db=str(db_path))
+        import os
+        import signal
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True
+        )
+        grandchild = int(proc.stdout.readline().strip().split()[1])
+        proc.wait(timeout=10)
+        try:
+            import hermes_state as hs
+
+            with hs._cross_process_repair_lock(db_path) as holding:
+                assert holding is True
+        finally:
+            with contextlib.suppress(OSError):
+                os.kill(grandchild, signal.SIGKILL)

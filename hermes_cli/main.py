@@ -3190,9 +3190,10 @@ def _resolve_use_tui(args) -> bool:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = _resolve_use_tui(args)
-
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
+    use_tui = _resolve_use_tui(args)
 
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
@@ -3424,14 +3425,6 @@ def cmd_chat(args):
     # that invoke cmd_chat directly (e.g. subcommand dispatch).
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-
-    # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
-    # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
-    # import time). Credentials in .env are still loaded — this flag only
-    # ignores behavioral/config settings.
-    if getattr(args, "ignore_user_config", False):
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
 
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
     # (rules), memory entries, and any preloaded skills coming from user config.
@@ -5187,10 +5180,13 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_lockfile_changed",
         "_npm_manifest_paths",
         "_npm_manifests_digest",
+        "_ORPHAN_RESCUE_REF_MAX_AGE_DAYS",
+        "_ORPHAN_RESCUE_REFS_TO_KEEP",
         "_orphaned_desktop_backend_pids",
         "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
+        "_prune_orphan_rescue_refs",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
         "_print_parked_branch_kept_notice",
@@ -5223,6 +5219,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_sync_with_upstream_if_needed",
         "_update_node_dependencies",
         "_update_via_zip",
+        "_warn_orphaned_update_autostashes",
         "_upgrade_pip_before_lazy_refresh",
         "_validate_critical_files_syntax",
         "_validate_critical_modules_import",
@@ -8174,6 +8171,37 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+def _desktop_linux_userns_sandbox_available() -> bool:
+    """Return True when Chromium's unprivileged user-namespace sandbox works.
+
+    When an unprivileged process can create a user namespace, Chromium uses the
+    namespace sandbox and never consults the setuid ``chrome-sandbox`` helper,
+    so requiring the helper to be root-owned 4755 (and prompting for sudo) is
+    unnecessary. Probe the real capability with ``unshare`` instead of reading
+    distro-specific sysctls: the probe fails closed on hosts where user
+    namespaces are disabled or AppArmor-restricted, which then follow the
+    existing setuid-helper path.
+    """
+    if sys.platform != "linux":
+        return False
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [unshare, "--user", "--map-root-user", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
     """Return True when ``chrome-sandbox`` exists as a regular file."""
     if sys.platform != "linux":
@@ -8212,6 +8240,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
         return True
 
+    if _desktop_linux_userns_sandbox_available():
+        print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
+        return True
+
     sudo = shutil.which("sudo")
     if not sudo:
         print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
@@ -8222,6 +8254,29 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
+    return True
+
+
+def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:
+    """Return True when Chromium should skip the present-but-non-setuid helper.
+
+    A user-owned ``chrome-sandbox`` still makes Chromium abort with
+    ``setuid_sandbox_host`` even when the namespace sandbox works. Passing
+    ``--disable-setuid-sandbox`` keeps the userns sandbox and avoids sudo.
+    Call only after ``_desktop_linux_sandbox_fixup`` succeeded without making
+    the helper root-owned 4755 (the userns path). Does not re-probe userns.
+    """
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(sandbox_lstat.st_mode):
+        return False
+    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return False
     return True
 
 
@@ -8619,6 +8674,8 @@ def cmd_gui(args: argparse.Namespace):
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
+    elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
+        launch_command.append("--disable-setuid-sandbox")
 
     launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
@@ -11476,14 +11533,14 @@ def cmd_profile(args):
             sys.exit(1)
 
     elif action == "export":
-        from hermes_cli.profiles import export_profile
+        from hermes_cli.profiles import export_profile, get_profile_export_path
 
         name = args.profile_name
-        output = args.output or f"{name}.tar.gz"
         try:
+            output = args.output or str(get_profile_export_path(name))
             result_path = export_profile(name, output)
             print(f"✓ Exported '{name}' to {result_path}")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"Error: {e}")
             sys.exit(1)
 
@@ -12050,6 +12107,23 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
+    # config.yaml instead of silently starting on defaults where provider
+    # auto-detection can adopt unnamed .env credentials (issue #81952).
+    # Same policy + escape hatch as _guard_noninteractive_user_config.
+    if _headless_backend:
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config(
+                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
+            )
+        except InvalidUserConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
     if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
         raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
@@ -12584,6 +12658,8 @@ def _prepare_agent_startup(args) -> None:
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
@@ -12673,6 +12749,43 @@ def _apply_safe_mode(args) -> None:
     os.environ["HERMES_SAFE_MODE"] = "1"
     os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
     os.environ["HERMES_IGNORE_RULES"] = "1"
+
+
+def _apply_user_config_bypass(args) -> None:
+    """Apply the explicit config bypass before any startup config reads."""
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+
+
+def _guard_noninteractive_user_config(args) -> None:
+    """Fail closed before a non-interactive invocation initializes providers."""
+    if getattr(args, "_noninteractive_config_validated", False):
+        return
+
+    is_noninteractive = (
+        bool(getattr(args, "oneshot", None))
+        or bool(getattr(args, "query", None))
+    )
+    if not is_noninteractive:
+        return
+
+    from hermes_cli.config import (
+        InvalidUserConfigError,
+        require_parseable_user_config,
+    )
+
+    try:
+        require_parseable_user_config(
+            ignore_user_config=bool(
+                getattr(args, "ignore_user_config", False)
+                or getattr(args, "safe_mode", False)
+            )
+        )
+    except InvalidUserConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    setattr(args, "_noninteractive_config_validated", True)
 
 
 def _set_chat_arg_defaults(args) -> None:

@@ -1512,7 +1512,10 @@ export function reconcileRegistryDrift(
   const unchanged = { changed: false, registry }
 
   if (config.mode === 'ssh') {
-    const ssh = normalizeSshConfig({ ...(config.remote && typeof config.remote === 'object' ? config.remote : {}), mode: 'ssh' })
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
 
     if (!ssh) {
       // A v1 SSH route without a usable host is not a route we can register.

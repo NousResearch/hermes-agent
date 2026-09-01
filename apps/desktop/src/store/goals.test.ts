@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $goalsBySession, applyGoalStatusText, clearSessionGoal } from './goals'
+import { $gateway } from './gateway'
+import { $goalsBySession, applyGoalStatusText, clearSessionGoal, refreshSessionGoal } from './goals'
+import { resetBackgroundPollingGuard } from './runtime-gone'
 
 describe('goal store', () => {
   afterEach(() => {
@@ -106,5 +108,39 @@ describe('goal store', () => {
     applyGoalStatusText('s2', '⏸ Goal (paused, 20/20 turns): other work', { hydrate: true })
 
     expect($goalsBySession.get().s2).toMatchObject({ status: 'paused', title: 'other work' })
+  })
+})
+
+describe('refreshSessionGoal dead-session guard', () => {
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('stops re-asking a runtime the gateway no longer holds', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshSessionGoal('dead-1')
+    await refreshSessionGoal('dead-1')
+    await refreshSessionGoal('dead-1')
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not latch on a transient failure', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 30s: slash.exec')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshSessionGoal('s1')
+    await refreshSessionGoal('s1')
+
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

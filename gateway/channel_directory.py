@@ -439,15 +439,15 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     entries: List[Dict[str, str]] = []
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state import get_shared_session_db, release_or_close
+        db = get_shared_session_db()
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):
                 return []
             rows = lister(platform=platform_name, active_only=False)
         finally:
-            db.close()
+            release_or_close(db)
 
         seen_ids = set()
         for row in rows:

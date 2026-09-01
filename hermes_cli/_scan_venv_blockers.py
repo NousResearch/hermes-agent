@@ -265,14 +265,25 @@ def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
     that supervisor would respawn whatever the updater kills. Anything
     unprovable → not exempt (fail closed, pre-exemption behavior).
     """
+    return _updater_owned_backend_entry(pid, cmdline) is not None
+
+
+def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
+    """Ledger entry for a deferred backend, or ``None`` when it must block.
+
+    Same decision logic as ``_is_updater_owned_backend`` (which delegates
+    here); returning the matched ledger entry lets ``main()`` emit sanitized
+    decision evidence — structured identity fields only, never argv, which
+    can carry tokens or private endpoints (#98350).
+    """
     try:
         from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
 
         purpose = _hermes_holder_subcommand(cmdline)
     except Exception:
-        return False
+        return None
     if purpose not in ("serve", "dashboard"):
-        return False
+        return None
     try:
         from hermes_cli.process_identity import (  # noqa: PLC0415
             ledger_entries,
@@ -281,19 +292,40 @@ def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
 
         entries = ledger_entries()
     except Exception:
-        return False
+        return None
     for entry in entries:
         if entry.get("pid") != pid:
             continue
         if entry.get("purpose") not in ("serve", "dashboard"):
-            return False
+            return None
         dead = spawner_is_dead(entry)
         if dead is not False:
             # Spawner dead, unrecorded, or unprovable-but-registered: the
             # updater's ledger rungs own this holder (reap or stop+relaunch).
-            return True
-        return _spawner_is_this_handoff_desktop(entry)
-    return False
+            return entry
+        if _spawner_is_this_handoff_desktop(entry):
+            return entry
+        return None
+    return None
+
+
+def _deferred_backend_evidence(entries: list[dict]) -> list[dict]:
+    """Sanitized decision evidence for deferred serve/dashboard backends.
+
+    Structured ledger fields only — pid, purpose, recorded port — never the
+    command line, which can carry tokens or private endpoints. Lets the
+    scan result explain *why* a holder disappeared from ``processes``
+    without echoing argv (#98350).
+    """
+    evidence = []
+    for entry in entries:
+        pid = entry.get("pid")
+        if not isinstance(pid, int):
+            continue
+        evidence.append(
+            {"pid": pid, "purpose": entry.get("purpose"), "port": entry.get("port")}
+        )
+    return evidence
 
 
 def _spawner_is_this_handoff_desktop(entry: dict) -> bool:
@@ -337,16 +369,17 @@ def main() -> None:
 
     processes = []
     exempted_gateways = 0
-    deferred_backends = 0
+    deferred_entries: list[dict] = []
     for pid, name, cmdline in matches:
         if _is_pausable_gateway(cmdline):
             exempted_gateways += 1
             continue
-        if _is_updater_owned_backend(pid, cmdline):
+        deferred_entry = _updater_owned_backend_entry(pid, cmdline)
+        if deferred_entry is not None:
             # Ledger-verified serve/dashboard backend the CLI updater's own
             # rungs stop (and relaunch) downstream — reporting it here would
             # dead-end the hand-off before that machinery can run (#98336).
-            deferred_backends += 1
+            deferred_entries.append(deferred_entry)
             continue
         process = {
             "pid": pid,
@@ -368,7 +401,10 @@ def main() -> None:
         "pausable_gateways": exempted_gateways,
         # Diagnostic only: ledger-verified serve/dashboard backends deferred
         # to the updater's stop/relaunch rungs (#98336).
-        "deferred_backends": deferred_backends,
+        "deferred_backends": len(deferred_entries),
+        # Diagnostic only: sanitized evidence (structured ledger identity,
+        # never argv) explaining which holders the deferral consumed (#98350).
+        "deferred_backend_evidence": _deferred_backend_evidence(deferred_entries),
     }
     print(json.dumps(data))
     sys.exit(0)

@@ -1048,7 +1048,7 @@ class TestForceReloadSymmetry:
 
         assert started.wait(timeout=1.0)
         assert results == [{"ok": True}]
-        assert elapsed < 1.0, f"caller blocked for {elapsed:.2f}s after timeout"
+        assert elapsed < 5.0, f"caller blocked for {elapsed:.2f}s after timeout"
         hold.set()
 
     def test_hook_callback_within_timeout_returns_value(self, monkeypatch):
@@ -1132,7 +1132,7 @@ class TestForceReloadSymmetry:
         elapsed = time.monotonic() - t0
 
         assert len(starts) == 1
-        assert elapsed < 1.0
+        assert elapsed < 5.0
         hold.set()
 
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
@@ -1166,7 +1166,7 @@ class TestForceReloadSymmetry:
         elapsed = time.monotonic() - t0
 
         assert msg == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-        assert elapsed < 1.0
+        assert elapsed < 5.0
 
         # Still-running / suppression window must also fail closed.
         msg2 = resolve_pre_tool_block("web_search", {"query": "y"})

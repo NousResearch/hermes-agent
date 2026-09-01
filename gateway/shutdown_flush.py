@@ -312,15 +312,16 @@ def recover_pending_to_db(
     # Use the provided SessionDB or open one on the default path.
     own_db = False
     if session_db is None:
-        from hermes_state import SessionDB
-        session_db = SessionDB()
+        from hermes_state import get_shared_session_db
+        session_db = get_shared_session_db()
         own_db = True
 
     def _close_owned_db() -> None:
         if not own_db:
             return
         try:
-            session_db.close()
+            from hermes_state import release_or_close
+            release_or_close(session_db)
         except Exception:
             pass
 

@@ -127,6 +127,76 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
     assert read_turn_marker(tmp_path, "abc")["prompt"] == "prompt"
 
 
+def _patch_local_interrupt(monkeypatch, session):
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda current: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda sid=None: None)
+
+
+def test_interrupt_ack_retires_marker_before_run_thread_exits(monkeypatch, marker_home):
+    """A confirmed Stop must not auto-continue if the backend dies afterward."""
+
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    interrupted = []
+    agent = types.SimpleNamespace(interrupt=lambda: interrupted.append(True))
+    session = _session(
+        agent=agent,
+        running=True,
+        _run_thread=_AliveThread(),
+        _active_turn_marker_key="original-key",
+    )
+    session["session_key"] = "rotated-key"
+    session_home = marker_home / "remote-profile"
+    session["profile_home"] = str(session_home)
+    record_turn_start(session_home, "original-key", "do not resume me")
+
+    _patch_local_interrupt(monkeypatch, session)
+
+    response = server._methods["session.interrupt"]("request-1", {"session_id": "runtime-1"})
+
+    assert response["result"]["status"] == "interrupted"
+    assert interrupted == [True]
+    assert read_turn_marker(session_home, "original-key") is None
+    assert read_turn_marker(session_home, "rotated-key") is None
+    assert "_active_turn_marker_key" not in session
+
+
+def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
+    monkeypatch, emits, turn_env, marker_home
+):
+    """Stop before the disk write must still prevent later auto-continue."""
+
+    interrupted = []
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        clear_interrupt=lambda: None,
+        interrupt=lambda: interrupted.append(True),
+        run_conversation=lambda message, **kwargs: {"final_response": "stopped"},
+    )
+    session = _session(agent=agent, running=True)
+    _patch_local_interrupt(monkeypatch, session)
+
+    def write_after_stop(home, key, prompt, *, attempts=0):
+        response = server._methods["session.interrupt"](
+            "stop-during-write", {"session_id": "runtime-race"}
+        )
+        assert response["result"]["status"] == "interrupted"
+        record_turn_start(home, key, prompt, attempts=attempts)
+
+    monkeypatch.setattr(server, "record_turn_start", write_after_stop)
+
+    server._run_prompt_submit("request-race", "runtime-race", session, "race me")
+
+    assert interrupted == [True]
+    assert read_turn_marker(marker_home, "session-key") is None
+    assert "_active_turn_marker_key" not in session
+
+
 # ── Turn lifecycle owns the marker ─────────────────────────────────────
 
 

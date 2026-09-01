@@ -4,6 +4,7 @@ import {
   getCuratorStatus,
   getMcpCatalog,
   getMemoryStatus,
+  getOfficialSkills,
   getSkillHubSources,
   getToolsetModels,
   installSkillFromHub,
@@ -36,6 +37,12 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
     await getSkillHubSources()
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/skills/hub/sources', timeoutMs: 45_000 }))
+  })
+
+  it('loads the built-in optional-skills catalog', async () => {
+    await getOfficialSkills()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/skills/hub/official' }))
   })
 
   it('encodes hub search params', async () => {

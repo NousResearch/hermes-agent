@@ -14,7 +14,9 @@ interface BrowserRealProfilePanelProps {
   profile?: ProfileScope
 }
 
-function readUseRealProfile(record: Record<string, unknown> | undefined): boolean {
+/** Shared with the Browser pane's first-open consent prompt, so both surfaces
+ *  agree on what "on" means for `browser.use_real_profile`. */
+export function readUseRealProfile(record: Record<string, unknown> | undefined): boolean {
   const browser = record?.browser
 
   if (browser && typeof browser === 'object' && !Array.isArray(browser)) {

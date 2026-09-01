@@ -15,7 +15,7 @@ from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
     credential_pool_matches_provider,
-    get_custom_provider_pool_key,
+    custom_provider_pool_key_candidates,
     load_pool,
 )
 from agent.secret_scope import get_secret as _get_secret
@@ -670,41 +670,57 @@ def _try_resolve_from_custom_pool(
     provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
-    pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
-    if not pool_key:
-        return None
+    candidates: list[str] = []
+    seen = set()
+
+    def _add(key: Optional[str]) -> None:
+        normalized = str(key or "").strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            candidates.append(normalized)
+
     try:
-        pool = load_pool(pool_key)
-        if not pool.has_credentials():
-            return None
-        entry = pool.select()
-        if entry is None:
-            return None
-        pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        if not pool_api_key:
-            return None
-        if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
-            # Legacy configs commonly used short/placeholder keys ('123',
-            # 'm', ...) for local no-auth services like Ollama -- fine for
-            # the endpoint itself, but has_usable_secret's 4-char floor
-            # (added after these configs were written) now rejects them
-            # here with no migration path. Every OTHER resolution path in
-            # this file already substitutes "no-key-required" for a
-            # loopback endpoint with no usable secret (the config-based
-            # custom_providers fallback a few hundred lines below, and the
-            # "actual" provider's local-offline exemption further down) --
-            # this pool path was the one gap (issue #86864).
-            pool_api_key = "no-key-required"
-        return {
-            "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
-            "base_url": base_url,
-            "api_key": pool_api_key,
-            "source": f"pool:{pool_key}",
-            "credential_pool": pool,
-        }
+        for key in custom_provider_pool_key_candidates(base_url, provider_name):
+            _add(key)
     except Exception:
+        pass
+    if not candidates:
         return None
+
+    for pool_key in candidates:
+        try:
+            pool = load_pool(pool_key)
+            if not pool.has_credentials():
+                continue
+            entry = pool.select()
+            if entry is None:
+                continue
+            pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+            if not pool_api_key:
+                continue
+            if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
+                # Legacy configs commonly used short/placeholder keys ('123',
+                # 'm', ...) for local no-auth services like Ollama -- fine for
+                # the endpoint itself, but has_usable_secret's 4-char floor
+                # (added after these configs were written) now rejects them
+                # here with no migration path. Every OTHER resolution path in
+                # this file already substitutes "no-key-required" for a
+                # loopback endpoint with no usable secret (the config-based
+                # custom_providers fallback a few hundred lines below, and the
+                # "actual" provider's local-offline exemption further down) --
+                # this pool path was the one gap (issue #86864).
+                pool_api_key = "no-key-required"
+            return {
+                "provider": provider_label,
+                "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+                "base_url": base_url,
+                "api_key": pool_api_key,
+                "source": f"pool:{pool_key}",
+                "credential_pool": pool,
+            }
+        except Exception:
+            continue
+    return None
 
 
 def _filter_capabilities(value: Any) -> Dict[str, bool]:
@@ -834,6 +850,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    provider_key = str(ep_name or "").strip()
+                    if provider_key:
+                        result["provider_key"] = provider_key
+                    if key_env:
+                        result["key_env"] = key_env
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -1267,7 +1288,12 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.

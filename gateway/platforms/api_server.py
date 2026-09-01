@@ -2282,6 +2282,121 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    # Source stamped on every session row this platform owns.  Hardwired in
+    # both places that create one — ``_bind_api_server_session`` (session
+    # ContextVars) and ``_create_agent`` (``platform="api_server"``) — so the
+    # peer lookup below can filter on it without guessing.
+    _SESSION_SOURCE = "api_server"
+
+    def _declared_conversation_session(
+        self, gateway_session_key: Optional[str]
+    ) -> Optional[str]:
+        """Resolve the live session a client declared with ``X-Hermes-Session-Key``.
+
+        The key names the *conversation*; ``session_id`` names the transcript
+        that conversation is currently on.  A client that manages its own
+        history has no ``previous_response_id`` chain to carry the transcript
+        forward, so the handlers used to mint a fresh id per request — and
+        every conversation-affinity hint Hermes sends off that id
+        (``prompt_cache_key`` on both OpenAI-wire transports, the
+        OpenRouter/Nous sticky ``session_id``, and xAI's ``x-grok-conv-id``)
+        re-keyed on every single reply (#96811).
+
+        This is the same reset-fenced recovery every native gateway platform
+        already uses (``SessionStore._recover_session_for_peer``): rows ended
+        at a conversation boundary — ``session_reset`` (/new),
+        ``session_switch``, ``idle``, ``daily``, ``suspended`` — are fenced
+        out, so a new conversation still gets a new id and a cold affinity
+        scope.  The generation that must rotate is durable independently of
+        this lookup, in the ``conversation_generations`` counter advanced
+        inside each boundary's own transaction
+        (``SessionDB._bump_conversation_generation``); all this has to resolve
+        is the live transcript.
+
+        Two first requests arriving concurrently on one declared key can each
+        miss this lookup, mint their own row and both bind — the mismatch
+        guard in :meth:`_bind_declared_conversation` does not fire, because
+        each row is still unkeyed at bind time.  That converges instead of
+        crossing: both rows carry the same key under the same source, so this
+        lookup returns the later one for every subsequent reply and the
+        earlier row is an abandoned transcript, never another conversation's
+        identity.
+
+        Returns ``None`` when nothing was declared, when no live row is
+        recorded for the declared key, or on any DB error — every one of
+        those leaves the caller's per-request id exactly as it is today.
+        """
+        key = (gateway_session_key or "").strip()
+        if not key:
+            return None
+        db = self._ensure_session_db()
+        if db is None:
+            return None
+        try:
+            row = db.find_latest_gateway_session_for_peer(
+                source=self._SESSION_SOURCE, session_key=key
+            )
+        except Exception:
+            logger.debug(
+                "[%s] declared-conversation lookup failed", self.name, exc_info=True
+            )
+            return None
+        return str(row["id"]) if row and row.get("id") else None
+
+    def _bind_declared_conversation(
+        self, session_id: Optional[str], gateway_session_key: Optional[str]
+    ) -> None:
+        """Record the declared conversation key on the session row.
+
+        Counterpart to :meth:`_declared_conversation_session`.  Without it the
+        row is written unkeyed by ``AIAgent._ensure_db_session`` (which knows
+        the key but does not persist it), and the reset-fenced lookup can
+        never see it — the mapping the next reply needs would not exist.
+
+        ``include_compression_ancestors`` carries the key up a mid-turn
+        compression rotation so the pre- and post-rotation rows of one
+        conversation share it, while that same walk deliberately stops at
+        ``/branch``, delegate and tool children (#79161).  The statement is an
+        UPDATE, so it is a harmless no-op on a turn that failed before the row
+        was created.
+        """
+        key = (gateway_session_key or "").strip()
+        sid = str(session_id or "").strip()
+        if not key or not sid:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            # Defence in depth behind the callers' precedence gate: never
+            # rewrite a row that already belongs to a different conversation.
+            # record_gateway_session_peer does SET session_key = ?, so a
+            # mistaken bind would strand the original conversation and hand its
+            # session to this request's key.
+            existing = db.get_session(sid) or {}
+            current = str(existing.get("session_key") or "").strip()
+            if current and current != key:
+                logger.debug(
+                    "[%s] refusing to rebind session %s from a different "
+                    "declared conversation",
+                    self.name,
+                    sid,
+                )
+                return
+            db.record_gateway_session_peer(
+                sid,
+                source=self._SESSION_SOURCE,
+                session_key=key,
+                include_compression_ancestors=True,
+            )
+        except Exception:
+            logger.debug(
+                "[%s] declared-conversation bind failed for %s",
+                self.name,
+                sid,
+                exc_info=True,
+            )
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -6330,8 +6445,22 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history = _auto_truncate_response_history(conversation_history)
 
         # Reuse session from previous_response_id chain so the dashboard
-        # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        # groups the entire conversation under one session entry.  A client
+        # that manages its own history has no chain to reuse, so fall back to
+        # the conversation it declared via ``X-Hermes-Session-Key`` before
+        # minting a throwaway id — otherwise every reply is a new conversation
+        # to every affinity surface (#96811).
+        # The response chain still outranks the declared key. Recording is
+        # gated on that same precedence: binding a session the chain selected
+        # would rewrite ITS routing key to this request's header
+        # (record_gateway_session_peer does SET session_key = ?), stranding the
+        # original conversation and letting the header key recover it instead.
+        _declared_selected = not stored_session_id and bool(gateway_session_key)
+        session_id = (
+            stored_session_id
+            or self._declared_conversation_session(gateway_session_key)
+            or str(uuid.uuid4())
+        )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         route = self._resolve_route(body.get("model"))
@@ -6402,6 +6531,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                bind_declared_conversation=_declared_selected,
                 **agent_overrides,
                 route=route,
             ))
@@ -6437,6 +6567,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                bind_declared_conversation=_declared_selected,
                 **agent_overrides,
                 route=route,
             )
@@ -7265,6 +7396,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        bind_declared_conversation: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -7491,6 +7623,19 @@ class APIServerAdapter(BasePlatformAdapter):
                         # shutdown.  pop() is a no-op when _create_agent
                         # succeeded but the turn never reached registration.
                         self._shutdown_interruptible_agents.pop(id(agent), None)
+                        # Record the declared conversation on the row the turn
+                        # actually ended on — ``agent.session_id`` already
+                        # carries a mid-turn compression rotation (#16938), so
+                        # the next reply resolves the live transcript rather
+                        # than its retired parent. Opt-in: only the routes that
+                        # resolve their session id from the declared key
+                        # (/v1/responses, /v1/runs) record one, so no other
+                        # caller's rows change shape.
+                        if bind_declared_conversation:
+                            self._bind_declared_conversation(
+                                getattr(agent, "session_id", None) or session_id,
+                                gateway_session_key,
+                            )
                     clear_session_vars(tokens)
 
         self._activate_admitted_request()

@@ -70,6 +70,11 @@ def test_current_checkout_completion_is_verified_before_success(capsys, monkeypa
 def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
     monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
+    monkeypatch.setattr(
+        update_cmd,
+        "_rebuild_desktop_after_update",
+        lambda _dir, **_kwargs: True,
+    )
 
     complete = update_cmd._repair_node_deps_on_current_checkout(
         lambda _message: False

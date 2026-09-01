@@ -21,6 +21,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 
 import { electronProcessStartMarker } from './parent-process-identity'
+import { isPidAlive } from './update-marker'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
@@ -42,6 +43,15 @@ export function execText(command: string, args: string[], { timeout = 3000 } = {
  * `claimDecision` / `probeStartMarker`).
  */
 export async function processStartMarker(pid: number): Promise<string> {
+  // Cheap native dead-PID gate. Windows Get-Process / macOS `ps -p` exit 1
+  // on a missing PID (not ESRCH), so the identity matchers used to keep the
+  // orphan and re-probe it every launch (#92875). ESRCH is the code those
+  // catch blocks already map to "gone". Alive or uninspectable (EPERM) PIDs
+  // still fall through to the platform probe.
+  if (!isPidAlive(pid)) {
+    throw Object.assign(new Error(`PID ${pid} no longer exists`), { code: 'ESRCH' })
+  }
+
   if (process.platform === 'linux') {
     const stat = await fs.promises.readFile(`/proc/${pid}/stat`, 'utf8')
 

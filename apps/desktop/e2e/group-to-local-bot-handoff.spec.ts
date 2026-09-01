@@ -32,7 +32,7 @@ test.afterAll(async () => {
 })
 
 test('local bot replaces an open group main workspace', async () => {
-  test.setTimeout(180_000)
+  test.setTimeout(240_000)
   const page = fixture!.page
 
   await openBots(page)
@@ -60,11 +60,21 @@ test('local bot replaces an open group main workspace', async () => {
   const programmer = page.getByRole('button', { name: /^Programmer\b/ }).filter({ visible: true }).first()
   await programmer.click()
 
-  const botChatTab = page.getByRole('tab', { name: /Bot Chat Close/ }).filter({ visible: true })
-  await expect(botChatTab).toBeVisible({ timeout: 30_000 })
-  await expect(botChatTab).toHaveAttribute('aria-selected', 'true')
+  // The bot's canonical chat opens INTO the main workspace pane (post
+  // design-system rework); as the lone pane in the zone it renders chromeless
+  // — no "Bot Chat" tab exists until a second pane joins the strip. The
+  // handoff is observed by the group surfaces leaving and the bot's chat
+  // (here a fresh one: its empty-state splash asks for a first message)
+  // taking the main workspace. The first open also spawns the bot's own
+  // backend, so give the "Loading session" phase a real chance to clear.
+  await expect(page.getByText('Say something to get started.').filter({ visible: true })).toBeVisible({
+    timeout: 120_000
+  })
   await expect(groupTab).toHaveCount(0)
   await expect(groupComposer).toHaveCount(0)
-  await expect(page.getByText(/Waking up Programmer/i)).toHaveCount(0)
+  // No "Waking up…" assertion: the mock backend can keep a bot's wake notice
+  // around indefinitely (see bot-mode-closed-chat-stays-closed's settle()),
+  // so its presence no longer distinguishes a stranded handoff. The splash
+  // and composer above are the proof the bot's chat took the workspace.
   await expect(page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()).toBeVisible()
 })

@@ -993,6 +993,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     network path — the underlying fetch is memory+disk cached with a
     last-known-good fallback.
     """
+    is_nous = provider_id.strip().lower() == "nous"
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
         from hermes_cli.models import fetch_models_with_pricing
@@ -1012,6 +1013,17 @@ def _fast_model_from_catalog(provider_id: str) -> str:
             # fetch below still works for the catalogs that allow it.
             logger.debug("No credentials for %s catalog", provider_id, exc_info=True)
 
+        if not api_key and is_nous:
+            # Nous is OAuth, so the resolver above raises for it. An anonymous
+            # read returns the full catalog, and a model picked from it is
+            # refused at request time by the org's policy.
+            try:
+                from hermes_cli.models import _resolve_nous_pricing_credentials
+
+                api_key, base_url = _resolve_nous_pricing_credentials()
+            except Exception:
+                logger.debug("No Nous credentials for catalog", exc_info=True)
+
         if not base_url:
             base_url = str(getattr(get_provider_profile(provider_id), "base_url", "") or "")
         base_url = base_url.rstrip("/")
@@ -1020,20 +1032,55 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         # fetch_models_with_pricing appends its own /v1/models.
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
+        # Same entry the pickers use, so the Nous-only arguments must match
+        # theirs: seeding it here without them costs the picker its sale chrome
+        # and leaves the policy catalog with no expiry.
+        _nous_kwargs = {}
+        if is_nous:
+            from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+
+            _nous_kwargs = {
+                "include_sale_original": True,
+                "cache_ttl_seconds": _NOUS_CATALOG_TTL_SECONDS,
+            }
         catalog = fetch_models_with_pricing(
-            api_key=api_key or None, base_url=base_url, timeout=3.0
+            api_key=api_key or None, base_url=base_url, timeout=3.0, **_nous_kwargs
         ) or {}
     except Exception:
         logger.debug("Fast-model catalog lookup failed for %s", provider_id, exc_info=True)
         return ""
 
     ids = sorted((str(m) for m in catalog), key=_model_recency_key, reverse=True)
+    if is_nous:
+        # The catalog's keys are a source of ids here, so the policy narrows
+        # them as it does the pickers' lists.
+        try:
+            from hermes_cli.models import (
+                nous_policy_allowed_ids,
+                restrict_to_nous_policy,
+            )
+
+            ids = restrict_to_nous_policy(ids, nous_policy_allowed_ids())
+        except Exception:
+            logger.debug("Nous policy filter unavailable", exc_info=True)
     for family in _FAST_MODEL_FAMILIES:
         for model_id in ids:
             lowered = model_id.lower()
             if family in lowered and not any(x in lowered for x in _FAST_MODEL_EXCLUDE):
                 return model_id
     return ""
+
+
+def _nous_policy_blocks(model_id: str) -> bool:
+    """True when the org's model policy does not admit *model_id*."""
+    try:
+        from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+        allowed = nous_policy_allowed_ids()
+        return bool(allowed) and not restrict_to_nous_policy([model_id], allowed)
+    except Exception:
+        logger.debug("Nous policy check unavailable", exc_info=True)
+        return False
 
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -1063,21 +1110,26 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     except Exception:
         pass
 
+    picked = ""
     if prefer_fast:
-        catalog_pick = _fast_model_from_catalog(provider_id)
-        if catalog_pick:
-            return catalog_pick
-        if profile is not None:
+        picked = _fast_model_from_catalog(provider_id)
+        if not picked and profile is not None:
             try:
-                live = profile.resolve_aux_model()
-                if live:
-                    return live
+                picked = profile.resolve_aux_model() or ""
             except Exception:
                 logger.debug("resolve_aux_model failed for %s", provider_id, exc_info=True)
 
-    if profile is not None and profile.default_aux_model:
-        return profile.default_aux_model
-    return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
+    if not picked and profile is not None and profile.default_aux_model:
+        picked = profile.default_aux_model
+    if not picked:
+        picked = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
+
+    # Steps 2-4 are policy-blind: resolve_aux_model queries a public
+    # recommendation and the rest are hardcoded. A blocked pick is refused at
+    # request time, so drop it and let the caller keep the main model.
+    if picked and provider_id.strip().lower() == "nous" and _nous_policy_blocks(picked):
+        return ""
+    return picked
 
 
 
@@ -1334,8 +1386,15 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
-# Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3.6-flash"
+# Default auxiliary models per provider.
+# _OPENROUTER_MODEL is the BUILT-IN fallback used only when the user never set
+# auxiliary.openrouter_model — it MUST be a :free SKU: this lane engages
+# silently (auxiliary tasks, no user prompt), and a paid built-in default here
+# meant silent real OpenRouter spend the user never opted into (#81952). The
+# SKU matches the one the free_only warning below recommends. User-configured
+# auxiliary.openrouter_model values are honored untouched (paid allowed when
+# the user chose it; _warn_paid_lane_once still fires for that case).
+_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -7018,6 +7077,40 @@ def resolve_provider_client(
                 custom_key = build_command_token_provider(
                     custom_key_cmd, custom_entry.get("name") or provider
                 ) or custom_key
+            if not custom_key:
+                try:
+                    from agent.credential_pool import (
+                        custom_provider_pool_key_candidates,
+                        load_pool,
+                    )
+
+                    pool_name = (
+                        custom_entry.get("provider_key")
+                        or custom_entry.get("name")
+                        or provider
+                    )
+                    for pool_key in custom_provider_pool_key_candidates(
+                        custom_base, pool_name
+                    ):
+                        try:
+                            pool = load_pool(pool_key)
+                        except Exception:
+                            continue
+                        if not pool.has_credentials():
+                            continue
+                        pool_entry = pool.select()
+                        if pool_entry is None:
+                            continue
+                        pool_api_key = (
+                            getattr(pool_entry, "runtime_api_key", None)
+                            or getattr(pool_entry, "access_token", "")
+                            or ""
+                        )
+                        if str(pool_api_key).strip():
+                            custom_key = str(pool_api_key).strip()
+                            break
+                except Exception:
+                    pass
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -10814,7 +10907,38 @@ def _call_llm_impl(
         raise
 
 
-def extract_content_or_reasoning(response) -> str:
+def _coerce_llm_message(response):
+    """Pull a message (dict, object, or str) out of a response-or-message value.
+
+    Compression and some OpenAI-compatible proxies hand us a dict-shaped
+    response or a bare message; vision/oneshot callers pass a ChatCompletion
+    object. MagicMock ``reasoning_*`` attrs are not strings — callers that
+    want the empty-content failure path rely on that.
+    """
+    if response is None or isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        if "choices" not in response:
+            return response
+        choices = response.get("choices") or []
+        if not choices:
+            return None
+        first = choices[0]
+        return first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return response
+    first = choices[0]
+    return first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+
+
+def _message_field(msg, name):
+    if isinstance(msg, dict):
+        return msg.get(name)
+    return getattr(msg, name, None)
+
+
+def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = None) -> str:
     """Extract content from an LLM response, falling back to reasoning fields.
 
     Mirrors the main agent loop's behavior when a reasoning model (DeepSeek-R1,
@@ -10827,12 +10951,24 @@ def extract_content_or_reasoning(response) -> str:
          structured reasoning fields (DeepSeek, Moonshot, NovitaAI, etc.).
       3. ``message.reasoning_details`` — OpenRouter unified array format.
 
+    Accepts a full response or a bare message (dict or object). When
+    ``max_reasoning_chars`` is set, a reasoning-field fallback is truncated
+    so an unbounded chain-of-thought cannot become the compaction summary.
+
     Returns the best available text, or ``""`` if nothing found.
     """
     import re
 
-    msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    msg = _coerce_llm_message(response)
+    if msg is None:
+        return ""
+    if isinstance(msg, str):
+        return msg.strip()
+
+    raw = _message_field(msg, "content")
+    if not isinstance(raw, str):
+        raw = str(raw) if raw else ""
+    content = raw.strip()
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
@@ -10848,11 +10984,11 @@ def extract_content_or_reasoning(response) -> str:
     # Content is empty or reasoning-only — try structured reasoning fields
     reasoning_parts: list[str] = []
     for field in ("reasoning", "reasoning_content"):
-        val = getattr(msg, field, None)
+        val = _message_field(msg, field)
         if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
             reasoning_parts.append(val.strip())
 
-    details = getattr(msg, "reasoning_details", None)
+    details = _message_field(msg, "reasoning_details")
     if details and isinstance(details, list):
         for detail in details:
             if isinstance(detail, dict):
@@ -10864,10 +11000,18 @@ def extract_content_or_reasoning(response) -> str:
                 if summary and summary not in reasoning_parts:
                     reasoning_parts.append(summary.strip() if isinstance(summary, str) else str(summary))
 
-    if reasoning_parts:
-        return "\n\n".join(reasoning_parts)
+    if not reasoning_parts:
+        return ""
 
-    return ""
+    text = "\n\n".join(reasoning_parts)
+    if max_reasoning_chars is not None and len(text) > max_reasoning_chars:
+        logger.warning(
+            "fell back to reasoning fields (%d chars); truncating to %d",
+            len(text),
+            max_reasoning_chars,
+        )
+        return text[:max_reasoning_chars]
+    return text
 
 
 @_relay_auxiliary_call_async

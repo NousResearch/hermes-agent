@@ -2206,6 +2206,38 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         return ""
 
 
+def _refuse_env_adoption_if_config_corrupt() -> None:
+    """Refuse env-key/pool auto-adoption of openrouter while config.yaml is corrupt.
+
+    When ``~/.hermes/config.yaml`` EXISTS but fails to parse, ``load_config()``
+    falls back to ``DEFAULT_CONFIG`` — so the tier-2 config check above finds
+    no ``model.provider`` and the env-var sniff / pool probe silently adopts
+    the PAID openrouter provider, even though the user's real (broken) config
+    may name a completely different provider (e.g. ``openai-codex``). That is
+    silent real-money spend against the user's actual intent (#81952).
+
+    This probe fires ONLY on the auto path — explicitly requested providers
+    never reach it — and clears itself as soon as the file changes (a fixed
+    config resolves normally on the next call).
+    """
+    try:
+        from hermes_cli.config import get_active_config_parse_failure, get_config_path
+
+        err = get_active_config_parse_failure()
+        if not err:
+            return
+        path = get_config_path()
+    except Exception as e:
+        logger.debug("Could not probe config parse-failure state: %s", e)
+        return
+    raise AuthError(
+        f"config.yaml at {path} is corrupt ({err}) — refusing to auto-select "
+        f"an inference provider from environment keys. Fix the YAML (a backup "
+        f"was saved next to it) or run hermes setup.",
+        code="corrupt_config",
+    )
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -2344,6 +2376,7 @@ def resolve_provider(
     if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")) or has_usable_secret(
         _scoped_key_env("OPENROUTER_API_KEY")
     ):
+        _refuse_env_adoption_if_config_corrupt()
         return "openrouter"
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
@@ -2356,10 +2389,13 @@ def resolve_provider(
     try:
         from agent.credential_pool import load_pool as _load_pool
 
-        if _load_pool("openrouter").has_credentials():
-            return "openrouter"
+        _pool_has_creds = _load_pool("openrouter").has_credentials()
     except Exception as e:
+        _pool_has_creds = False
         logger.debug("Could not check OpenRouter credential pool: %s", e)
+    if _pool_has_creds:
+        _refuse_env_adoption_if_config_corrupt()
+        return "openrouter"
 
     # Determine the logged-in OAuth provider up front so the env-key loop below
     # can WARN when an exported API key preempts it (#29285 transparency). The
@@ -4015,6 +4051,32 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     return dict(imported)
 
 
+def _codex_http_client(**kwargs: Any) -> "httpx.Client":
+    """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with racing.
+
+    Same broken-IPv6 failure mode as the chat transport (#13834): a host that
+    advertises AAAA records but blackholes IPv6 makes each serial connect
+    attempt eat the full connect timeout before IPv4 is tried, so token
+    refresh / device login / usage probes time out where the official Codex
+    CLI (which races families per RFC 8305) works. Install the same
+    Happy-Eyeballs sync backend #94388 added for the chat transport.
+
+    Best-effort: if the racing backend can't be installed (unexpected
+    httpx/httpcore internals, mocked client in tests), the client still works
+    with the default serial connect behavior. Proxy-backed transports are
+    intentionally left on the default backend (the TCP connect goes to the
+    proxy, not to auth.openai.com/chatgpt.com).
+    """
+    client = httpx.Client(**kwargs)
+    try:
+        from agent.process_bootstrap import enable_happy_eyeballs_on_client
+
+        enable_happy_eyeballs_on_client(client)
+    except Exception:
+        pass
+    return client
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -4032,7 +4094,7 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(
+    with _codex_http_client(
         timeout=timeout,
         headers={
             "Accept": "application/json",
@@ -4481,7 +4543,7 @@ def _probe_codex_quota_restored(
         )
         if isinstance(account_id, str) and account_id.strip():
             headers["ChatGPT-Account-Id"] = account_id.strip()
-        with httpx.Client(timeout=10.0) as client:
+        with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
@@ -8388,7 +8450,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
                 resp = client.post(
                     f"{issuer}/api/accounts/deviceauth/usercode",
                     json={"client_id": client_id},
@@ -8463,7 +8525,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -8504,7 +8566,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={
@@ -9398,6 +9460,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             from hermes_cli.models import (
                 get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
+                nous_policy_allowed_ids, restrict_to_nous_policy,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -9412,6 +9475,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 # purchases are reflected immediately.
                 free_tier = check_nous_free_tier(force_fresh=True)
                 _portal_for_recs = auth_state.get("portal_base_url", "")
+                # Narrow before the tier split, so a rescued id still has to
+                # pass the free/paid predicate.
+                _policy_allowed = nous_policy_allowed_ids()
+                _policy_narrowed = False
                 if free_tier:
                     try:
                         from hermes_cli.nous_account import (
@@ -9437,6 +9504,11 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_free_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
+                    _policy_narrowed = model_ids != _before_policy
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )
@@ -9448,8 +9520,18 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_paid_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
+                    _policy_narrowed = model_ids != _before_policy
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
+                from hermes_cli.nous_account import nous_policy_notice
+
+                _policy_notice = nous_policy_notice(removed=_policy_narrowed)
+                if _policy_notice:
+                    print(_policy_notice)
                 print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
                 selected_model = _prompt_model_selection(
                     model_ids, pricing=pricing,

@@ -156,7 +156,8 @@ export const zh: Translations = {
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
@@ -1284,6 +1285,11 @@ export const zh: Translations = {
       reasoning: '推理',
       reasoningOff: '关闭',
       defaultsFailed: '保存模型默认值失败',
+      loadFailed: '无法加载模型',
+      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
+      restartBackend: '重启后端',
+      restartingBackend: '正在重启后端...',
+      restartFailed: '无法重启后端',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
@@ -1447,7 +1453,17 @@ export const zh: Translations = {
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
         disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
-        failedSave: '无法保存真实配置文件设置'
+        failedSave: '无法保存真实配置文件设置',
+        prompt: {
+          title: '让网站保持登录状态',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
+          bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
+          bulletLocal: '所有数据都不会离开这台电脑。',
+          dontShowAgain: '不再显示',
+          notNow: '暂不',
+          enable: '使用我的配置文件'
+        }
       }
     }
   },
@@ -1507,6 +1523,8 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    officialCatalog: '可安装',
+    officialPill: '官方',
     hub: {
       searchPlaceholder: '搜索技能中心',
       search: '搜索',
@@ -2945,6 +2963,8 @@ export const zh: Translations = {
     connectedProvider: provider => `${provider} 已连接`,
     connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
     signInFailed: '登录失败，请重试。',
+    signInExpired:
+      '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
     pickDifferentProvider: '选择其他提供方',
     signInWith: provider => `使用 ${provider} 登录`,
     openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
@@ -3266,7 +3286,17 @@ export const zh: Translations = {
       loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: '无法访问预览页面。',
       openTarget: url => `打开 ${url}`,
-      fallbackTitle: '预览'
+      fallbackTitle: '预览',
+      annotate: '标注',
+      annotateOn: '停止标注',
+      annotateNeedPage: '请先在内置浏览器中打开页面。',
+      annotateFailed: '无法开始标注',
+      commenting: '标注中',
+      addComments: count => (count === 1 ? '添加 1 条批注' : `添加 ${count} 条批注`),
+      commentPlaceholder: '添加批注…',
+      commentTitle: n => `批注 ${n}`,
+      saveComment: '保存',
+      cancelComment: '取消批注'
     }
   },
 

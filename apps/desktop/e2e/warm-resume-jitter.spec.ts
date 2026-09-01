@@ -10,7 +10,7 @@
  * `syncSessionStateToView` to fire a second `setMessages` — a visual
  * flicker as the transcript DOM was updated.
  *
- * This test pre-seeds a 32-message session into state.db, boots the app,
+ * This test pre-seeds a session into state.db, boots the app,
  * clicks the session (cold resume — populates the warm cache), navigates
  * away to a new chat, then clicks back (warm resume). Two detectors run:
  *
@@ -50,8 +50,16 @@ const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
 // renderer's keep-alive visibility policy instead of relying on DOM order.
 const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
 const ALL_SURFACES = '[data-composer-target]'
-/** 32 messages (16 user/assistant pairs) — enough DOM churn for detection. */
-const MESSAGE_COUNT = 32
+/**
+ * 16 messages (8 user/assistant pairs) — enough DOM churn for detection while
+ * still fitting a hot-hidden pane's retention budget. A kept-alive pane keeps
+ * only its live tail (HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40 weight units in
+ * thread/list.tsx); 16 short messages ≈ 32 units, so the whole transcript
+ * survives hiding. Above the budget, reveal legitimately backfills trimmed
+ * turns (additive DOM bursts) — that is paging, not the repaint bug this
+ * suite hunts, and it would drown the detectors.
+ */
+const MESSAGE_COUNT = 16
 /** Seeded PRNG so the generated content is deterministic across runs. */
 const RNG_SEED = 42
 
@@ -174,7 +182,16 @@ async function installRenderCounter(
       : surfaces.at(-1)
     const viewport = surface?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) {
-      throw new Error('Thread viewport not found before warm resume')
+      const diag = [...document.querySelectorAll(allSelector)].map(s => ({
+        hidden: Boolean(s.closest('[data-pane-hidden]')),
+        target: s.getAttribute('data-composer-target'),
+        hasViewport: Boolean(s.querySelector('[data-slot="aui_thread-viewport"]')),
+        textLen: (s.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').length,
+        head: (s.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').slice(0, 80),
+        tail: (s.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').slice(-80),
+        includesExpected: expected ? (s.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected) : null,
+      }))
+      throw new Error('Thread viewport not found before warm resume DIAG=' + JSON.stringify(diag) + ' expected=' + expected)
     }
 
     const state = { bursts: 0, mutations: 0, timeline: [] as number[], stopped: false, reconciles: 0 }

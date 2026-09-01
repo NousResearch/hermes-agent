@@ -55,10 +55,7 @@ class FakeReviewAgent:
     def interrupt(self, message=None):
         pass
 
-    def shutdown_memory_provider(self):
-        pass
-
-    def close(self):
+    def release_clients(self):
         pass
 
 
@@ -185,7 +182,13 @@ def _install_relay_recorder(monkeypatch, review_run=None):
     return calls
 
 
-def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
+def test_background_review_releases_clients_without_closing_shared_session(monkeypatch):
+    """The review fork must not clean up resources owned by its parent session.
+
+    The fork uses the foreground session ID for prefix-cache parity.  Calling
+    ``close()`` would therefore kill that session's registered terminal
+    processes and tear down its environment when the review completes.
+    """
     events = []
 
     class FakeReviewAgent:
@@ -196,11 +199,11 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         def run_conversation(self, **kwargs):
             events.append(("run_conversation", kwargs))
 
-        def shutdown_memory_provider(self):
-            events.append(("shutdown_memory_provider", None))
-
         def close(self):
             events.append(("close", None))
+
+        def release_clients(self):
+            events.append(("release_clients", None))
 
     monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
     monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
@@ -216,8 +219,7 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     assert [name for name, _payload in events] == [
         "init",
         "run_conversation",
-        "shutdown_memory_provider",
-        "close",
+        "release_clients",
     ]
 
 
@@ -725,7 +727,7 @@ def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):
             self.index = instance_count
             instance_count += 1
 
-        def shutdown_memory_provider(self):
+        def release_clients(self):
             if self.index == 0:
                 first_cleanup_entered.set()
                 assert allow_first_cleanup.wait(2.0)

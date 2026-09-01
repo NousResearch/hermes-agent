@@ -142,6 +142,47 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+
+def _is_discord_transport_error(exc: BaseException) -> bool:
+    """Return True for connection-shaped send failures (dead/dropping WS).
+
+    These are the failures where the message demonstrably did NOT reach
+    Discord because the transport itself was down — the delivery-obligation
+    ledger can safely replay them after reconnect (#95382). HTTP-level
+    rejections (permissions, formatting, 4xx) are NOT transport errors and
+    must keep their original error string. Timeouts are excluded: a timed-out
+    send may have reached Discord, so replaying it risks a duplicate.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return False
+    if isinstance(exc, (ConnectionError, OSError)):
+        return True
+    if DISCORD_AVAILABLE and discord is not None:
+        _transport_types = tuple(
+            t
+            for t in (
+                getattr(discord, "ConnectionClosed", None),
+                getattr(discord, "GatewayNotFound", None),
+                getattr(discord, "DiscordServerError", None),
+            )
+            if isinstance(t, type)
+        )
+        if _transport_types and isinstance(exc, _transport_types):
+            return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "websocket closed",
+            "connection reset",
+            "connection closed",
+            "session is closed",
+            "cannot write to closing transport",
+            "not connected",
+        )
+    )
+
+
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
 except ImportError:
@@ -3451,7 +3492,15 @@ class DiscordAdapter(BasePlatformAdapter):
         created automatically.
         """
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            # Dead transport (client gone / gateway reconnecting): classify as
+            # send_path_degraded so the delivery-obligation ledger's reconnect
+            # sweep (_redeliver_failed_obligations_for_platform) can replay
+            # this final response once the adapter is live again — a generic
+            # "Not connected" error is not runtime-retryable and left the
+            # turn's output stranded until a full process restart (#95382).
+            return SendResult(
+                success=False, error="send_path_degraded", retryable=True
+            )
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
@@ -3582,7 +3631,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            result = SendResult(success=False, error=str(e))
+            if _is_discord_transport_error(e):
+                # Connection-shaped failure (WS drop / closed session): use
+                # the ledger's runtime-retryable marker so the reconnect
+                # sweep can replay this final response instead of stranding
+                # it until a process restart (#95382 silent partial loss).
+                result = SendResult(
+                    success=False, error="send_path_degraded", retryable=True
+                )
+            else:
+                result = SendResult(success=False, error=str(e))
             await asyncio.to_thread(
                 self._record_discord_response,
                 reply_to=reply_to,

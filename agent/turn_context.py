@@ -1066,10 +1066,18 @@ def build_turn_context(
         )
 
         if not _preflight_deferred:
-            _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
-                _compressor.last_prompt_tokens = _preflight_tokens
+            # Display-only seed (see
+            # ContextCompressor.maybe_seed_preflight_display_tokens): a real
+            # provider reading always wins over the rough estimate, and the
+            # -1 post-compression sentinel (#36718) stays protected. On
+            # usage-less responses the seed also feeds the tool-loop
+            # compression gate — the one live path where an inflated seed
+            # could push compression below the user threshold.
+            _maybe_seed = getattr(
+                _compressor, "maybe_seed_preflight_display_tokens", None
+            )
+            if callable(_maybe_seed):
+                _maybe_seed(_preflight_tokens)
 
         _compression_cooldown = getattr(
             _compressor,

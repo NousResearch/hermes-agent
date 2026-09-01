@@ -1173,14 +1173,12 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
 
     output = (body.output or "").strip()
     if not output:
-        from hermes_constants import get_hermes_home
-        staging = get_hermes_home() / "profile-exports"
         try:
-            staging.mkdir(parents=True, exist_ok=True)
+            output = str(profiles_mod.get_profile_export_path(name))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        output = str(staging / f"{profiles_mod.normalize_profile_name(name)}-{stamp}.tar.gz")
 
     loop = asyncio.get_running_loop()
     try:

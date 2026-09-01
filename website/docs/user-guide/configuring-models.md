@@ -286,7 +286,7 @@ A one-turn switch breaks the provider's prompt-cache prefix twice (switching out
 
 ### Custom aliases
 
-Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform. There are two equivalent formats — pick whichever fits your workflow.
+Define your own short names for models you reach for often, then use `/model <alias>` in a running session or `hermes chat --model <alias>` at startup. There are two equivalent formats — pick whichever fits your workflow.
 
 **Canonical (top-level `model_aliases:`)** — full control over provider + base_url:
 

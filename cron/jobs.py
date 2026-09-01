@@ -1213,6 +1213,29 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return max(MIN_GRACE, min(grace, MAX_GRACE))
 
 
+# Missed-run visibility (#99879): a recurring dispatch within this many
+# seconds of its scheduled instant renders as "on time". The built-in ticker
+# runs once a minute and a busy tick can push dispatch a couple of minutes
+# past the scheduled instant — that is normal cadence, not gateway downtime.
+_LATE_DISPATCH_TOLERANCE_SECONDS = 300
+
+
+def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> str:
+    """Classify a recurring dispatch by how late it fired.
+
+    ``on_time``  — within normal ticker cadence slack;
+    ``late``     — missed the scheduled instant but within the catch-up
+                   grace window (e.g. gateway briefly down);
+    ``catch_up`` — beyond the grace window; the due-scan skipped the
+                   accumulated misses and executed once now.
+    """
+    if lateness_seconds > grace_seconds:
+        return "catch_up"
+    if lateness_seconds > _LATE_DISPATCH_TOLERANCE_SECONDS:
+        return "late"
+    return "on_time"
+
+
 # Durable (persisted-state) recovery counter for a recurring job wedged in a
 # stale ``last_status == "error"`` state with ``next_run_at`` parked in the
 # future.  This is the restart-surviving half of the recurring-cron wedge
@@ -4182,6 +4205,28 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["run_claim"] = claim
+                            needs_save = True
+                            break
+
+                # Missed-run visibility (#99879): persist scheduled-vs-actual
+                # dispatch timing on the job record so `hermes cron list` /
+                # `hermes cron status` (separate CLI processes) can show a
+                # late catch-up run as such instead of an ordinary on-time
+                # run. Recurring schedules only — one-shots beyond grace are
+                # retired above, and manual triggers have no scheduled
+                # instant to be late against.
+                if not manual_run and kind in {"cron", "interval"}:
+                    lateness = max(0.0, (now - next_run_dt).total_seconds())
+                    dispatch_stamp = {
+                        "scheduled_at": next_run,
+                        "dispatched_at": now.isoformat(),
+                        "lateness_seconds": round(lateness, 1),
+                        "kind": _classify_dispatch_lateness(lateness, grace),
+                    }
+                    job["last_dispatch"] = dispatch_stamp
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["last_dispatch"] = dispatch_stamp
                             needs_save = True
                             break
 

@@ -84,6 +84,8 @@ def test_tui_failed_reauth_preserves_active_state(
         False,
     )
 
+    assert peer.connect_timeouts == [315]
+    assert peer.completed_events[-1] == failure_point.value
     assert flow.status == "error"
     assert flow.worker_done is True
     assert failure_point.value in (flow.error or "")

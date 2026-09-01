@@ -7,6 +7,13 @@ import { $connection, $selectedStoredSessionId } from '@/store/session'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
 
+// The consent dialog has its own test file and needs a QueryClientProvider;
+// these tests exercise the pane's console/watch/webview wiring, not the
+// prompt, so isolate it the way the pane's other collaborators are.
+vi.mock('./real-profile-consent-dialog', () => ({
+  RealProfileConsentDialog: () => null
+}))
+
 function stubPdfObjectUrls() {
   const NativeUrl = URL
   let objectUrlIndex = 0

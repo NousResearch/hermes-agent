@@ -2016,7 +2016,7 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     class Controller:
         def dispatch_ci_failure(self, audit: CIAuditReceipt) -> str:
             dispatched.append(audit)
-            return "scheduled"
+            return "rejected"
 
     monkeypatch.setattr("github_pr_feedback.cli.GitHubClient", GitHub)
     monkeypatch.setattr("github_pr_feedback.cli.LocalCIRunner", Runner)
@@ -2051,6 +2051,12 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
             "receipt_id": receipt.receipt_id,
             "repository": "acme/widgets",
             "status": "failed",
+            "handoff_status": "pending",
+        },
+        {
+            "receipt_id": receipt.receipt_id,
+            "retryable": True,
+            "status": "audit_handoff_retryable",
         }
     ]
 

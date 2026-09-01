@@ -861,10 +861,12 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
-            # GitHub's list order is not a freshness contract.  A PR comment,
+            # GitHub's list order is not a freshness contract. A PR comment,
             # review, or synchronize event advances updated_at, so newest-first
-            # keeps the bounded scanner on the changes that can actually need
-            # work instead of replaying hundreds of historical open PRs.
+            # is the normal fallback order. Local-CI backlog selection below
+            # reserves this bounded window for older heads that still lack
+            # passed exact-head evidence, preventing the freshness window from
+            # starving historical open PRs forever.
             pull_requests = tuple(
                 sorted(
                     pull_requests,
@@ -902,6 +904,12 @@ class ScanController:
                         skipped[error] += 1
                         if error == "agent_label_error":
                             break
+            required_local_ci_backlog += _required_local_ci_backlog_count(
+                self._policy,
+                self._ledger,
+                target,
+                pull_requests,
+            )
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)
@@ -912,15 +920,12 @@ class ScanController:
                     len(pull_requests)
                     - self._policy.local_ci_audit.max_open_prs_per_scan
                 )
-                pull_requests = pull_requests[
-                    : self._policy.local_ci_audit.max_open_prs_per_scan
-                ]
-            required_local_ci_backlog += _required_local_ci_backlog_count(
-                self._policy,
-                self._ledger,
-                target,
-                pull_requests,
-            )
+                pull_requests = _select_local_ci_candidates(
+                    self._policy,
+                    self._ledger,
+                    target,
+                    pull_requests,
+                )
             if actions_enabled and pull_requests:
                 # actions_enabled is only the repo-level Actions on/off toggle;
                 # it stays True through a billing lockout, where every job

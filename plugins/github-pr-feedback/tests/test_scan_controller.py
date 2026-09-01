@@ -1798,7 +1798,9 @@ def test_scan_dispatches_local_ci_newest_pull_request_first(tmp_path: Path) -> N
     ledger.close()
 
 
-def test_scan_bounds_newest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> None:
+def test_scan_prioritizes_oldest_missing_receipt_within_local_ci_read_cap(
+    tmp_path: Path,
+) -> None:
     local_path, sha = initialized_repository(tmp_path)
     older = PullRequest(
         17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
@@ -1840,8 +1842,8 @@ def test_scan_bounds_newest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> N
 
     assert result.created == 1
     assert result.skipped["local_ci_open_pr_scan_cap"] == 1
-    assert github.feedback_calls == [("acme/widgets", 18)]
-    assert github.current_calls == [("acme/widgets", 18)]
+    assert github.feedback_calls == [("acme/widgets", 17)]
+    assert github.current_calls == [("acme/widgets", 17)]
     ledger.close()
 
 

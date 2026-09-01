@@ -833,8 +833,9 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             print(
                 json.dumps(
                     {
-                        "status": "audit_handoff_unavailable",
+                        "status": "audit_handoff_retryable",
                         "receipt_id": receipt.receipt_id,
+                        "retryable": True,
                     },
                     sort_keys=True,
                 ),

@@ -57,6 +57,9 @@ class OAuthArtifactState:
         token, client, metadata = self.labels()
         return f"token={token} client={client} metadata={metadata}"
 
+    def __repr__(self) -> str:
+        return f"OAuthArtifactState({self.safe_summary()})"
+
 
 _OLD_DOCUMENTS = {
     "token": {"access_token": "OLD_ACCESS_TOKEN_FOR_TEST_ONLY", "refresh_token": "OLD_REFRESH_TOKEN_FOR_TEST_ONLY", "token_type": "Bearer", "expires_in": 3600},

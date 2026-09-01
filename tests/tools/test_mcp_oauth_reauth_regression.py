@@ -31,6 +31,18 @@ def test_safe_summary_never_contains_fake_secret_payloads():
     assert "old-auth.invalid" not in summary
 
 
+def test_repr_never_contains_fake_secret_payloads():
+    state = OAuthArtifactState(
+        token=b'{"access_token":"OLD_ACCESS_TOKEN_FOR_TEST_ONLY"}',
+        client=b'{"client_secret":"OLD_CLIENT_SECRET_FOR_TEST_ONLY"}',
+        metadata=b'{"token_endpoint":"https://old-auth.invalid/token"}',
+    )
+    rendered = repr(state)
+    assert "OLD_ACCESS_TOKEN_FOR_TEST_ONLY" not in rendered
+    assert "OLD_CLIENT_SECRET_FOR_TEST_ONLY" not in rendered
+    assert "old-auth.invalid" not in rendered
+
+
 def test_raise_known_mutation_rejects_unknown_corruption_shape():
     before = OAuthArtifactState(b"OLD_TOKEN", b"OLD_CLIENT", b"OLD_META")
     unexpected = OAuthArtifactState(None, None, b"PARTIAL_META")

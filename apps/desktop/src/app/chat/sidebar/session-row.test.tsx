@@ -198,7 +198,7 @@ describe('SidebarSessionRow running arc', () => {
   })
 
   it('paints the arc while the session is running', () => {
-    publishSessionState('s1', { ...createClientSessionState('s1'), busy: true })
+    publishSessionState('s1', { ...createClientSessionState('s1'), busy: true, storedSessionId: 's1' })
 
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
@@ -230,7 +230,7 @@ describe('SidebarSessionRow running arc', () => {
     sessionTitle.mockClear()
 
     act(() => {
-      publishSessionState('s1', { ...createClientSessionState('s1'), busy: true })
+      publishSessionState('s1', { ...createClientSessionState('s1'), busy: true, storedSessionId: 's1' })
     })
 
     await waitFor(() => {

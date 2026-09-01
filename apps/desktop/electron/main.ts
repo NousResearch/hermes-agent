@@ -281,8 +281,8 @@ import {
 import { canAdmitLocalBackend, isUnlimitedPoolCapacity, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
-import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { createKeepAwake } from './power-save'
+import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,

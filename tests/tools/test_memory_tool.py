@@ -330,6 +330,56 @@ class TestMemoryToolDispatcher:
         assert "the real one" in store.memory_entries
         assert "ignored" not in store.memory_entries
 
+    def test_approval_gate_does_not_stage_add_that_exceeds_limit(
+        self, tmp_path, monkeypatch
+    ):
+        from tools import write_approval as wa
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path / "memory")
+        monkeypatch.setattr(wa, "write_approval_enabled", lambda _subsystem: True)
+        monkeypatch.setattr(wa, "_interactive_approval_available", lambda: False)
+
+        limited = MemoryStore(memory_char_limit=20)
+        limited.load_from_disk()
+        assert limited.add("memory", "x" * 15)["success"] is True
+
+        result = json.loads(
+            memory_tool(action="add", target="memory", content="too large", store=limited)
+        )
+
+        assert result["success"] is False
+        assert "exceed" in result["error"].lower()
+        assert result["current_entries"] == ["x" * 15]
+        assert wa.pending_count(wa.MEMORY) == 0
+
+    def test_approval_gate_does_not_stage_batch_with_overflowing_final_state(
+        self, tmp_path, monkeypatch
+    ):
+        from tools import write_approval as wa
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path / "memory")
+        monkeypatch.setattr(wa, "write_approval_enabled", lambda _subsystem: True)
+        monkeypatch.setattr(wa, "_interactive_approval_available", lambda: False)
+
+        limited = MemoryStore(memory_char_limit=20)
+        limited.load_from_disk()
+        assert limited.add("memory", "x" * 15)["success"] is True
+
+        result = json.loads(
+            memory_tool(
+                target="memory",
+                operations=[{"action": "add", "content": "too large"}],
+                store=limited,
+            )
+        )
+
+        assert result["success"] is False
+        assert "over the limit" in result["error"].lower()
+        assert result["current_entries"] == ["x" * 15]
+        assert wa.pending_count(wa.MEMORY) == 0
+
 
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""

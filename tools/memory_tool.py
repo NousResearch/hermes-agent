@@ -411,6 +411,98 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def validate_pending_capacity(
+        self,
+        target: str,
+        *,
+        action: str,
+        content: Optional[str] = None,
+        old_text: Optional[str] = None,
+        operations: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return an over-budget error before a write is staged, if applicable.
+
+        Approval staging happens outside the store mutation methods, so a
+        pending write used to bypass their capacity checks and looked successful
+        until approval. Re-read under the normal memory lock so the proposal is
+        checked against the latest on-disk state without changing it.
+
+        ``None`` means capacity is currently sufficient (or the operation cannot
+        be evaluated without applying its normal semantic validation). The
+        approval handler remains the final authority and checks again on apply.
+        """
+        path = self._path_for(target)
+        with self._file_lock(path):
+            if self._reload_target(target, skip_drift=True) is _READ_FAILED:
+                return _read_failed_error(path)
+
+            entries = list(self._entries_for(target))
+            limit = self._char_limit(target)
+            candidate = list(entries)
+
+            if action == "add":
+                value = (content or "").strip()
+                if value in candidate:
+                    return None
+                candidate.append(value)
+            elif action == "replace":
+                value = (content or "").strip()
+                matches = [i for i, entry in enumerate(candidate) if (old_text or "") in entry]
+                if not matches or not value or len({candidate[i] for i in matches}) > 1:
+                    return None
+                candidate[matches[0]] = value
+            elif action == "batch":
+                for operation in operations or []:
+                    operation = operation or {}
+                    op_action = operation.get("action")
+                    value = (operation.get("content") or operation.get("new_text") or "").strip()
+                    needle = (operation.get("old_text") or "").strip()
+                    if op_action == "add":
+                        if value and value not in candidate:
+                            candidate.append(value)
+                    elif op_action == "replace":
+                        matches = [i for i, entry in enumerate(candidate) if needle and needle in entry]
+                        if value and len(matches) == 1:
+                            candidate[matches[0]] = value
+                    elif op_action == "remove":
+                        matches = [i for i, entry in enumerate(candidate) if needle and needle in entry]
+                        if len(matches) == 1:
+                            candidate.pop(matches[0])
+                    else:
+                        return None
+            else:
+                return None
+
+            new_total = len(ENTRY_DELIMITER.join(candidate)) if candidate else 0
+            if new_total <= limit:
+                return None
+
+            current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+            if action == "add":
+                error = (
+                    f"Memory at {current:,}/{limit:,} chars. Adding this entry ({len((content or '').strip())} chars) "
+                    "would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into "
+                    "shorter ones or 'remove' stale or less important entries (see current_entries below), then retry."
+                )
+            elif action == "batch":
+                error = (
+                    f"After applying all {len(operations or [])} operations, memory would be at "
+                    f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more entries "
+                    "in the same batch (see current_entries below), then retry."
+                )
+            else:
+                error = (
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
+                    "or 'remove' other stale or less important entries to make room (see current_entries below), "
+                    "then retry."
+                )
+            return {
+                "success": False,
+                "error": error,
+                "current_entries": entries,
+                "usage": f"{current:,}/{limit:,}",
+            }
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -947,7 +1039,7 @@ def load_on_disk_store() -> "MemoryStore":
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str], store: "MemoryStore") -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -963,6 +1055,15 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         # If the gate module can't load, fail open (current behaviour) rather
         # than blocking all memory writes.
         return None
+
+    if not wa.write_approval_enabled(wa.MEMORY):
+        return None
+
+    capacity_error = store.validate_pending_capacity(
+        target, action=action, content=content, old_text=old_text
+    )
+    if capacity_error is not None:
+        return json.dumps(capacity_error, ensure_ascii=False)
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
@@ -1003,7 +1104,9 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(
+    target: str, operations: List[Dict[str, Any]], store: "MemoryStore"
+) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -1014,6 +1117,13 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         from tools import write_approval as wa
     except Exception:
         return None
+
+    if wa.write_approval_enabled(wa.MEMORY):
+        capacity_error = store.validate_pending_capacity(
+            target, action="batch", operations=operations
+        )
+        if capacity_error is not None:
+            return json.dumps(capacity_error, ensure_ascii=False)
 
     label = "user profile" if target == "user" else "memory"
     summary = f"apply {len(operations)} op(s) to {label}"
@@ -1130,7 +1240,7 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations, store)
         if gate_result is not None:
             return gate_result
         result = store.apply_batch(target, operations)
@@ -1155,7 +1265,7 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text, store)
     if gate_result is not None:
         return gate_result
 

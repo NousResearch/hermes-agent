@@ -1216,6 +1216,17 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     return sweep.crashed
 
 
+def _warn_dropped_summary(task_id: str, run_id: Optional[int], summary: Optional[str]) -> None:
+    """A closed run has nowhere to land a summary. Unlike the sibling ``run_id is None`` sites in
+    this module we log instead of synthesizing a run row: a synthetic row would inflate the
+    per-task attempt count a later policy derives from this same table."""
+    if run_id is None and summary:
+        _kb._log.warning(
+            "Task %s: run already closed, dropping a %d-char summary "
+            "(CAS lost to the crash detector)", task_id, len(summary),
+        )
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1227,6 +1238,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1239,6 +1251,11 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``summary`` is the dying attempt's own account of what it did, persisted to
+    ``task_runs.summary`` so ``build_worker_context`` can hand it to the next attempt.
+    Optional: most failure paths (crash, spawn failure) have no worker left to ask. Not
+    capped here — the read path caps at ``_CTX_MAX_FIELD_BYTES``.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1284,8 +1301,10 @@ def _record_task_failure(
             if end_run:
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error,
+                    summary=summary,
                     metadata={"failures": failures, "retry_status": retry_status},
                 )
+                _warn_dropped_summary(task_id, run_id, summary)
                 _kb._append_event(
                     conn, task_id, outcome,
                     {"error": error, "failures": failures, "retry_status": retry_status},
@@ -1316,6 +1335,7 @@ def _record_task_failure(
             # Only the spawn path has an open run to close.
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                summary=summary,
                 metadata={
                     "failures": failures,
                     "trigger_outcome": outcome,
@@ -1324,6 +1344,7 @@ def _record_task_failure(
                     "retry_status": retry_status,
                 },
             )
+            _warn_dropped_summary(task_id, run_id, summary)
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)

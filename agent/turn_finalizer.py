@@ -41,19 +41,70 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _is_pure_tool_call_tail(msg: dict) -> bool:
+    """Assistant row with ``tool_calls`` but no visible text of its own."""
+    if not isinstance(msg, dict) or not msg.get("tool_calls"):
+        return False
+    return _assistant_row_missing_visible_text(msg)
+
+
+def _fill_assistant_tail_content(agent, tail: dict, final_response) -> None:
+    """Write delivered text onto an already-persisted blank assistant row."""
+    tail["content"] = final_response
+    stamp_message_timestamp(tail)
+    tail.pop(_DB_PERSISTED_MARKER, None)
+    agent._db_flush_scan_prefix = None
+
+
+# Verification continuation scaffolding flags: verify-on-stop / pre_verify
+# inject a synthetic user nudge to keep the agent going one more turn.
+# These nudges must be stripped from returned/live history to avoid
+# role-alternation breaks and poisoning the resumed transcript. The
+# assistant response is real content and is not flagged. (#65919 §7)
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+# `handle_max_iterations` never returns empty — on every failure mode it
+# substitutes a placeholder (chat_completion_helpers.py:3165, 3230, 3232,
+# 3236). Persisting one would hand the next worker a prior-attempt block that
+# says nothing, so the retry would look resumed and would not be; the
+# exception variant would also pipe raw provider error text into a later
+# prompt. Treat them as the absence of a summary, which is what they are.
+_SUMMARY_PLACEHOLDERS = (
+    "I reached the iteration limit",
+    "I reached the maximum iterations",
+)
+
+
 def _record_kanban_budget_exhausted(
-    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
+    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger,
+    summary: str | None = None,
 ) -> None:
     """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
 
     Routed via ``_record_task_failure`` (not ``kanban_block``) so it counts toward the
     consecutive-failure circuit breaker. Idempotent via the ``_end_run`` CAS
-    (``WHERE ended_at IS NULL``), so safe from multiple exit paths.
+    (``WHERE ended_at IS NULL``), so safe from multiple exit paths (#87096).
 
-    This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
-    guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
-    from multiple exit paths.
+    ``summary`` is the dying worker's own account of its work, produced by
+    the extra toolless call in ``_handle_max_iterations``. Persisting it is
+    the whole point of that call: ``build_worker_context`` reads prior
+    attempts' summaries, so the retry resumes instead of re-deriving. An
+    empty summary is logged rather than stored silently — it means the fleet
+    paid for an API call and got nothing, which is worth knowing.
     """
+    cleaned = (summary or "").strip() or None
+    if cleaned and cleaned.startswith(_SUMMARY_PLACEHOLDERS):
+        cleaned = None
+    if cleaned is None:
+        logger.warning(
+            "Budget-exhausted task %s produced no summary — the retry will "
+            "start cold (summary was %r)",
+            kanban_task,
+            summary,
+        )
     try:
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
@@ -70,6 +121,7 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
+                summary=cleaned,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
             )
         finally:
@@ -128,10 +180,15 @@ def _resolve_budget_fallback(
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
     preserved_verification_fallback = False
+    # True once a user-facing fallback (summary call or preserved verification answer) produced
+    # ``final_response``; only then is it the worker's own account of its work, fit to persist as
+    # the attempt summary. The bounded fallback below has no summary to offer.
+    _summary_fallback_taken = False
     if (
         final_response is None and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
+        _summary_fallback_taken = True
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         if _pending_verification_response:
             # A verification gate withheld a composed answer, then the budget ran out:
@@ -176,7 +233,10 @@ def _resolve_budget_fallback(
     # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
-        _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
+        _record_kanban_budget_exhausted(
+            _kanban_task, api_call_count, agent.max_iterations, logger,
+            summary=flatten_message_text(final_response) if _summary_fallback_taken else None,
+        )
     return final_response, _turn_exit_reason, preserved_verification_fallback
 
 

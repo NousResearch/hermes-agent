@@ -192,6 +192,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         outcome="timed_out",
         release_claim=True,
         end_run=True,
+        summary="composed report",
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
 

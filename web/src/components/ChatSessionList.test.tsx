@@ -149,6 +149,13 @@ describe("ChatSessionList activity status", () => {
     expect(host.querySelectorAll("button[title]")).toHaveLength(0);
   });
 
+  it("keeps the mobile session search field at a 16px-safe size", async () => {
+    await render();
+    const search = host.querySelector<HTMLInputElement>("input[type=search]");
+    expect(search?.className).toContain("text-base");
+    expect(search?.className).toContain("sm:text-xs");
+  });
+
   it("renders the supported labels for each session status", async () => {
     await render({ one: "ready", two: "working" });
     expect(host.textContent).toContain("Ready");

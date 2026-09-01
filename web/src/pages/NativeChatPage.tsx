@@ -648,7 +648,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           <select
             id="native-chat-model"
             aria-label="Chat model"
-            className="h-9 max-w-44 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-xs text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30"
+            className="h-9 max-w-44 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-base text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30 sm:text-xs"
             value={routingSelection.model ? `${routingSelection.model.provider}:${routingSelection.model.model}` : "adaptive"}
             onChange={(event) => {
               if (event.target.value === "adaptive") return void changeRouting("", "", routingSelection.reasoning);
@@ -663,7 +663,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           <select
             id="native-chat-reasoning"
             aria-label="Reasoning level"
-            className="h-9 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-xs text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30"
+            className="h-9 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-base text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30 sm:text-xs"
             value={routingSelection.reasoning}
             onChange={(event) => changeRouting(routingSelection.model?.model ?? "", routingSelection.model?.provider ?? "", event.target.value as NativeReasoningLevel)}
           >
@@ -960,7 +960,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 ref={textareaRef}
                 aria-label="Message"
                 aria-describedby="native-chat-composer-hint"
-                className="min-h-20 w-full resize-y border border-border bg-background/40 px-3 py-2 font-courier text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40"
+                className="min-h-20 w-full resize-y border border-border bg-background/40 px-3 py-2 font-courier text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40 sm:text-sm"
                 value={draft}
                 disabled={connectionState !== "open" || !sessionId}
                 placeholder="Message Hermes… (drop or paste files)"

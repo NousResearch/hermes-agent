@@ -109,6 +109,19 @@ describe("NativeChatPage", () => {
     expect(navigator?.classList.contains("hidden")).toBe(false);
   });
 
+  it("keeps chat text controls at a mobile-safe size while staying compact on desktop", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea");
+    expect(textarea?.className).toContain("text-base");
+    expect(textarea?.className).toContain("sm:text-sm");
+
+    for (const select of Array.from(host.querySelectorAll("select"))) {
+      expect(select.className).toContain("text-base");
+      expect(select.className).toContain("sm:text-xs");
+    }
+  });
+
   it("keeps Enter inside Thai IME composition and submits only after composition ends", () => {
     expect(shouldSubmitComposerKey("Enter", false, true)).toBe(false);
     expect(shouldSubmitComposerKey("Enter", true, false)).toBe(false);

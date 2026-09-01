@@ -576,7 +576,7 @@ export function ChatSessionList({
           placeholder={searchPlaceholder}
           aria-label={searchLabel}
           aria-busy={searching}
-          className="h-8 w-full min-w-0 py-0 pr-2 pl-8 text-xs"
+          className="h-8 w-full min-w-0 py-0 pr-2 pl-8 text-base sm:text-xs"
         />
       </div>
 

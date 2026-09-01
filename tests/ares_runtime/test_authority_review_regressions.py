@@ -50,6 +50,14 @@ def test_sibling_attenuation_cannot_duplicate_parent_budget() -> None:
     assert exc.value.code == "USE_COUNT_EXHAUSTED"
 
 
+def test_parent_self_use_cannot_overrun_delegated_budget() -> None:
+    parent = _scope(uses=2)
+    parent.attenuate({"tool": "write_file", "target": "path:/tmp/target", "use_count": 2, "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"}}, child_generation=2)
+    with pytest.raises(ContractError) as exc:
+        parent.reserve(consumption_ref="parent-use", args_digest="sha256:parent", target_ref="path:/tmp/target")
+    assert exc.value.code == "USE_COUNT_EXHAUSTED"
+
+
 def test_target_scope_requires_target_ref_and_scope_copy_is_deep() -> None:
     s = _scope()
     with pytest.raises(ContractError) as exc:

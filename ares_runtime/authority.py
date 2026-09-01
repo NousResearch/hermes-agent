@@ -177,7 +177,7 @@ class AuthorityScopeV1:
         args_digest = _require_str(args_digest, "INVALID_ARGS_DIGEST")
         if consumption_ref in self._settlements:
             raise ContractError("DUPLICATE_CONSUMPTION_REF")
-        if "use_count" in self._scope and self._charged_count >= self._scope["use_count"]:
+        if "use_count" in self._scope and self._charged_count + self._delegated_count >= self._scope["use_count"]:
             raise ContractError("USE_COUNT_EXHAUSTED")
         if "target" in self._scope and target_ref is None:
             raise ContractError("TARGET_REQUIRED")

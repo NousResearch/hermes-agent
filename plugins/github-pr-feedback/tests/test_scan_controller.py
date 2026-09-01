@@ -1874,7 +1874,8 @@ def test_scan_prioritizes_oldest_missing_receipt_within_local_ci_read_cap(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped["local_ci_open_pr_scan_cap"] == 1
+    assert result.local_ci_catalogue_deferred == 1
+    assert "local_ci_open_pr_scan_cap" not in result.skipped
     assert github.feedback_calls == [("acme/widgets", 17)]
     assert github.current_calls == [("acme/widgets", 17)]
     ledger.close()
@@ -2249,7 +2250,8 @@ def test_required_local_ci_backlog_signal_ignores_read_cap_when_receipts_are_cur
     ).scan()
 
     assert getattr(result, "required_local_ci_backlog", 0) == 0
-    assert result.skipped["local_ci_open_pr_scan_cap"] == 1
+    assert result.local_ci_catalogue_deferred == 1
+    assert "local_ci_open_pr_scan_cap" not in result.skipped
     assert github.feedback_calls == [("acme/widgets", 18)]
     assert github.current_calls == []
     ledger.close()

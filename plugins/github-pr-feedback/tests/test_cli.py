@@ -316,6 +316,22 @@ def test_scan_does_not_defer_secondary_fanout_for_read_cap_without_ci_backlog(
     assert "deferred" not in payload
 
 
+def test_scan_payload_reports_catalogue_deferred_separately_from_skips() -> None:
+    from github_pr_feedback.controller import ScanResult
+    from github_pr_feedback.cli import _scan_payload
+
+    payload = _scan_payload(
+        ScanResult(
+            created=1,
+            skipped={},
+            local_ci_catalogue_deferred=199,
+        )
+    )
+
+    assert payload["local_ci_catalogue_deferred"] == 199
+    assert "local_ci_open_pr_scan_cap" not in payload["skipped"]
+
+
 class RecordingKanbanRunner:
     def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
         self.stdout = stdout

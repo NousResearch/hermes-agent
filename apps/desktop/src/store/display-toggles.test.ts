@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const $gateway = atom<unknown>(null)
-const request = vi.fn(async () => undefined)
+const request = vi.fn(async (_method: string, _params?: Record<string, unknown>) => undefined)
 
 vi.mock('@/store/gateway', () => ({
   $gateway,

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 
 import pytest
 import yaml
@@ -92,19 +93,30 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         assert proc.stdin is not None
         assert proc.stdout is not None
         stdout = proc.stdout
-        threading.Thread(
-            target=lambda: output.put(stdout.readline()),
-            daemon=True,
-        ).start()
-        proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
-        proc.stdin.flush()
-        try:
-            line = output.get(timeout=10)
-        except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
-        response = json.loads(line)
-        assert response["ok"] is True
-        assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]
+        def read_lines() -> None:
+            for line in stdout:
+                output.put(line)
+
+        threading.Thread(target=read_lines, daemon=True).start()
+        # MCP startup/discovery is asynchronous. /tools must eventually expose
+        # the profile-local server, but the first response can legitimately
+        # arrive before the child handshake settles on a loaded CI runner.
+        deadline = time.monotonic() + 10
+        response = None
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            proc.stdin.write(json.dumps({"id": attempt, "command": "/tools"}) + "\n")
+            proc.stdin.flush()
+            try:
+                line = output.get(timeout=1)
+            except queue.Empty:
+                continue
+            candidate = json.loads(line)
+            if candidate.get("ok") and "mcp__profileprobe__hermes_61922_profile_probe" in candidate.get("output", ""):
+                response = candidate
+                break
+        assert response is not None, "profile-local MCP tool did not appear in /tools within 10 seconds"
     finally:
         proc.terminate()
         try:

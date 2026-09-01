@@ -2063,6 +2063,103 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     ]
 
 
+def test_audit_handoff_exception_renders_retryable_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
+    from github_pr_feedback.cli import _audit_pr
+    from github_pr_feedback.github_client import CheckState, PullRequestMergeState
+
+    head_sha = "a" * 40
+    base_sha = "b" * 40
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    settings = enabled_settings(Path(__file__).resolve().parents[3])
+    settings["local_ci_audit"] = {
+        "enabled": True,
+        "assignee": "pr-local-ci-auditor",
+        "post_results": True,
+    }
+    receipt = CIAuditReceipt(
+        receipt_id="f" * 64,
+        identity=CIAuditIdentity("acme/widgets", 17, base_sha, head_sha),
+        manifest_digest="e" * 64,
+        status="failed",
+        started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
+        actions_state=CheckState(False, True, 0),
+        commands=(),
+    )
+
+    class GitHub:
+        def get_merge_state(self, repository: str, pr_number: int):
+            return PullRequestMergeState(
+                repository=repository,
+                number=pr_number,
+                state="OPEN",
+                is_draft=False,
+                mergeable=True,
+                merge_state_status="CLEAN",
+                base_branch="main",
+                base_sha=base_sha,
+                head_repository=repository,
+                author_login="owner",
+                head_ref_name="codex/fix",
+                head_sha=head_sha,
+                merged=False,
+                merge_commit_oid=None,
+            )
+
+        def list_feedback(self, _repository: str, _pr_number: int):
+            return ()
+
+        def post_issue_comment(self, _repository: str, _pr_number: int, _body: str):
+            return None
+
+    class Ledger:
+        def close(self) -> None:
+            pass
+
+    class Controller:
+        def dispatch_ci_failure(self, _audit: CIAuditReceipt) -> str:
+            raise RuntimeError("repair dispatch crashed")
+
+    monkeypatch.setattr("github_pr_feedback.cli.GitHubClient", GitHub)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli.FeedbackLedger.for_current_profile", lambda: Ledger()
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._controller", lambda _policy, _ledger: Controller()
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_grouped_exact_head_audit",
+        lambda *_args, **_kwargs: receipt,
+    )
+    monkeypatch.setattr("github_pr_feedback.cli._block_current_ci_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("github_pr_feedback.cli._terminate_current_ci_worker", lambda: None)
+
+    result = _audit_pr(
+        RecordingContext(settings),
+        argparse.Namespace(
+            repository="acme/widgets",
+            pr_number=17,
+            head_sha=head_sha,
+            worktree=str(repository),
+        ),
+    )
+
+    assert result == 1
+    rendered = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rendered[-1] == {
+        "handoff_reason": "repair dispatch crashed",
+        "receipt_id": receipt.receipt_id,
+        "retryable": True,
+        "status": "audit_handoff_retryable",
+    }
+
+
 def test_blocked_merge_handoff_blocks_task_with_exact_blockers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

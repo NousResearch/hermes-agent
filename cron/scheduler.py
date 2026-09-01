@@ -279,7 +279,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
     # provider and the operator debugged the wrong system).
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
-        return inactivity_notice(job_name, job_id)
+        notice = inactivity_notice(job_name, job_id)
+        activity_match = re.search(r"last activity:\s*(.+)", text, re.IGNORECASE)
+        if activity_match:
+            activity = " ".join(activity_match.group(1).split())
+            if len(activity) > 100:
+                activity = activity[:97].rstrip() + "..."
+            notice += f" Last activity: {activity}."
+        return notice
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
@@ -513,7 +520,8 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    resolve_cron_inactivity_timeout, save_job_output, self_removal_delivery_allowed,
+    self_removal_delivery_scope, use_cron_store)
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
@@ -1193,18 +1201,9 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
         return hit
 
 
-def _cron_inactivity_seconds() -> float:
-    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600. Shared by the
-    inactivity monitor and the cwd-lock bound so they can't drift: the lock bound must stay >= the
-    inactivity limit or waiters fail while a healthy holder runs."""
-    raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
-    if not raw:
-        return 600.0
-    try:
-        return float(raw)
-    except (ValueError, TypeError):
-        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
-        return 600.0
+def _cron_inactivity_seconds(config: Optional[dict] = None) -> float:
+    """Shared watchdog/lock/claim inactivity budget; 0 = unlimited."""
+    return resolve_cron_inactivity_timeout(config)
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:

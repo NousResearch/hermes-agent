@@ -38,7 +38,15 @@ def classify_cron_failure_reason(text: str) -> str:
     exc = exc_cls(text)
     if status:
         exc.status_code = int(status.group(1))
-    return classify_api_error(exc).reason.value
+    reason = classify_api_error(exc).reason.value
+    # A generic TimeoutError can be a local subprocess/tool deadline. Only
+    # provider-shaped timeout signatures warrant provider remediation here.
+    if reason == "timeout" and not any(signature in text.lower() for signature in (
+        "readtimeout", "connecttimeout", "pooltimeout", "apitimeouterror",
+        "provider timeout", "provider timed out", "upstream timed out", "request timed out",
+    )):
+        return "unknown"
+    return reason
 
 
 # What happened, per reason: the one gloss table shared with subagent notices lives in

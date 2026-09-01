@@ -4,6 +4,7 @@ import { keyedTimeouts } from '@/lib/keyed-timeouts'
 
 import { $gateway } from './gateway'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
 export type GoalStatus = 'active' | 'done' | 'paused' | 'waiting'
@@ -170,10 +171,7 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
   }
 
   try {
-    const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
-      gateway.request<T>(method, params ?? {})
-
-    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequest, 'slash.exec', {
+    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequestFor(gateway), 'slash.exec', {
       command: 'goal status',
       session_id: sid
     })

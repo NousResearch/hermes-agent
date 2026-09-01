@@ -8,12 +8,19 @@ import { JsonRpcGatewayError } from '@hermes/shared'
  *  status) and by the owner-routed RPC seam that clears it. This module is a
  *  dependency-free leaf on purpose: `session-request-router` (which every
  *  store imports) must be able to clear the latch after a successful rebind
- *  without pulling the session/tile stores into its import graph. The public
- *  surface for callers is `runtime-gone.ts`, which re-exports everything here. */
+ *  without pulling the session/tile stores into its import graph. Stores that
+ *  also need the heal levers import through `runtime-gone.ts` (which re-exports
+ *  this module); cycle-sensitive callers (the router, the gateway event loop)
+ *  import the leaf directly. */
 const goneSessions = new Set<string>()
 
 /** Gateway JSON-RPC code for "session not found" (tui_gateway `_sess_nowait`). */
 const GATEWAY_SESSION_NOT_FOUND_CODE = 4001
+
+/** Consecutive heals per stored session id (see `runtime-gone.ts`
+ *  `markRuntimeGone`). Lives here so the rebind seam below can refund it
+ *  without importing the heal module. */
+export const healsByStoredId = new Map<string, number>()
 
 /** A gone session is unrecoverable for THIS runtime id; a timeout or transport
  *  blip is not. Only the former may stop a poll — misclassifying a transient
@@ -67,6 +74,9 @@ export function resetBackgroundPollingGuard(sid?: string): void {
   }
 
   goneSessions.clear()
+  // Same lifetime as the latch: a respawned backend re-mints every runtime
+  // id, so every stored session's heal budget starts over too.
+  healsByStoredId.clear()
 }
 
 /** Ids a successful `session.resume` / `session.activate` just rebound — the
@@ -90,11 +100,6 @@ function reboundSessionIds(method: string, params: Record<string, unknown>, resu
   return ids
 }
 
-/** Consecutive heals per stored session id (see `runtime-gone.ts`
- *  `markRuntimeGone`). Lives here so the rebind seam below can refund it
- *  without importing the heal module. */
-export const healsByStoredId = new Map<string, number>()
-
 /** Un-latch the ids a successful `session.resume` / `session.activate` just
  *  rebound and refund the stored session's heal budget: a rebind is proof of
  *  life, so the NEXT reap can still be healed. Without the refund a backend
@@ -112,4 +117,14 @@ export function resetBackgroundPollingGuardAfterRebind(
     goneSessions.delete(id)
     healsByStoredId.delete(id)
   }
+}
+
+/** Adapt a store-level gateway handle (`$gateway.get()` or the narrower
+ *  `ApprovalGateway` shape) to the ambient-request callback
+ *  `requestForOwnedSession` expects. The pollers never pass a deadline, so the
+ *  2-arg call shape is kept exactly (gateway.request callers assert on it). */
+export function ambientRequestFor(gateway: {
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+}): <R>(method: string, params?: Record<string, unknown>) => Promise<R> {
+  return <R>(method: string, params?: Record<string, unknown>) => gateway.request(method, params ?? {}) as Promise<R>
 }

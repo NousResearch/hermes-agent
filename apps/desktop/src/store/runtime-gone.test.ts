@@ -183,6 +183,20 @@ describe('gone-latch classifier and rebind seam', () => {
     expect(isSessionGone('rt-other')).toBe(false)
   })
 
+  it('a respawned backend (global clear) also resets every heal budget', () => {
+    for (const rt of ['rt-1', 'rt-2', 'rt-3']) {
+      $sessionStates.set({ [rt]: cachedState(STORED) })
+      $sessionTiles.set([tile(STORED, rt)])
+      expect(markRuntimeGone(rt)).toBe(true)
+    }
+
+    resetBackgroundPollingGuard()
+
+    $sessionStates.set({ 'rt-4': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-4')])
+    expect(markRuntimeGone('rt-4')).toBe(true)
+  })
+
   it('refunds the stored session heal budget on a successful rebind', () => {
     // Three reaps exhaust MAX_CONSECUTIVE_HEALS for STORED...
     for (const rt of ['rt-1', 'rt-2', 'rt-3']) {

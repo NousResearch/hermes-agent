@@ -3,6 +3,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
+import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -122,10 +123,7 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
 
   if (gateway && request.requestId && request.sessionId) {
     try {
-      const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
-        gateway.request(method, params ?? {}) as Promise<T>
-
-      await requestForOwnedSession(request.sessionId, ambientRequest, 'approval.received', {
+      await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.received', {
         request_id: request.requestId,
         session_id: request.sessionId
       })
@@ -149,10 +147,9 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   let rawResult: unknown
 
   try {
-    const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
-      gateway.request(method, params ?? {}) as Promise<T>
-
-    rawResult = await requestForOwnedSession(sessionId, ambientRequest, 'approval.pending', { session_id: sessionId })
+    rawResult = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
+      session_id: sessionId
+    })
   } catch (error) {
     if (isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)

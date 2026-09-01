@@ -192,9 +192,12 @@ def emit_trigger(
 ) -> Optional[str]:
     """Append an idempotent trigger event to the ledger, if triggered.
 
+    C6: reports success ONLY after a confirmed append or a confirmed
+    idempotent existing event.  Ledger failures return None (never a
+    success-shaped event id).
     Event id derives from (profile, sorted reasons, window_end) so repeated
     processing of the same evidence window is idempotent.  Returns the
-    event_id, or None when no trigger applies.
+    event_id, or None when no trigger applies or the append failed.
     """
     if not decision.get("trigger"):
         return None
@@ -206,7 +209,7 @@ def emit_trigger(
     ).hexdigest()[:16]
     event_id = f"selfeval-trigger-{profile}-{digest}"
     try:
-        from hermes_cli.profile_activity_ledger import append_event
+        from hermes_cli.profile_activity_ledger import append_event, query_events
         append_event(
             source="denji-self-eval-trigger",
             event_type="profile.self_eval.trigger",
@@ -225,9 +228,14 @@ def emit_trigger(
             },
             occurred_at=int(window_end),
         )
-        return event_id
+        # C6: confirm the event is actually readable from the ledger before
+        # reporting success (guards wrong-HERMES_HOME and silent drops).
+        stored = query_events(event_types=["profile.self_eval.trigger"])
+        if any(e.get("event_id") == event_id for e in stored):
+            return event_id
+        return None
     except Exception:
-        return event_id
+        return None
 
 
 if __name__ == "__main__":

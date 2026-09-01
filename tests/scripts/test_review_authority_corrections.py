@@ -116,7 +116,10 @@ class TestC8FindingTaxonomy:
                          actor_profile="octacon", target_profile="octacon",
                          occurred_at=now - 90 + i)
         dim = mod._quality_dimension("octacon", now - 86400)
-        assert dim["evidence"]["governance_findings_open"] == 1
+        # opened(1) and resolved(3) in-window: nothing remains open
+        assert dim["evidence"]["governance_findings_open"] == 0
+        assert dim["evidence"]["governance_findings_resolved"] == 3
+        assert dim["verdict"] in ("CLEAN", "WATCH")  # never ATTENTION from resolved work
 
 
 class TestC8Scope:

@@ -144,6 +144,23 @@ def _profile_home(profile: str) -> Optional[str]:
                 return None
         return os.path.expanduser(f"~/.hermes/profiles/{profile}")
 
+def outbound_identity() -> str:
+    """Asserted sender identity for outbound A2A requests (fleet task #322).
+
+    '{profile}-{hostname}' (e.g. 'librarian-kimchi'): profile from
+    _active_profile_name(), machine's short hostname label via socket — the
+    naming pieces the inbound server already uses (_default_agent_name).
+    Sent as the X-A2A-Identity header; advisory display provenance for
+    loopback receivers — asserted, never authentication. No config, no token.
+    """
+    profile = _active_profile_name()
+    try:
+        import socket
+        host = (socket.gethostname() or "localhost").split(".")[0] or "localhost"
+    except Exception:
+        host = "localhost"
+    return f"{profile}-{host}"
+
 def _safe_context_slug(value: str, max_len: int = 96) -> str:
     """Sanitize attacker-provided context ids before using in session titles."""
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-._")

@@ -204,6 +204,7 @@ def test_default_spawn_bridges_process_local_provider_into_profile_worker(
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][provider_index + 1] == "ollama"
     assert captured["env"]["CUSTOM_BASE_URL"] == "http://127.0.0.1:11434/v1"
+    assert captured["env"]["HERMES_KANBAN_LOCAL_ONLY"] == "1"
     toolsets = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     assert "terminal" in toolsets
     assert "code_execution" not in toolsets

@@ -109,6 +109,20 @@ def test_unsupported_thinking_never_activates_remote_fallback():
     assert agent._fallback_index == 0
 
 
+def test_kanban_local_only_suppresses_profile_fallback_chain(monkeypatch):
+    """A local CI child must not escape to a remote configured fallback."""
+    monkeypatch.setenv("HERMES_KANBAN_LOCAL_ONLY", "1")
+    agent = _make_agent(
+        fallback_model=[
+            {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+            {"provider": "nous", "model": "hermes-4"},
+        ],
+    )
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None
+
+
 def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
     """Unsafe remote payloads must go directly to a local fallback.
 

@@ -100,15 +100,23 @@ def _prune_replaced_custom_model_config_credentials(
     try:
         from agent.credential_pool import (
             CUSTOM_POOL_PREFIX,
-            get_custom_provider_pool_key,
+            custom_provider_pool_key_candidates,
         )
         from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-        active_pool_key = get_custom_provider_pool_key(
-            base_url,
-            provider_name=provider_name or None,
-        )
-        if not active_pool_key:
+        # A keyed ``providers.<key>`` endpoint stores under the durable slug
+        # while legacy-named pools keep the ``custom:<display-name>`` key, so
+        # every identity the active endpoint may occupy must be skipped —
+        # comparing against a single preferred key false-prunes the provider's
+        # own legacy-named pool (verified regression from PR #100413 review).
+        active_pool_keys = {
+            str(key).strip().lower()
+            for key in custom_provider_pool_key_candidates(
+                base_url,
+                provider_name=provider_name or None,
+            )
+        }
+        if not active_pool_keys:
             return
         pools = read_credential_pool(None)
         if not isinstance(pools, dict):
@@ -117,7 +125,7 @@ def _prune_replaced_custom_model_config_credentials(
             if (
                 not isinstance(pool_key, str)
                 or not pool_key.startswith(CUSTOM_POOL_PREFIX)
-                or pool_key == active_pool_key
+                or pool_key in active_pool_keys
                 or not isinstance(entries, list)
             ):
                 continue

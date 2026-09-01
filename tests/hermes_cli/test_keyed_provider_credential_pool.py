@@ -100,3 +100,117 @@ def test_keyed_provider_runtime_falls_back_to_legacy_custom_namespace(
     resolved = rp.resolve_runtime_provider(requested="b-ai")
     assert resolved["api_key"] == LEGACY_KEY
     assert resolved["api_key"] != "no-key-required"
+
+
+def _model_config_entry(entry_id, token):
+    return {
+        "id": entry_id,
+        "label": "model_config",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "model_config",
+        "access_token": token,
+    }
+
+
+def test_prune_keeps_active_legacy_pool_for_keyed_provider(tmp_path, monkeypatch):
+    """A keyed provider's own legacy-named pool must not be false-pruned.
+
+    Regression: with keys stored under ``custom:b.ai`` while the provider is
+    configured as ``providers.b-ai``, the active pool key resolves to the
+    durable slug ``b-ai``; comparing with ``==`` let the prune strip the
+    provider's own current credential from ``custom:b.ai``.
+    """
+    config = {
+        "model": {"default": "b-ai-model", "provider": "b-ai"},
+        "providers": {
+            "b-ai": {
+                "name": "B.AI",
+                "base_url": "https://api.b.ai/v1",
+            }
+        },
+    }
+    pools = {
+        # legacy-named pool for the (now keyed) b.ai provider holding the
+        # credential seeded from model.api_key — this is the ACTIVE pool
+        "custom:b.ai": [_model_config_entry("mc1", "sk-current-b-ai-key")],
+        # an unrelated stale pool that SHOULD be pruned
+        "custom:old-endpoint": [_model_config_entry("mc2", "sk-stale-key")],
+    }
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": pools,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from hermes_cli.model_setup_flows import (
+        _prune_replaced_custom_model_config_credentials,
+    )
+
+    _prune_replaced_custom_model_config_credentials(
+        "https://api.b.ai/v1", provider_name="B.AI"
+    )
+
+    after = json.loads(
+        (tmp_path / ".hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    kept = (after.get("credential_pool") or {}).get("custom:b.ai")
+    pruned = (after.get("credential_pool") or {}).get("custom:old-endpoint")
+
+    assert kept, "active provider's own legacy-named pool must keep its credential"
+    assert kept[0]["access_token"] == "sk-current-b-ai-key"
+    assert pruned == [], "stale pool for a different endpoint must be pruned"
+
+
+def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
+    """A legacy-named pool must still seed from model.api_key.
+
+    Regression: with model.provider 'custom' pointing at a keyed provider's
+    base_url, the pool key ``custom:b.ai`` no longer equals the preferred
+    candidate (the slug ``b-ai``), silently skipping the model_config seed.
+    """
+    config = {
+        "model": {
+            "default": "b-ai-model",
+            "provider": "custom",
+            "base_url": "https://api.b.ai/v1",
+            "api_key": "sk-model-config-key",
+        },
+        "providers": {
+            "b-ai": {
+                "name": "B.AI",
+                "base_url": "https://api.b.ai/v1",
+            }
+        },
+    }
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {"custom:b.ai": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:b.ai")
+    entries = pool.entries() if hasattr(pool, "entries") else []
+    seeded = [e for e in entries if getattr(e, "source", "") == "model_config"]
+    assert seeded, "legacy-named pool must still seed model_config from model.api_key"
+    assert getattr(seeded[0], "access_token", "") == "sk-model-config-key"

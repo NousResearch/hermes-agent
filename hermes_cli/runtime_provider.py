@@ -16,7 +16,6 @@ from agent.credential_pool import (
     PooledCredential,
     credential_pool_matches_provider,
     custom_provider_pool_key_candidates,
-    get_custom_provider_pool_key,
     load_pool,
 )
 from agent.secret_scope import get_secret as _get_secret
@@ -685,7 +684,6 @@ def _try_resolve_from_custom_pool(
             _add(key)
     except Exception:
         pass
-    _add(get_custom_provider_pool_key(base_url, provider_name=provider_name))
     if not candidates:
         return None
 

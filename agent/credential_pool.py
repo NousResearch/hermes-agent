@@ -3596,9 +3596,18 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     model_api_key = v.strip()
                     break
             if model_provider == "custom" and model_base_url and model_api_key:
-                # Check if this model's base_url matches our custom provider
-                matched_key = get_custom_provider_pool_key(model_base_url)
-                if matched_key == pool_key:
+                # Check if this model's base_url matches our custom provider.
+                # The pool may be keyed under either the durable
+                # ``providers.<key>`` slug or the legacy ``custom:<name>``
+                # namespace, so accept the match against any candidate —
+                # comparing against the single preferred key silently skips
+                # seeding when the pool holds the other identity (verified
+                # regression from PR #100413 review).
+                matched_keys = {
+                    str(key).strip().lower()
+                    for key in custom_provider_pool_key_candidates(model_base_url)
+                }
+                if pool_key in matched_keys:
                     source = "model_config"
                     if not _is_suppressed(pool_key, source):
                         active_sources.add(source)

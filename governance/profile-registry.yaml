@@ -1,0 +1,141 @@
+schema_version: 1
+root:
+  name: KENSEI
+  description: Sahil / KENSEI orchestrator
+profiles:
+  # Tier 1 — active gateway leads
+  - name: kensei
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [orchestration, crons, mcp, approvals]
+    gateway_unit: hermes-gateway
+  - name: misa-misa
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [voice-intake, stt, tts]
+    gateway_unit: hermes-gateway-misa-misa
+  - name: remii
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [research, signals, market-scanning]
+    gateway_unit: hermes-gateway-remii
+  - name: wesker
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [ops, security, infra, gateway-health]
+    gateway_unit: hermes-gateway-wesker
+  - name: gojo
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [admin, mailbox, calendar, job-hunt]
+    gateway_unit: hermes-gateway-gojo
+  - name: octacon
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [coding, build, debugging, prs]
+    gateway_unit: hermes-gateway-octacon
+  - name: ceecee
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [content-drafting, brand, social]
+    gateway_unit: hermes-gateway-ceecee
+  - name: mrhermagi
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [teaching, ai-ml-curriculum]
+    gateway_unit: hermes-gateway-mrhermagi
+  - name: quan
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [qa, testing, release-quality]
+    gateway_unit: hermes-gateway-quan
+  - name: denji
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [governance, profile-ledger, audits]
+    gateway_unit: hermes-gateway-denji
+  - name: kensei-review
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [post-completion-audit, process-review]
+    gateway_unit: hermes-gateway-kensei-review
+  - name: light
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [knowledge-capture, wiki, runbooks]
+    gateway_unit: hermes-gateway-light
+  - name: dezzy
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [design, ui-ux, design-systems]
+    gateway_unit: hermes-gateway-dezzy
+  - name: sirvir
+    kind: lead
+    parent: KENSEI
+    lifecycle: active
+    domains: [rig-operations, turbofit, gpu-watch]
+    gateway_unit: hermes-gateway-sirvir
+  # Tier 2 — standing delegation targets (organisational; gateway_unit is a
+  # link, never proof a unit is active)
+  - {name: ceecee-brand, kind: worker, parent: ceecee, lifecycle: active, domains: [brand], gateway_unit: null}
+  - {name: ceecee-reviewer, kind: worker, parent: ceecee, lifecycle: active, domains: [review], gateway_unit: null}
+  - {name: ceecee-seo, kind: worker, parent: ceecee, lifecycle: active, domains: [seo], gateway_unit: null}
+  - {name: ceecee-social, kind: worker, parent: ceecee, lifecycle: active, domains: [social], gateway_unit: null}
+  - {name: ceecee-writer, kind: worker, parent: ceecee, lifecycle: active, domains: [writing], gateway_unit: null}
+  - {name: content-strategist, kind: worker, parent: ceecee, lifecycle: active, domains: [content-strategy], gateway_unit: null}
+  - {name: denji-ledger, kind: worker, parent: denji, lifecycle: active, domains: [ledger], gateway_unit: null}
+  - {name: denji-monitor, kind: worker, parent: denji, lifecycle: active, domains: [monitoring], gateway_unit: null}
+  - {name: denji-reviewer, kind: worker, parent: denji, lifecycle: active, domains: [review], gateway_unit: null}
+  - {name: denji-skill, kind: worker, parent: denji, lifecycle: active, domains: [skills], gateway_unit: null}
+  - {name: dezzy-brand, kind: worker, parent: dezzy, lifecycle: active, domains: [brand], gateway_unit: null}
+  - {name: dezzy-component-lib, kind: worker, parent: dezzy, lifecycle: active, domains: [component-library], gateway_unit: null}
+  - {name: dezzy-design-system, kind: worker, parent: dezzy, lifecycle: active, domains: [design-systems], gateway_unit: null}
+  - {name: dezzy-image-prompt, kind: worker, parent: dezzy, lifecycle: active, domains: [image-prompting], gateway_unit: null}
+  - {name: dezzy-ux-architect, kind: worker, parent: dezzy, lifecycle: active, domains: [ux-architecture], gateway_unit: null}
+  - {name: dezzy-ux-prototype, kind: worker, parent: dezzy, lifecycle: active, domains: [ux-prototyping], gateway_unit: null}
+  - {name: gojo-admin, kind: worker, parent: gojo, lifecycle: active, domains: [admin], gateway_unit: null}
+  - {name: gojo-calendar, kind: worker, parent: gojo, lifecycle: active, domains: [calendar], gateway_unit: null}
+  - {name: gojo-mailbox, kind: worker, parent: gojo, lifecycle: active, domains: [mailbox], gateway_unit: null}
+  - {name: light-archivist, kind: worker, parent: light, lifecycle: active, domains: [archival], gateway_unit: null}
+  - {name: light-indexer, kind: worker, parent: light, lifecycle: active, domains: [indexing], gateway_unit: null}
+  - {name: light-wiki, kind: worker, parent: light, lifecycle: active, domains: [wiki], gateway_unit: null}
+  - {name: market-scanner, kind: worker, parent: remii, lifecycle: active, domains: [market-monitoring], gateway_unit: null}
+  - {name: moss, kind: worker, parent: octacon, lifecycle: active, domains: [oss-contributions], gateway_unit: null}
+  - {name: octacon-architect, kind: worker, parent: octacon, lifecycle: active, domains: [architecture], gateway_unit: null}
+  - {name: octacon-backend, kind: worker, parent: octacon, lifecycle: active, domains: [backend], gateway_unit: null}
+  - {name: octacon-frontend, kind: worker, parent: octacon, lifecycle: active, domains: [frontend], gateway_unit: null}
+  - {name: octacon-infra, kind: worker, parent: octacon, lifecycle: active, domains: [infrastructure], gateway_unit: null}
+  - {name: octacon-mobile, kind: worker, parent: octacon, lifecycle: active, domains: [mobile], gateway_unit: null}
+  - {name: octacon-techwriter, kind: worker, parent: octacon, lifecycle: active, domains: [technical-writing], gateway_unit: null}
+  - {name: octacon-testrunner, kind: worker, parent: octacon, lifecycle: active, domains: [test-automation], gateway_unit: null}
+  - {name: orchestrator, kind: utility, parent: kensei, lifecycle: active, domains: [decomposition], gateway_unit: null}
+  - {name: quan-arch, kind: worker, parent: quan, lifecycle: active, domains: [architecture-review], gateway_unit: null}
+  - {name: quan-code, kind: worker, parent: quan, lifecycle: active, domains: [code-review], gateway_unit: null}
+  - {name: quan-e2e, kind: worker, parent: quan, lifecycle: active, domains: [e2e-testing], gateway_unit: null}
+  - {name: quan-perf, kind: worker, parent: quan, lifecycle: active, domains: [performance], gateway_unit: null}
+  - {name: quan-security, kind: worker, parent: quan, lifecycle: active, domains: [security], gateway_unit: null}
+  - {name: quan-ux, kind: worker, parent: quan, lifecycle: active, domains: [ux-review], gateway_unit: null}
+  - {name: remii-deep, kind: worker, parent: remii, lifecycle: active, domains: [deep-research], gateway_unit: null}
+  - {name: remii-digest, kind: worker, parent: remii, lifecycle: active, domains: [digests], gateway_unit: null}
+  - {name: remii-gitradar, kind: worker, parent: remii, lifecycle: active, domains: [gitradar], gateway_unit: null}
+  - {name: remii-market, kind: worker, parent: remii, lifecycle: active, domains: [market-research], gateway_unit: null}
+  - {name: skill-broker, kind: utility, parent: denji, lifecycle: active, domains: [skill-brokerage], gateway_unit: null}
+  - {name: skill-research, kind: utility, parent: denji, lifecycle: active, domains: [skill-research], gateway_unit: null}
+  - {name: triage-router, kind: utility, parent: kensei, lifecycle: active, domains: [triage], gateway_unit: null}
+  - {name: work, kind: utility, parent: kensei, lifecycle: standby, domains: [scratch-workspace], gateway_unit: null}
+  - {name: wesker-backup, kind: worker, parent: wesker, lifecycle: active, domains: [backup], gateway_unit: null}
+  - {name: wesker-ops, kind: worker, parent: wesker, lifecycle: active, domains: [operations], gateway_unit: null}
+  - {name: wesker-scanner, kind: worker, parent: wesker, lifecycle: active, domains: [scanning], gateway_unit: null}

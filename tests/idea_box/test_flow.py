@@ -326,6 +326,20 @@ class TestReject:
         assert reject_result.action == "rejected"
         assert reject_result.wiki_path is not None
 
+    def test_reject_default_wiki_root_is_canonical(self, tmp_path, monkeypatch):
+        """The no-backend fallback writes only under the canonical HOME-relative wiki."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("WIKI_PATH", raising=False)
+        flow = IdeaBoxFlow(dedup_checker=_make_checker(is_dup=False))
+        result = flow.capture("Build a feature", _make_source())
+
+        rejected = flow.reject(result.card, reason="Not needed")
+
+        assert rejected.wiki_path is not None
+        assert rejected.wiki_path.startswith(
+            str(tmp_path / "docs" / "wiki" / "raw" / "ideas")
+        )
+
     def test_reject_wiki_filename_unique_per_idea(self):
         """Each rejected idea should get a unique wiki filename to preserve provenance."""
         import tempfile, os

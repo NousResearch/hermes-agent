@@ -32,7 +32,7 @@ RADAR_DIR = Path(os.environ.get(
         / "runbooks" / "github-radar"),
 ))
 MASHUPS_FILE = Path(os.environ.get(
-    "KENSEI_WIKI_ROOT", "/home/kensei/wiki",
+    "KENSEI_WIKI_ROOT", os.path.expanduser("~/docs/wiki"),
 )) / "_meta" / "paper-mashups.md"
 OUT_DIR = HERMES / "runbooks" / "kensei-review-daily"
 TODAY = datetime.now().strftime("%Y-%m-%d")

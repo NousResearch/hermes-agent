@@ -6,8 +6,9 @@ def test_cron_activity_uses_ledger_contract_fields(monkeypatch, tmp_path):
     from hermes_cli import profile_activity_ledger as ledger
 
     monkeypatch.setattr(ledger, "is_enabled", lambda cfg=None: True)
-    monkeypatch.setattr(ledger, "ledger_db_path", lambda: tmp_path / "activity.sqlite")
-    monkeypatch.setattr(ledger, "ledger_jsonl_dir", lambda: tmp_path / "logboard")
+    # R2-6: ledger path helpers now take an optional explicit_home argument.
+    monkeypatch.setattr(ledger, "ledger_db_path", lambda explicit_home=None: tmp_path / "activity.sqlite")
+    monkeypatch.setattr(ledger, "ledger_jsonl_dir", lambda explicit_home=None: tmp_path / "logboard")
 
     _record_cron_activity(
         "job_run_error",

@@ -312,7 +312,7 @@ Match by reading `~/.hermes/plugins/` directory listing and checking paper abstr
 against known component responsibilities.
 
 ### C) GitRadar Wiki (222+ repos)
-Read `~/wiki/repos/index.md` for the full classified repo list. For each score ≥3.5 paper:
+Read `~/docs/wiki/repos/index.md` for the full classified repo list. For each score ≥3.5 paper:
 
 - Scan the index for repos whose description or classification aligns with the paper
 - If a paper mentions a tool/technique/pattern, check if the wiki has it → if not, flag as "GitRadar candidate"
@@ -442,12 +442,12 @@ Sources: arXiv + Semantic Scholar + HuggingFace + Papers With Code
 ```
 
 ### Stream 2: LLM Wiki Pages
-For score ≥3.5 papers, create or update wiki pages in `~/wiki/concepts/`:
+For score ≥3.5 papers, create or update wiki pages in `~/docs/wiki/concepts/`:
 
-1. Create `~/wiki/raw/papers/{arxiv-id}.md` — immutable source with frontmatter (include citation count, venue, source list)
+1. Create `~/docs/wiki/raw/papers/{arxiv-id}.md` — immutable source with frontmatter (include citation count, venue, source list)
 2. Create/update concept page(s) — follow `llm-wiki` conventions
-3. Update `~/wiki/index.md` with new page entries
-4. Append to `~/wiki/log.md`
+3. Update `~/docs/wiki/index.md` with new page entries
+4. Append to `~/docs/wiki/log.md`
 5. **New v2:** Tag wiki pages with `quality: high|medium|low` based on citation count + venue
 
 For score 2.0-3.4 papers: optionally add a one-line reference to an existing concept page.
@@ -456,7 +456,7 @@ Don't create new pages.
 ### Stream 3: GitRadar Mashup Ideas
 For cross-reference matches between papers and GitRadar repos (score ≥3.5 papers only):
 
-1. Write to `~/wiki/_meta/paper-mashups.md` (append, dated) using the **expanded
+1. Write to `~/docs/wiki/_meta/paper-mashups.md` (append, dated) using the **expanded
    mashup format** (Idea + How It Works + Why It Matters + Remii's Recommendation)
 2. For each mashup, **Remii MUST apply validation before writing**:
    - Check the paper's arXiv ID for code links (Semantic Scholar "externalIds" field)
@@ -543,7 +543,7 @@ verifiable source.
 
 ### Deduplication
 - Deduplicate across ALL FOUR sources using arXiv ID as the canonical key
-- Before creating wiki pages, check `~/wiki/index.md` — don't create duplicate pages
+- Before creating wiki pages, check `~/docs/wiki/index.md` — don't create duplicate pages
 - Before filing kanban tasks, check existing boards for related tasks
 - If a paper was already processed earlier this week, reference the existing work instead of re-creating
 
@@ -577,7 +577,7 @@ verifiable source.
 ## Output Contract
 
 **Primary delivery:** Discord `#research-ops` with compact summary + quality metadata.
-**Wiki writes:** Direct to `~/wiki/` following `llm-wiki` conventions.
+**Wiki writes:** Direct to `~/docs/wiki/` following `llm-wiki` conventions.
 **Content briefs:** `~/.hermes/content-briefs/` directory.
 **Kanban tasks:** `research` board for mashup/build ideas.
 **Brain facts:** `~/brain/` pages via file write — see Stream 5.
@@ -618,7 +618,7 @@ If the run finds nothing actionable (0 papers scoring ≥2.0): deliver [SILENT].
 - **Paper dates are UTC.** Convert to UK time for the D-14 window.
 - **Don't over-create wiki pages.** Only score ≥3.5 papers get their own pages. Score 2.0-3.4 get a mention in an existing concept page.
 - **Content briefs pile up.** CeeCee's review cron skims the directory. Flag backlog if >5 unprocessed briefs.
-- **The GitRadar wiki index is auto-generated.** Don't write to `~/wiki/repos/index.md` directly — use `~/wiki/_meta/paper-mashups.md`.
+- **The GitRadar wiki index is auto-generated.** Don't write to `~/docs/wiki/repos/index.md` directly — use `~/docs/wiki/_meta/paper-mashups.md`.
 - **Mashup ideas are speculative.** Flag as "investigate" not "build now." Don't auto-file kanban tasks.
 - **Brand voices are required for content briefs.** Load them before drafting angles.
 - **Quality weight can demote papers.** A paper scoring 5 on relevance with 0 citations drops to 2.5. This is intentional — it prevents recommending vapourware. Trust the methodology.

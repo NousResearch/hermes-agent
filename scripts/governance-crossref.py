@@ -1,251 +1,332 @@
 #!/usr/bin/env python3
-"""
-KENSEI Governance - Cross-Reference Engine + Change Registry
-Takes Denji's profile review JSON and produces:
-  1. Cross-reference report (self-eval vs Denji vs audit)
-  2. Change registry (per-profile SOUL.md/skills/tools diffs)
+"""Project canonical governance finding events into current JSON and closure views.
 
-Usage: python3 governance-crossref.py --review review.json --output-dir logboard/
+This is the existing governance-crossref cron seam.  It no longer reads the
+obsolete profile-score/self-evaluation files: the append-only activity ledger is
+the only source of current finding truth.
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import os
 import sys
-import datetime as dt
+import time
+from collections import Counter
 from pathlib import Path
-from collections import defaultdict
+from typing import Any, Iterable, Mapping
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hermes_cli import governance_findings  # noqa: E402
+from hermes_cli import profile_activity_ledger as ledger  # noqa: E402
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/home/kensei/.hermes"))
 LOGBOARD = HERMES_HOME / "governance" / "logboard"
+OVERDUE_DAYS = 7
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
-def load_self_evals():
-    """Load all self-eval files from the logboard."""
-    evals = {}
-    for f in LOGBOARD.glob("self-eval-*.md"):
-        stem = f.stem.replace("self-eval-", "")
-        # Strip trailing date if present: "default-2026-06-08" → "default"
-        parts = stem.rsplit("-", 3)
-        if len(parts) == 4 and all(p.isdigit() for p in parts[1:]):
-            profile = parts[0]
-        else:
-            profile = stem
-        content = f.read_text()
-
-        # Parse markdown sections
-        lines = content.split("\n")
-        claims = []
-        current_section = ""
-        in_content = False
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Track which section we're in
-            if stripped.startswith("## "):
-                current_section = stripped.replace("## ", "").lower()
-                in_content = True
-                continue
-            if stripped.startswith("# "):
-                in_content = False
-                continue
-
-            if not in_content or not stripped:
-                continue
-
-            # Extract non-STUB claims from key sections
-            if any(s in current_section for s in ["tasks completed", "observations", "recommended"]):
-                if "[STUB]" not in stripped and stripped.startswith("- "):
-                    claims.append(stripped)
-
-            # Flag STUB presence
-            if "[STUB]" in stripped:
-                if "STUB" not in profile:
-                    claims.append("⚠️ STUB content found - self-eval is pro forma, not evidence-grounded")
-
-        # Classify the self-eval quality
-        is_stub = "[STUB]" in content
-        eval_type = "STUB (pro forma, no evidence)" if is_stub else "EVIDENCE (grounded in data)"
-
-        # Extract headline from first non-header, non-empty line
-        headline = "No self-eval content parsed"
-        for line in lines:
-            s = line.strip()
-            if not s or s.startswith("---"):
-                continue
-            if s.startswith("#"):
-                continue
-            headline = s[:100]
-            break
-
-        evals[profile] = {
-            "file": str(f),
-            "claims": claims,
-            "headline": headline,
-            "eval_type": eval_type,
-            "is_stub": is_stub,
-            "date": dt.datetime.fromtimestamp(f.stat().st_mtime).strftime("%d/%m/%Y"),
-        }
-    return evals
+def _age_days(source_observed_at: int, now: int) -> int:
+    return max(0, (int(now) - int(source_observed_at)) // 86400)
 
 
-def load_skill_audit():
-    """Load the latest skill audit JSON export."""
-    audit_files = sorted(LOGBOARD.glob("skill-audit-*.json"), reverse=True)
-    if not audit_files:
+def _age_bucket(age_days: int) -> str:
+    if age_days < 7:
+        return "0-6d"
+    if age_days < 30:
+        return "7-29d"
+    return "30d+"
+
+
+def _finding_key(item: Mapping[str, Any]) -> str:
+    return str(item.get("dedupe_key") or item.get("finding_id") or "")
+
+
+def _normalise_previous(previous: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(previous, Mapping) or previous.get("schema_version") != 1:
         return {}
-    with open(audit_files[0]) as f:
-        return json.load(f)
+    rows = previous.get("findings")
+    if not isinstance(rows, list):
+        return {}
+    return {
+        _finding_key(row): row
+        for row in rows
+        if isinstance(row, Mapping) and _finding_key(row)
+    }
 
 
-def cross_reference(denji_review, self_evals, skill_audit):
-    """Produce cross-reference table and change registry."""
-    rows = []
-    changes = []
-
-    for profile, review in denji_review.get("profiles", {}).items():
-        self_eval = self_evals.get(profile, {})
-        audit = skill_audit.get(profile, {})
-
-        # Self-eval summary extraction
-        eval_headline = self_eval.get("headline", "No self-eval found")
-        eval_is_stub = self_eval.get("is_stub", False)
-        eval_is_positive = any(w in eval_headline.lower() for w in
-                               ["all good", "healthy", "stable", "✅", "working"]) or not eval_is_stub
-
-        # Denji review scores
-        denji_score = review.get("total_score", 0)
-        honesty = review.get("honesty_score", 0)
-        audit_score = audit.get("score", 0) if isinstance(audit, dict) else 0
-        decision = review.get("decision", "UNKNOWN")
-
-        # Mismatch detection
-        mismatch_type = "aligned"
-        if eval_is_stub:
-            mismatch_type = "eval_quality"  # STUB = eval quality gap, not content mismatch
-        elif eval_is_positive and denji_score < 50:
-            mismatch_type = "major"
-        elif eval_is_positive and denji_score < 70:
-            mismatch_type = "minor"
-        elif honesty < 10 and denji_score > 60:
-            mismatch_type = "eval_quality"  # good profile, bad eval
-
-        rows.append({
-            "profile": profile,
-            "self_eval": eval_headline[:80],
-            "eval_type": self_eval.get("eval_type", "UNKNOWN"),
-            "is_stub": eval_is_stub,
-            "denji_score": denji_score,
-            "audit_score": audit_score,
-            "honesty": honesty,
-            "decision": decision,
-            "mismatch": mismatch_type,
-        })
-
-        # Change registry
-        if decision in ("REWORK", "INTERVENE"):
-            profile_changes = review.get("changes", {})
-            if profile_changes:
-                changes.append({
-                    "profile": profile,
-                    "score": denji_score,
-                    "decision": decision,
-                    "changes": profile_changes,
-                })
-
-    return rows, changes
+def _missing(item: Mapping[str, Any]) -> list[str]:
+    missing: list[str] = []
+    if not item.get("evidence_refs"):
+        missing.append("evidence")
+    if not item.get("owner"):
+        missing.append("owner")
+    if not item.get("task_id"):
+        missing.append("action_task")
+    if item.get("state") in {"resolved", "dismissed", "risk_accepted"} and not item.get("resolution_ref"):
+        missing.append("resolution_proof")
+    return missing
 
 
-def render_report(now, rows, changes):
-    """Render cross-reference report as markdown."""
-    healthy = [r for r in rows if r["decision"] == "HEALTHY"]
-    observe = [r for r in rows if r["decision"] == "OBSERVE"]
-    rework = [r for r in rows if r["decision"] == "REWORK"]
-    intervene = [r for r in rows if r["decision"] == "INTERVENE"]
+def _next_action(item: Mapping[str, Any], missing: list[str]) -> str:
+    if item.get("state") == "resolved" and "resolution_proof" not in missing:
+        return "closed"
+    if "owner" in missing:
+        return "assign owner"
+    if "action_task" in missing:
+        return "create action task"
+    if "evidence" in missing:
+        return "attach evidence"
+    if "resolution_proof" in missing:
+        return "attach resolution proof"
+    if item.get("state") == "open":
+        return "owner action required"
+    return "monitor"
 
+
+def _current_items(events: Iterable[Mapping[str, Any]], now: int) -> list[dict[str, Any]]:
+    reduced = governance_findings.reduce_findings(events)
+    items: list[dict[str, Any]] = []
+    for key, raw in reduced.items():
+        item = dict(raw)
+        item["age_days"] = _age_days(item["source_observed_at"], now)
+        item["overdue"] = item["state"] == "open" and item["age_days"] >= OVERDUE_DAYS
+        item["missing"] = _missing(item)
+        item["next_action"] = _next_action(item, item["missing"])
+        item["finding_key"] = key
+        items.append(item)
+    items.sort(
+        key=lambda item: (
+            -_SEVERITY_RANK.get(str(item.get("severity")), -1),
+            -int(item.get("source_observed_at") or 0),
+            str(item.get("finding_key") or ""),
+        )
+    )
+    return items
+
+
+def _attention_reason(item: Mapping[str, Any], old: Mapping[str, Any] | None) -> str | None:
+    if old is None:
+        return "new"
+    old_rank = _SEVERITY_RANK.get(str(old.get("severity")), -1)
+    new_rank = _SEVERITY_RANK.get(str(item.get("severity")), -1)
+    if new_rank > old_rank or (
+        old.get("state") in {"resolved", "dismissed", "risk_accepted"}
+        and item.get("state") == "open"
+    ):
+        return "worsened"
+    if item.get("overdue") and not old.get("overdue"):
+        return "overdue"
+    if item.get("missing"):
+        return "human_decision"
+    return None
+
+
+def _weekly_metrics(events: Iterable[Mapping[str, Any]], items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    by_key: dict[str, list[Mapping[str, Any]]] = {}
+    terminal_counts = Counter()
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        if event_type not in governance_findings.FINDING_EVENT_TYPES:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        key = str(payload.get("dedupe_key") or "")
+        if not key:
+            continue
+        by_key.setdefault(key, []).append(event)
+        if event_type in {"governance.finding.resolved", "governance.finding.dismissed"}:
+            terminal_counts[event_type] += 1
+
+    owner_durations: list[int] = []
+    resolution_durations: list[int] = []
+    recurring = 0
+    for key, history in by_key.items():
+        ordered = sorted(history, key=lambda event: (
+            int((event.get("payload") or {}).get("source_observed_at") or event.get("occurred_at") or 0),
+            str(event.get("event_id") or ""),
+        ))
+        first_time = int((ordered[0].get("payload") or {}).get("source_observed_at") or ordered[0].get("occurred_at") or 0)
+        opened_count = sum(1 for event in ordered if event.get("event_type") == "governance.finding.opened")
+        if opened_count > 1:
+            recurring += 1
+        owner_event = next(
+            (
+                event for event in ordered
+                if isinstance(event.get("payload"), Mapping) and event["payload"].get("owner")
+            ),
+            None,
+        )
+        if owner_event is not None:
+            owner_time = int(owner_event["payload"].get("source_observed_at") or owner_event.get("occurred_at") or first_time)
+            owner_durations.append(max(0, owner_time - first_time))
+        resolution_event = next(
+            (
+                event for event in ordered
+                if event.get("event_type") == "governance.finding.resolved"
+                and isinstance(event.get("payload"), Mapping)
+                and event["payload"].get("resolution_ref")
+            ),
+            None,
+        )
+        if resolution_event is not None:
+            resolution_time = int(resolution_event["payload"].get("source_observed_at") or resolution_event.get("occurred_at") or first_time)
+            resolution_durations.append(max(0, resolution_time - first_time))
+
+    terminal_total = terminal_counts["governance.finding.resolved"] + terminal_counts["governance.finding.dismissed"]
+    return {
+        "false_positive_rate": (
+            round(terminal_counts["governance.finding.dismissed"] / terminal_total, 4)
+            if terminal_total else None
+        ),
+        "false_positive_definition": "dismissed findings / resolved-or-dismissed findings",
+        "time_to_owner_days": (
+            round(sum(owner_durations) / len(owner_durations) / 86400, 2)
+            if owner_durations else None
+        ),
+        "time_to_verified_resolution_days": (
+            round(sum(resolution_durations) / len(resolution_durations) / 86400, 2)
+            if resolution_durations else None
+        ),
+        "recurring_findings": recurring,
+        "human_decisions_waiting": sum(1 for item in items if item.get("missing")),
+    }
+
+
+def project_events(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    now: int | None = None,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic current projection and attention signal."""
+    reference_time = int(time.time()) if now is None else int(now)
+    event_list = list(events)
+    items = _current_items(event_list, reference_time)
+    old_by_key = _normalise_previous(previous)
+    attention: list[dict[str, Any]] = []
+    for item in items:
+        reason = _attention_reason(item, old_by_key.get(item["finding_key"]))
+        if reason:
+            attention.append({"finding_key": item["finding_key"], "reason": reason})
+
+    groups = {
+        "severity": dict(sorted(Counter(str(item["severity"]) for item in items).items())),
+        "owner": dict(sorted(Counter(str(item.get("owner") or "unassigned") for item in items).items())),
+        "state": dict(sorted(Counter(str(item["state"]) for item in items).items())),
+        "age": dict(sorted(Counter(_age_bucket(int(item["age_days"])) for item in items).items())),
+    }
+    return {
+        "schema_version": 1,
+        "findings": items,
+        "groups": groups,
+        "metrics": _weekly_metrics(event_list, items),
+        "attention": attention,
+        "emit": bool(attention),
+    }
+
+
+def render_projection(projection: Mapping[str, Any]) -> str:
+    """Render the JSON projection with stable formatting and no timestamps."""
+    return json.dumps(projection, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def render_closure_view(projection: Mapping[str, Any]) -> str:
+    """Render the concise weekly Denji closure report."""
     lines = [
-        f"# Governance Cross-Reference - {now.strftime('%d/%m/%Y')}",
-        "",
-        f"Active profiles: {len(rows)} | Healthy: {len(healthy)} | Observe: {len(observe)} | Rework: {len(rework)} | Intervene: {len(intervene)}",
-        "",
+        "Finding | Evidence | Owner | Age | Action task | State | Resolution proof | Next action"
     ]
-
-    # Score table
-    lines.append("## Profile Score Table")
-    lines.append("")
-    lines.append("| Profile | Denji Score | Audit Score | Honesty | Decision | Self-Eval Type | Self-Eval Says |")
-    lines.append("|---------|------------|-------------|---------|----------|----------------|---------------|")
-    for r in sorted(rows, key=lambda x: -x["denji_score"]):
-        eval_preview = r["self_eval"][:50] if not r.get("is_stub") else "⚠️ STUB"
-        lines.append(f"| {r['profile']} | {r['denji_score']} | {r['audit_score']} | {r['honesty']}/20 | {r['decision']} | {r.get('eval_type', '?')} | {eval_preview} |")
-    lines.append("")
-
-    # Mismatches
-    mismatches = [r for r in rows if r["mismatch"] != "aligned"]
-    if mismatches:
-        lines.append("## Cross-Reference Mismatches")
-        lines.append("")
-        for r in mismatches:
-            emoji = "🔴" if r["mismatch"] == "major" else "🟡"
-            lines.append(f"- {emoji} **{r['profile']}** - self-eval says \"{r['self_eval'][:60]}\", Denji scores {r['denji_score']}/100")
-        lines.append("")
-
-    # Change registry
-    if changes:
-        lines.append("## Change Registry")
-        lines.append("")
-        for c in changes:
-            lines.append(f"### {c['profile']} - Score {c['score']}/100 ({c['decision']})")
-            lines.append("")
-            for domain, items in c["changes"].items():
-                lines.append(f"**{domain}:**")
-                for item in items:
-                    lines.append(f"- [ ] {item}")
-                lines.append("")
-            lines.append("")
-
-    # Theatre detection
-    theatre = [r for r in rows if r["mismatch"] == "major" and r["honesty"] < 8]
-    if theatre:
-        lines.append("## ⚠️ Theatre Detection")
-        lines.append("")
-        lines.append("These profiles rate themselves healthy but Denji's evidence-based review disagrees significantly:")
-        for t in theatre:
-            lines.append(f"- **{t['profile']}** - self-eval positive, Denji {t['denji_score']}/100, honesty {t['honesty']}/20")
-
-    return "\n".join(lines)
+    for item in projection.get("findings", []):
+        evidence = "; ".join(item.get("evidence_refs") or []) or "MISSING"
+        lines.append(
+            " | ".join(
+                [
+                    str(item.get("finding_id") or ""),
+                    evidence,
+                    str(item.get("owner") or "MISSING"),
+                    f"{item.get('age_days', 0)}d",
+                    str(item.get("task_id") or "MISSING"),
+                    str(item.get("state") or ""),
+                    str(item.get("resolution_ref") or "MISSING"),
+                    str(item.get("next_action") or "monitor"),
+                ]
+            )
+        )
+    metrics = projection.get("metrics") or {}
+    lines.extend(
+        [
+            "",
+            "Weekly metrics",
+            f"False-positive rate | {metrics.get('false_positive_rate') if metrics.get('false_positive_rate') is not None else 'insufficient evidence'}",
+            f"Time to owner (days) | {metrics.get('time_to_owner_days') if metrics.get('time_to_owner_days') is not None else 'insufficient evidence'}",
+            f"Time to verified resolution (days) | {metrics.get('time_to_verified_resolution_days') if metrics.get('time_to_verified_resolution_days') is not None else 'insufficient evidence'}",
+            f"Recurring findings | {metrics.get('recurring_findings', 0)}",
+            f"Human decisions waiting | {metrics.get('human_decisions_waiting', 0)}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
-def main():
-    review_path = sys.argv[1] if len(sys.argv) > 1 else None
-    if not review_path:
-        print("Usage: governance-crossref.py <denji-review.json>")
-        sys.exit(1)
+def write_projection(
+    output_dir: Path,
+    events: Iterable[Mapping[str, Any]],
+    *,
+    now: int | None = None,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write the deterministic JSON and Markdown views and return the projection."""
+    projection = project_events(events, now=now, previous=previous)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "current-findings.json").write_text(
+        render_projection(projection), encoding="utf-8"
+    )
+    (output_dir / "denji-closure-view.md").write_text(
+        render_closure_view(projection), encoding="utf-8"
+    )
+    return projection
 
-    with open(review_path) as f:
-        denji_review = json.load(f)
 
-    self_evals = load_self_evals()
-    skill_audit = load_skill_audit()
-    rows, changes = cross_reference(denji_review, self_evals, skill_audit)
+def load_current_projection(path: Path) -> dict[str, Any] | None:
+    """Read only this projector's schema; ignore legacy files as authority."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) and data.get("schema_version") == 1 else None
 
-    now = dt.datetime.now()
-    report = render_report(now, rows, changes)
 
-    report_path = LOGBOARD / f"cross-ref-{now.strftime('%Y%m%d')}.md"
-    report_path.write_text(report)
+def load_canonical_events() -> list[dict[str, Any]]:
+    return ledger.query_events(event_types=sorted(governance_findings.FINDING_EVENT_TYPES))
 
-    # Print summary for cron delivery. Speak only when there is drift to act on;
-    # an all-aligned run is silent (the full report is still written to disk).
-    healthy = len([r for r in rows if r["decision"] == "HEALTHY"])
-    mismatches = len([r for r in rows if r["mismatch"] != "aligned"])
-    if mismatches == 0:
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    # Kept as a compatibility positional so old scheduler invocations do not
+    # crash; it is deliberately not read and cannot become current truth.
+    parser.add_argument("_legacy_input", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument("--output-dir", type=Path, default=LOGBOARD)
+    parser.add_argument("--now", type=int, default=None)
+    args = parser.parse_args(argv)
+
+    events = load_canonical_events()
+    previous = load_current_projection(args.output_dir / "current-findings.json")
+    projection = write_projection(args.output_dir, events, now=args.now, previous=previous)
+    if not projection["emit"]:
         print("[SILENT]")
-        return
-    print(f"🔴 Governance cross-ref - {mismatches} mismatch(es) - {now.strftime('%d/%m/%Y %H:%M')}")
-    print(f"{len(rows)} profiles | {healthy} healthy | {mismatches} mismatches")
-    print(f"Report: {report_path}")
+        return 0
+
+    by_reason = Counter(item["reason"] for item in projection["attention"])
+    summary = ", ".join(f"{key}={by_reason[key]}" for key in sorted(by_reason))
+    print(f"Governance findings require attention: {len(projection['attention'])} ({summary})")
+    print(f"Projection: {args.output_dir / 'current-findings.json'}")
+    print(f"Closure view: {args.output_dir / 'denji-closure-view.md'}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

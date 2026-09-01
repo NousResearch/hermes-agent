@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
 """Denji profile review execution engine - scheduled weekly/monthly/quarterly scans.
 
-Reads profile configs, session stats, ledger activity, and file timestamps to produce
-structured review entries in the central activity ledger as ``profile.review.*`` events.
+P3.2 — four-dimensional evidence review.  Activity-only "dormant" conclusions
+are replaced by four separate evidence dimensions:
 
-Each review cycle has a dedicated event type:
-  - ``profile.review.weekly``   - lightweight activity snapshot
-  - ``profile.review.monthly``  - mid-weight: usage + config drift + auto-promotions
-  - ``profile.review.quarterly`` - full audit: session history + config + identity + trends
+  1. ``runtime``    — effective gateway/heartbeat/service state
+  2. ``workload``   — Kanban assignments/runs plus direct delegation events
+  3. ``quality``    — failures, rework, review outcomes, recurring findings
+  4. ``capability`` — config validity, skill/tool denials, missing dependencies
 
-All findings are tamper-evident: append-only ledger events with per-profile payloads.
-Exportable via any ``query_events(event_types=['profile.review.*'])`` call.
+Allowed verdicts: HEALTHY | OBSERVE | ACTION REQUIRED | COLD/STANDBY.
+Dimensions are never collapsed into a synthetic score.  Each dimension
+records its observation window, source refs, evidence counts and reason.
+
+Key invariants:
+  * Active gateways are NEVER labelled dormant solely because ledger volume
+    is low (gateway activity does not flow through the ledger).
+  * Direct delegation events count as workload and preserve specialist
+    identity (Phase 2 telemetry).
+  * Registry lifecycle (organisational state) and runtime evidence stay
+    distinct: ``standby`` is not "inactive service".
+  * Monthly scope = active + changed profiles; quarterly = full roster.
+  * Structured event output stays append-only; no profile mutation.
+
+Reads profile configs, session stats, ledger activity, and file timestamps to
+produce structured review entries in the central activity ledger as
+``profile.review.*`` events.
 
 Usage:
-  python3 denji-review-cycle.py --cycle weekly    # lightweight
-  python3 denji-review-cycle.py --cycle monthly   # mid-weight
-  python3 denji-review-cycle.py --cycle quarterly # full audit
+  python3 denji-review-cycle.py --cycle weekly
+  python3 denji-review-cycle.py --cycle monthly
+  python3 denji-review-cycle.py --cycle quarterly
 """
 
 import json
@@ -26,6 +41,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -37,6 +53,11 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")
 PROFILES_DIR = HERMES_HOME / "profiles"
 LEDGER_DB = HERMES_HOME / "governance" / "profile-activity-ledger.sqlite"
 LOGBOARD = HERMES_HOME / "governance" / "logboard"
+REGISTRY_YAML = HERMES_HOME / "governance" / "profile-registry.yaml"
+
+ALLOWED_VERDICTS = ("HEALTHY", "OBSERVE", "ACTION REQUIRED", "COLD/STANDBY")
+
+REVIEW_VERSION = "4dim-1"
 
 # ── Profile discovery ────────────────────────────────────────────────────────
 
@@ -69,6 +90,28 @@ def _safe_read_yaml(path: Path) -> dict:
         return {}
 
 
+# ── Registry lifecycle (organisational state) ───────────────────────────────
+
+def _registry_lifecycle() -> dict[str, str]:
+    """Profile name -> registry lifecycle, from the deployed registry.
+
+    Read-only; missing/unreadable registry returns {} (organisational state
+    is then simply absent from the review — never inferred).
+    """
+    try:
+        import yaml as _pyyaml
+        raw = _pyyaml.safe_load(REGISTRY_YAML.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), list):
+        return {}
+    return {
+        e["name"]: e.get("lifecycle") or "active"
+        for e in raw["profiles"]
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+
 # ── Profile file stats ───────────────────────────────────────────────────────
 
 def _file_stats(profile: str) -> dict[str, dict]:
@@ -95,7 +138,8 @@ def _file_stats(profile: str) -> dict[str, dict]:
 
 # ── Ledger queries ────────────────────────────────────────────────────────────
 
-def _ledger_counts(profile: str, since: int | None = None) -> dict:
+def _ledger_counts(profile: str, since: int | None = None,
+                   actor_only: bool = False) -> dict:
     """Return activity counts for a profile in the window."""
     db = LEDGER_DB
     if not db.exists():
@@ -103,12 +147,18 @@ def _ledger_counts(profile: str, since: int | None = None) -> dict:
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
-        params = [profile]
-        where = "WHERE (actor_profile = ? OR target_profile = ?)"
+        params: list = []
+        clauses = []
+        if actor_only:
+            clauses.append("actor_profile = ?")
+        else:
+            clauses.append("(actor_profile = ? OR target_profile = ?)")
+            params.append(profile)
+        params.insert(0, profile)
         if since:
-            where += " AND occurred_at >= ?"
-            params.extend([profile, str(since)])
-
+            clauses.append("occurred_at >= ?")
+            params.append(str(since))
+        where = "WHERE " + " AND ".join(clauses)
         rows = con.execute(
             f"SELECT event_type, COUNT(*) as cnt FROM activity_events {where} GROUP BY event_type",
             params,
@@ -119,7 +169,310 @@ def _ledger_counts(profile: str, since: int | None = None) -> dict:
         return {}
 
 
-# ── Review generators ─────────────────────────────────────────────────────────
+# ── Dimension 1: runtime ─────────────────────────────────────────────────────
+
+# C8: explicit default/root identity mapping — the default profile IS the
+# base gateway, not a "default" named unit.
+_DEFAULT_PROFILE_GATEWAY_UNIT = "hermes-gateway.service"
+
+
+def _registry_gateway_unit(profile: str, registry_index: Optional[dict] = None) -> Optional[str]:
+    """Resolve the registry-declared gateway unit for a profile.
+
+    C8: consumes the registry ``gateway_unit`` mapping (the authority),
+    with the explicit default/root identity mapping applied first.  The
+    legacy ``hermes-gateway-{profile}.service`` convention is only a
+    fallback when the registry does not declare a unit.
+    """
+    if profile == "default":
+        return _DEFAULT_PROFILE_GATEWAY_UNIT
+    if registry_index is None:
+        registry_index = _registry_lifecycle_index()
+    entry = (registry_index or {}).get(profile)
+    if isinstance(entry, dict) and entry.get("gateway_unit"):
+        unit = str(entry["gateway_unit"])
+        return unit if unit.endswith(".service") else f"{unit}.service"
+    return f"hermes-gateway-{profile}.service"
+
+
+def _registry_lifecycle_index() -> dict[str, dict]:
+    """Profile name -> registry entry (full mapping incl. gateway_unit)."""
+    try:
+        import yaml as _pyyaml
+        raw = _pyyaml.safe_load(REGISTRY_YAML.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), list):
+        return {}
+    return {
+        e["name"]: e
+        for e in raw["profiles"]
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+
+def _runtime_dimension(profile: str, since: int) -> dict:
+    """Effective gateway/heartbeat/service state.
+
+    C8: unit identity comes from the registry (or the default/root
+    mapping); systemd-uncheckable evidence is UNKNOWN, never inactive.
+    """
+    window_days = (int(time.time()) - since) // 86400
+    registry_index = _registry_lifecycle_index()
+    unit = _registry_gateway_unit(profile, registry_index)
+    evidence = {
+        "window_days": window_days,
+        "gateway_unit": unit,
+        "unit_active": None,
+        "source_refs": ["systemctl is-active"],
+    }
+    unit_active = None
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        unit_active = (r.returncode == 0 and r.stdout.strip() == "active")
+    except Exception:
+        unit_active = None  # UNKNOWN — cannot verify
+    evidence["unit_active"] = unit_active
+    # Ledger heartbeat evidence (kanban.heartbeat events are runtime proxies)
+    counts = _ledger_counts(profile, since, actor_only=True)
+    heartbeats = counts.get("kanban.heartbeat", 0)
+    evidence["heartbeat_events"] = heartbeats
+    evidence["source_refs"].append("profile-activity-ledger:kanban.heartbeat")
+
+    if unit_active is True:
+        verdict = "ACTIVE"
+    elif unit_active is None:
+        verdict = "UNKNOWN"
+    elif unit_active is False and heartbeats > 0:
+        verdict = "ACTIVE"  # runtime proof without a unit (on-demand profile)
+    else:
+        verdict = "INACTIVE"
+    return {"dimension": "runtime", "verdict": verdict, "evidence": evidence,
+            "method_version": REVIEW_VERSION}
+
+
+# ── Dimension 2: workload ────────────────────────────────────────────────────
+
+def _workload_dimension(profile: str, since: int) -> dict:
+    """Kanban assignments/runs plus direct delegation events.
+
+    Direct delegation events preserve specialist identity (Phase 2): they
+    count here as workload even when no kanban row exists.
+    """
+    counts = _ledger_counts(profile, since)
+    kanban_assignments = sum(
+        v for k, v in counts.items() if k.startswith("kanban.assigned")
+    )
+    kanban_claims = sum(
+        v for k, v in counts.items() if k.startswith("kanban.claimed")
+    )
+    # Direct delegation — actor or target identity preserved
+    delegation_counts = _delegation_counts(profile, since)
+    evidence = {
+        "window_days": (int(time.time()) - since) // 86400,
+        "kanban_assignments": kanban_assignments,
+        "kanban_claims": kanban_claims,
+        "direct_delegations": delegation_counts.get("delegation.started", 0),
+        "delegations_received": delegation_counts.get("delegation.received", 0),
+        "source_refs": [
+            "profile-activity-ledger:kanban.*",
+            "profile-activity-ledger:delegation.started",
+        ],
+        "method_version": REVIEW_VERSION,
+    }
+    total = (kanban_assignments + kanban_claims
+             + delegation_counts.get("delegation.started", 0)
+             + delegation_counts.get("delegation.received", 0))
+    verdict = "EVIDENT" if total > 0 else "ABSENT"
+    return {"dimension": "workload", "verdict": verdict, "evidence": evidence}
+
+
+def _delegation_counts(profile: str, since: int) -> dict:
+    """Count direct delegation events, preserving specialist identity.
+
+    ``delegation.started`` events with the profile as actor (delegate_tool
+    Phase 2 telemetry).  Read-only aggregate query; no payload bodies read.
+    """
+    db = LEDGER_DB
+    if not db.exists():
+        return {}
+    # Live event taxonomy: only ``delegation.started`` exists; direction is
+    # expressed by which profile is actor vs target.  Both counts read the
+    # same event type from the appropriate identity column.
+    out = {"delegation.started": 0, "delegation.received": 0}
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        started_as_actor = con.execute(
+            "SELECT COUNT(*) FROM activity_events "
+            "WHERE event_type = 'delegation.started' AND actor_profile = ? "
+            "AND occurred_at >= ?",
+            (profile, int(since)),
+        ).fetchone()
+        received_as_target = con.execute(
+            "SELECT COUNT(*) FROM activity_events "
+            "WHERE event_type = 'delegation.started' AND target_profile = ? "
+            "AND occurred_at >= ?",
+            (profile, int(since)),
+        ).fetchone()
+        out["delegation.started"] = int(started_as_actor[0]) if started_as_actor else 0
+        out["delegation.received"] = int(received_as_target[0]) if received_as_target else 0
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+# ── Dimension 3: quality ─────────────────────────────────────────────────────
+
+def _open_finding_ids(profile: str, since: int) -> tuple[list[str], dict[str, int]]:
+    """R2-10: compute currently-open findings by IDENTITY and LATEST state.
+
+    Reads (object_id, event_type, occurred_at) for governance.finding.*
+    events of the profile and reduces each finding identity to its latest
+    state: open when the latest event is opened/updated, closed when
+    resolved/dismissed.  ``since`` bounds which findings are reported
+    (findings last touched before the window are not reported), but state
+    history extends before the window so opened-before/resolved-inside is
+    handled correctly.
+
+    Returns (open_ids, counts) — safe IDs/counts only, never payloads.
+    ``counts["reopened"]`` counts currently-open finding identities whose
+    history contains a resolved/dismissed transition (a genuine reopen).
+    """
+    db = LEDGER_DB
+    open_ids: list[str] = []
+    counts = {"opened": 0, "resolved": 0, "open": 0, "reopened": 0}
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT object_id, event_type, occurred_at, id FROM activity_events "
+            "WHERE event_type IN ('governance.finding.opened', "
+            "'governance.finding.updated', 'governance.finding.resolved', "
+            "'governance.finding.dismissed') "
+            "AND (actor_profile = ? OR target_profile = ?) "
+            "AND object_id IS NOT NULL AND object_id != '' "
+            "ORDER BY object_id, occurred_at ASC, id ASC",
+            (profile, profile),
+        ).fetchall()
+        con.close()
+    except Exception:
+        return open_ids, counts
+    # R3-2: identity history carries (event_type, occurred_at, row id) so the
+    # latest state is the greatest (occurred_at, id) tuple — a same-second
+    # tie resolves by insertion order (higher row id = later).
+    history: dict[str, list[tuple[str, int, int]]] = {}
+    for object_id, event_type, occurred_at, row_id in rows:
+        if occurred_at is None:
+            continue
+        history.setdefault(object_id, []).append((event_type, int(occurred_at), int(row_id)))
+    for object_id, events in history.items():
+        latest = max(events, key=lambda e: (e[1], e[2]))  # (occurred_at, id)
+        last_occurred = latest[1]
+        if last_occurred < since:
+            continue  # last activity predates the window
+        latest_type = latest[0]
+        is_open = latest_type in ("governance.finding.opened", "governance.finding.updated")
+        if is_open:
+            open_ids.append(object_id)
+            # R3-2: recurrence = this identity was closed (resolved/dismissed)
+            # at some point and is now open again — a genuine reopen.
+            if any(t in ("governance.finding.resolved", "governance.finding.dismissed")
+                   for t, _, _ in events):
+                counts["reopened"] += 1
+        if latest_type in ("governance.finding.opened", "governance.finding.updated"):
+            counts["opened"] += 1
+        else:
+            counts["resolved"] += 1
+    counts["open"] = len(open_ids)
+    return open_ids, counts
+
+
+def _quality_dimension(profile: str, since: int) -> dict:
+    counts = _ledger_counts(profile, since)
+    failures = sum(
+        v for k, v in counts.items()
+        if k in ("kanban.crashed", "kanban.gave_up", "job_run_error",
+                 "kanban.completion_blocked_hallucination")
+    )
+    rework = sum(
+        v for k, v in counts.items() if k in ("kanban.council_revise", "kanban.audit_revise")
+    )
+    review_outcomes = sum(
+        v for k, v in counts.items() if k.startswith("kanban.operator_")
+    )
+    # R2-10: identity/state-based open findings (not raw event arithmetic).
+    # R3-2: recurrence is a genuine reopen of an identity — NOT the count of
+    # distinct open findings (two unrelated findings are not "recurrent").
+    open_ids, fcounts = _open_finding_ids(profile, since)
+    open_findings = len(open_ids)
+    recurring = fcounts["reopened"] > 0 and open_findings > 0
+    evidence = {
+        "window_days": (int(time.time()) - since) // 86400,
+        "failures": failures,
+        "rework": rework,
+        "review_outcomes": review_outcomes,
+        "governance_findings_open": open_findings,
+        "governance_findings_open_ids": open_ids,
+        "governance_findings_opened_events": fcounts["opened"],
+        "governance_findings_resolved_events": fcounts["resolved"],
+        "recurring_findings": recurring,
+        "source_refs": [
+            "profile-activity-ledger:kanban.crashed|gave_up",
+            "profile-activity-ledger:kanban.council_revise|audit_revise",
+            "profile-activity-ledger:governance.finding.opened|updated|resolved|dismissed (identity+latest-state)",
+        ],
+        "method_version": REVIEW_VERSION,
+    }
+    if failures >= 3 or open_findings >= 3 or recurring:
+        verdict = "ATTENTION"
+    elif failures + rework > 0 or open_findings > 0:
+        verdict = "WATCH"
+    else:
+        verdict = "CLEAN"
+    return {"dimension": "quality", "verdict": verdict, "evidence": evidence}
+
+
+# ── Dimension 4: capability ──────────────────────────────────────────────────
+
+def _capability_dimension(profile: str, since: int) -> dict:
+    cfg_path = _config_path(profile)
+    cfg = _safe_read_yaml(cfg_path) if cfg_path else {}
+    config_valid = bool(cfg)
+    counts = _ledger_counts(profile, since)
+    skill_denials = counts.get("skill.denied", 0) + counts.get("skill.access.blocked", 0)
+    tool_denials = counts.get("tool.denied", 0) + counts.get("tool.access.would_block", 0)
+    # SOUL.md is the constitution-critical identity file; USER.md is
+    # optional context and its absence is not a capability defect.
+    stats = _file_stats(profile)
+    missing_files = [
+        fn for fn, st in stats.items()
+        if not st.get("exists") and fn == "SOUL.md"
+    ] if profile != "default" else []
+    evidence = {
+        "window_days": (int(time.time()) - since) // 86400,
+        "config_valid": config_valid,
+        "skill_denials": skill_denials,
+        "tool_denials": tool_denials,
+        "missing_identity_files": missing_files,
+        "source_refs": [
+            "profile config.yaml parse",
+            "profile-activity-ledger:skill.denied|tool.denied",
+        ],
+        "method_version": REVIEW_VERSION,
+    }
+    if not config_valid or missing_files:
+        verdict = "DEGRADED"
+    elif skill_denials + tool_denials >= 5:
+        verdict = "WATCH"
+    else:
+        verdict = "OK"
+    return {"dimension": "capability", "verdict": verdict, "evidence": evidence}
+
+
+# ── Legacy helpers kept for backward-compatible payloads ─────────────────────
 
 def _week_review(profile: str, since: int) -> dict:
     """Lightweight: activity snapshot + file changes."""
@@ -140,7 +493,6 @@ def _week_review(profile: str, since: int) -> dict:
         "skills_events": skills_related,
         "top_event_types": sorted(counts.items(), key=lambda kv: -kv[1])[:5],
         "files": files,
-        "recommendation": _assess_activity(total_activity, profile),
     }
 
 
@@ -165,7 +517,6 @@ def _month_review(profile: str, since: int) -> dict:
         "always_skills_count": len(skills.get("always_skills") or []),
         "auto_promotions": auto_promotions,
         "files": files,
-        "recommendation": _assess_activity(total_activity, profile),
     }
 
 
@@ -177,7 +528,6 @@ def _quarter_review(profile: str, since: int) -> dict:
     cfg = _safe_read_yaml(cfg_path) if cfg_path else {}
     skills = (cfg.get("skills") or {})
 
-    # Also check SOUL.md and USER.md content
     home = HERMES_HOME if profile == "default" else PROFILES_DIR / profile
     soul_exists = (home / "SOUL.md").exists()
     user_exists = (home / "USER.md").exists()
@@ -200,78 +550,161 @@ def _quarter_review(profile: str, since: int) -> dict:
         "soul_exists": soul_exists,
         "user_exists": user_exists,
         "files": files,
-        "recommendation": _assess_activity(total_activity),
     }
 
 
-def _assess_activity(total: int, profile: str = "") -> str:
-    # Gateway/Tier-1 override: profiles that run an active systemd gateway or
-    # are listed Tier 1 in the registry are NEVER dormant, even with zero
-    # ledger events (they work through the gateway ticker, not the ledger).
-    if profile and _is_active_gateway(profile):
-        return "active - gateway lead (tier-1 override)"
-    if total >= 100:
-        return "active - profile is in regular use"
-    elif total >= 10:
-        return "low activity - monitor for obsolescence"
-    else:
-        return "dormant - consider archival or removal"
+# ── Four-dimension verdict assembly ─────────────────────────────────────────
 
-
-def _is_active_gateway(profile: str) -> bool:
-    """True if the profile runs an active systemd gateway unit or is Tier 1 in the registry."""
-    try:
-        # 1) systemd gateway unit check (profiles run hermes-gateway-<name>.service)
-        unit = f"hermes-gateway-{profile}.service"
-        r = subprocess.run(
-            ["systemctl", "is-active", unit],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0 and r.stdout.strip() == "active":
-            return True
-    except Exception:
-        pass
-    try:
-        # 2) profile-tier-registry.md Tier-1 check (fallback when unit name differs)
-        reg = HERMES_HOME / "governance" / "profile-tier-registry.md"
-        if reg.exists():
-            for line in reg.read_text(errors="ignore").splitlines():
-                if profile.lower() in line.lower() and "tier" in line.lower() and "1" in line:
-                    # Require an explicit tier-1 designation rather than a random "1" digit
-                    low = line.lower()
-                    if "tier 1" in low or "tier-1" in low or "tier1" in low:
-                        return True
-    except Exception:
-        pass
+def _profile_changed_since(profile: str, since: int) -> bool:
+    """True when the profile's identity/config files changed in the window."""
+    base = HERMES_HOME if profile == "default" else PROFILES_DIR / profile
+    for fn in ("config.yaml", "SOUL.md", "USER.md"):
+        path = base / fn if fn != "config.yaml" or profile != "default" else HERMES_HOME / fn
+        try:
+            if path.exists() and path.stat().st_mtime >= since:
+                return True
+        except OSError:
+            continue
     return False
 
 
+def _monthly_scope(
+    profiles: list[str],
+    since: int,
+    *,
+    lifecycle_map: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """C8: monthly scope = active profiles PLUS changed profiles.
+
+    A frozen/retired profile with in-window identity/config changes IS in
+    scope (material change triggers review).  Unchanged frozen/retired
+    profiles are excluded.  Profiles with unknown lifecycle default to
+    active scope.
+    """
+    lifecycle_map = lifecycle_map if lifecycle_map is not None else _registry_lifecycle()
+    scope: list[str] = []
+    for profile in profiles:
+        lifecycle = lifecycle_map.get(profile, "active")
+        if lifecycle in ("active", "standby"):
+            scope.append(profile)
+        elif _profile_changed_since(profile, since):
+            scope.append(profile)  # changed frozen/retired → reviewed
+    return scope
+
+
+def _four_dimension_verdict(dimensions: dict[str, dict],
+                            registry_lifecycle: str | None) -> tuple[str, list[str]]:
+    """Map dimension evidence to one of the four allowed verdicts.
+
+    Rules:
+      * Dimensions are never collapsed into a score.
+      * An active gateway can never be COLD/STANDBY merely because ledger
+        volume is low (runtime is its own dimension).
+      * ``standby`` registry lifecycle is organisational COLD/STANDBY only
+        when runtime evidence agrees; inactive service alone is runtime
+        evidence, not a lifecycle change.
+    """
+    reasons: list[str] = []
+    runtime = dimensions.get("runtime", {}).get("verdict")
+    workload = dimensions.get("workload", {}).get("verdict")
+    quality = dimensions.get("quality", {}).get("verdict")
+    capability = dimensions.get("capability", {}).get("verdict")
+
+    if quality == "ATTENTION":
+        reasons.append("quality dimension ATTENTION (repeated failures or recurring findings)")
+        return "ACTION REQUIRED", reasons
+    if capability == "DEGRADED":
+        reasons.append("capability dimension DEGRADED (config invalid or identity files missing)")
+        return "ACTION REQUIRED", reasons
+    if capability == "WATCH":
+        reasons.append("capability dimension WATCH (skill/tool denials above threshold)")
+        return "ACTION REQUIRED", reasons
+    if quality == "WATCH":
+        reasons.append("quality dimension WATCH (failures or rework in window)")
+        return "OBSERVE", reasons
+
+    # Standby: organisational lifecycle with corroborating runtime evidence.
+    if registry_lifecycle == "standby" and runtime != "ACTIVE":
+        reasons.append("registry lifecycle standby with non-active runtime")
+        return "COLD/STANDBY", reasons
+
+    if runtime == "ACTIVE":
+        reasons.append("runtime dimension ACTIVE (gateway/heartbeat evidence)")
+        return "HEALTHY", reasons
+
+    # No active runtime: only then does absent workload suggest standby.
+    if workload == "ABSENT":
+        reasons.append("runtime non-active and workload ABSENT in window")
+        return "COLD/STANDBY", reasons
+    reasons.append("evidence mixed — no defect threshold crossed")
+    return "OBSERVE", reasons
+
+
+def _build_review(profile: str, since: int, cycle: str) -> dict:
+    dimensions = {
+        "runtime": _runtime_dimension(profile, since),
+        "workload": _workload_dimension(profile, since),
+        "quality": _quality_dimension(profile, since),
+        "capability": _capability_dimension(profile, since),
+    }
+    lifecycle = _registry_lifecycle().get(profile)
+    verdict, reasons = _four_dimension_verdict(dimensions, lifecycle)
+    review = {
+        "review_version": REVIEW_VERSION,
+        "cycle": cycle,
+        "profile": profile,
+        "since_epoch": since,
+        "window_days": (int(time.time()) - since) // 86400,
+        "dimensions": dimensions,
+        "registry_lifecycle": lifecycle,
+        "verdict": verdict,
+        "reasons": reasons,
+        "recommendation": verdict,  # legacy field name, now the 4-dim verdict
+    }
+    base = {"weekly": _week_review, "monthly": _month_review, "quarterly": _quarter_review}[cycle]
+    review.update(base(profile, since))
+    return review
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+def _profiles_for_cycle(cycle: str, profiles: list[str]) -> tuple[list[str], str]:
+    """Monthly scope is active and changed profiles; quarterly is full roster."""
+    if cycle in ("weekly", "monthly"):
+        return profiles, "full_roster_fallback"  # caller refines with changed-set below
+    return profiles, "full_roster"
+
 
 def _run_cycle(cycle: str) -> str:
     now = int(time.time())
     if cycle == "weekly":
         since = now - 7 * 86400
-        review_fn = _week_review
     elif cycle == "monthly":
         since = now - 30 * 86400
-        review_fn = _month_review
     elif cycle == "quarterly":
         since = now - 90 * 86400
-        review_fn = _quarter_review
     else:
         print(f"Unknown cycle: {cycle}")
         sys.exit(1)
 
     event_type = f"profile.review.{cycle}"
     profiles = _all_profiles()
+    lifecycle_map = _registry_lifecycle()
+
+    # C8: monthly scope = active + changed (changed frozen/retired included);
+    # quarterly = full roster/architecture.
+    if cycle == "monthly" and lifecycle_map:
+        in_scope = _monthly_scope(profiles, since, lifecycle_map=lifecycle_map)
+        scope_note = "active+changed (registry lifecycle + change detection)"
+    else:
+        in_scope = profiles
+        scope_note = "full roster/architecture"
 
     results = []
-    for profile in sorted(profiles):
-        findings = review_fn(profile, since)
+    for profile in sorted(in_scope):
+        findings = _build_review(profile, since, cycle)
+        findings["scope_note"] = scope_note if cycle != "weekly" else "weekly snapshot"
         event_id = f"review-{cycle}-{profile}-{now}"
-        payload = json.dumps(findings)
-
         append_event(
             source="denji-review-cycle",
             event_type=event_type,
@@ -279,18 +712,12 @@ def _run_cycle(cycle: str) -> str:
             actor_profile="denji",
             target_profile=profile,
             object_type="profile.review",
-            summary=f"{cycle.capitalize()} review for {profile}: {findings['recommendation']}",
+            summary=f"{cycle.capitalize()} review for {profile}: {findings['verdict']}",
             payload=findings,
             occurred_at=now,
         )
-        results.append((profile, findings["recommendation"]))
+        results.append((profile, findings["verdict"]))
 
-    # Summary — only print when there are changes from last cycle
-    active = sum(1 for _, r in results if "active" in r)
-    low = sum(1 for _, r in results if "low activity" in r)
-    dormant = sum(1 for _, r in results if "dormant" in r)
-
-    # Compare against previous artifact to detect changes
     prev_artifacts = sorted(LOGBOARD.glob(f"profile-review-{cycle}-*.json"), reverse=True) if LOGBOARD.exists() else []
     prev_recs = {}
     if prev_artifacts:
@@ -301,17 +728,17 @@ def _run_cycle(cycle: str) -> str:
         except Exception:
             pass
 
-    # Count changes
     changed = []
     for profile, rec in results:
         prev_rec = prev_recs.get(profile)
         if prev_rec != rec:
             changed.append((profile, prev_rec, rec))
 
-    # Write JSON artifact to logboard for reference (always)
     LOGBOARD.mkdir(parents=True, exist_ok=True)
     artifact = {
         "cycle": cycle,
+        "review_version": REVIEW_VERSION,
+        "scope_note": scope_note if cycle == "monthly" else ("full roster/architecture" if cycle == "quarterly" else "weekly snapshot"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "timestamp_epoch": now,
         "profiles_reviewed": len(results),
@@ -326,17 +753,19 @@ def _run_cycle(cycle: str) -> str:
     artifact_path = LOGBOARD / f"profile-review-{cycle}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
     artifact_path.write_text(json.dumps(artifact, indent=2))
 
-    # Only deliver to Discord when there are changes
     if not changed:
         return event_type  # silent — no changes from last cycle
 
-    print(f"Denji Review Cycle - {cycle} - {len(profiles)} profiles")
+    counts: dict[str, int] = {}
+    for _, r in results:
+        counts[r] = counts.get(r, 0) + 1
+    print(f"Denji Review Cycle - {cycle} - {len(profiles)} profiles ({scope_note})")
     print(f"Changes: {len(changed)} (of {len(results)} reviewed)")
-    print(f"Summary: {active} active, {low} low, {dormant} dormant")
+    print(f"Verdicts: {counts}")
     print(f"Events recorded to ledger: {len(results)} × {event_type}")
     for profile, prev_rec, new_rec in changed[:10]:
         prev_short = (prev_rec or "new")[:40]
-        print(f"  {profile}: {prev_short} → {new_rec[:40]}")
+        print(f"  {profile}: {prev_short} → {new_rec}")
     print(f"Artifact: {artifact_path}")
 
     return event_type

@@ -797,6 +797,117 @@ def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
     return history
 
 
+def _lifecycle_metadata_value(value: Any, *, max_length: int = 256) -> str | int | float | None:
+    """Return only bounded scalar metadata suitable for the activity ledger."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if value and "\n" not in value and "\r" not in value:
+            return value[:max_length]
+    return None
+
+
+def _record_delegation_event(
+    event_type: str,
+    *,
+    parent_agent: Any,
+    child: Any,
+    child_subagent_id: Optional[str] = None,
+    child_role: Optional[str] = None,
+    child_profile: Optional[str] = None,
+    parent_subagent_id: Optional[str] = None,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a sanitized delegation lifecycle event without affecting the run.
+
+    This is deliberately a side-channel at the existing start/finalization
+    choke points.  It never receives or persists the child goal, summary, tool
+    arguments, tool results, prompts, or credentials.
+    """
+    try:
+        from hermes_cli.profile_activity_ledger import record_event_if_enabled
+
+        child_id = _lifecycle_metadata_value(
+            child_subagent_id or getattr(child, "_subagent_id", None)
+        )
+        child_session_id = _lifecycle_metadata_value(getattr(child, "session_id", None))
+        if not child_id and not child_session_id:
+            return
+        child_key = str(child_id or child_session_id)
+        parent_session_id = _lifecycle_metadata_value(getattr(parent_agent, "session_id", None))
+        parent_turn_id = _lifecycle_metadata_value(getattr(parent_agent, "_current_turn_id", "") or "")
+        parent_id = _lifecycle_metadata_value(parent_subagent_id)
+        role = _lifecycle_metadata_value(child_role or getattr(child, "_delegate_role", None))
+        specialist_profile = _lifecycle_metadata_value(
+            child_profile or getattr(child, "_delegate_profile", None)
+        )
+        model = _lifecycle_metadata_value(getattr(child, "model", None))
+        provider = _lifecycle_metadata_value(getattr(child, "provider", None))
+        payload: Dict[str, Any] = {
+            "child_subagent_id": child_id,
+            "child_session_id": child_session_id,
+            "child_role": role,
+            "model": model,
+            "provider": provider,
+            "parent_session_id": parent_session_id,
+            "parent_turn_id": parent_turn_id,
+            "parent_subagent_id": parent_id,
+        }
+        if specialist_profile is not None:
+            payload["child_profile"] = specialist_profile
+        if event_type == "delegation.started":
+            payload["status"] = "started"
+        elif event_type == "delegation.finished":
+            result = result if isinstance(result, dict) else {}
+            tokens = result.get("tokens") if isinstance(result.get("tokens"), dict) else {}
+            tool_trace = result.get("tool_trace") if isinstance(result.get("tool_trace"), list) else []
+            tool_names = sorted(
+                {
+                    str(item.get("tool"))[:256]
+                    for item in tool_trace
+                    if isinstance(item, dict) and item.get("tool")
+                }
+            )
+            raw_cost = result.get("cost_usd", result.get("_child_cost_usd", 0.0))
+            cost = raw_cost if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool) else 0.0
+            duration = result.get("duration_seconds", 0.0)
+            duration_ms = int(float(duration) * 1000) if isinstance(duration, (int, float)) else 0
+            payload.update(
+                {
+                    "status": _lifecycle_metadata_value(result.get("status")) or "unknown",
+                    "exit_reason": _lifecycle_metadata_value(result.get("exit_reason")) or "unknown",
+                    "duration_ms": max(0, duration_ms),
+                    "api_calls": int(result.get("api_calls", 0)) if isinstance(result.get("api_calls"), (int, float)) else 0,
+                    "token_counts": {
+                        "input": int(tokens.get("input", 0)) if isinstance(tokens.get("input"), (int, float)) else 0,
+                        "output": int(tokens.get("output", 0)) if isinstance(tokens.get("output"), (int, float)) else 0,
+                    },
+                    "cost_usd": round(float(cost), 6),
+                    "tool_count": len(tool_trace),
+                    "tool_names": tool_names,
+                }
+            )
+        else:
+            return
+        record_event_if_enabled(
+            source="delegate_tool",
+            actor_profile=os.environ.get("HERMES_PROFILE") or "unknown",
+            target_profile=str(specialist_profile or role) if (specialist_profile or role) else None,
+            event_type=event_type,
+            object_type="delegation",
+            object_id=child_key,
+            summary="Delegation lifecycle event",
+            payload=payload,
+            event_id=f"delegation:{child_key}:{event_type}",
+        )
+    except Exception:
+        # Governance telemetry is fail-safe and must never break delegation.
+        logger.debug("delegation lifecycle ledger write failed", exc_info=True)
+
+
 def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
@@ -2274,6 +2385,7 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    setattr(child, "_delegate_profile", profile)
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -2339,6 +2451,15 @@ def _build_child_agent(
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
 
+    _record_delegation_event(
+        "delegation.started",
+        parent_agent=parent_agent,
+        child=child,
+        child_subagent_id=subagent_id,
+        child_role=effective_role,
+        child_profile=profile,
+        parent_subagent_id=parent_subagent_id,
+    )
     return child
 
 
@@ -3722,11 +3843,21 @@ def _finalize_child_results(
                     children_cost_total += float(child_cost)
             except (TypeError, ValueError):
                 pass
-            if invoke_hook is None:
-                continue
             try:
                 child_index = entry.get("task_index", -1)
                 child = child_by_index.get(child_index)
+                _record_delegation_event(
+                    "delegation.finished",
+                    parent_agent=parent_agent,
+                    child=child,
+                    child_subagent_id=getattr(child, "_subagent_id", None),
+                    child_role=child_role,
+                    child_profile=getattr(child, "_delegate_profile", None),
+                    parent_subagent_id=getattr(child, "_parent_subagent_id", None),
+                    result=entry,
+                )
+                if invoke_hook is None:
+                    continue
                 invoke_hook(
                     "subagent_stop",
                     parent_session_id=parent_session_id,

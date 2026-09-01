@@ -146,3 +146,4 @@ class TestTier2ProfileContentAllowed:
         )
         assert child is not None
         assert getattr(child, "model", "") == "deepseek-v4-flash"
+        assert child.__dict__.get("_delegate_profile") == "active-worker"

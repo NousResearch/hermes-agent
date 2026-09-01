@@ -61,16 +61,25 @@ END;
 """
 
 
-def _governance_root() -> Path:
+def _governance_root(explicit_home=None) -> Path:
+    """R2-6: resolve the governance root, honouring an explicit home.
+
+    An explicit ``explicit_home`` (HERMES_HOME path) routes ledger reads
+    and writes to THAT home; the default resolves the process root.  No
+    environment mutation is involved.
+    """
+    if explicit_home is not None:
+        from pathlib import Path as _P
+        return _P(explicit_home) / "governance"
     return get_default_hermes_root() / "governance"
 
 
-def ledger_db_path() -> Path:
-    return _governance_root() / "profile-activity-ledger.sqlite"
+def ledger_db_path(explicit_home=None) -> Path:
+    return _governance_root(explicit_home) / "profile-activity-ledger.sqlite"
 
 
-def ledger_jsonl_dir() -> Path:
-    return _governance_root() / "logboard" / "profile-activity-ledger"
+def ledger_jsonl_dir(explicit_home=None) -> Path:
+    return _governance_root(explicit_home) / "logboard" / "profile-activity-ledger"
 
 
 def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
@@ -83,8 +92,8 @@ def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
     return bool(value)
 
 
-def _connect() -> sqlite3.Connection:
-    path = ledger_db_path()
+def _connect(explicit_home=None) -> sqlite3.Connection:
+    path = ledger_db_path(explicit_home)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -124,13 +133,13 @@ def _make_event_id(
     return "pal_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
-def _mirror_path(occurred_at: int) -> Path:
+def _mirror_path(occurred_at: int, explicit_home=None) -> Path:
     day = time.strftime("%Y-%m-%d", time.gmtime(occurred_at))
-    return ledger_jsonl_dir() / f"{day}.jsonl"
+    return ledger_jsonl_dir(explicit_home) / f"{day}.jsonl"
 
 
-def _append_jsonl_once(row: dict[str, Any]) -> None:
-    mirror_path = _mirror_path(int(row["occurred_at"]))
+def _append_jsonl_once(row: dict[str, Any], explicit_home=None) -> None:
+    mirror_path = _mirror_path(int(row["occurred_at"]), explicit_home)
     mirror_path.parent.mkdir(parents=True, exist_ok=True)
     event_id = str(row["event_id"])
     if mirror_path.exists():
@@ -164,11 +173,16 @@ def append_event(
     summary: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
     occurred_at: Optional[int] = None,
+    explicit_home=None,
 ) -> str:
     """Append an activity event and mirror it to JSONL.
 
     ``event_id`` is the idempotency key. If it already exists, the existing row
     is left untouched and the JSONL mirror is not duplicated.
+
+    R2-6: ``explicit_home`` routes this append (and its read-back paths) to
+    the given HERMES_HOME instead of the process root — no environment
+    mutation involved.  Default callers are unchanged.
     """
 
     occurred = int(occurred_at or time.time())
@@ -200,7 +214,7 @@ def append_event(
         "created_at": created_at,
     }
 
-    with _connect() as conn:
+    with _connect(explicit_home) as conn:
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO activity_events (
@@ -228,7 +242,7 @@ def append_event(
         )
         inserted = cur.rowcount == 1
     if inserted:
-        _append_jsonl_once(row)
+        _append_jsonl_once(row, explicit_home)
     return resolved_event_id
 
 
@@ -243,6 +257,7 @@ def query_events(
     since: Optional[int] = None,
     until: Optional[int] = None,
     limit: Optional[int] = None,
+    explicit_home=None,
 ) -> list[dict[str, Any]]:
     """Read events from the ledger with optional filters.
 
@@ -250,8 +265,11 @@ def query_events(
     promotion audit, and the dashboard Skills page. Returns rows newest-first
     as plain dicts with ``payload`` decoded from ``payload_json``. Never raises
     on a missing/empty ledger — returns an empty list.
+
+    R2-6: ``explicit_home`` routes this read to the given HERMES_HOME
+    instead of the process root (no environment mutation).
     """
-    if not ledger_db_path().exists():
+    if not ledger_db_path(explicit_home).exists():
         return []
     clauses: list[str] = []
     params: list[Any] = []
@@ -280,7 +298,7 @@ def query_events(
         sql += " LIMIT ?"
         params.append(int(limit))
     try:
-        with _connect() as conn:
+        with _connect(explicit_home) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, params).fetchall()
     except sqlite3.Error as exc:  # never break a read path on a ledger hiccup

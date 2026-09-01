@@ -6,7 +6,16 @@ import os, re
 from pathlib import Path
 
 BRAIN_DIR = Path(os.path.expanduser("~/brain"))
-WIKI_DIR = Path(os.path.expanduser("~/wiki"))
+
+
+def _wiki_dir() -> Path:
+    """Resolve the canonical wiki root while preserving explicit overrides."""
+    return Path(
+        os.environ.get("WIKI_PATH", str(Path.home() / "docs" / "wiki"))
+    ).expanduser()
+
+
+WIKI_DIR = _wiki_dir()
 _STOP = {"the","a","an","and","or","to","of","in","is","for","with","on","my","i"}
 
 

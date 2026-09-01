@@ -37,10 +37,11 @@ Use this skill when the user:
 
 **Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
 
-If unset, defaults to `~/wiki`.
+If unset, defaults to `$HOME/docs/wiki` (the Git-backed canonical wiki; on this
+system that is `/home/kensei/docs/wiki`, origin `Sahil-SS9/kensei-wiki`).
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI="${WIKI_PATH:-$HOME/docs/wiki}"
 ```
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
@@ -78,7 +79,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI="${WIKI_PATH:-$HOME/docs/wiki}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"
@@ -98,7 +99,7 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `$HOME/docs/wiki`)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -324,7 +325,7 @@ When the user asks to lint, health-check, or audit the wiki:
 # Use execute_code for this — programmatic scan across all wiki pages
 import os, re
 from collections import defaultdict
-wiki = "<WIKI_PATH>"
+wiki = "<WIKI_PATH>"   # default: $HOME/docs/wiki
 # Scan all .md files in entities/, concepts/, comparisons/, queries/
 # Extract all [[wikilinks]] — build inbound link map
 # Pages with zero inbound links are orphans
@@ -436,7 +437,7 @@ ob login --email <email> --password '<password>'
 ob sync-create-remote --name "LLM Wiki"
 
 # Connect the wiki directory to the vault
-cd ~/wiki
+cd "$HOME/docs/wiki"
 ob sync-setup --vault "<vault-id>"
 
 # Initial sync
@@ -456,7 +457,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/path/to/ob sync --continuous
-WorkingDirectory=%h/wiki
+WorkingDirectory=%h/docs/wiki
 Restart=on-failure
 RestartSec=10
 
@@ -471,7 +472,7 @@ systemctl --user enable --now obsidian-wiki-sync
 sudo loginctl enable-linger $USER
 ```
 
-This lets the agent write to `~/wiki` on a server while you browse the same
+This lets the agent write to `~/docs/wiki` on a server while you browse the same
 vault in Obsidian on your laptop/phone — changes appear within seconds.
 
 ## Pitfalls

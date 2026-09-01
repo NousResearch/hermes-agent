@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -42,17 +43,22 @@ class TestC10CoreNullParent:
 class TestC10DashboardFailClosed:
     @pytest.fixture
     def dash(self, tmp_path, monkeypatch):
+        # R3-5: dashboard checkout supplied explicitly via EVIDENCE_SPINE_DASHBOARD.
+        dash_root = os.environ.get("EVIDENCE_SPINE_DASHBOARD")
+        if not dash_root or not Path(dash_root).is_dir():
+            pytest.skip("EVIDENCE_SPINE_DASHBOARD not supplied (cross-repo test)")
+        assert isinstance(dash_root, str)
         home = tmp_path / "hermes-home"
         (home / "profiles").mkdir(parents=True)
         (home / "governance").mkdir()
         import sys
-        sys.path.insert(0, "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
+        sys.path.insert(0, dash_root)
         from backend import profile_docs
         monkeypatch.setattr(profile_docs, "HERMES_HOME", home)
         monkeypatch.setattr(profile_docs, "PROFILES_DIR", home / "profiles")
         monkeypatch.setattr(profile_docs, "GATEWAY_PROFILES", ["octacon"])
         yield home, profile_docs
-        sys.path.pop(0)
+        sys.path.remove(dash_root)
 
     def _write_registry(self, home, doc):
         (home / "governance" / "profile-registry.yaml").write_text(

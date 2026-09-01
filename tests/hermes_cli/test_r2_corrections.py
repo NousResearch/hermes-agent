@@ -393,7 +393,8 @@ class TestR26ExplicitHome:
         home_b = tmp_path / "home-b"
         (home_b / "governance").mkdir(parents=True)
 
-        REPO = "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-agent"
+        # R3-5: derive core checkout from this test file's own location
+        REPO = str(Path(__file__).resolve().parents[2])
         spec = importlib.util.spec_from_file_location(
             "set_eval_r26", f"{REPO}/scripts/denji-self-eval-trigger.py")
         mod = importlib.util.module_from_spec(spec)
@@ -615,11 +616,19 @@ class TestR27HumanProvenance:
 class TestR28DashboardValidation:
     @pytest.fixture
     def dash(self, tmp_path, monkeypatch):
+        # R3-5: the dashboard checkout is supplied EXPLICITLY via the
+        # EVIDENCE_SPINE_DASHBOARD env var (bound by the selector).  The core
+        # checkout is derived from this file; the dashboard is cross-repo and
+        # must never be assumed at a builder path.
+        dash_root = os.environ.get("EVIDENCE_SPINE_DASHBOARD")
+        if not dash_root or not Path(dash_root).is_dir():
+            pytest.skip("EVIDENCE_SPINE_DASHBOARD not supplied (cross-repo test)")
+        assert isinstance(dash_root, str)  # narrow for static checkers
         home = tmp_path / "hermes-home"
         (home / "profiles").mkdir(parents=True)
         (home / "governance").mkdir()
         import sys
-        sys.path.insert(0, "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
+        sys.path.insert(0, dash_root)
         # R2-8 isolation: 'backend' may already be cached from another
         # selector file (module-name collision) — force a fresh import of
         # the r2 dashboard's backend for this fixture.
@@ -633,7 +642,7 @@ class TestR28DashboardValidation:
         sys.modules.pop("backend", None)
         if saved_backend is not None:
             sys.modules["backend"] = saved_backend
-        sys.path.remove("/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
+        sys.path.remove(dash_root)
 
     def test_duplicate_entries_rejected(self, dash):
         home, profile_docs = dash
@@ -880,9 +889,11 @@ class TestR210FindingRecurrence:
     @staticmethod
     def _load():
         import importlib.util
+        # R3-5: derive the core checkout from this test file's own location
+        # (the worktree root is two directories up from tests/hermes_cli/).
+        root = Path(__file__).resolve().parents[2]
         spec = importlib.util.spec_from_file_location(
-            "drc_r210",
-            "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-agent/scripts/denji-review-cycle.py")
+            "drc_r210", str(root / "scripts" / "denji-review-cycle.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod

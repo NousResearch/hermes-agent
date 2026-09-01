@@ -98,6 +98,17 @@ def test_fallback_reason_text_defaults_when_reason_is_missing():
     assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
 
 
+def test_unsupported_thinking_never_activates_remote_fallback():
+    agent = _make_agent(
+        fallback_model={"provider": "nous", "model": "solar-pro"},
+    )
+    with patch("agent.auxiliary_client.resolve_provider_client") as resolve_client:
+        assert agent._try_activate_fallback(FailoverReason.unsupported_thinking) is False
+
+    resolve_client.assert_not_called()
+    assert agent._fallback_index == 0
+
+
 def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
     """Unsafe remote payloads must go directly to a local fallback.
 

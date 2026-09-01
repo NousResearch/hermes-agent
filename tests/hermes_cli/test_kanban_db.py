@@ -372,6 +372,24 @@ def test_provider_egress_error_parser_requires_known_signature(
     assert _kb._provider_egress_error_text("task") is None
 
 
+def test_provider_unsupported_thinking_parser_is_terminal(
+    tmp_path, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+    log_path.write_text(
+        'HTTP 400: model "devstral-small-2:24b" does not support thinking\n',
+        encoding="utf-8",
+    )
+
+    assert _kb._provider_terminal_error_text("task") == (
+        "provider rejected reasoning: selected model does not support thinking",
+        "unsupported_thinking",
+    )
+
+
 def test_provider_egress_crash_is_terminal_needs_attention(
     kanban_home, monkeypatch,
 ):
@@ -402,6 +420,38 @@ def test_provider_egress_crash_is_terminal_needs_attention(
     assert task.status == "blocked"
     assert task.last_failure_error == (
         "provider egress blocked: LLM egress blocked: base64_payload"
+    )
+
+
+def test_provider_unsupported_thinking_crash_is_terminal_needs_attention(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    log_path = kanban_home / "unsupported-thinking-worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        task_id = kb.create_task(conn, title="unsupported-thinking", assignee="a")
+        kb.claim_task(conn, task_id, claimer=f"{host}:unsupported-thinking")
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (70002, task_id))
+        conn.commit()
+        log_path.write_text(
+            'HTTP 400: model "devstral-small-2:24b" does not support thinking\n',
+            encoding="utf-8",
+        )
+
+        crashed = kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, task_id)
+
+    assert task_id in crashed
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.last_failure_error == (
+        "provider rejected reasoning: selected model does not support thinking"
     )
 
 

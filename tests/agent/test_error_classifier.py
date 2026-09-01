@@ -69,7 +69,7 @@ class TestFailoverReason:
             "provider_policy_blocked",
             "content_policy_blocked",
             "egress_policy_blocked",
-            "thinking_signature", "long_context_tier",
+            "thinking_signature", "unsupported_thinking", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",
@@ -108,6 +108,17 @@ class TestFailoverReason:
         assert result.reason is FailoverReason.egress_policy_blocked
         assert result.retryable is False
         assert result.should_fallback is True
+
+    def test_unsupported_thinking_is_terminal_and_never_falls_back(self):
+        error = MockAPIError(
+            'model "devstral-small-2:24b" does not support thinking',
+            status_code=400,
+        )
+        result = classify_api_error(error, provider="ollama", model="devstral-small-2:24b")
+
+        assert result.reason is FailoverReason.unsupported_thinking
+        assert result.retryable is False
+        assert result.should_fallback is False
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────

@@ -58,6 +58,23 @@ class TestSchema:
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
+    def test_schema_preserves_driver_indices_and_documents_native_value_replacement(
+        self,
+    ):
+        """Models must not offset cua-driver's zero-based element indices."""
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        properties = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        element_description = properties["element"]["description"].lower()
+        assert "exactly as returned" in element_description
+        assert "1-based" not in element_description
+
+        action_description = properties["action"]["description"].lower()
+        value_description = properties["value"]["description"].lower()
+        assert "contenteditable" in action_description
+        assert "contenteditable" in value_description
+        assert "replaces rather than appends" in value_description
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):
@@ -108,6 +125,16 @@ class TestDispatch:
         assert "type" in call_names
         type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
         assert type_kw["text"] == "hello"
+
+    def test_click_preserves_zero_element_index(self, noop_backend):
+        """The driver owns the index base; zero is a valid element index."""
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "click", "element": 0})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert click_kw["element"] == 0
 
     def test_drag_action_routes_to_backend_by_element(self, noop_backend):
         """drag action must dispatch to backend.drag with element indices (issue #24170, bug 4)."""

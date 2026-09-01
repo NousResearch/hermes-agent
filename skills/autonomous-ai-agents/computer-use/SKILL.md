@@ -44,11 +44,14 @@ Returns a screenshot with numbered overlays on every interactable
 element AND an AX-tree index like:
 
 ```
-#1  AXButton 'Back' @ (12, 80, 28, 28) [Chrome]
-#2  AXTextField 'Address bar' @ (80, 80, 900, 32) [Chrome]
-#7  Link 'Sign In' @ (900, 420, 80, 24) [Chrome]
+#0  AXButton 'Back' @ (12, 80, 28, 28) [Chrome]
+#1  AXTextField 'Address bar' @ (80, 80, 900, 32) [Chrome]
+#6  Link 'Sign In' @ (900, 420, 80, 24) [Chrome]
 ...
 ```
+
+Use each index exactly as printed by the capture. cua-driver currently emits
+zero-based indices; never add or subtract one before passing an index back.
 
 The role names match the host platform's accessibility framework
 (`AXButton` on macOS, `Button` on Windows UIA, `push button` on Linux
@@ -58,7 +61,7 @@ AT-SPI) — treat them as labels, not as strict types.
 habit:
 
 ```
-computer_use(action="click", element=7)
+computer_use(action="click", element=6)
 ```
 
 Much more reliable than pixel coordinates for every model. Claude was
@@ -68,7 +71,7 @@ trained on both; other models are often only reliable with indices.
 can save a round-trip by asking for the post-action capture inline:
 
 ```
-computer_use(action="click", element=7, capture_after=True)
+computer_use(action="click", element=6, capture_after=True)
 ```
 
 ## Capture modes
@@ -91,6 +94,7 @@ drag              from_element=N, to_element=M        (or from/to_coordinate)
 scroll            direction=up|down|left|right   amount=3 (ticks)
 type              text="…"
 key               keys="<save shortcut>" | "return" | "escape" | "<modifier>+t"
+set_value         element=N, value="…"   (replaces supported native values)
 wait              seconds=0.5
 list_apps
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
@@ -99,6 +103,11 @@ focus_app         app="<app name>"   raise_window=false   (default: don't raise)
 All actions accept optional `capture_after=True` to get a follow-up
 screenshot in the same tool call. All actions that target an element
 accept `modifiers=[…]` for held keys.
+
+Use `set_value` for supported editable text/contenteditable controls as well as
+selects and sliders when you need to replace the value directly through the
+driver's native background value setter. Use `type` when you need to append by
+synthesizing keystrokes.
 
 The input actions (`click`, `double_click`, `right_click`, `middle_click`,
 `drag`, `scroll`, `type`, `key`) also accept `delivery_mode`. The optional
@@ -152,9 +161,9 @@ Walk it in order:
    verifiably swallows synthetic input.
 
 ```
-computer_use(action="click", element=7)
+computer_use(action="click", element=6)
 # → {effect: "suspected_noop", escalation: {recommended: "foreground", ...}}
-computer_use(action="click", element=7, delivery_mode="foreground")
+computer_use(action="click", element=6, delivery_mode="foreground")
 # → {effect: "unverifiable", path: "x11_pixel_fg"}   then re-capture to confirm
 ```
 

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -27,6 +29,88 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import hermaguard_events as he
 from hermes_cli import shadow_classifier as sc
 from hermes_cli import pilot_evidence as pe
+
+
+def _selector_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "scripts" / "evidence-spine-selector.sh"
+
+
+def _bound_dashboard() -> tuple[str, str]:
+    dashboard = os.environ.get("EVIDENCE_SPINE_DASHBOARD")
+    dashboard_sha = os.environ.get("EVIDENCE_SPINE_DASHBOARD_SHA")
+    if not dashboard or not dashboard_sha:
+        pytest.skip("exact dashboard path/SHA bindings are required for selector tests")
+    assert dashboard is not None
+    assert dashboard_sha is not None
+    return dashboard, dashboard_sha
+
+
+def test_selector_rejects_missing_dashboard_sha_only():
+    dashboard, _ = _bound_dashboard()
+    env = os.environ.copy()
+    env["EVIDENCE_SPINE_DASHBOARD"] = dashboard
+    env.pop("EVIDENCE_SPINE_DASHBOARD_SHA", None)
+
+    result = subprocess.run(
+        [str(_selector_path())],
+        cwd=_selector_path().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 2
+    assert "EVIDENCE_SPINE_DASHBOARD_SHA is required" in output
+    assert "COLLECTED:" not in output
+
+
+@pytest.mark.parametrize("target", ["core", "dashboard"])
+def test_selector_fails_closed_when_git_grep_errors(tmp_path, target):
+    dashboard, dashboard_sha = _bound_dashboard()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    failure_root = str(_selector_path().parents[1]) if target == "core" else dashboard
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_wrapper = bin_dir / "git"
+    git_wrapper.write_text(
+        "#!/bin/sh\n"
+        f"if [ \"$1\" = -C ] && [ \"$2\" = {failure_root} ] && [ \"$3\" = grep ]; then\n"
+        "  echo 'fatal: simulated git grep failure' >&2\n"
+        "  exit 128\n"
+        "fi\n"
+        f"exec {real_git} \"$@\"\n",
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "EVIDENCE_SPINE_DASHBOARD": dashboard,
+            "EVIDENCE_SPINE_DASHBOARD_SHA": dashboard_sha,
+        }
+    )
+
+    result = subprocess.run(
+        [str(_selector_path())],
+        cwd=_selector_path().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 5
+    assert f"{target} hardcoded-prefix scan failed with exit 128" in output
+    assert "fatal: simulated git grep failure" in output
+    assert "HARDCODED_PREFIX_SCAN: 0 matches" not in output
+    assert "COLLECTED:" not in output
 
 
 @pytest.fixture

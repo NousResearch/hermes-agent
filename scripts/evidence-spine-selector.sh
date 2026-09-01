@@ -69,8 +69,12 @@ if [ -z "${EVIDENCE_SPINE_DASHBOARD:-}" ]; then
   echo "SEL_FAIL: EVIDENCE_SPINE_DASHBOARD is required (bind the dashboard checkout explicitly)" >&2
   exit 2
 fi
+if [ -z "${EVIDENCE_SPINE_DASHBOARD_SHA:-}" ]; then
+  echo "SEL_FAIL: EVIDENCE_SPINE_DASHBOARD_SHA is required (bind the dashboard commit explicitly)" >&2
+  exit 2
+fi
 DASH_ROOT="$EVIDENCE_SPINE_DASHBOARD"
-DASH_SHA_EXPECTED="${EVIDENCE_SPINE_DASHBOARD_SHA:-dbc95aa49f24a24fc0ce39792f73c1683f65dca1}"
+DASH_SHA_EXPECTED="$EVIDENCE_SPINE_DASHBOARD_SHA"
 if [ ! -d "$DASH_ROOT" ]; then
   echo "SEL_FAIL: dashboard checkout missing: $DASH_ROOT" >&2
   exit 2
@@ -82,6 +86,7 @@ if [ "$DASH_SHA" != "$DASH_SHA_EXPECTED" ]; then
 fi
 echo "DASH_SHA=$DASH_SHA"
 export EVIDENCE_SPINE_DASHBOARD="$DASH_ROOT"
+export EVIDENCE_SPINE_DASHBOARD_SHA="$DASH_SHA_EXPECTED"
 
 # ── R4-2/R4-3: export exact core bindings for dashboard cross-repo tests ──
 export EVIDENCE_SPINE_CORE="$REPO_ROOT"
@@ -92,10 +97,21 @@ echo "EVIDENCE_SPINE_CORE_SHA=$EVIDENCE_SPINE_CORE_SHA"
 # ── R5-3: broad hardcoded worktree prefix across ALL tracked content ────────
 # Assemble at runtime so this selector does not contain the prohibited token.
 SCAN_PAT="worktrees/governance-evidence-""spine-"
-PREFIX_HITS="$({
-  git -C "$REPO_ROOT" grep -n -I -e "$SCAN_PAT" -- . || true
-  git -C "$DASH_ROOT" grep -n -I -e "$SCAN_PAT" -- . || true
-})"
+CORE_PREFIX_HITS="$(git -C "$REPO_ROOT" grep -n -I -e "$SCAN_PAT" -- . 2>&1)"
+CORE_PREFIX_EXIT=$?
+if [ "$CORE_PREFIX_EXIT" -gt 1 ]; then
+  echo "SEL_FAIL: core hardcoded-prefix scan failed with exit $CORE_PREFIX_EXIT" >&2
+  echo "$CORE_PREFIX_HITS" >&2
+  exit 5
+fi
+DASH_PREFIX_HITS="$(git -C "$DASH_ROOT" grep -n -I -e "$SCAN_PAT" -- . 2>&1)"
+DASH_PREFIX_EXIT=$?
+if [ "$DASH_PREFIX_EXIT" -gt 1 ]; then
+  echo "SEL_FAIL: dashboard hardcoded-prefix scan failed with exit $DASH_PREFIX_EXIT" >&2
+  echo "$DASH_PREFIX_HITS" >&2
+  exit 5
+fi
+PREFIX_HITS="${CORE_PREFIX_HITS}${CORE_PREFIX_HITS:+$'\n'}${DASH_PREFIX_HITS}"
 if [ -n "$PREFIX_HITS" ]; then
   echo "SEL_FAIL: hardcoded governance-evidence-spine worktree prefix found:" >&2
   echo "$PREFIX_HITS" >&2
@@ -160,7 +176,7 @@ if [ -z "$COLLECTED_COUNT" ]; then
   echo "SEL_FAIL: could not parse collected count from $EVIDENCE_FILE" >&2
   exit 3
 fi
-EXPECTED_NODES=487
+EXPECTED_NODES=490
 echo "COLLECTED: $COLLECTED_COUNT (expected $EXPECTED_NODES, log: $EVIDENCE_FILE)"
 if [ "$COLLECTED_COUNT" != "$EXPECTED_NODES" ]; then
   echo "SEL_FAIL: collected $COLLECTED_COUNT != expected $EXPECTED_NODES" >&2

@@ -310,7 +310,12 @@ test('bufferedOutput without a sentinel still resolves from later live stdout', 
 test('bufferedOutput without a sentinel still times out (no false positive)', async () => {
   const child = makeFakeChild()
 
-  const wait = waitForDashboardPort(child, 50, () => '', () => 'no sentinel here\n')
+  const wait = waitForDashboardPort(
+    child,
+    50,
+    () => '',
+    () => 'no sentinel here\n'
+  )
 
   await assert.rejects(wait, /Timed out waiting/)
 })

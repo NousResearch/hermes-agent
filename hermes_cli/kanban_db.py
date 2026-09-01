@@ -9115,6 +9115,70 @@ def heartbeat_worker(
     return True
 
 
+def stamp_worker_run_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    extra: dict,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Best-effort merge ``extra`` into the active run's ``metadata``.
+
+    Same identity contract as ``heartbeat_worker``: the worker's own current
+    run, pinned by ``expected_run_id`` when provided. Used by the kanban
+    finalize-in-process instrumentation to record, on the run row itself,
+    whether a forced finalize turn fired (so the rate is measurable whether or
+    not the worker later completes). Never raises. Returns True only when the
+    merge actually landed on the task's pinned (or current) run row — False
+    when ``extra`` is empty, when that run does not exist, when a pinned id
+    is stale or belongs to a different task, or when the write failed.
+
+    The merge is JSON-level (read current metadata, update, write back) rather
+    than the outer ``metadata = ?`` overwrite used by complete/block — a worker
+    may stamp the fired flag mid-run, before the terminal transition writes its
+    own handoff metadata. The lookup is scoped to both ``id`` AND ``task_id``,
+    and the write is verified by rowcount, so a stale/foreign pinned run is a
+    real no-op (never silently lands on a sibling run).
+    """
+    if not extra:
+        return False
+    try:
+        run_id = (
+            int(expected_run_id)
+            if expected_run_id is not None
+            else _current_run_id(conn, task_id)
+        )
+        if run_id is None:
+            return False
+        # Scoped to this task so a pinned id that is stale or belongs to a
+        # different task is rejected, not merged onto the wrong row.
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None:
+            return False
+        meta: dict = {}
+        if row["metadata"]:
+            try:
+                meta = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta.update(extra)
+        cur = conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), run_id),
+        )
+        # The row existed a moment ago; rowcount confirms the write actually
+        # landed (guards against a racing delete between SELECT and UPDATE).
+        return cur.rowcount > 0
+    except Exception:
+        _log.debug("stamp_worker_run_metadata failed: %s", task_id, exc_info=True)
+        return False
+
+
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,

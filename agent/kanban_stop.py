@@ -17,7 +17,22 @@ import os
 from typing import Any, Iterable, Optional
 
 
-_TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# The terminal kanban tools a worker may end on. This is the SINGLE source
+# of truth: ``agent.kanban_checkpoint`` imports it (as ``_TERMINAL_TOOLS``)
+# rather than copying it, so the detection gate, the reminder, and the forced
+# finalize-tool restriction can never diverge.
+#
+# Recognized terminal transitions include the review handoffs, not just the
+# conclusive pair: a worker that correctly calls ``kanban_request_review``
+# (implementer handing off) or ``kanban_request_changes`` (reviewer returning
+# work) has legitimately closed its run and must NOT be re-nudged or forced
+# into ``kanban_complete``/``kanban_block``.
+_TERMINAL_KANBAN_TOOLS = frozenset({
+    "kanban_complete",
+    "kanban_block",
+    "kanban_request_review",
+    "kanban_request_changes",
+})
 
 _DEFAULT_MAX_ATTEMPTS = 2
 

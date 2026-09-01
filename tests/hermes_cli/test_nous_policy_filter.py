@@ -162,18 +162,24 @@ class TestNousPolicyNotice:
 
     def test_shows_a_line_for_a_governed_org(self, monkeypatch):
         self._patch(monkeypatch, True)
-        assert "restricts which models" in account_mod.nous_policy_notice()
+        assert "restricts which models" in account_mod.nous_policy_notice(removed=True)
 
     @pytest.mark.parametrize("present", [False, None])
     def test_silent_otherwise(self, monkeypatch, present):
         """Absent is an older mint, not an unrestricted org."""
         self._patch(monkeypatch, present)
-        assert account_mod.nous_policy_notice() == ""
+        assert account_mod.nous_policy_notice(removed=True) == ""
+
+    def test_silent_when_the_filter_removed_nothing(self, monkeypatch):
+        """The catalog read fails open, so a governed org can still end up with
+        a full list — saying it was filtered would be false."""
+        self._patch(monkeypatch, True)
+        assert account_mod.nous_policy_notice(removed=False) == ""
 
     def test_names_no_models(self, monkeypatch):
         """The blocked set is most of the catalog under an allowlist."""
         self._patch(monkeypatch, True)
-        notice = account_mod.nous_policy_notice()
+        notice = account_mod.nous_policy_notice(removed=True)
         assert "/" not in notice, f"looks like it names a model: {notice}"
         assert len(notice.splitlines()) == 1
 

@@ -421,14 +421,18 @@ def nous_policy_present() -> Optional[bool]:
         return None
 
 
-def nous_policy_notice() -> str:
-    """A one-line notice for an org that restricts model choice, else ``""``.
+def nous_policy_notice(*, removed: bool) -> str:
+    """A one-line notice for a list the org's policy narrowed, else ``""``.
 
     A blocked model is omitted rather than marked, which reads as "Hermes does
     not support this". This says which it is without enumerating the blocked
     set, which under an allowlist is most of the catalog.
+
+    *removed* is whether the filter actually dropped anything. The catalog read
+    fails open — an anonymous or empty one narrows nothing — so the claim alone
+    would label a full list as filtered.
     """
-    if nous_policy_present() is not True:
+    if not removed or nous_policy_present() is not True:
         return ""
     return (
         "Your organization restricts which models are available — "

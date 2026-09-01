@@ -9395,6 +9395,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 # Narrow before the tier split, so a rescued id still has to
                 # pass the free/paid predicate.
                 _policy_allowed = nous_policy_allowed_ids()
+                _policy_narrowed = False
                 if free_tier:
                     try:
                         from hermes_cli.nous_account import (
@@ -9420,9 +9421,11 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_free_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
                     model_ids = restrict_to_nous_policy(
                         model_ids, _policy_allowed, rescue_empty=True,
                     )
+                    _policy_narrowed = model_ids != _before_policy
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )
@@ -9434,14 +9437,16 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_paid_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
                     model_ids = restrict_to_nous_policy(
                         model_ids, _policy_allowed, rescue_empty=True,
                     )
+                    _policy_narrowed = model_ids != _before_policy
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
                 from hermes_cli.nous_account import nous_policy_notice
 
-                _policy_notice = nous_policy_notice()
+                _policy_notice = nous_policy_notice(removed=_policy_narrowed)
                 if _policy_notice:
                     print(_policy_notice)
                 print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")

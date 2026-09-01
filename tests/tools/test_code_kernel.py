@@ -18,9 +18,15 @@ tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import textwrap
+import time
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -121,6 +127,166 @@ class TestSessionStatePersistence(unittest.TestCase):
 
 
 class TestKernelLifecycle(unittest.TestCase):
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows process-handle contract")
+    def test_kernel_exits_when_its_backend_parent_dies(self):
+        """A long-running cell must not outlive the backend that spawned it."""
+        import psutil
+
+        tmpdir = tempfile.TemporaryDirectory(prefix="hermes_parent_death_test_")
+        tmp_path = Path(tmpdir.name)
+        repo_root = Path(__file__).resolve().parents[2]
+        state_path = tmp_path / "kernel-state.json"
+        cell_started_path = tmp_path / "cell-started"
+        parent_script = tmp_path / "spawn-kernel-parent.py"
+        parent_script.write_text(
+            textwrap.dedent(
+                f"""
+                import json
+                import sys
+                import time
+                from pathlib import Path
+
+                import psutil
+
+                from tools.code_kernel import SessionKernel, _spawn
+
+                state_path = Path(sys.argv[1])
+                cell_started_path = Path(sys.argv[2])
+                kernel = SessionKernel(("parent-death-test",))
+                _spawn(
+                    kernel,
+                    task_id="parent-death-test",
+                    child_python=sys.executable,
+                    child_cwd="",
+                    sandbox_tools=frozenset(),
+                    max_tool_calls=1,
+                )
+                child = psutil.Process(kernel.proc.pid)
+                state_tmp_path = state_path.with_suffix(".tmp")
+                state_tmp_path.write_text(
+                    json.dumps(
+                        {{
+                            "pid": kernel.proc.pid,
+                            "create_time": child.create_time(),
+                            "tmpdir": kernel.tmpdir,
+                        }}
+                    ),
+                    encoding="utf-8",
+                )
+                state_tmp_path.replace(state_path)
+                request = json.dumps(
+                    {{
+                        "id": "long-cell",
+                        "code": (
+                            "import __main__, json, os\\n"
+                            "from pathlib import Path\\n"
+                            f"Path({{str(cell_started_path)!r}}).write_text(\\n"
+                            "    json.dumps({{\\n"
+                            "        'env_present': "
+                            "'HERMES_KERNEL_PARENT_PROCESS_HANDLE' in os.environ,\\n"
+                            "        'global_present': bool(getattr(\\n"
+                            "            __main__, '_PARENT_PROCESS_HANDLE', ''\\n"
+                            "        )),\\n"
+                            "    }})\\n"
+                            ")\\n"
+                            "import time\\n"
+                            "time.sleep(300)"
+                        ),
+                    }}
+                ) + "\\n"
+                kernel.proc.stdin.write(request.encode("utf-8"))
+                kernel.proc.stdin.flush()
+                while True:
+                    time.sleep(60)
+                """
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        env["HERMES_HOME"] = str(tmp_path / "hermes-home")
+        parent = subprocess.Popen(
+            [sys.executable, str(parent_script), str(state_path), str(cell_started_path)],
+            cwd=str(repo_root),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+        child_pid = None
+        child_create_time = None
+        child_tmpdir = None
+
+        def child_identity_alive():
+            if child_pid is None or child_create_time is None:
+                return False
+            try:
+                return psutil.Process(child_pid).create_time() == child_create_time
+            except psutil.NoSuchProcess:
+                return False
+
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if child_pid is None and state_path.exists():
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    child_pid = int(state["pid"])
+                    child_create_time = float(state["create_time"])
+                    child_tmpdir = Path(state["tmpdir"])
+                if child_pid is not None and cell_started_path.exists():
+                    break
+                if parent.poll() is not None:
+                    stderr = parent.stderr.read() if parent.stderr is not None else ""
+                    self.fail(
+                        f"kernel parent exited before setup: {parent.returncode}: {stderr}"
+                    )
+                time.sleep(0.05)
+            self.assertIsNotNone(child_pid, "kernel child did not start")
+            assert child_pid is not None
+            self.assertIsNotNone(child_create_time, "kernel identity was not recorded")
+            self.assertTrue(cell_started_path.exists(), "kernel cell did not start")
+            cell_state = json.loads(cell_started_path.read_text(encoding="utf-8"))
+            self.assertFalse(cell_state["env_present"], "parent handle leaked via env")
+            self.assertFalse(cell_state["global_present"], "parent handle leaked via runner globals")
+            self.assertTrue(child_identity_alive(), "kernel child was never alive")
+
+            parent.kill()
+            parent.wait(timeout=10)
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and child_identity_alive():
+                time.sleep(0.05)
+            self.assertFalse(
+                child_identity_alive(),
+                "session kernel survived its backend parent",
+            )
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=10)
+            if child_pid is not None:
+                try:
+                    child = psutil.Process(child_pid)
+                    if child.create_time() == child_create_time:
+                        child.kill()
+                        child.wait(timeout=10)
+                except psutil.NoSuchProcess:
+                    pass
+            if child_tmpdir is not None:
+                temp_root = Path(tempfile.gettempdir()).resolve()
+                resolved_tmpdir = child_tmpdir.resolve()
+                if (
+                    resolved_tmpdir.parent == temp_root
+                    and resolved_tmpdir.name.startswith("hermes_kernel_")
+                ):
+                    shutil.rmtree(resolved_tmpdir, ignore_errors=True)
+            tmpdir.cleanup()
+
     def test_timeout_kills_the_kernel_and_reports_state_loss(self):
         with _kernel_config(timeout=1):
             slow = _run("import time\ntime.sleep(30)")

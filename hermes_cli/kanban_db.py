@@ -5611,6 +5611,26 @@ def _maybe_create_deploy_followup(
     branch = (task.branch_name or "").strip() or f"wt/{task_id}"
     repo = worktrees_root.parent
 
+    # 2026-09-02: the deploy target is whatever branch the repo is PARKED on,
+    # not a hardcoded "main". On 09-02 06:53:28 the auto-updater reset main to
+    # origin/main and erased 59 fleet commits; the fleet now lives on `fleet`
+    # with updates.parked_branch_strategy: update_in_place. A deploy card that
+    # still said "main" would merge approved work onto upstream's branch, where
+    # the next update would discard it — i.e. silently re-create that incident.
+    # Resolve dynamically so this cannot drift again.
+    deploy_branch = "main"
+    try:
+        _hb = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
+        )
+        _name = (_hb.stdout or "").strip()
+        if _hb.returncode == 0 and _name and _name != "HEAD":
+            deploy_branch = _name
+    except Exception:  # never block a deploy card on a git hiccup
+        pass
+
     title = f"Deploy: merge {branch} + restart gateway"
     idempotency_key = f"deploy-followup:{task_id}"
     body = (
@@ -5621,12 +5641,12 @@ def _maybe_create_deploy_followup(
         f"Repo: `{repo}`\n\n"
         "Steps:\n"
         f"1. `cd {repo}`\n"
-        "2. Ensure the branch is present: `git switch main`, then `git fetch origin` "
+        f"2. Ensure the branch is present: `git switch {deploy_branch}`, then `git fetch origin` "
         f"and `git branch --list {branch}`. If the post-completion cleanup pruned the "
         "local worktree branch, recreate it from the parent card's commit rather than "
         "abandoning the deploy.\n"
         f"3. Capture which fleet-watchdog files this deploy touches: "
-        f"`git diff --name-only main...{branch} -- scripts/fleet-watchdogs/ > /tmp/wd-changed-{task_id}`. "
+        f"`git diff --name-only {deploy_branch}...{branch} -- scripts/fleet-watchdogs/ > /tmp/wd-changed-{task_id}`. "
         "An empty file means no watchdog change in this merge.\n"
         f"4. Merge: `git merge --no-edit {branch}` (fast-forward preferred: "
         f"`git merge --ff-only {branch}`). On conflict, resolve and commit — never "
@@ -5645,7 +5665,7 @@ def _maybe_create_deploy_followup(
         "7. Restart the live (root) gateway via the existing axel cron copy: "
         "`bash ~/.hermes/profiles/axel/scripts/restart-root-gateway.sh`, then verify the "
         "gateway shows a fresh start_time (launchctl labels: `ai.hermes.gateway` = root).\n"
-        "8. Confirm `git log main` includes the merge AND `ps`/`launchctl` shows the "
+        f"8. Confirm `git log {deploy_branch}` includes the merge AND `ps`/`launchctl` shows the "
         "gateway start_time changed since before this card ran. In the completion "
         "summary, list exactly which watchdog files (if any) were installed into "
         "~/.hermes/scripts.\n\n"

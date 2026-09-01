@@ -3411,6 +3411,13 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     _interrupt_session_turn(str(params.get("session_id") or ""), session)
+    # Retire the crash-recovery marker on a confirmed local Stop. Waiting for
+    # the run thread's finally leaves a window where a backend exit looks like
+    # a crash and session.resume auto-continues the turn the user just stopped.
+    # Extra key covers compression rotating session_key mid-turn.
+    with session["history_lock"]:
+        active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
+    _retire_turn_marker(session, active_marker_key)
     return _ok(rid, {"status": "interrupted"})
 
 

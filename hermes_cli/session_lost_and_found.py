@@ -334,11 +334,17 @@ def _copy_direct_tables(
         "compression_locks",
         "gateway_routing",
         "async_delegations",
+        "delivery_obligations",
     ):
         source_columns = _table_columns(lf_conn, table)
         if not source_columns:
             continue
         dest_columns = _table_columns(dest, table)
+        if table == "delivery_obligations" and not dest_columns:
+            from gateway.delivery_ledger import _initialize_schema
+
+            _initialize_schema(dest)
+            dest_columns = _table_columns(dest, table)
         columns = [c for c in dest_columns if c in source_columns]
         if not columns:
             continue

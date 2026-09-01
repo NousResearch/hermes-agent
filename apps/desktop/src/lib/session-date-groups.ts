@@ -195,6 +195,7 @@ export function hideCollapsedGroupRows(
     if (row.kind === 'divider') {
       hiding = !isOpen(row.key)
       out.push(row)
+
       continue
     }
 

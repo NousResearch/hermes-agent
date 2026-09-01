@@ -214,12 +214,7 @@ describe('hideCollapsedGroupRows', () => {
 
     const visible = hideCollapsedGroupRows(rows, key => key !== 'yesterday')
 
-    expect(visible).toEqual([
-      rows[0],
-      rows[1],
-      rows[4],
-      rows[5]
-    ])
+    expect(visible).toEqual([rows[0], rows[1], rows[4], rows[5]])
   })
 
   it('never hides the unlabelled head above the first divider', () => {

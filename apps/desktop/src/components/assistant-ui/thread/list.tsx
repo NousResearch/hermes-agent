@@ -143,20 +143,14 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
  *  off the bottom should still track, but a reader in history must not yank. */
 export const RUN_START_SNAP_THRESHOLD_PX = 64
 
-export function shouldSnapOnRunStart(
-  remainingPx: number,
-  thresholdPx = RUN_START_SNAP_THRESHOLD_PX
-): boolean {
+export function shouldSnapOnRunStart(remainingPx: number, thresholdPx = RUN_START_SNAP_THRESHOLD_PX): boolean {
   return remainingPx < thresholdPx
 }
 
 // True when the pin-to-bottom settle should re-arm. A same-session refresh
 // (transcript briefly emptied and repopulated under the same key) must keep
 // the reader's position; only a session switch or a cold-load arrival re-pins.
-export function shouldRePinOnTranscriptReload(opts: {
-  sessionSwitched: boolean
-  settledNonEmpty: boolean
-}): boolean {
+export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; settledNonEmpty: boolean }): boolean {
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
@@ -609,10 +603,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])
 
   // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(
-    () => onScrollToBottomRequest(() => void scrollToBottom(), sessionId),
-    [scrollToBottom, sessionId]
-  )
+  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
   // the same to any window): rAF and ResizeObserver may have been frozen, so

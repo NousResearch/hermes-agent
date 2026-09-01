@@ -384,10 +384,7 @@ export function SidebarSessionsSection({
   // Closed date/status buckets keep their divider and drop the sessions under
   // it. Same array when nothing is collapsed so the virtualizer's rows ref
   // stays stable across parent re-renders.
-  const visibleRows = useMemo(
-    () => hideCollapsedGroupRows(flatRows, isListGroupOpen),
-    [flatRows, isListGroupOpen]
-  )
+  const visibleRows = useMemo(() => hideCollapsedGroupRows(flatRows, isListGroupOpen), [flatRows, isListGroupOpen])
 
   // dnd-kit must see exactly the ids it renders, in render order: the sortable
   // set is derived from the rows, not from `sessions`. Feeding it the unrendered
@@ -395,6 +392,7 @@ export function SidebarSessionsSection({
   // wasn't looking at — the drag that landed a row in the wrong slot.
   const sortableRowIds = useMemo(() => reorderableRowIds(visibleRows), [visibleRows])
   const allSortableRowIds = useMemo(() => reorderableRowIds(flatRows), [flatRows])
+
   const persistSessionOrder = useCallback(
     (ids: string[]) => onReorderSessions?.(mergeVisibleReorder(allSortableRowIds, ids)),
     [allSortableRowIds, onReorderSessions]
@@ -405,9 +403,7 @@ export function SidebarSessionsSection({
       return
     }
 
-    $sidebarListGroupIds.set(
-      flatRows.flatMap(row => (row.kind === 'divider' ? [listGroupNodeId(row.key)] : []))
-    )
+    $sidebarListGroupIds.set(flatRows.flatMap(row => (row.kind === 'divider' ? [listGroupNodeId(row.key)] : [])))
 
     return () => {
       $sidebarListGroupIds.set([])

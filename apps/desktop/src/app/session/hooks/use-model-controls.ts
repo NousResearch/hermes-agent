@@ -73,10 +73,7 @@ export function useModelControls({
         return { ...prev, provider, model, providers }
       }
 
-      queryClient.setQueryData<ModelOptionsResponse>(
-        modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-        patch
-      )
+      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
         queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
@@ -140,11 +137,7 @@ export function useModelControls({
           }
 
           const options = queryClient.getQueryData<ModelOptionsResponse>(
-            modelOptionsQueryKey(
-              cacheProfile || $activeGatewayProfile.get(),
-              null,
-              cacheOwnerConnectionId
-            )
+            modelOptionsQueryKey(cacheProfile || $activeGatewayProfile.get(), null, cacheOwnerConnectionId)
           )
 
           return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())

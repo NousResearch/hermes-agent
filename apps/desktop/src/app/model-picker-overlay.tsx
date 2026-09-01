@@ -18,12 +18,7 @@ import {
   setModelPickerOpen
 } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
-import {
-  $focusedRuntimeId,
-  $focusedSessionState,
-  $focusedStoredSessionId,
-  $sessionTiles
-} from '@/store/session-states'
+import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionTiles } from '@/store/session-states'
 
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway
@@ -96,9 +91,7 @@ export function ModelPickerOverlay({
       currentProvider={currentProvider}
       gw={gateway}
       onOpenChange={setModelPickerOpen}
-      onSelect={selection =>
-        (pickerOwner.route ? selectFocusedModel : onSelect)({ ...selection, sessionId })
-      }
+      onSelect={selection => (pickerOwner.route ? selectFocusedModel : onSelect)({ ...selection, sessionId })}
       open={open}
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}

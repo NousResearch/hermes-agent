@@ -174,6 +174,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
   const prAvailable = Boolean(desktopGit()?.review?.prList)
+
   // Fold the level in view: project rows, or the date/status buckets. Project
   // rows default open, so "all collapsed" means every one of them has been
   // explicitly shut. Never sweeps Pinned or Cron.
@@ -183,6 +184,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
       : grouping === 'date' || grouping === 'status'
         ? listGroupIds
         : []
+
   const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
 
   const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label

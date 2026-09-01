@@ -5,7 +5,11 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { activeConnectionScopeSuffix, connectionScopeSuffix, rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+import {
+  activeConnectionScopeSuffix,
+  connectionScopeSuffix,
+  rescopeConnectionScopedStores
+} from '@/lib/connection-scoped'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'

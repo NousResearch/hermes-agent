@@ -64,6 +64,7 @@ export function SidebarDateDivider({
       {label}
     </span>
   )
+
   const rule = <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-(--ui-stroke-tertiary)" />
 
   return (

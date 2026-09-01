@@ -723,9 +723,9 @@ describe('useModelControls', () => {
       })
     )
 
-    await expect(
-      result.current.selectModel({ model: 'bogus', provider: 'xai', sessionId: 'runtime-b' })
-    ).resolves.toBe(false)
+    await expect(result.current.selectModel({ model: 'bogus', provider: 'xai', sessionId: 'runtime-b' })).resolves.toBe(
+      false
+    )
 
     expect(queryClient.getQueryData(ownerBKey)).toMatchObject({ model: 'old-b', provider: 'provider-b' })
     expect(queryClient.getQueryData(ambientAKey)).toMatchObject({ model: 'model-a', provider: 'provider-a' })

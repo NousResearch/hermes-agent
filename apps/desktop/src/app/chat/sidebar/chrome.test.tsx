@@ -10,10 +10,7 @@ describe('SidebarDateDivider', () => {
     const onToggle = vi.fn()
 
     render(
-      <SidebarDateDivider
-        label="Yesterday"
-        toggle={{ ariaLabel: 'Hide Yesterday sessions', onToggle, open: true }}
-      />
+      <SidebarDateDivider label="Yesterday" toggle={{ ariaLabel: 'Hide Yesterday sessions', onToggle, open: true }} />
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide Yesterday sessions' }))

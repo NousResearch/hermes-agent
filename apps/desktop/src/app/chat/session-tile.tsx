@@ -171,6 +171,7 @@ function TileChat({
     queryClient,
     requestGateway: requestTileGateway
   })
+
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'

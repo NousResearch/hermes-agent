@@ -406,11 +406,7 @@ export const focusComposerInput = (el: HTMLElement | null) => {
 
     const active = document.activeElement
 
-    if (
-      active instanceof HTMLElement &&
-      active.dataset.slot === RICH_INPUT_SLOT &&
-      !isElementInHiddenPane(active)
-    ) {
+    if (active instanceof HTMLElement && active.dataset.slot === RICH_INPUT_SLOT && !isElementInHiddenPane(active)) {
       return
     }
 

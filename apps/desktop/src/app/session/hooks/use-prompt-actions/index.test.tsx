@@ -5789,6 +5789,7 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     setMessages(seed as never)
 
     let latest: Record<string, unknown> | undefined
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'prompt.submit') {
         throw new JsonRpcGatewayError('target user message is no longer in session history', {

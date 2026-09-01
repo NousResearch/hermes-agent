@@ -128,7 +128,7 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
         "--limit",
         str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
     )
     comments_argv = (
         "gh",
@@ -153,7 +153,10 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     )
     runner = RecordingRunner(
         {
-            pulls_argv: [canonical_list_pull(), canonical_list_pull(number=18)],
+            pulls_argv: [
+                canonical_list_pull(labels=("codex", "type/perf")),
+                canonical_list_pull(number=18),
+            ],
             comments_argv: [
                 [canonical_feedback("issue-1", "first")],
                 [canonical_feedback("issue-2", "second")],
@@ -177,6 +180,7 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     feedback = client.list_feedback("acme/widgets", 17)
 
     assert [pull_request.number for pull_request in pull_requests] == [17, 18]
+    assert pull_requests[0].labels == ("codex", "type/perf")
     assert [(item.kind, item.feedback_id, item.body) for item in feedback] == [
         ("issue_comment", "issue-1", "first"),
         ("issue_comment", "issue-2", "second"),
@@ -387,12 +391,41 @@ def test_github_client_fails_closed_when_filtered_pr_list_lacks_canonical_fields
         "--limit",
         str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
     )
     runner = RecordingRunner({argv: [{"number": 17}]})
 
     with pytest.raises(GitHubClientError, match="missing required fields"):
         GitHubClient(runner).list_open_pull_requests("acme/widgets", "owner")
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [None, ["codex"], [{"name": 7}]],
+)
+def test_github_client_fails_closed_on_malformed_list_labels(labels: object) -> None:
+    argv = (
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "acme/widgets",
+        "--state",
+        "open",
+        "--author",
+        "owner",
+        "--limit",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
+        "--json",
+        "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
+    )
+    row = canonical_list_pull()
+    row["labels"] = labels
+
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: [row]})).list_open_pull_requests(
+            "acme/widgets", "owner"
+        )
 
 
 def test_github_client_fails_closed_if_owned_pr_query_hits_coverage_cap() -> None:
@@ -409,7 +442,7 @@ def test_github_client_fails_closed_if_owned_pr_query_hits_coverage_cap() -> Non
         "--limit",
         str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
     )
     runner = RecordingRunner(
         {
@@ -436,7 +469,7 @@ def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() 
         "--limit",
         str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
     )
     branch_argv = ("gh", "api", "repos/acme/widgets/branches/stable")
     runner = RecordingRunner(
@@ -985,7 +1018,9 @@ def canonical_pull(number: int = 17, head_sha: str = "a" * 40) -> dict[str, obje
 
 
 def canonical_list_pull(
-    number: int = 17, head_sha: str = "a" * 40
+    number: int = 17,
+    head_sha: str = "a" * 40,
+    labels: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return {
         "number": number,
@@ -995,6 +1030,7 @@ def canonical_list_pull(
         "headRefName": "codex/fix",
         "headRefOid": head_sha,
         "updatedAt": "2026-08-26T08:00:00Z",
+        "labels": [{"name": label} for label in labels],
     }
 
 

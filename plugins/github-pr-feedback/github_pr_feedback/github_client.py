@@ -335,7 +335,7 @@ class GitHubClient:
                 "--limit",
                 str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
-                "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+                "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
             ]
         )
         if not isinstance(payload, list) or any(
@@ -366,7 +366,7 @@ class GitHubClient:
                 "--limit",
                 str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
-                "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+                "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
             ]
         )
         if not isinstance(payload, list) or any(
@@ -891,6 +891,12 @@ def _pull_request(row: dict[str, Any]) -> PullRequest:
 
 def _listed_pull_request(base_repository: str, row: dict[str, Any]) -> PullRequest:
     try:
+        raw_labels = row.get("labels", [])
+        if not isinstance(raw_labels, list) or any(
+            not isinstance(label, dict) or not isinstance(label.get("name"), str)
+            for label in raw_labels
+        ):
+            raise TypeError("labels must be a list of named objects")
         return PullRequest(
             number=row["number"],
             state=row["state"],
@@ -899,6 +905,7 @@ def _listed_pull_request(base_repository: str, row: dict[str, Any]) -> PullReque
             author_login=row["author"]["login"],
             head_ref_name=row["headRefName"],
             head_sha=row["headRefOid"],
+            labels=tuple(label["name"] for label in raw_labels),
             updated_at=_timestamp(row["updatedAt"]),
         )
     except (KeyError, TypeError, ValueError) as error:

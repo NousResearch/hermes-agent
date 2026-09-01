@@ -60,6 +60,18 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 
+def test_format_footer_reasoning_field():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        reasoning_effort="High",
+        context_tokens=42,
+        context_length=100,
+        cwd="",
+        fields=("model", "reasoning", "context_pct"),
+    )
+    assert out == "gpt-5.4 · high · 42%"
+
+
 def test_format_footer_skips_missing_context_length():
     out = format_runtime_footer(
         model="openai/gpt-5.4",

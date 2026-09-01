@@ -111,6 +111,7 @@ def _format_latency(seconds: float) -> str:
 def format_runtime_footer(
     *,
     model: Optional[str],
+    reasoning_effort: Optional[str] = None,
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
@@ -128,6 +129,10 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "reasoning":
+            effort = str(reasoning_effort or "").strip().lower()
+            if effort:
+                parts.append(effort)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -153,6 +158,7 @@ def build_footer_line(
     user_config: dict[str, Any] | None,
     platform_key: str | None,
     model: Optional[str],
+    reasoning_effort: Optional[str] = None,
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
@@ -173,6 +179,7 @@ def build_footer_line(
         return ""
     return format_runtime_footer(
         model=model,
+        reasoning_effort=reasoning_effort,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,

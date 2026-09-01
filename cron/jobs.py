@@ -3033,7 +3033,13 @@ def _mark_job_run_locked(
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
 
-    ``status`` overrides the derived ``last_status`` ("ok"/"error") with a
+    A run that succeeded but failed delivery records
+    ``last_status = "delivery_failed"`` (never "ok") so the failure is
+    visible to every reader, while ``failure_streak`` stays untouched —
+    the agent did its job.
+
+    ``status`` overrides the derived ``last_status`` ("ok"/"error"/
+    "delivery_failed") with a
     specific terminal status for this run — e.g. ``"blocked_config"`` when
     the pre-dispatch configuration validation refused to run the agent
     (T1-26), so `cronjob list` distinguishes "your config is broken" from
@@ -3058,7 +3064,21 @@ def _mark_job_run_locked(
                 # The transient manual-run context is single-fire: whatever
                 # run just completed consumed it (or superseded it).
                 job.pop("manual_run_prompt", None)
-                job["last_status"] = status or ("ok" if success else "error")
+                # A run whose agent succeeded but whose delivery failed is NOT
+                # "ok": recording it as such hid last_delivery_error behind a
+                # green status in `cron list`/the UI and made a job that never
+                # reached the user look like a quiet success (#83993). It gets
+                # its own status so every reader that keys off "ok" (CLI list,
+                # doctor, cronjob_tools) sees the failure. An explicit
+                # ``status`` override (e.g. "blocked_config") still wins.
+                if status:
+                    job["last_status"] = status
+                elif not success:
+                    job["last_status"] = "error"
+                elif isinstance(delivery_error, str) and delivery_error.strip():
+                    job["last_status"] = "delivery_failed"
+                else:
+                    job["last_status"] = "ok"
                 job["last_error"] = error if not success else None
                 # A healthy run means the configuration validates again — drop
                 # the preflight alert-dedup marker so a FUTURE config break

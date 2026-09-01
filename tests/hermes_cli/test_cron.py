@@ -160,6 +160,28 @@ class TestCronDoctor:
         assert rc == 0
         assert "✓ Cron doctor found no issues" in out
 
+    def test_doctor_reports_delivery_failure_once(self, tmp_cron_dir, capsys):
+        """A delivery_failed run is a delivery issue, not a failed agent run.
+
+        The agent succeeded (last_error is None), so the generic last-run-failed
+        line would only ever say "unknown error" — double-reporting the same
+        incident (#83993).
+        """
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "last delivery failed: telegram timeout" in out
+        assert "last run failed" not in out
+        assert "unknown error" not in out
+
     def test_doctor_flags_overdue_next_run(self, tmp_cron_dir, capsys):
         from datetime import datetime, timedelta, timezone
 
@@ -191,6 +213,48 @@ class TestCronDoctor:
         out = capsys.readouterr().out
         assert rc == 0
         assert "✓ Cron doctor found no issues" in out
+
+
+class TestCronListStatusRendering:
+    """`cron list` must never paint an undelivered run as a success (#83993)."""
+
+    def test_delivery_failed_is_not_green_ok(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        # capsys is not a tty, so force colors on to check the paint itself.
+        monkeypatch.setattr("hermes_cli.colors.should_use_color", lambda: True)
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
+        assert "delivery_failed" in last_run_line
+        assert "telegram timeout" in last_run_line, (
+            "the delivery detail lives in last_delivery_error, not last_error"
+        )
+        assert cron_cli.Colors.GREEN not in last_run_line
+
+    def test_ok_run_still_green(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        monkeypatch.setattr("hermes_cli.colors.should_use_color", lambda: True)
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
+        jobs[0]["last_status"] = "ok"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
+        assert f"{cron_cli.Colors.GREEN}ok" in last_run_line
+        assert "delivery_failed" not in last_run_line
 
 
 class TestGatewayNotRunningWarning:

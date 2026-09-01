@@ -264,6 +264,12 @@ def cron_list(show_all: bool = False):
             last_run = job.get("last_run_at", "?")
             if last_status == "ok":
                 status_display = color("ok", Colors.GREEN)
+            elif last_status == "delivery_failed":
+                # The agent succeeded but the result never reached the user —
+                # not green, and the detail lives in last_delivery_error
+                # (last_error is None for these runs).
+                detail = job.get("last_delivery_error") or "?"
+                status_display = color(f"delivery_failed: {detail}", Colors.YELLOW)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
                 streak = int(job.get("failure_streak") or 0)
@@ -688,7 +694,10 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
 
     last_status = str(job.get("last_status") or "").strip().lower()
-    if last_status and last_status != "ok":
+    # "delivery_failed" means the agent run itself succeeded, so it is not a
+    # failed last run — the dedicated delivery issue below reports it (and
+    # last_error is None, which would render as "unknown error" here).
+    if last_status and last_status not in {"ok", "delivery_failed"}:
         err = str(job.get("last_error") or "unknown error").strip()
         issues.append(f"last run failed: {err}")
 

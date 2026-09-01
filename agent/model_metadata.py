@@ -1502,6 +1502,35 @@ def fetch_endpoint_model_metadata(
                         model_alias = props.get("model_alias", "")
                         if n_ctx and model_alias and model_alias in cache:
                             cache[model_alias]["context_length"] = n_ctx
+                    else:
+                        # Router mode: bare /props 400s and telemetry is
+                        # per-child (?model=). Enumerate children via the
+                        # native /models (carries status) and read each
+                        # LOADED child's granted window — the value the
+                        # context policy actually granted, which the meter
+                        # and compressor must follow. Unloaded children are
+                        # skipped: probing them could trigger an autoload.
+                        native = requests.get(base + "/models", headers=headers, timeout=5, verify=_verify)
+                        if native.ok:
+                            children = (native.json() or {}).get("data", [])
+                            for child in children[:16]:
+                                if not isinstance(child, dict):
+                                    continue
+                                child_id = child.get("id")
+                                status = (child.get("status") or {}).get("value")
+                                if not child_id or child_id not in cache or status not in ("loaded", "ready"):
+                                    continue
+                                pr = requests.get(
+                                    base + "/v1/props", params={"model": child_id},
+                                    headers=headers, timeout=5, verify=_verify)
+                                if not pr.ok:
+                                    pr = requests.get(
+                                        base + "/props", params={"model": child_id},
+                                        headers=headers, timeout=5, verify=_verify)
+                                if pr.ok:
+                                    child_ctx = (pr.json().get("default_generation_settings") or {}).get("n_ctx")
+                                    if child_ctx:
+                                        cache[child_id]["context_length"] = child_ctx
                 except Exception:
                     pass
 
@@ -2374,6 +2403,27 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
                             break
+
+            # llama.cpp: /props reports default_generation_settings.n_ctx —
+            # the RUNTIME window the server grants. Critically, the router
+            # answers this (from its preset) even for a model that is not
+            # currently loaded, while /v1/models reports meta=null until
+            # load. Without this probe, resolving a lazily-loaded model at
+            # session start finds no metadata and falls through to the
+            # name-pattern defaults, where a family catch-all (e.g. "qwen"
+            # = 131072) misreports a server launched at 262144.
+            if server_type == "llamacpp":
+                for props_path in (f"/props?model={model}", "/props"):
+                    try:
+                        resp = client.get(f"{server_url}{props_path}")
+                    except httpx.HTTPError:
+                        break
+                    if resp.status_code != 200:
+                        continue
+                    n_ctx = (resp.json().get("default_generation_settings")
+                             or {}).get("n_ctx")
+                    if isinstance(n_ctx, (int, float)) and n_ctx:
+                        return int(n_ctx)
 
             # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies:
             # try /v1/models/{model}

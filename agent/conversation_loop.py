@@ -652,6 +652,40 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _maybe_grow_local_window(agent: Any, compressor: Any,
+                             request_tokens: int) -> Optional[int]:
+    """Try growing the managed local model's context window before
+    compressing. Returns the new window when the ladder granted one, else
+    None (hold / at native / not a managed local session).
+
+    The window ladder's design order: models launch at their zero-spill
+    window and grow toward native max as the session needs room;
+    compression is the move of last resort. Cheap for every non-local
+    provider: one lowercase compare, no imports.
+    """
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in ("llamacpp", "llama.cpp", "llama-cpp", "custom"):
+        return None
+    base_url = getattr(agent, "base_url", "") or ""
+    if "127.0.0.1" not in base_url and "localhost" not in base_url:
+        return None
+    try:
+        from hermes_cli.local_runtime.growth import maybe_grow_window
+
+        current_window = int(getattr(compressor, "context_length", 0) or 0)
+        if current_window <= 0:
+            return None
+        return maybe_grow_window(
+            getattr(agent, "model", "") or "",
+            base_url=base_url,
+            session_tokens=int(request_tokens),
+            current_window=current_window,
+        )
+    except Exception as exc:  # noqa: BLE001 — growth must never break a turn
+        logger.debug("local window growth check failed: %s", exc)
+        return None
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -2876,6 +2910,39 @@ def run_conversation(
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
         ):
+            # Managed local runtime: try GROWING the context window before
+            # compressing (the window ladder's design order — compression is
+            # the move of last resort, once the window is at the model's
+            # native max or physics/speed say stop). Only fires for a
+            # llamacpp-flavored provider whose base_url is the server this
+            # process supervises; every other provider falls straight
+            # through to compression, exactly as before.
+            _grown_window = _maybe_grow_local_window(
+                agent, _compressor, request_pressure_tokens
+            )
+            if _grown_window:
+                # The server now grants a bigger window: recalibrate the
+                # compressor to it and skip compression this pass — the
+                # request that was over the OLD threshold fits the new one.
+                _compressor.update_model(
+                    agent.model,
+                    _grown_window,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+                agent._buffer_status(
+                    f"📈 Context window grown to {_grown_window // 1024}K "
+                    f"(local model; conversation continues uncompressed)"
+                )
+                # This preflight iteration never reached the provider —
+                # refund the consumed call/budget exactly as the compression
+                # path below does before ITS continue.
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                agent.iteration_budget.refund()
+                continue
             if _moa_prepared_request is not None:
                 pending_moa_prepared_request = _moa_prepared_request
             compression_attempts += 1

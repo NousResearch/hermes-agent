@@ -301,6 +301,9 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
+      /** Launch flag: the app was started with --local, enabling the
+       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      localModelsEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void

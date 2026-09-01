@@ -8658,7 +8658,10 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        electron_argv = [npm, "exec", "--", "electron", "."]
+        if getattr(args, "local", False):
+            electron_argv.append("--local")
+        launch_result = subprocess.run(electron_argv, cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -8677,6 +8680,8 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.append("--disable-setuid-sandbox")
 
     launch_command.extend(config_electron_flags)
+    if getattr(args, "local", False):
+        launch_command.append("--local")
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)

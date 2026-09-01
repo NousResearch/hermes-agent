@@ -1225,6 +1225,13 @@ export async function retainGatewayForSessionTurn(
   profile: string,
   sessionId: string
 ): Promise<() => void> {
+  // Primary events do not flow through a Secondary's terminal-event listener.
+  // Registering a no-op lease here would leave a phantom key that can suppress
+  // the real hold if this route is later re-homed as a secondary.
+  if (isPrimaryRegistryRoute(connectionId, normKey(profile))) {
+    return () => undefined
+  }
+
   const scope = registryBackendScopeKey(connectionId, normKey(profile))
   const key = turnLeaseKey(scope, sessionId)
 

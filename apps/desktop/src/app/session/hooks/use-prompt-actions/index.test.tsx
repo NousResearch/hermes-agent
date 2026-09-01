@@ -1891,14 +1891,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
 
     expect(await handle!.submitText('continue remotely')).toBe(true)
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
-      'hermes01',
-      'default',
+    expect(ambientRequest).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: 'runtime-remote', text: 'continue remotely' },
       1_800_000
     )
-    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
   it('clears a leftover interrupted flag on a fresh submit (so the new turn streams)', async () => {

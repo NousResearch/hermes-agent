@@ -15,11 +15,19 @@ test('normalizeCaptureRect floors origin and ceils size, never zero', () => {
 
 test('mapViewportRectToImage scales CSS pixels onto a DPR bitmap and clamps', () => {
   assert.deepEqual(
-    mapViewportRectToImage({ height: 20, width: 40, x: 10, y: 8 }, { height: 100, width: 200 }, { height: 200, width: 400 }),
+    mapViewportRectToImage(
+      { height: 20, width: 40, x: 10, y: 8 },
+      { height: 100, width: 200 },
+      { height: 200, width: 400 }
+    ),
     { height: 40, width: 80, x: 20, y: 16 }
   )
   assert.equal(
-    mapViewportRectToImage({ height: 20, width: 40, x: 500, y: 8 }, { height: 100, width: 200 }, { height: 200, width: 400 }),
+    mapViewportRectToImage(
+      { height: 20, width: 40, x: 500, y: 8 },
+      { height: 100, width: 200 },
+      { height: 200, width: 400 }
+    ),
     null
   )
 })

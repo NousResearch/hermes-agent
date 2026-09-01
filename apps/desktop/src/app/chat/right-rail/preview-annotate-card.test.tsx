@@ -55,9 +55,7 @@ describe('PreviewAnnotateCard', () => {
     )
 
     const card = rendered.container.querySelector('[data-annotate-card="true"]') as HTMLElement
-    expect(card.style.background.replace(/\s/g, '').toLowerCase()).toMatch(
-      /#2a2a2a|rgb\(42,42,42\)/
-    )
+    expect(card.style.background.replace(/\s/g, '').toLowerCase()).toMatch(/#2a2a2a|rgb\(42,42,42\)/)
     expect(rendered.getByPlaceholderText('Add a comment...')).toBeTruthy()
     expect(rendered.container.querySelector('.codicon-mic')).toBeNull()
     expect(rendered.container.querySelector('.codicon-unmute')).toBeNull()

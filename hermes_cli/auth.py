@@ -7841,8 +7841,54 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:
+    """Best-effort POSITIVE evidence that an external-process provider's CLI
+    is authenticated.
+
+    Returns ``(verified, source)``. ``verified`` is only ever True on hard
+    evidence (a supported env token, or a known on-disk credential store).
+    False means "not verifiable from here", NOT "signed out" — the Copilot
+    CLI may hold its session in an OS keychain Hermes can't read. Callers
+    must therefore treat False as unknown, never as proof of absence.
+
+    Deliberately subprocess-free: this runs from status endpoints and pickers,
+    and spawning ``gh auth token`` there re-creates the cold-start stall
+    (#60800) that copilot_auth.py works to avoid.
+    """
+    if provider_id != "copilot-acp":
+        return False, None
+    # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
+    try:
+        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
+        for env_var in COPILOT_ENV_VARS:
+            val = os.getenv(env_var, "").strip()
+            if val and validate_copilot_token(val)[0]:
+                return True, f"env: {env_var}"
+    except Exception as exc:
+        logger.debug("copilot-acp env token evidence check failed: %s", exc)
+    # 2. Known on-disk GitHub Copilot credential stores (the same locations
+    #    models.py already fingerprints as external credential files).
+    for cred_path in (
+        "~/.config/github-copilot/hosts.json",
+        "~/.config/github-copilot/apps.json",
+    ):
+        try:
+            expanded = os.path.expanduser(cred_path)
+            if os.path.isfile(expanded) and os.path.getsize(expanded) > 2:
+                return True, cred_path
+        except OSError:
+            continue
+    return False, None
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess."""
+    """Status snapshot for providers that run a local subprocess.
+
+    ``configured``/``logged_in`` stay structural (the executable resolves or a
+    TCP endpoint is set) because the spawned subprocess owns its real auth.
+    ``auth_verified``/``auth_source`` carry positive credential evidence when
+    Hermes can actually see some — absence of evidence is not absence of auth.
+    """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
@@ -7859,6 +7905,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = pconfig.inference_base_url
 
     resolved_command = shutil.which(command) if command else None
+    auth_verified, auth_source = _external_process_auth_evidence(provider_id)
     return {
         "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
         "provider": provider_id,
@@ -7868,6 +7915,8 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         "resolved_command": resolved_command,
         "base_url": base_url,
         "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "auth_verified": auth_verified,
+        "auth_source": auth_source,
     }
 
 
@@ -7888,12 +7937,16 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
-        return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
-    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
+    # External-process providers (copilot-acp today; kiro/devin/junie-style ACP
+    # backends tomorrow) — dispatch on auth_type, not a hardcoded slug, so every
+    # provider of this class gets a real status instead of the
+    # ``{"logged_in": False}`` fallthrough.
+    if pconfig and pconfig.auth_type == "external_process":
+        return get_external_process_provider_status(target)
+    # API-key providers
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain

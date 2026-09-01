@@ -230,6 +230,78 @@ class TestCoerceToolArgsNested:
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [{"id": "1", "content": "x"}]
 
+    def test_object_arg_referenced_via_defs_is_parsed(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {
+                    "Address": {
+                        "type": "object",
+                        "properties": {
+                            "street": {"type": "string"},
+                            "zip": {"type": "string"},
+                        },
+                    },
+                },
+                "properties": {
+                    "address": {"$ref": "#/$defs/Address"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"address": '{"street": "Alpha Ave", "zip": "A-001"}'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["address"] == {
+                "street": "Alpha Ave",
+                "zip": "A-001",
+            }
+
+    def test_array_item_referenced_via_defs_is_parsed(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {
+                    "Address": {
+                        "type": "object",
+                        "properties": {"street": {"type": "string"}},
+                    },
+                },
+                "properties": {
+                    "addresses": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/Address"},
+                    },
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"addresses": ['{"street": "Alpha Ave"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["addresses"] == [{"street": "Alpha Ave"}]
+
+    def test_external_and_cyclic_refs_are_preserved(self):
+        for ref, definitions in (
+            ("https://example.com/address.json", {}),
+            ("#/$defs/Address", {"Address": {"$ref": "#/$defs/Address"}}),
+        ):
+            schema = {
+                "name": "test_tool",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "$defs": definitions,
+                    "properties": {"address": {"$ref": ref}},
+                },
+            }
+            with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+                raw = '{"street": "Alpha Ave"}'
+                result = coerce_tool_args("test_tool", {"address": raw})
+                assert result["address"] == raw
+
 
     def test_string_subfield_with_json_content_preserved(self):
         """A string-typed sub-field whose value looks like JSON must NOT be parsed."""

@@ -617,7 +617,9 @@ REMEMBER_SCHEMA = {
         "Submit important long-term information to OpenViking through session "
         "memory extraction. Success means the source was submitted, not that a "
         "distinct memory file was created. OpenViking can add, merge, or skip the "
-        "final memory. If the message is accepted but commit fails, it normally "
+        "final memory. Use this tool when OpenViking should decide how to retain "
+        "the information. Do not use it when an exact memory file or URI is "
+        "required. If the message is accepted but commit fails, it normally "
         "remains live and unextracted because server auto-commit is disabled by "
         "default; follow the returned recovery instructions."
     ),

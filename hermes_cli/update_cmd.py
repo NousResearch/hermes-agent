@@ -9921,10 +9921,47 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             from hermes_cli.gateway import (
                                 GATEWAY_LOOP_WEDGED,
                                 _escalate_wedged_gateway,
+                                _is_pid_ancestor_of_current_process,
+                                _request_gateway_self_restart,
                                 probe_gateway_loop_liveness,
                             )
 
-                            if (
+                            if _is_pid_ancestor_of_current_process(_main_pid):
+                                # THREE-WAY DEADLOCK BREAK (#100179).
+                                #
+                                # When `hermes update` runs INSIDE the gateway's
+                                # own process tree — the hermes-auto-update cron
+                                # job is the canonical case — waiting for that
+                                # gateway to exit is a circular wait:
+                                #
+                                #   gateway  waits on all in-flight work units
+                                #            (#77184 don't-amputate-turns)
+                                #     └─ cron agent session waits on the
+                                #        `hermes update` process to exit
+                                #          └─ `hermes update` waits on the
+                                #             gateway to exit  ← back to A
+                                #
+                                # The wedged-loop probe cannot break it: the cron
+                                # session posts activity every ~180s (process-tool
+                                # poll return), so it is "actively waiting
+                                # forever" and never marked wedged. The gateway
+                                # then burns the full force-drain cap (1800s)
+                                # before killing its own updater's session.
+                                #
+                                # Fire-and-forget instead: signal the restart and
+                                # return immediately. The gateway's own restart
+                                # flow completes normally once THIS process (and
+                                # therefore the cron work unit holding it) exits.
+                                print(
+                                    f"  → {svc_name}: update is running inside "
+                                    "this gateway's process tree — signalling "
+                                    "restart and letting the gateway drain "
+                                    "itself (avoids the cron-update deadlock)"
+                                )
+                                _graceful_ok = _request_gateway_self_restart(
+                                    _main_pid
+                                )
+                            elif (
                                 probe_gateway_loop_liveness(_main_pid)
                                 == GATEWAY_LOOP_WEDGED
                             ):
@@ -10234,10 +10271,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_cli.gateway import (
                     GATEWAY_LOOP_WEDGED,
                     _escalate_wedged_gateway,
+                    _is_pid_ancestor_of_current_process,
+                    _request_gateway_self_restart,
                     probe_gateway_loop_liveness,
                 )
 
-                if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+                if _is_pid_ancestor_of_current_process(pid):
+                    # Same three-way deadlock break as the systemd path
+                    # (#100179): this update is running inside that gateway's
+                    # process tree (hermes-auto-update cron), so waiting for it
+                    # to exit is a circular wait — the gateway waits on the
+                    # cron work unit, the cron session waits on this process,
+                    # this process waits on the gateway. Signal and return.
+                    print(
+                        f"  → {proc.profile}: update runs inside this gateway's "
+                        "process tree — signalling restart without waiting "
+                        "(avoids the cron-update deadlock)"
+                    )
+                    drained = _request_gateway_self_restart(pid)
+                elif probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
                     # Loop-liveness probe: this gateway's event loop is
                     # provably dead (#81642) — SIGUSR1/SIGTERM shutdown can
                     # never run, so the drain wait would burn the full budget

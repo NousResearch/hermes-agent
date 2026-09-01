@@ -728,6 +728,31 @@ _LINT_TOOLS = ("ruff", "flake8", "pylint")
 _TYPECHECK_TOOLS = ("mypy", "pyright", "basedpyright")
 # (rung_key, project_python) -> resolved tool name or None (=> rung skipped)
 _TOOL_CACHE: dict[tuple[str, str], Optional[str]] = {}
+# project_python -> pytest importable under that interpreter (bool)
+_PYTEST_CACHE: dict[str, bool] = {}
+
+
+def _is_test_py(rel: str) -> bool:
+    """True when a root-relative python path is (or lives under) a test file."""
+    p = Path(rel)
+    return "tests" in p.parts or "test" in p.name.lower()
+
+
+def _pytest_importable(project_python: str, cwd: str) -> bool:
+    """True when ``pytest`` imports under the project interpreter.
+
+    Cached per interpreter so the happy path probes once.  The focused-tests
+    rung and the import rung's handling of test files both depend on this: a
+    worktree venv without pytest (it is not part of the stdlib venv) would
+    otherwise false-bounce a good card whose changed test file does ``import
+    pytest`` (2026-09-01 self-test defect).  A gate-toolchain gap is SKIPPED
+    (logged), never a failure.
+    """
+    if project_python in _PYTEST_CACHE:
+        return _PYTEST_CACHE[project_python]
+    rc, _ = _run_capture([project_python, "-c", "import pytest"], cwd=cwd)
+    _PYTEST_CACHE[project_python] = rc == 0
+    return _PYTEST_CACHE[project_python]
 
 
 def _resolve_tool(python: str, key: str, candidates: tuple[str, ...]) -> Optional[str]:
@@ -805,6 +830,14 @@ def _rung_command(
     Precedence: config override (``kanban.review_gate.<key>_command``) →
     first available default tool.  ``None`` means 'skip this rung', never a
     failure.
+
+    The default tool is invoked as the exact executable ``_resolve_tool``
+    detected (a console script in the project venv ``bin``), never ``python
+    -m <tool>``.  A standalone tool (ruff, pyright) installs a binary but not
+    a ``<tool>`` module on every interpreter — ``python -m pyright`` dies with
+    "No module named pyright", inverting the missing-tool → skip contract
+    into a false bounce (2026-09-01 self-test defect).  Ruff needs its
+    ``check`` subcommand.
     """
     override = _config_rung_override(f"{key}_command")
     if override:
@@ -818,8 +851,12 @@ def _rung_command(
     tool = _resolve_tool(project_python, key, candidates)
     if tool is None:
         return None
-    prefix = ("-m", "ruff", "check") + extra_prefix if tool == "ruff" else ("-m", tool) + extra_prefix
-    return [project_python, *prefix, *files]
+    bin_dir = Path(project_python).parent  # same bin _resolve_tool probed
+    argv = [str(bin_dir / tool), *extra_prefix]
+    if tool == "ruff":
+        argv.append("check")
+    argv.extend(files)
+    return argv
 
 
 class _GateBounce(NamedTuple):
@@ -892,18 +929,39 @@ def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
 
     # Rung 3: import/build sanity (today's check).
     if changed_py:
-        build_cmd = _build_sanity_command(pypath, str(ws), changed_py)
-        rc, out = _run_capture(build_cmd, cwd=str(ws))
-        if rc != 0:
-            return _fail("import/build sanity", build_cmd, rc, out)
+        # A changed test file may ``import pytest`` at module load; if pytest
+        # isn't importable under the project interpreter that would be a
+        # gate-toolchain false bounce, not a card defect.  When pytest is
+        # absent, import only the non-test changed modules and log the skip.
+        sanity_py = changed_py
+        pytest_ok = _pytest_importable(pypath, str(ws))
+        if not pytest_ok and any(_is_test_py(f) for f in changed_py):
+            sanity_py = [f for f in changed_py if not _is_test_py(f)]
+            logger.info(
+                "review gate: import sanity skipping %d test file(s); "
+                "pytest not importable under %s",
+                len(changed_py) - len(sanity_py),
+                pypath,
+            )
+        if sanity_py:
+            build_cmd = _build_sanity_command(pypath, str(ws), sanity_py)
+            rc, out = _run_capture(build_cmd, cwd=str(ws))
+            if rc != 0:
+                return _fail("import/build sanity", build_cmd, rc, out)
 
     # Rung 4: focused tests (least cheap — constructor + execution).
     tests = _focused_test_paths(str(ws), changed_py)
     if tests:
-        test_cmd = _gate_command(pypath, tests)
-        rc, out = _run_capture(test_cmd, cwd=str(ws))
-        if rc != 0:
-            return _fail("focused tests", test_cmd, rc, out)
+        if not _pytest_importable(pypath, str(ws)):
+            logger.info(
+                "review gate: focused-tests rung skipped (pytest not importable under %s)",
+                pypath,
+            )
+        else:
+            test_cmd = _gate_command(pypath, tests)
+            rc, out = _run_capture(test_cmd, cwd=str(ws))
+            if rc != 0:
+                return _fail("focused tests", test_cmd, rc, out)
 
     # Every rung green (or skipped) — gate passes.
     return None

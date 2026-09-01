@@ -429,6 +429,7 @@ def _set_rung_overrides(
     # bleed in (cache key is (python, key); fixture python differs per test,
     # but be explicit).
     tools._TOOL_CACHE.clear()
+    tools._PYTEST_CACHE.clear()
 
 
 def test_ladder_lint_fail_bounces_before_typecheck(
@@ -560,6 +561,112 @@ def test_ladder_tool_detection_is_venv_scoped(
     ) is None
     # The full gate still proceeds to review (skipped rungs are not failures).
     resp = json.loads(tools._handle_request_review({"summary": "no tools, no override"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+# ---------------------------------------------------------------------------
+# 09-01 self-test defects: (1) invoke the tool the way it was detected, not
+# ``python -m``; (2) a worktree venv without pytest never false-bounces.
+# ---------------------------------------------------------------------------
+
+
+def _write_venv_bin_tool(repo: Path, name: str, body: str) -> Path:
+    """Write an executable script into the repo venv ``bin`` (the detection
+    surface ``_resolve_tool`` probes) usable as a standalone tool binary."""
+    path = repo / "venv" / "bin" / name
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
+
+
+def test_rung_command_invokes_detected_binary_directly(repo: Path) -> None:
+    """Regression: a standalone default tool is invoked as its own binary,
+    never ``python -m <tool>`` (which dies with 'No module named X' and turns
+    the missing-tool -> skip contract into a false bounce)."""
+    script = _write_venv_bin_tool(repo, "ruff", "echo RAN")
+    from tools import kanban_tools as tools
+
+    tools._TOOL_CACHE.clear()
+    tools._PYTEST_CACHE.clear()
+    pypath = str(repo / "venv" / "bin" / "python")
+    cmd = tools._rung_command(pypath, "lint", tools._LINT_TOOLS, ["a.py"])
+    # The exact detected binary + ruff's `check` subcommand — no `-m`.
+    assert cmd == [str(script), "check", "a.py"], cmd
+    # The binary is the one _resolve_tool saw in the same venv bin.
+    assert cmd[0] == str(repo / "venv" / "bin" / "ruff")
+
+
+def test_ladder_standalone_binary_gates(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a standalone ruff binary present in the venv is executed and
+    a failing lint bounces the card, carrying the binary's own output (proving
+    the binary itself ran, not a failing `python -m ruff`)."""
+    ws = _add_worktree(repo, "standalone-ruff")
+    _change_python_file(ws, "mymod.py", "OK = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_good():\n    assert 1 == 1\n")
+    _write_venv_bin_tool(repo, "ruff", "echo STANDALONE-RUFF-RAN\nexit 1")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    tools._TOOL_CACHE.clear()
+    tools._PYTEST_CACHE.clear()
+    resp = json.loads(tools._handle_request_review({"summary": "ruff fails"}))
+    assert "error" in resp
+    assert "on the 'lint' rung" in resp["error"]
+    assert "STANDALONE-RUFF-RAN" in resp["error"]  # the binary itself ran
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+
+
+def _write_pytest_missing_python(repo: Path) -> None:
+    """Replace the repo venv's python with one where ``import pytest`` fails.
+
+    The gate probes pytest via ``python -c 'import pytest'``; a real interpreter
+    without pytest returns nonzero.  This shim fails exactly that probe while
+    passing everything else through to the real interpreter, so the import rung
+    still validates non-test modules under a genuinely pytest-less venv.
+    """
+    real = sys.executable
+    pypath = repo / "venv" / "bin" / "python"
+    pypath.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-c" ] && [ "$2" = "import pytest" ]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        f'exec {real} "$@"\n'
+    )
+    pypath.chmod(pypath.stat().st_mode | stat.S_IEXEC)
+
+
+def test_worktree_venv_without_pytest_passes_import_rung(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh worktree venv lacking pytest never false-bounces a card whose
+    changed test file does ``import pytest``.
+
+    The import rung skips (logged) the pytest-dependent test file while still
+    validating the changed non-test module, and the focused-tests rung is
+    skipped — so a good card proceeds to review instead of dying on the gate's
+    missing toolchain."""
+    ws = _add_worktree(repo, "no-pytest")
+    _write_pytest_missing_python(repo)
+    _change_python_file(ws, "mymod.py", "OK = 1\n")
+    # The changed test file imports pytest at module load — under the pytest-
+    # less venv a naive import rung would false-bounce on ImportError.
+    _change_python_file(ws, "tests/test_mymod.py", "import pytest\ndef test_good():\n    assert 1 == 1\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    tools._TOOL_CACHE.clear()
+    tools._PYTEST_CACHE.clear()
+    assert tools._pytest_importable(str(repo / "venv" / "bin" / "python"), str(ws)) is False
+    resp = json.loads(tools._handle_request_review({"summary": "venv has no pytest"}))
     assert resp.get("ok") is True, resp
     with kb.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"

@@ -142,6 +142,8 @@ fallback_model:
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][model_index + 1] == "qwen3.6:35b-a3b"
     assert captured["cmd"][provider_index + 1] == "ollama-launch"
+    reasoning_index = captured["cmd"].index("--reasoning")
+    assert captured["cmd"][reasoning_index + 1] == "none"
     assert "gemma4:e2b-it-qat" not in captured["cmd"]
 
 

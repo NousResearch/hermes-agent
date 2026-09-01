@@ -3596,16 +3596,14 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
-                # An ACP client communicates via subprocess stdio and returns a
-                # plain SimpleNamespace — not an iterable stream.  Keyed on the
-                # `acp://` scheme rather than one vendor, so any ACP client is
-                # excluded.  Mirror the ACP exclusion used for Responses API
-                # upgrade (lines ~1083-1085).
+                # ACP clients opt into streaming explicitly. Older/general ACP
+                # shims still return one-shot completion objects, while the
+                # Copilot ACP client exposes a queue-backed iterable stream.
                 elif (
                     agent.provider in {"copilot-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
-                ):
+                ) and getattr(agent.client, "supports_streaming", False) is not True:
                     _use_streaming = False
                 # MoA streams only when a display/TTS consumer is present to
                 # receive the deltas. MoAChatCompletions.create() honors

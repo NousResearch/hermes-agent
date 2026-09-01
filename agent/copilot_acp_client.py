@@ -20,10 +20,9 @@ import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from agent.acp_openai_bridge import (
-    completion_to_stream_chunks as _completion_to_stream_chunks,
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
@@ -355,6 +354,218 @@ class _ACPChatNamespace:
         self.completions = _ACPChatCompletions(client)
 
 
+class _ToolCallStreamFilter:
+    """Suppress tool bridge payloads while preserving surrounding text."""
+
+    _START = "<tool_call>"
+    _END = "</tool_call>"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._inside_tool_call = False
+
+    @staticmethod
+    def _partial_marker_length(text: str, marker: str) -> int:
+        limit = min(len(text), len(marker) - 1)
+        for length in range(limit, 0, -1):
+            if text.endswith(marker[:length]):
+                return length
+        return 0
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        self._buffer += text
+        visible: list[str] = []
+        while self._buffer:
+            marker = self._END if self._inside_tool_call else self._START
+            marker_index = self._buffer.find(marker)
+            if marker_index >= 0:
+                if not self._inside_tool_call and marker_index:
+                    visible.append(self._buffer[:marker_index])
+                self._buffer = self._buffer[marker_index + len(marker):]
+                self._inside_tool_call = not self._inside_tool_call
+                continue
+
+            keep = self._partial_marker_length(self._buffer, marker)
+            if self._inside_tool_call:
+                self._buffer = self._buffer[-keep:] if keep else ""
+            else:
+                emit_length = len(self._buffer) - keep
+                if emit_length:
+                    visible.append(self._buffer[:emit_length])
+                self._buffer = self._buffer[emit_length:]
+            break
+        return "".join(visible)
+
+    def finish(self) -> str:
+        if self._inside_tool_call:
+            self._buffer = ""
+            return ""
+        tail = self._buffer
+        self._buffer = ""
+        return tail
+
+
+def _empty_usage() -> SimpleNamespace:
+    return SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+    )
+
+
+def _stream_chunk(
+    *,
+    model: str,
+    content: str | None = None,
+    reasoning: str | None = None,
+    tool_calls: list[Any] | None = None,
+    finish_reason: str | None = None,
+) -> SimpleNamespace:
+    delta = SimpleNamespace(
+        role="assistant",
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=reasoning,
+        reasoning=reasoning,
+    )
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=0,
+                delta=delta,
+                finish_reason=finish_reason,
+            )
+        ],
+        model=model,
+        usage=None,
+    )
+
+
+def _tool_call_stream_deltas(tool_calls: list[Any]) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            index=index,
+            id=getattr(tool_call, "id", None),
+            type=getattr(tool_call, "type", "function"),
+            function=SimpleNamespace(
+                name=getattr(tool_call.function, "name", None),
+                arguments=getattr(tool_call.function, "arguments", None),
+            ),
+        )
+        for index, tool_call in enumerate(tool_calls)
+    ]
+
+
+class _ACPStreamingResponse:
+    """Queue-backed OpenAI-style stream over one ACP prompt."""
+
+    response = None
+
+    def __init__(
+        self,
+        client: "CopilotACPClient",
+        *,
+        prompt_text: str,
+        model: str,
+        timeout_seconds: float,
+    ) -> None:
+        self._client = client
+        self._prompt_text = prompt_text
+        self._model = model
+        self._timeout_seconds = timeout_seconds
+        self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._closed = threading.Event()
+        self._worker = threading.Thread(target=self._produce, daemon=True)
+        self._worker.start()
+
+    def _put_delta(self, kind: str, text: str) -> None:
+        if text and not self._closed.is_set():
+            self._events.put((kind, text))
+
+    def _produce(self) -> None:
+        try:
+            response_text, reasoning_text = self._client._run_prompt(
+                self._prompt_text,
+                timeout_seconds=self._timeout_seconds,
+                model=self._model,
+                text_delta_callback=lambda text: self._put_delta("text", text),
+                reasoning_delta_callback=lambda text: self._put_delta("reasoning", text),
+            )
+            self._events.put(("complete", (response_text, reasoning_text)))
+        except Exception as exc:
+            self._events.put(("error", exc))
+
+    def __iter__(self) -> Iterator[SimpleNamespace]:
+        tool_filter = _ToolCallStreamFilter()
+        streamed_text_parts: list[str] = []
+        streamed_reasoning_parts: list[str] = []
+
+        while True:
+            kind, payload = self._events.get()
+            if kind == "text":
+                text = str(payload)
+                streamed_text_parts.append(text)
+                visible = tool_filter.feed(text)
+                if visible:
+                    yield _stream_chunk(model=self._model, content=visible)
+                continue
+            if kind == "reasoning":
+                reasoning = str(payload)
+                streamed_reasoning_parts.append(reasoning)
+                yield _stream_chunk(model=self._model, reasoning=reasoning)
+                continue
+            if kind == "error":
+                self._closed.set()
+                raise payload
+
+            response_text, reasoning_text = payload
+            streamed_text = "".join(streamed_text_parts)
+            if not streamed_text:
+                visible = tool_filter.feed(response_text)
+            elif response_text.startswith(streamed_text):
+                visible = tool_filter.feed(response_text[len(streamed_text):])
+            else:
+                visible = ""
+            visible += tool_filter.finish()
+            if visible:
+                yield _stream_chunk(model=self._model, content=visible)
+
+            streamed_reasoning = "".join(streamed_reasoning_parts)
+            if not streamed_reasoning:
+                remaining_reasoning = reasoning_text
+            elif reasoning_text.startswith(streamed_reasoning):
+                remaining_reasoning = reasoning_text[len(streamed_reasoning):]
+            else:
+                remaining_reasoning = ""
+            if remaining_reasoning:
+                yield _stream_chunk(model=self._model, reasoning=remaining_reasoning)
+
+            tool_calls, _ = _extract_tool_calls_from_text(response_text)
+            finish_reason = "tool_calls" if tool_calls else "stop"
+            yield _stream_chunk(
+                model=self._model,
+                tool_calls=_tool_call_stream_deltas(tool_calls) or None,
+                finish_reason=finish_reason,
+            )
+            yield SimpleNamespace(
+                choices=[],
+                model=self._model,
+                usage=_empty_usage(),
+            )
+            self._closed.set()
+            return
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._client.close()
+
+
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
 
@@ -363,6 +574,7 @@ class CopilotACPClient:
     # through a wire adapter) and is safe to use from async code as-is.
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
+    supports_streaming = True
 
     def __init__(
         self,
@@ -438,20 +650,22 @@ class CopilotACPClient:
             _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
 
+        if stream:
+            return _ACPStreamingResponse(
+                self,
+                prompt_text=prompt_text,
+                model=model or "copilot-acp",
+                timeout_seconds=_effective_timeout,
+            )
+
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
             model=model,
         )
-
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
-        usage = SimpleNamespace(
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-        )
+        usage = _empty_usage()
         assistant_message = SimpleNamespace(
             content=cleaned_text,
             tool_calls=tool_calls,
@@ -466,8 +680,6 @@ class CopilotACPClient:
             usage=usage,
             model=model or "copilot-acp",
         )
-        if stream:
-            return _completion_to_stream_chunks(completion)
         return completion
 
     def _run_prompt(
@@ -476,6 +688,8 @@ class CopilotACPClient:
         *,
         timeout_seconds: float,
         model: str | None = None,
+        text_delta_callback: Callable[[str], None] | None = None,
+        reasoning_delta_callback: Callable[[str], None] | None = None,
     ) -> tuple[str, str]:
         # Fast-fail when the CLI doesn't support the ACP args we'd pass.
         # Without this guard, a CLI like Claude Code v2.x exits with
@@ -589,6 +803,8 @@ class CopilotACPClient:
                     cwd=self._acp_cwd,
                     text_parts=text_parts,
                     reasoning_parts=reasoning_parts,
+                    text_delta_callback=text_delta_callback,
+                    reasoning_delta_callback=reasoning_delta_callback,
                 ):
                     continue
 
@@ -703,6 +919,8 @@ class CopilotACPClient:
         cwd: str,
         text_parts: list[str] | None,
         reasoning_parts: list[str] | None,
+        text_delta_callback: Callable[[str], None] | None = None,
+        reasoning_delta_callback: Callable[[str], None] | None = None,
     ) -> bool:
         method = msg.get("method")
         if not isinstance(method, str):
@@ -716,10 +934,16 @@ class CopilotACPClient:
             chunk_text = ""
             if isinstance(content, dict):
                 chunk_text = str(content.get("text") or "")
-            if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
-                text_parts.append(chunk_text)
-            elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:
-                reasoning_parts.append(chunk_text)
+            if kind == "agent_message_chunk" and chunk_text:
+                if text_parts is not None:
+                    text_parts.append(chunk_text)
+                if text_delta_callback is not None:
+                    text_delta_callback(chunk_text)
+            elif kind == "agent_thought_chunk" and chunk_text:
+                if reasoning_parts is not None:
+                    reasoning_parts.append(chunk_text)
+                if reasoning_delta_callback is not None:
+                    reasoning_delta_callback(chunk_text)
             return True
 
         if process.stdin is None:

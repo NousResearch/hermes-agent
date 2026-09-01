@@ -488,6 +488,27 @@ def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() 
     assert runner.calls == [pulls_argv, branch_argv]
 
 
+def test_github_client_adds_labels_with_fixed_issue_endpoint() -> None:
+    argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/issues/17/labels",
+        "--method",
+        "POST",
+        "--field",
+        "labels[]=codex",
+        "--field",
+        "labels[]=area/hermes",
+    )
+    runner = RecordingRunner({argv: {"labels": [{"name": "codex"}]}})
+
+    GitHubClient(runner).add_issue_labels(
+        "acme/widgets", 17, ("codex", "area/hermes")
+    )
+
+    assert runner.calls == [argv]
+
+
 def test_github_client_bounds_untrusted_feedback_body_at_intake() -> None:
     responses = feedback_responses("x" * (MAX_FEEDBACK_BODY_CHARS + 1_000))
     client = GitHubClient(RecordingRunner(responses))

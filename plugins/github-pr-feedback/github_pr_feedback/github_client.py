@@ -296,7 +296,7 @@ class CheckState:
 
 
 class GitHubClient:
-    """Reads only the canonical PR and review endpoints using literal argv."""
+    """Use canonical PR/review endpoints and bounded fixed-argv writes."""
 
     REVIEW_STATE_QUERY = (
         "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
@@ -713,6 +713,64 @@ class GitHubClient:
             ]
         )
 
+    def add_issue_labels(
+        self, repository: str, number: int, labels: tuple[str, ...]
+    ) -> None:
+        """Add an explicit non-empty label set through the issue endpoint."""
+
+        repository = _validated_repository(repository)
+        number = _positive_number(number)
+        if (
+            not isinstance(labels, tuple)
+            or not labels
+            or any(
+                not isinstance(label, str)
+                or not label.strip()
+                or len(label) > 50
+                or "," in label
+                for label in labels
+            )
+            or len(set(labels)) != len(labels)
+        ):
+            raise ValueError("labels must be a unique non-empty tuple")
+        argv = [
+            "gh",
+            "api",
+            f"repos/{repository}/issues/{number}/labels",
+            "--method",
+            "POST",
+        ]
+        for label in labels:
+            argv.extend(("--field", f"labels[]={label}"))
+        self._runner.run(argv)
+
+    def ensure_issue_label(
+        self, repository: str, label: str, *, color: str, description: str
+    ) -> None:
+        """Create or update one configured label using an exact name/color."""
+
+        repository = _validated_repository(repository)
+        label = _validated_label(label)
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", color):
+            raise ValueError("label color must be six hexadecimal characters")
+        if not isinstance(description, str) or not description.strip() or len(description) > 100:
+            raise ValueError("label description must contain 1 to 100 characters")
+        self._runner.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repository}/labels/{quote(label, safe='')}",
+                "--method",
+                "PUT",
+                "--field",
+                f"new_name={label}",
+                "--field",
+                f"color={color.casefold()}",
+                "--field",
+                f"description={description}",
+            ]
+        )
+
     def resolve_review_thread_for_comment(
         self,
         repository: str,
@@ -979,6 +1037,13 @@ def _required_string(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("required string was absent")
     return value.strip()
+
+
+def _validated_label(value: object) -> str:
+    label = _required_string(value)
+    if len(label) > 50 or "," in label or any(character in label for character in "\r\n"):
+        raise ValueError("label must be a bounded single-line name")
+    return label
 
 
 def _validated_sha(value: object) -> str:

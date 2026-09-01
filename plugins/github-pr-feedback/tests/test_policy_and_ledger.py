@@ -379,6 +379,39 @@ def test_disabled_config_is_not_admitted(tmp_path: Path) -> None:
     )
 
 
+def test_enabled_policy_parses_bounded_agent_label_mappings(tmp_path: Path) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_raw_config(repository_path)
+    raw["agent_labels"] = {
+        "enabled": True,
+        "max_updates_per_scan": 12,
+        "create_missing": True,
+        "mappings": [
+            {
+                "branch_prefix": "codex/",
+                "label": "codex",
+                "color": "1f6feb",
+                "description": "PR authored by Codex",
+            },
+            {
+                "branch_prefix": "hermes/",
+                "label": "hermes",
+                "color": "8250df",
+                "description": "PR authored by Hermes",
+            },
+        ],
+    }
+
+    policy = load_policy(raw)
+
+    assert policy.agent_labels is not None
+    assert policy.agent_labels.label_for_branch("codex/fix") == "codex"
+    assert policy.agent_labels.label_for_branch("hermes/repair") == "hermes"
+    assert policy.agent_labels.label_for_branch("feature/plain") is None
+    assert policy.agent_labels.create_missing is True
+
+
 def test_dispatched_feedback_is_not_actioned_until_explicit_exact_head_acknowledgement(
     tmp_path: Path,
 ) -> None:

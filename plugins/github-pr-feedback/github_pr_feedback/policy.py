@@ -325,6 +325,36 @@ class LocalCIAuditPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentLabelMapping:
+    """One explicit branch-prefix to canonical GitHub label mapping."""
+
+    branch_prefix: str
+    label: str
+    color: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentLabelPolicy:
+    """Bounded, opt-in labels applied by the Hermes feedback scanner."""
+
+    enabled: bool
+    max_updates_per_scan: int = 1
+    create_missing: bool = False
+    mappings: tuple[AgentLabelMapping, ...] = ()
+
+    def label_for_branch(self, branch: str) -> str | None:
+        matches = [
+            mapping
+            for mapping in self.mappings
+            if branch.startswith(mapping.branch_prefix)
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda mapping: len(mapping.branch_prefix)).label
+
+
+@dataclass(frozen=True, slots=True)
 class PostMergePolicy:
     """A fixed, local-only deployment action after a confirmed merge."""
 
@@ -403,6 +433,7 @@ class PluginPolicy:
     assignee_rules: tuple[AssigneeRule, ...] = ()
     routing_rules: tuple[RoutingRule, ...] = ()
     local_ci_audit: LocalCIAuditPolicy | None = None
+    agent_labels: AgentLabelPolicy | None = None
     merge_maintainer: MergeMaintainerPolicy | None = None
     repair_steward: RepairStewardPolicy | None = None
     release_maintenance: ReleaseMaintenancePolicy | None = None
@@ -699,6 +730,69 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
         required_for_open_prs=required_for_open_prs,
         max_dispatches_per_scan=max_dispatches_per_scan,
         max_open_prs_per_scan=max_open_prs_per_scan,
+    )
+
+
+def _parse_agent_labels(raw: object) -> AgentLabelPolicy | None:
+    if not isinstance(raw, Mapping):
+        raise ValueError("agent_labels must be a mapping")
+    enabled = raw.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("agent_labels enabled must be a boolean")
+    if not enabled:
+        if set(raw) != {"enabled"}:
+            raise ValueError("disabled agent_labels has unknown fields")
+        return None
+    expected = {"enabled", "max_updates_per_scan", "create_missing", "mappings"}
+    if set(raw) != expected:
+        raise ValueError("agent_labels has missing or unknown fields")
+    max_updates = raw["max_updates_per_scan"]
+    if (
+        not isinstance(max_updates, int)
+        or isinstance(max_updates, bool)
+        or not 1 <= max_updates <= 100
+    ):
+        raise ValueError("agent_labels max_updates_per_scan must be between 1 and 100")
+    create_missing = raw["create_missing"]
+    if not isinstance(create_missing, bool):
+        raise ValueError("agent_labels create_missing must be a boolean")
+    raw_mappings = raw["mappings"]
+    if isinstance(raw_mappings, (str, bytes)) or not isinstance(raw_mappings, Sequence):
+        raise ValueError("agent_labels mappings must be a non-empty list")
+    if not 1 <= len(raw_mappings) <= 8:
+        raise ValueError("agent_labels mappings must contain between 1 and 8 items")
+    mappings: list[AgentLabelMapping] = []
+    for item in raw_mappings:
+        if not isinstance(item, Mapping) or set(item) != {
+            "branch_prefix",
+            "label",
+            "color",
+            "description",
+        }:
+            raise ValueError("agent_labels mapping has missing or unknown fields")
+        branch_prefix = _nonempty_string(item["branch_prefix"], "agent label branch_prefix")
+        label = _nonempty_string(item["label"], "agent label")
+        color = _nonempty_string(item["color"], "agent label color").casefold()
+        description = _nonempty_string(item["description"], "agent label description")
+        if (
+            branch_prefix.startswith("refs/")
+            or any(character.isspace() for character in branch_prefix)
+            or len(label) > 50
+            or "," in label
+            or not re.fullmatch(r"[0-9a-f]{6}", color)
+            or len(description) > 100
+        ):
+            raise ValueError("agent label mapping contains an invalid value")
+        mappings.append(AgentLabelMapping(branch_prefix, label, color, description))
+    if len({mapping.branch_prefix for mapping in mappings}) != len(mappings):
+        raise ValueError("agent label branch prefixes must be unique")
+    if len({mapping.label for mapping in mappings}) != len(mappings):
+        raise ValueError("agent label names must be unique")
+    return AgentLabelPolicy(
+        enabled=True,
+        max_updates_per_scan=max_updates,
+        create_missing=create_missing,
+        mappings=tuple(mappings),
     )
 
 
@@ -1014,6 +1108,7 @@ def load_policy(raw: object) -> PluginPolicy:
         "assignee_rules",
         "routing_rules",
         "local_ci_audit",
+        "agent_labels",
         "merge_maintainer",
         "repair_steward",
         "release_maintenance",
@@ -1082,6 +1177,11 @@ def load_policy(raw: object) -> PluginPolicy:
             _parse_routing_rules(raw["routing_rules"]) if "routing_rules" in raw else ()
         ),
         local_ci_audit=_validated_local_ci_audit(raw, targets),
+        agent_labels=(
+            _parse_agent_labels(raw["agent_labels"])
+            if "agent_labels" in raw
+            else None
+        ),
         merge_maintainer=(
             _parse_merge_maintainer(raw["merge_maintainer"], targets=targets)
             if "merge_maintainer" in raw

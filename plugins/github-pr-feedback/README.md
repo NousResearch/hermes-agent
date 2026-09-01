@@ -58,6 +58,27 @@ plugins:
           post_results: false
           repositories:
             - example-owner/example-repository
+        # Optional bounded branch labels. The scanner rereads the exact PR
+        # identity before writing and after writing, and skips labels already
+        # present. It uses the GitHub issue-label API, so no Actions job is
+        # needed for tagging.
+        agent_labels:
+          enabled: false
+          max_updates_per_scan: 25
+          create_missing: true
+          mappings:
+            - branch_prefix: codex/
+              label: codex
+              color: 1f6feb
+              description: PR authored by Codex
+            - branch_prefix: hermes/
+              label: hermes
+              color: 8250df
+              description: PR authored by Hermes
+            - branch_prefix: quad/
+              label: quad
+              color: fbca04
+              description: PR authored by Quad
         # Optional exact-head repair owner for confirmed conflicts, requested
         # changes, and non-green repository checks. It may repair and push but
         # never merge. Start in report-only mode.

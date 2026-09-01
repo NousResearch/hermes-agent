@@ -136,6 +136,14 @@ class GitHubReader(Protocol):
 
     def get_check_state(self, repository: str, head_sha: str) -> CheckState: ...
 
+    def add_issue_labels(
+        self, repository: str, number: int, labels: tuple[str, ...]
+    ) -> None: ...
+
+    def ensure_issue_label(
+        self, repository: str, label: str, *, color: str, description: str
+    ) -> None: ...
+
 
 class LocalGit(Protocol):
     def prepare_receipt_worktree(
@@ -862,6 +870,29 @@ class ScanController:
                     reverse=True,
                 )
             )
+            label_updates = 0
+            label_policy = self._policy.agent_labels
+            if label_policy is not None and label_policy.enabled:
+                for pull_request in pull_requests:
+                    desired_label = label_policy.label_for_branch(
+                        pull_request.head_ref_name
+                    )
+                    if desired_label is None or desired_label in pull_request.labels:
+                        continue
+                    if label_updates >= label_policy.max_updates_per_scan:
+                        skipped["agent_label_update_cap"] += 1
+                        break
+                    error = self._apply_agent_label(
+                        repository,
+                        target,
+                        pull_request,
+                        desired_label,
+                        label_policy,
+                    )
+                    if error is None:
+                        label_updates += 1
+                    else:
+                        skipped[error] += 1
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)
@@ -1109,6 +1140,56 @@ class ScanController:
             skipped,
             required_local_ci_backlog=required_local_ci_backlog,
         )
+
+    def _apply_agent_label(
+        self,
+        repository: str,
+        target: RepositoryTarget,
+        listed: PullRequest,
+        desired_label: str,
+        label_policy,
+    ) -> str | None:
+        """Apply one branch label only across exact-head read/write/readback checks."""
+
+        def current_matches(current: PullRequest) -> bool:
+            return (
+                current.number == listed.number
+                and current.base_repository == repository
+                and current.head_repository == target.head_repository
+                and current.head_ref_name == listed.head_ref_name
+                and current.head_sha.casefold() == listed.head_sha.casefold()
+            )
+
+        try:
+            current = self._github.get_pull_request(repository, listed.number)
+            if not current_matches(current):
+                return "agent_label_head_changed"
+            if desired_label in current.labels:
+                return None
+            mapping = next(
+                mapping
+                for mapping in label_policy.mappings
+                if mapping.label == desired_label
+            )
+            if label_policy.create_missing:
+                self._github.ensure_issue_label(
+                    repository,
+                    mapping.label,
+                    color=mapping.color,
+                    description=mapping.description,
+                )
+                current = self._github.get_pull_request(repository, listed.number)
+                if not current_matches(current):
+                    return "agent_label_head_changed"
+            self._github.add_issue_labels(repository, listed.number, (desired_label,))
+            readback = self._github.get_pull_request(repository, listed.number)
+            if not current_matches(readback):
+                return "agent_label_head_changed"
+            if desired_label not in readback.labels:
+                return "agent_label_readback_failed"
+        except Exception:  # noqa: BLE001 - a label write must fail closed.
+            return "agent_label_error"
+        return None
 
     def _read_scan_snapshot(
         self,

@@ -58,6 +58,8 @@ class FakeGitHub:
         self.current_calls: list[tuple[str, int]] = []
         self.feedback_calls: list[tuple[str, int]] = []
         self.branch_calls: list[tuple[str, str]] = []
+        self.label_calls: list[tuple[str, int, tuple[str, ...]]] = []
+        self.ensure_label_calls: list[tuple[str, str, str, str]] = []
         self.actions_are_enabled = True
         self.billing_blocked = False
         self.branch_head = self.current.base_sha
@@ -104,6 +106,32 @@ class FakeGitHub:
         assert branch == self.current.base_branch
         assert self.branch_head is not None
         return self.branch_head
+
+    def add_issue_labels(
+        self, repository: str, number: int, labels: tuple[str, ...]
+    ) -> None:
+        self.label_calls.append((repository, number, labels))
+        current = self.current_by_number[number]
+        self.current_by_number[number] = PullRequest(
+            current.number,
+            current.state,
+            current.base_repository,
+            current.head_repository,
+            current.author_login,
+            current.head_ref_name,
+            current.head_sha,
+            labels=tuple(dict.fromkeys((*current.labels, *labels))),
+            base_branch=current.base_branch,
+            base_sha=current.base_sha,
+            updated_at=current.updated_at,
+        )
+        if number == self.current.number:
+            self.current = self.current_by_number[number]
+
+    def ensure_issue_label(
+        self, repository: str, label: str, *, color: str, description: str
+    ) -> None:
+        self.ensure_label_calls.append((repository, label, color, description))
 
 
 @pytest.mark.parametrize(
@@ -204,6 +232,44 @@ def test_unchanged_pr_update_watermark_skips_repeated_feedback_reads(
     assert first.degraded is False
     assert second.degraded is False
     assert github.feedback_calls == [("acme/widgets", 17)]
+
+
+def test_scan_applies_one_exact_branch_label_and_confirms_readback(
+    tmp_path: Path,
+) -> None:
+    local_path, head_sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        agent_labels=True,
+    )
+    pull_request = PullRequest(
+        17,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/fix",
+        head_sha,
+        updated_at=datetime(2026, 8, 26, 8, 0, tzinfo=UTC),
+    )
+    github = FakeGitHub(pull_request, ())
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(
+        policy,
+        ledger,
+        github,
+        RecordingKanban(),
+        RecordingLocalGit(),
+    ).scan()
+
+    assert result.degraded is False
+    assert github.ensure_label_calls == [
+        ("acme/widgets", "codex", "1f6feb", "PR authored by Codex")
+    ]
+    assert github.label_calls == [("acme/widgets", 17, ("codex",))]
+    assert github.current.labels == ("codex",)
 
 
 def test_failed_ci_receipt_waits_for_current_base_before_dispatching_fixer(
@@ -3622,6 +3688,7 @@ def configured_policy(
     auto_dispatch: bool = False,
     local_ci_audit: bool = False,
     merge_maintainer: bool = False,
+    agent_labels: bool = False,
 ):
     raw = {
             "enabled": True,
@@ -3662,6 +3729,26 @@ def configured_policy(
                 "requires_review": False,
             }
         ]
+    if agent_labels:
+        raw["agent_labels"] = {
+            "enabled": True,
+            "max_updates_per_scan": 2,
+            "create_missing": True,
+            "mappings": [
+                {
+                    "branch_prefix": "codex/",
+                    "label": "codex",
+                    "color": "1f6feb",
+                    "description": "PR authored by Codex",
+                },
+                {
+                    "branch_prefix": "hermes/",
+                    "label": "hermes",
+                    "color": "8250df",
+                    "description": "PR authored by Hermes",
+                },
+            ],
+        }
     if merge_maintainer:
         raw["merge_maintainer"] = {
             "enabled": True,

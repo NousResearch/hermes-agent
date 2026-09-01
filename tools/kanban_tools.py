@@ -34,7 +34,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
@@ -488,11 +488,133 @@ def _run_gate_output_tail(output: str) -> str:
     return "\n".join(lines[-PRE_REVIEW_TAIL_LINES:])
 
 
-def _run_pre_review_gate(task: Any) -> Optional[str]:
-    """Run the zero-token build gate for a worktree-backed task.
+# ---------------- Review-gate ladder (cheapest rung first) ----------------
+# The pre-review gate is an ordered ladder: lint -> typecheck -> import/build
+# (today's check) -> focused tests.  Every rung that bounces a card saves a
+# full LLM review run (review is the fleet's most expensive step), and the
+# cheapest rungs run first.  Order is fixed: lint and typecheck are nearly
+# free vs import/tests, so they go ahead of the constructive checks.
+#
+# A rung whose tool is not available in the project is skipped (logged, not a
+# failure) so a project with no linter never blocks.  Per-project commands use
+# the same override mechanism as the focused-tests rung (``kanban.review_gate
+# .lint_command`` / ``.typecheck_command``), defaulting to a sane tool; the
+# tool resolution is cached per (rung, python) so the happy path does not
+# re-probe the venv.
 
-    Returns ``None`` when the gate passes (or does not apply), otherwise the
-    gate output to attach to the refusal comment.  Pure subprocess.
+_LINT_TOOLS = ("ruff", "flake8", "pylint")
+_TYPECHECK_TOOLS = ("mypy", "pyright", "basedpyright")
+# (rung_key, project_python) -> resolved tool name or None (=> rung skipped)
+_TOOL_CACHE: dict[tuple[str, str], Optional[str]] = {}
+
+
+def _resolve_tool(python: str, key: str, candidates: tuple[str, ...]) -> Optional[str]:
+    """Pick the first available lint/typecheck tool for a project python.
+
+    Cached per (key, python) so the happy path probes the venv once.  A tool
+    is 'available in the project' when its executable lives in the project's
+    venv bin (the sibling of ``<python>/bin/python``).  Deliberately scoped to
+    the project venv — NOT the ambient ``PATH`` — so the ladder is
+    deterministic per project and a project that does not vendor a linter
+    skips the rung rather than silently using some globally-installed tool
+    that isn't part of its environment.  Projects that rely on system tooling
+    can pin ``kanban.review_gate.lint_command`` / ``typecheck_command``.
+    """
+    ck = (key, python)
+    if ck in _TOOL_CACHE:
+        return _TOOL_CACHE[ck]
+    chosen: Optional[str] = None
+    bin_dir = Path(python).parent  # venv/bin when python is venv/bin/python
+    try:
+        for tool in candidates:
+            if (bin_dir / tool).is_file():
+                chosen = tool
+                break
+    except Exception:
+        chosen = None
+    _TOOL_CACHE[ck] = chosen
+    return chosen
+
+
+def _config_rung_override(key: str) -> Any:
+    """Return the ``kanban.review_gate.<key>`` override (str/list) or None."""
+    from hermes_cli.config import cfg_get, load_config
+
+    try:
+        return cfg_get(load_config(), "kanban", "review_gate", key, default=None)
+    except Exception:
+        return None
+
+
+def _expand_rung_argv(
+    tokens: Any, project_python: str, files: list[str]
+) -> list[str]:
+    """Expand a lint/typecheck override (like the tests ``command`` override).
+
+    ``{python}`` becomes the project interpreter; every ``{files}`` expands to
+    one argv element per changed python file (a shared placeholder cannot be a
+    single space-joined element — ruff/mypy would read one bogus path).
+    """
+    argv: list[str] = []
+    for a in tokens:
+        token = str(a).replace("{python}", project_python)
+        if "{files}" not in token:
+            if token:
+                argv.append(token)
+            continue
+        before, _, after = token.partition("{files}")
+        for f in files:
+            seg = before + f + after
+            if seg:
+                argv.append(seg)
+    return argv
+
+
+def _rung_command(
+    project_python: str,
+    key: str,
+    candidates: tuple[str, ...],
+    files: list[str],
+    *,
+    extra_prefix: tuple[str, ...] = (),
+) -> Optional[list[str]]:
+    """Build the argv for a lint/typecheck rung, or None when the tool is absent.
+
+    Precedence: config override (``kanban.review_gate.<key>_command``) →
+    first available default tool.  ``None`` means 'skip this rung', never a
+    failure.
+    """
+    override = _config_rung_override(f"{key}_command")
+    if override:
+        try:
+            if isinstance(override, str):
+                override = shlex.split(override)
+            if isinstance(override, (list, tuple)):
+                return _expand_rung_argv(override, project_python, files)
+        except Exception:
+            pass  # malformed override -> fall through to the tool default
+    tool = _resolve_tool(project_python, key, candidates)
+    if tool is None:
+        return None
+    prefix = ("-m", "ruff", "check") + extra_prefix if tool == "ruff" else ("-m", tool) + extra_prefix
+    return [project_python, *prefix, *files]
+
+
+class _GateBounce(NamedTuple):
+    """Which ladder rung bounced and that rung's output (this rung only)."""
+
+    rung: str
+    output: str
+
+
+def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
+    """Run the zero-token review-gate ladder for a worktree-backed task.
+
+    Returns ``None`` when the gate passes (or does not apply), otherwise a
+    ``_GateBounce`` naming the rung that failed and carrying only that rung's
+    output.  Pure subprocess — no LLM tokens.  The ladder short-circuits on
+    the first failing rung; a rung whose tool is absent from the project is
+    skipped (logged), not a failure.
     """
     kind = getattr(task, "workspace_kind", None)
     if kind != "worktree":
@@ -516,24 +638,52 @@ def _run_pre_review_gate(task: Any) -> Optional[str]:
     if not pypath:
         return None
     changed_py = _changed_python_files(str(ws))
-    output_chunks: list[str] = []
 
+    def _fail(rung: str, cmd: list[str], rc: int, out: str) -> _GateBounce:
+        return _GateBounce(rung, f"[{rung}: {' '.join(cmd)} rc={rc}]\n{out}")
+
+    # Rung 1: lint (cheapest).  Skip when no linter tool is available.
     if changed_py:
-        rc, out = _run_capture(
-            _build_sanity_command(pypath, str(ws), changed_py), cwd=str(ws)
-        )
-        output_chunks.append(f"[import/build sanity: rc={rc}]\n{out}")
-        if rc != 0:
-            return "\n\n".join(output_chunks)
+        lint = _rung_command(pypath, "lint", _LINT_TOOLS, changed_py)
+        if lint is None:
+            logger.info(
+                "review gate: lint rung skipped (no linter tool in project venv for %s)",
+                pypath,
+            )
+        else:
+            rc, out = _run_capture(lint, cwd=ws)
+            if rc != 0:
+                return _fail("lint", lint, rc, out)
 
+    # Rung 2: typecheck.  Skip when no typechecker tool is available.
+    if changed_py:
+        tc = _rung_command(pypath, "typecheck", _TYPECHECK_TOOLS, changed_py)
+        if tc is None:
+            logger.info(
+                "review gate: typecheck rung skipped (no typechecker tool in project venv for %s)",
+                pypath,
+            )
+        else:
+            rc, out = _run_capture(tc, cwd=ws)
+            if rc != 0:
+                return _fail("typecheck", tc, rc, out)
+
+    # Rung 3: import/build sanity (today's check).
+    if changed_py:
+        build_cmd = _build_sanity_command(pypath, str(ws), changed_py)
+        rc, out = _run_capture(build_cmd, cwd=str(ws))
+        if rc != 0:
+            return _fail("import/build sanity", build_cmd, rc, out)
+
+    # Rung 4: focused tests (least cheap — constructor + execution).
     tests = _focused_test_paths(str(ws), changed_py)
     if tests:
-        rc, out = _run_capture(_gate_command(pypath, tests), cwd=str(ws))
-        output_chunks.append(f"[focused tests: {' '.join(tests)} rc={rc}]\n{out}")
+        test_cmd = _gate_command(pypath, tests)
+        rc, out = _run_capture(test_cmd, cwd=str(ws))
         if rc != 0:
-            return "\n\n".join(output_chunks)
+            return _fail("focused tests", test_cmd, rc, out)
 
-    # Nothing failed; no tests matched and build is fine — gate is green.
+    # Every rung green (or skipped) — gate passes.
     return None
 
 
@@ -1255,31 +1405,48 @@ def _handle_request_review(args: dict, **kw) -> str:
                     "requesting review."
                 )
             # Pre-review build gate: refuse the transition when a worktree
-            # card's changed python files don't build or its focused tests
-            # fail.  Zero LLM tokens; on failure the card stays in its current
-            # (builder) lane, an auto-comment carries the gate output tail,
-            # and no failure is counted against the card.
-            gate_output = _run_pre_review_gate(task)
-            if gate_output is not None:
-                tail = _run_gate_output_tail(gate_output)
+            # card fails any rung of the review ladder (lint, typecheck,
+            # import/build, focused tests).  Zero LLM tokens; on failure the
+            # card stays in its current (builder) lane, an auto-comment names
+            # the failing rung and carries only that rung's output, and no
+            # failure is counted against the card.
+            gate_bounce = _run_pre_review_gate(task)
+            if gate_bounce is not None:
+                tail = _run_gate_output_tail(gate_bounce.output)
                 kb.add_comment(
                     conn,
                     tid,
                     author="pre-review-gate",
                     body=(
-                        "Pre-review build gate FAILED — review was not "
-                        "started.\n\nThe worktree must build and its focused "
-                        "tests must pass before entering review. Fix the "
-                        "failure and request review again.\n\n"
-                        "```\n" + tail + "\n```"
+                        f"Pre-review gate FAILED on the '{gate_bounce.rung}' "
+                        "rung — review was not started.\n\nThe worktree must "
+                        "pass the review ladder (lint, typecheck, "
+                        "import/build, focused tests) before entering review. "
+                        "Fix the failure and request review again.\n\n"
+                        "```\n"
+                        + tail
+                        + "\n```"
                     ),
                 )
+                # Record WHICH rung bounced so the ladder's own value is
+                # measurable (e.g. if lint never catches anything in a month,
+                # that rung is removable).
+                with kb.write_txn(conn):
+                    kb._append_event(
+                        conn,
+                        tid,
+                        "gate_bounced",
+                        {"rung": gate_bounce.rung},
+                        run_id=_worker_run_id(tid),
+                    )
                 return tool_error(
-                    f"Pre-review build gate failed for {tid}; review not "
-                    "started. The task stays in its current lane (no failure "
-                    "counted) and a comment carries the last "
-                    f"{PRE_REVIEW_TAIL_LINES} lines of gate output. Fix the "
-                    "build/tests and call kanban_request_review again.\n\n"
+                    f"Pre-review gate failed for {tid} on the "
+                    f"'{gate_bounce.rung}' rung; review not started. The task "
+                    "stays in its current lane (no failure counted) and a "
+                    f"comment carries the last {PRE_REVIEW_TAIL_LINES} lines "
+                    f"of {gate_bounce.rung} output. Fix the "
+                    f"{gate_bounce.rung} and call kanban_request_review "
+                    "again.\n\n"
                     + tail
                 )
             ok, fail_reason = kb.request_review(

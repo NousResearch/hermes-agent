@@ -2792,6 +2792,14 @@ DEFAULT_CONFIG = {
         "review_gate": {
             "enabled": True,
             "command": None,
+            # Optional argv overrides for the lint and typecheck rungs of the
+            # pre-review ladder (see tools/kanban_tools.py).  Same placeholder
+            # mechanism as `command`: a string or list of argv fragments with
+            # {python} and {files} placeholders.  When None the gate
+            # auto-detects a tool in the project venv; a rung with no tool
+            # available is skipped, not failed.
+            "lint_command": None,
+            "typecheck_command": None,
         },
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.

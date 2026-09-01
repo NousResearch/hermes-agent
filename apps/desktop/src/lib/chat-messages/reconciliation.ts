@@ -40,6 +40,83 @@ const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
   return Boolean(storedText) && storedText === normalizedTimelineText(local)
 }
 
+const userTurnMatch = (stored: ChatMessage, local: ChatMessage) =>
+  stored.role === 'user' &&
+  local.role === 'user' &&
+  normalizedTimelineText(stored) === normalizedTimelineText(local) &&
+  (stored.attachmentRefs ?? []).join('\n') === (local.attachmentRefs ?? []).join('\n')
+
+/**
+ * Find the hydrated assistant representing a local failed tail turn.
+ *
+ * Text and provider tool-call ids are not globally unique, so the match is
+ * deliberately anchored to the last visible user turn on both timelines.
+ */
+const tailTurnAssistantMatchIndex = (
+  storedMessages: ChatMessage[],
+  localMessages: ChatMessage[],
+  localAssistantIndex: number
+) => {
+  if (
+    localMessages
+      .slice(localAssistantIndex + 1)
+      .some(message => message.role === 'user' && !message.hidden)
+  ) {
+    return -1
+  }
+
+  let localUserIndex = -1
+
+  for (let index = localAssistantIndex - 1; index >= 0; index -= 1) {
+    const message = localMessages[index]
+
+    if (message.role === 'user' && !message.hidden) {
+      localUserIndex = index
+
+      break
+    }
+  }
+
+  let storedUserIndex = -1
+
+  for (let index = storedMessages.length - 1; index >= 0; index -= 1) {
+    const message = storedMessages[index]
+
+    if (message.role === 'user' && !message.hidden) {
+      storedUserIndex = index
+
+      break
+    }
+  }
+
+  const localUserCount = localMessages
+    .slice(0, localAssistantIndex)
+    .filter(message => message.role === 'user' && !message.hidden).length
+
+  const storedUserCount = storedMessages.filter(message => message.role === 'user' && !message.hidden).length
+
+  if (
+    localUserIndex === -1 ||
+    storedUserIndex === -1 ||
+    localUserCount !== storedUserCount ||
+    !userTurnMatch(storedMessages[storedUserIndex], localMessages[localUserIndex])
+  ) {
+    return -1
+  }
+
+  const localAssistant = localMessages[localAssistantIndex]
+
+  for (let index = storedMessages.length - 1; index > storedUserIndex; index -= 1) {
+    const message = storedMessages[index]
+
+    if (message.role === 'assistant' && !message.hidden && assistantTimelineMatch(message, localAssistant)) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
   if (stored.type !== local.type) {
     return false
@@ -159,6 +236,18 @@ export function preserveLocalAssistantErrors(
     const message = currentMessages[index]
 
     if (message.role !== 'assistant' || !message.error || message.hidden || existingIds.has(message.id)) {
+      continue
+    }
+
+    const hydratedAssistantIndex = tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+
+    if (hydratedAssistantIndex !== -1) {
+      mergedNextMessages[hydratedAssistantIndex] = {
+        ...mergedNextMessages[hydratedAssistantIndex],
+        error: message.error,
+        pending: false
+      }
+
       continue
     }
 

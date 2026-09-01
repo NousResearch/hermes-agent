@@ -110,11 +110,16 @@ def test_terminal_only_schemas_filter(worker_env):
         _tool_def("kanban_complete"),
         _tool_def("kanban_heartbeat"),
         _tool_def("kanban_block"),
+        _tool_def("kanban_request_review"),
+        _tool_def("kanban_request_changes"),
     ]
     only = terminal_only_schemas(tools)
     assert only is not None
     names = {t["function"]["name"] for t in only}
-    assert names == {"kanban_complete", "kanban_block"}
+    assert names == {
+        "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_request_changes",
+    }
     assert terminal_tools_present(tools) is True
 
 
@@ -263,15 +268,23 @@ def test_finalize_restricts_then_releases_on_terminal(worker_env):
         _tool_def("web_search"),
         _tool_def("kanban_complete"),
         _tool_def("kanban_block"),
+        _tool_def("kanban_request_review"),
+        _tool_def("kanban_request_changes"),
     ]
     _fin = terminal_only_schemas(tools)
-    assert _simplify_tools(_fin) == {"kanban_complete", "kanban_block"}
+    assert _simplify_tools(_fin) == {
+        "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_request_changes",
+    }
 
     # (a) Finalize turn in flight, no terminal call yet → restricted request.
     api_msgs = [{"role": "tool", "name": "web_search", "tool_call_id": "1", "content": "cm"}]
     assert terminal_seen(api_msgs) is False
     tools_for_api = _fin  # hook replaces the toolset
-    assert _simplify_tools(tools_for_api) == {"kanban_complete", "kanban_block"}
+    assert _simplify_tools(tools_for_api) == {
+        "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_request_changes",
+    }
 
     # (b) The model now produces the terminal call → restriction releases.
     api_msgs = api_msgs + [
@@ -287,7 +300,70 @@ def test_finalize_restricts_then_releases_on_terminal(worker_env):
     ]
     assert terminal_seen(api_msgs) is True
     tools_for_api = tools  # hook clears _kanban_finalize_tools → full toolset
-    assert _simplify_tools(tools_for_api) == {"web_search", "kanban_complete", "kanban_block"}
+    assert _simplify_tools(tools_for_api) == {
+        "web_search", "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_request_changes",
+    }
+
+
+def test_finalize_restriction_releases_on_review_handoff(worker_env):
+    """A correct review handoff inside the forced turn is a terminal close too:
+    the restriction must release (not keep steering toward complete/block)."""
+    from agent.kanban_checkpoint import _session_called_terminal_in as terminal_seen
+
+    tools = [
+        _tool_def("web_search"),
+        _tool_def("kanban_complete"),
+        _tool_def("kanban_block"),
+        _tool_def("kanban_request_review"),
+        _tool_def("kanban_request_changes"),
+    ]
+    _fin = terminal_only_schemas(tools)
+    api_msgs = [
+        {"role": "tool", "name": "web_search", "tool_call_id": "1", "content": "cm"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "9", "type": "function",
+                 "function": {"name": "kanban_request_review", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "name": "kanban_request_review", "tool_call_id": "9", "content": "review"},
+    ]
+    assert terminal_seen(api_msgs) is True
+    # Restriction releases exactly as it does for complete/block.
+    assert _simplify_tools(_fin) == {
+        "kanban_complete", "kanban_block",
+        "kanban_request_review", "kanban_request_changes",
+    }
+
+
+def test_review_handoff_is_terminal_so_guard_does_not_fire(worker_env):
+    """Rodge round-1 Critical: a worker that correctly handed off to review must
+    not be re-nudged (or force-steered) into complete/block. Both the kanban_stop
+    terminal loop and the checkpoint detector must treat request_review /
+    request_changes as terminal transitions."""
+    from agent.kanban_checkpoint import _session_called_terminal_in as terminal_seen
+    from agent.kanban_stop import build_kanban_stop_nudge, session_called_kanban_terminal
+
+    for tool in ("kanban_request_review", "kanban_request_changes"):
+        msgs = [
+            {"role": "user", "content": "work"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "1", "type": "function",
+                     "function": {"name": tool, "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "name": tool, "tool_call_id": "1", "content": "ok"},
+        ]
+        assert session_called_kanban_terminal(msgs) is True
+        assert terminal_seen(msgs) is True
+        # The stop-guard sees a terminal handoff → no nudge, no forced turn.
+        assert build_kanban_stop_nudge(messages=msgs, attempts=0) is None
 
 
 def test_finalize_request_build_hook_is_noop_when_fired_not_pending(worker_env):

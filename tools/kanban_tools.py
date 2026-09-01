@@ -170,7 +170,7 @@ def _worker_run_id(task_id: str) -> Optional[int]:
 
 
 def _stamp_worker_session_metadata(
-    task_id: str, metadata: Optional[dict]
+    task_id: str, metadata: Optional[dict], *, finalize_conclusive: bool = False
 ) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
@@ -184,20 +184,29 @@ def _stamp_worker_session_metadata(
         to_stamp["worker_session_id"] = session_id
     # Finalize-in-process instrumentation: if a forced finalize turn fired this
     # run, stamp whether it ultimately produced a terminal tool. Reading the
-    # module flags here (a terminal-tool handler) is correct: reaching
-    # kanban_complete / kanban_block WITH a prior finalize turn proves the
-    # finalize succeeded. If the worker instead exited cleanly without ever
-    # calling a terminal tool, the run is closed by the dispatcher as a
-    # protocol violation and the metrics snapshot was already recorded at the
-    # moment the finalize turn fired (see the loop hook) — this stamp just
-    # ties the successful path to the run row.
+    # module flags here (a terminal-tool handler) is correct: reaching a
+    # terminal tool WITH a prior finalize turn proves the finalize closed the
+    # run instead of falling through to a protocol violation. If the worker
+    # instead exited cleanly without ever calling a terminal tool, the run is
+    # closed by the dispatcher as a protocol violation and the metrics snapshot
+    # was already recorded at the moment the finalize turn fired (see the loop
+    # hook) — this stamp just ties the successful path to the run row.
+    #
+    # `finalize_conclusive` distinguishes the two terminal classes: `finalize
+    # _turn_succeeded` is only marked True by a CONCLUSIVE close (kanban_complete;
+    # kanban_block writes no metadata so carries no stamp). A review/return
+    # handoff (kanban_request_review / changes) is also a valid terminal that
+    # closes the run, but it does NOT mark success — doing so would skew the
+    # measured "finalize concluded the work" rate with handoffs that hand off
+    # rather than conclude. For those, only the fired flag is stamped.
     try:
         from agent.kanban_checkpoint import finalize_metrics, mark_finalize_succeeded
 
         m = finalize_metrics()
         if m.get("finalize_turn_fired"):
-            mark_finalize_succeeded()
-            m = finalize_metrics()
+            if finalize_conclusive:
+                mark_finalize_succeeded()
+                m = finalize_metrics()
             for key, val in m.items():
                 if val is not None:
                     to_stamp[key] = val
@@ -1078,7 +1087,7 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
-    metadata = _stamp_worker_session_metadata(tid, metadata)
+    metadata = _stamp_worker_session_metadata(tid, metadata, finalize_conclusive=True)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1263,6 +1272,8 @@ def _handle_request_review(args: dict, **kw) -> str:
             metadata = json.loads(metadata_json)
         except json.JSONDecodeError:
             return tool_error("metadata could not be safely serialized")
+    # A review handoff is a valid terminal close but NOT a conclusive complete:
+    # stamp worker session + the fired flag, never finalize_turn_succeeded.
     metadata = _stamp_worker_session_metadata(tid, metadata)
     reviewer = args.get("reviewer") or None
     if reviewer:

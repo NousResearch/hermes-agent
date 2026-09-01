@@ -50,10 +50,13 @@ from typing import Iterable, Optional
 # real env var — the worker's lifecycle tools already key off it.
 _TASK_ENV = "HERMES_KANBAN_TASK"
 
-# The terminal kanban tools a worker must end on. Mirrored here so the
-# finalize-turn toolset restriction and the reminder gate share one source of
-# truth with ``agent.kanban_stop._TERMINAL_KANBAN_TOOLS``.
-_TERMINAL_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# The terminal kanban tools a worker may end on. Imported (NOT duplicated)
+# from ``agent.kanban_stop`` — the single source of truth — so the detection
+# gate, the reminder, and the forced finalize-tool restriction can never
+# diverge. Recognized terminal transitions: ``kanban_complete``,
+# ``kanban_block``, ``kanban_request_review``, ``kanban_request_changes`` (a
+# correct review/return handoff is also a clean close of the worker's run).
+from agent.kanban_stop import _TERMINAL_KANBAN_TOOLS as _TERMINAL_TOOLS
 
 # Flag stamped on the ephemeral reminder so `_is_ephemeral_scaffolding` in
 # run_agent.py strips it from the durable transcript if it ever leaks into a
@@ -80,9 +83,10 @@ def build_checkpoint_reminder(task_id: str) -> str:
     """
     tid = (task_id or "").strip() or worker_task_id() or "this task"
     return (
-        "[checkpoint] Task `%s` is still `running`. End this worker by calling "
-        "`kanban_complete(...)` or `kanban_block(...)` — a plain-text reply is "
-        "not a terminal state for the board." % tid
+        "[checkpoint] Task `%s` is still `running` — a plain-text reply is not "
+        "a terminal state. End this worker with a terminal board tool: "
+        "`kanban_complete`/`kanban_block`, or the handoffs "
+        "`kanban_request_review`/`kanban_request_changes`." % tid
     )
 
 
@@ -190,10 +194,12 @@ def build_finalize_instruction(task_id: str) -> str:
     return (
         "[System: forced finalize — task `%s` is still `running` and this is "
         "your last chance to close it in-process. The ONLY tools available now "
-        "are `kanban_complete` and `kanban_block`. If the work is done, call "
+        "are the terminal board tools. If the work is done, call "
         "`kanban_complete(summary=..., artifacts=[...])` now; if you are "
-        "genuinely blocked, call `kanban_block(reason=...)` now. Do not reply "
-        "with prose — pick one of the two terminal tools and call it.]" % tid
+        "genuinely blocked, call `kanban_block(reason=...)` now; if the work is "
+        "finished and needs review, call `kanban_request_review(...)` now; if "
+        "you are returning changes, call `kanban_request_changes(...)` now. Do "
+        "not reply with prose — pick a terminal tool and call it.]" % tid
     )
 
 

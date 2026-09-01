@@ -103,16 +103,61 @@ def test_stamp_stale_run_pinned_rejected(kanban_home):
         tid = _new_task(conn)
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
-        # Simulate a stale run id (already-closed / foreign): stamp must not
-        # corrupt a different run.
+        assert run1 is not None
+        # Sentinel on the real run so we can prove it is never touched.
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps({"sentinel": "kept"}), run1.id),
+        )
+        # Simulate a stale run id (already-closed / foreign): the contract pins
+        # the worker's own run and must NOT fall back onto another run.
         ok = kb.stamp_worker_run_metadata(
             conn, tid,
             extra={"finalize_turn_fired": True},
             expected_run_id=run1.id + 9999,
         )
-        # Pinned to a nonexistent run → no-op (fallback to current would be
-        # wrong here; the contract pins the worker's own run).
-        assert ok is False or ok is True
+        # Pinned to a nonexistent run → genuine no-op, not a fallback.
+        assert ok is False
+        # And the real run's metadata is provably uncorrupted.
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ?", (run1.id,)
+        ).fetchone()
+        meta = json.loads(row["metadata"])
+        assert meta == {"sentinel": "kept"}
+        assert "finalize_turn_fired" not in meta
+    finally:
+        conn.close()
+
+
+def test_stamp_foreign_run_rejected_even_if_id_exists(kanban_home):
+    """A pinned run id belonging to a DIFFERENT task must not be merged onto."""
+    conn = kb.connect()
+    try:
+        tid_a = _new_task(conn)
+        tid_b = _new_task(conn)
+        kb.claim_task(conn, tid_a)
+        kb.claim_task(conn, tid_b)
+        run_b = kb.latest_run(conn, tid_b)
+        if run_b is None:
+            pytest.skip("no foreign run row present")
+        # Commit a sentinel to run_b so we can prove it is never merged onto.
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps({"foreign_sentinel": True}), run_b.id),
+        )
+        kb.stamp_worker_run_metadata(
+            conn, tid_a,
+            extra={"finalize_turn_fired": True},
+            expected_run_id=run_b.id,
+        )
+        meta = json.loads(
+            conn.execute(
+                "SELECT metadata FROM task_runs WHERE id = ?", (run_b.id,)
+            ).fetchone()["metadata"] or "{}"
+        )
+        # The pinned foreign run must be untouched by task A's stamp.
+        assert meta == {"foreign_sentinel": True}
+        assert "finalize_turn_fired" not in meta
     finally:
         conn.close()
 
@@ -135,11 +180,37 @@ def test_stamp_includes_worker_session_and_finalize(kanban_home, monkeypatch):
     kcp.reset_finalize_state()
     kcp.mark_finalize_fired()
 
-    out = _stamp_worker_session_metadata("t_abc", {"handoff": "done"})
+    # kanban_complete is the conclusive close → marks finalize_turn_succeeded.
+    out = _stamp_worker_session_metadata(
+        "t_abc", {"handoff": "done"}, finalize_conclusive=True
+    )
     out = normalize(out)
     assert out["worker_session_id"] == "sess-1"
     assert out["finalize_turn_fired"] is True
-    assert out["finalize_turn_succeeded"] is True  # reached a terminal tool
+    assert out["finalize_turn_succeeded"] is True  # conclusive complete
+
+
+def test_stamp_review_handoff_does_not_mark_succeeded(kanban_home, monkeypatch):
+    """A review handoff after a finalize fired is a valid terminal close but not
+    a conclusive complete — it must stamp the fired flag, never succeeded."""
+    from tools.kanban_tools import _stamp_worker_session_metadata
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc")
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
+
+    from agent import kanban_checkpoint as kcp
+
+    kcp.reset_finalize_state()
+    kcp.mark_finalize_fired()
+
+    # kanban_request_review path (default conclusive=False) → NOT succeeded.
+    out = _stamp_worker_session_metadata(
+        "t_abc", {"handoff": "review"}
+    )
+    out = normalize(out)
+    assert out["worker_session_id"] == "sess-1"
+    assert out["finalize_turn_fired"] is True
+    assert out["finalize_turn_succeeded"] is False
 
 
 def test_stamp_foreign_task_untouched(kanban_home, monkeypatch):

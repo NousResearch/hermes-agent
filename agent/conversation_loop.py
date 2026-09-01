@@ -8531,7 +8531,6 @@ def run_conversation(
                         # (best-effort; never breaks the loop).
                         try:
                             from tools.kanban_tools import _connect as _kck_connect
-                            from hermes_cli import kanban_db as _kb
                             _tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
                             _kb, _conn = _kck_connect()
                             try:

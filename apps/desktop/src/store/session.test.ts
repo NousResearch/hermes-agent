@@ -877,11 +877,8 @@ describe('workspaceCwdForNewSession', () => {
     // new session must NOT inherit /tradingview — pre-fix this returned the
     // sticky remembered cwd and the gateway mapped it back to the wrong
     // project via project_tree.py.
-    window.localStorage.setItem(
-      'hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default',
-      '/tradingview',
-    )
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/tradingview')
     applyConfiguredDefaultProjectDir(null)
 
     expect(workspaceCwdForNewSession()).toBe('')
@@ -892,10 +889,7 @@ describe('workspaceCwdForNewSession', () => {
     // *did* set a configured default — the explicit default pre-attaches
     // identically across local and remote mode.
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
-    window.localStorage.setItem(
-      'hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default',
-      '/tradingview',
-    )
+    setCurrentCwd('/tradingview')
     applyConfiguredDefaultProjectDir('/home/user/configured')
 
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')

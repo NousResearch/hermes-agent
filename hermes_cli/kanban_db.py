@@ -8305,6 +8305,28 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Workspace / worktree contention signatures in a worker log that indicate a
+# clean exit (rc=0) was NOT a genuine protocol violation but a broken
+# workspace: the worker bailed because of git-worktree / workspace-path
+# contention. Retrying into the same broken workspace would just loop, so the
+# card is blocked (``capability``) instead (2026-09-01 split, t_8fc16a73).
+#
+# Only SPECIFIC contention phrases are matched — never the bare nouns
+# ``workspace`` / ``worktree`` / the ``.worktrees`` path — because those appear
+# in benign model reasoning text (measured 126/166 real worker logs, 2026-09-01)
+# and would misclassify a genuine no_checkpoint (finished but forgot to
+# checkpoint) whose log tail merely mentions "workspace" as workspace_error →
+# blocked instead of the bounded retry it needs. A true git worktree /
+# workspace-path contention failure always carries one of these exact
+# signatures.
+_WORKSPACE_ERROR_RE = re.compile(
+    r"\b(not inside a git repo|does not point at a git "
+    r"repo root|non-absolute workspace|is already checked out at|"
+    r"failed to create worktree|already exists and is not an empty "
+    r"directory)\b",
+    re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -8665,6 +8687,38 @@ def _detect_provider_outage(
         re.search(r"\b(403|429|4\d\d|5\d\d|forbidden|too_many_requests|"
                  r"monthly\s*limit|credits|quota|forbidden)\b",
                  log, re.IGNORECASE))
+
+
+def _classify_clean_exit(
+    task_id: str, *, board: Optional[str] = None,
+) -> str:
+    """Classify a clean-exit (rc=0) worker whose task is still ``running``.
+
+    Decisions are grounded in the worker log (never a guess). One of:
+
+    * ``workspace_error`` — a workspace / worktree / git-contention signature
+      in the log. The card must be blocked (``capability``), not retried into
+      the same broken workspace (2026-09-01 split, t_8fc16a73).
+    * ``no_checkpoint`` — the genuine case: a model that finished but never
+      checkpointed (no workspace error in the log). Keeps today's bounded
+      retry.
+
+    The provider class (``provider_error``) is NOT derived here: the fast
+    provider spawn-bounce is a distinct, timing-gated path
+    (``_detect_provider_outage`` → ``violation_class=provider_error``), and a
+    long-running clean exit with provider text in the log is deliberately kept
+    a plain crash (see test_kanban_circuit_breaker.py ``[False]`` — the outage
+    fingerprint is specifically the *spawn bounce*, not any clean exit).
+    """
+    try:
+        log = _read_worker_log_text(task_id, board=board)
+    except Exception:
+        log = ""
+    if not log:
+        return "no_checkpoint"
+    if _WORKSPACE_ERROR_RE.search(log):
+        return "workspace_error"
+    return "no_checkpoint"
 
 
 def _read_worker_log_text(
@@ -9728,6 +9782,8 @@ def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = N
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            workspace_error = False
+            protocol_violation = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -9781,27 +9837,64 @@ def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = N
                         "claimer": row["claim_lock"],
                         "exit_code": code,
                         "provider_outage": True,
+                        "violation_class": "provider_error",
                     }
                 else:
-                    protocol_violation = True
-                    error_text = (
-                        "worker exited cleanly (rc=0) without calling "
-                        "kanban_complete or kanban_block — protocol violation. "
-                        "If the prior run already did the work, verify it and "
-                        "report the result via kanban_complete; a run that ends "
-                        "without a terminal kanban call counts as failed no "
-                        "matter what it did."
+                    # Split the clean-exit case that is NOT the fast provider
+                    # spawn bounce into its two remaining real classes
+                    # (2026-09-01, t_8fc16a73). The fast provider bounce above
+                    # is ``violation_class=provider_error``; here a workspace
+                    # failure and a genuine no-checkpoint get distinct error
+                    # text + machine field so they stop being conflated with
+                    # each other (and with the provider wall) in the board.
+                    violation_class = _classify_clean_exit(
+                        row["id"], board=board,
                     )
-                    event_kind = "protocol_violation"
-                    event_payload = {
-                        "pid": pid,
-                        "claimer": row["claim_lock"],
-                        "exit_code": code,
-                        # Durable marker for _protocol_violation_streak: _end_run
-                        # copies this payload into the run metadata, which is how
-                        # the violation-only retry budget is derived later.
-                        "protocol_violation": True,
-                    }
+                    if violation_class == "workspace_error":
+                        workspace_error = True
+                        error_text = (
+                            f"worker exited cleanly (rc=0) without calling "
+                            f"kanban_complete or kanban_block because of a "
+                            f"workspace/worktree error in the worker log — "
+                            f"violation_class=workspace_error; blocked as "
+                            f"capability so it is not retried into the same "
+                            f"broken workspace"
+                        )
+                        event_kind = "workspace_error"
+                        event_payload = {
+                            "pid": pid,
+                            "claimer": row["claim_lock"],
+                            "exit_code": code,
+                            "violation_class": "workspace_error",
+                        }
+                    else:
+                        # ``no_checkpoint`` — the genuine case: a model that
+                        # finished but never checkpointed. Keeps today's
+                        # bounded retry.
+                        protocol_violation = True
+                        error_text = (
+                            "worker exited cleanly (rc=0) without calling "
+                            "kanban_complete or kanban_block — protocol "
+                            "violation (violation_class=no_checkpoint: no "
+                            "provider or workspace error in the log; the "
+                            "model finished but never checkpointed). If the "
+                            "prior run already did the work, verify it and "
+                            "report the result via kanban_complete; a run that "
+                            "ends without a terminal kanban call counts as "
+                            "failed no matter what it did."
+                        )
+                        event_kind = "protocol_violation"
+                        event_payload = {
+                            "pid": pid,
+                            "claimer": row["claim_lock"],
+                            "exit_code": code,
+                            "violation_class": "no_checkpoint",
+                            # Durable marker for _protocol_violation_streak:
+                            # _end_run copies this payload into the run
+                            # metadata, which is how the violation-only retry
+                            # budget is derived later.
+                            "protocol_violation": True,
+                        }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -9838,18 +9931,40 @@ def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = N
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
-            )
+            if workspace_error:
+                # Block with a ``capability`` kind: the workspace is broken, so
+                # retrying into the same workspace just loops. This is a
+                # deliberate stop, not a crash — it must not consume the
+                # failure budget or the protocol-violation streak.
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "block_kind = 'capability' "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (row["id"], pid, row["claim_lock"]),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (retry_status, row["id"], pid, row["claim_lock"]),
+                )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                # Workspace errors are a deliberate capability block, and
+                # provider errors are released like a quota wall (no failure
+                # counted, no violation-streak consumed).
+                if workspace_error:
+                    _run_outcome = "blocked"
+                elif rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -9882,6 +9997,18 @@ def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = N
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif workspace_error:
+                    # Blocked by a broken workspace — NOT a crash and NOT a
+                    # failure: the card is parked for an assessor, and it does
+                    # not consume the failure budget or the violation streak.
+                    # Still stamp ``last_failure_error`` (like the
+                    # rate_limited and protocol_violation branches) so the
+                    # assessor / board UI sees the reason string instead of a
+                    # bare capability block with nothing to act on.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget

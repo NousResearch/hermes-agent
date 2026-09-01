@@ -152,10 +152,150 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         "created_cards": [],
     }))
     assert ok.get("ok") is True
-
     conn = kb.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Tool-evidence gate (t_8fc16a73): refuse a completion from a run that made
+# ZERO non-kanban tool calls.
+# ---------------------------------------------------------------------------
+
+def test_complete_zero_evidence_is_bounced_with_correction(worker_env, monkeypatch):
+    """A worker run with no non-kanban tool evidence and no kanban children is
+    refused with a correction naming what is missing; the task stays
+    in-flight."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-no-evidence")
+    from tools import kanban_tools as kt
+    monkeypatch.setattr(
+        "tools.kanban_tools._open_session_db", lambda _sid: (object(), None),
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._run_produced_kanban_children", lambda _db, _sid: False,
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._count_non_kanban_tool_calls", lambda _db, _sid: 0,
+    )
+    out = kt._handle_complete({"summary": "claimed done but did nothing"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "ZERO non-kanban tool" in d["error"]
+    assert "still in-flight" in d["error"]
+    # Task is untouched, still running.
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_with_tool_evidence_is_accepted_unchanged(worker_env, monkeypatch):
+    """A run that DID real tool work completes normally — the gate must not
+    interfere with legitimate completions."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-with-evidence")
+    from tools import kanban_tools as kt
+    monkeypatch.setattr(
+        "tools.kanban_tools._open_session_db", lambda _sid: (object(), None),
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._run_produced_kanban_children", lambda _db, _sid: False,
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._count_non_kanban_tool_calls", lambda _db, _sid: 7,
+    )
+    out = kt._handle_complete({
+        "summary": "edited files + ran tests",
+        "metadata": {"tests_run": 12},
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome == "completed"
+        assert run.summary == "edited files + ran tests"
+    finally:
+        conn.close()
+
+
+def test_complete_repeat_no_evidence_is_counted_as_failed(worker_env, monkeypatch):
+    """A repeat no-evidence completion is counted as a failed complete (the
+    run is closed as a crash and the card returns to its source phase), not
+    just bounced again."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-repeat")
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    monkeypatch.setattr(
+        "tools.kanban_tools._open_session_db", lambda _sid: (object(), None),
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._run_produced_kanban_children", lambda _db, _sid: False,
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._count_non_kanban_tool_calls", lambda _db, _sid: 0,
+    )
+    first = json.loads(kt._handle_complete({"summary": "nothing done"}))
+    assert "ZERO non-kanban tool" in first["error"]
+    # Second attempt with still zero evidence → repeat → counted as failed.
+    second = json.loads(kt._handle_complete({"summary": "still nothing done"}))
+    assert second.get("ok") is not True
+    assert "counted as a failed completion" in second["error"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "ready", \
+            "repeat no-evidence completion releases the card for re-dispatch"
+        assert task.consecutive_failures == 1, \
+            "the repeat must count against the failure budget"
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome == "crashed"
+        # The fabricated-completion signature is durable on the
+        # completion_blocked_no_evidence event trail.
+        n_blocks = conn.execute(
+            "SELECT count(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = 'completion_blocked_no_evidence'",
+            (worker_env,),
+        ).fetchone()["n"]
+        assert n_blocks == 2, "first + repeat no-evidence completes both audited"
+    finally:
+        conn.close()
+
+
+def test_complete_orchestrator_with_kanban_children_is_accepted(worker_env, monkeypatch):
+    """An orchestrator worker that decomposed a goal (kanban_create /
+    kanban_link) then completes its OWN card with no non-kanban tool call must
+    NOT be bounced by the evidence gate — the fan-out IS its work (Rodge
+    round-1: HERMES_KANBAN_TASK == own id, so the CLI open path does not cover
+    it)."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-orch")
+    from tools import kanban_tools as kt
+    monkeypatch.setattr(
+        "tools.kanban_tools._open_session_db", lambda _sid: (object(), None),
+    )
+    # Ancillary evidence zero, but the run DID produce kanban children.
+    monkeypatch.setattr(
+        "tools.kanban_tools._run_produced_kanban_children", lambda _db, _sid: True,
+    )
+    monkeypatch.setattr(
+        "tools.kanban_tools._count_non_kanban_tool_calls", lambda _db, _sid: 0,
+    )
+    out = kt._handle_complete({
+        "summary": "decomposed goal into children",
+        "metadata": {"created_cards": ["t_child1", "t_child2"]},
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, f"orchestrator completion must be accepted: {d}"
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome == "completed"
+        assert run.summary == "decomposed goal into children"
     finally:
         conn.close()
 

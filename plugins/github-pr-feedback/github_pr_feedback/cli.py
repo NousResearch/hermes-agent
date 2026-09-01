@@ -22,7 +22,11 @@ from typing import Any, Callable, Iterator, Protocol
 from .controller import KanbanTask, LocalGitRepository, ScanController
 from .ci_runner import CIAuditIdentity, CIAuditReceipt, CIValidationError, LocalCIRunner
 from .github_client import GitHubClient, GitHubClientError
-from .ledger import FeedbackLedger, LedgerStateError
+from .ledger import (
+    FeedbackLedger,
+    LedgerStateError,
+    parse_maintenance_command_evidence,
+)
 from .merge_controller import (
     CanonicalMergeEvidenceSource,
     MergeController,
@@ -395,6 +399,11 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     maintenance.add_argument("--lane", required=True)
     maintenance.add_argument("--status", required=True, choices=("passed", "failed"))
     maintenance.add_argument("--summary", required=True)
+    maintenance.add_argument(
+        "--command-evidence-json",
+        required=True,
+        help="JSON list containing argv, cwd, return code, timeout, and output digests",
+    )
 
 
 def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
@@ -435,6 +444,12 @@ def _complete_maintenance(ctx: Any, args: argparse.Namespace) -> int:
             or not _FULL_SHA.fullmatch(args.head_sha)
         ):
             raise ValueError("maintenance receipt identity is not configured")
+        try:
+            command_evidence = parse_maintenance_command_evidence(
+                json.loads(args.command_evidence_json)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("maintenance command evidence is invalid") from error
         ledger = FeedbackLedger.for_current_profile()
         try:
             ledger.record_maintenance_receipt(
@@ -444,6 +459,7 @@ def _complete_maintenance(ctx: Any, args: argparse.Namespace) -> int:
                 status=args.status,
                 summary=args.summary,
                 completed_at=datetime.now(UTC),
+                command_evidence=command_evidence,
             )
         finally:
             ledger.close()

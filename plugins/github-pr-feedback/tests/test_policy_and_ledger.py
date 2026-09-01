@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 import github_pr_feedback.ledger as ledger_module
-from github_pr_feedback.ledger import ClaimLease, FeedbackLedger
+from github_pr_feedback.ledger import (
+    ClaimLease,
+    FeedbackLedger,
+    MaintenanceCommandEvidence,
+)
 from github_pr_feedback.policy import (
     FeedbackReceipt,
     MergeMaintainerPolicy,
@@ -20,6 +24,22 @@ from github_pr_feedback.policy import (
     _is_git_worktree,
     load_policy,
 )
+
+
+def maintenance_command_evidence(
+    *, returncode: int = 0, timed_out: bool = False
+) -> tuple[MaintenanceCommandEvidence, ...]:
+    return (
+        MaintenanceCommandEvidence(
+            argv=("python3", "-m", "pytest", "-q"),
+            cwd="/tmp/widgets",
+            returncode=returncode,
+            duration_ms=125,
+            timed_out=timed_out,
+            stdout_sha256="a" * 64,
+            stderr_sha256="b" * 64,
+        ),
+    )
 
 
 def configured_policy(tmp_path: Path):
@@ -201,12 +221,53 @@ def test_maintenance_receipts_are_exact_head_and_lane_scoped(tmp_path: Path) -> 
         status="failed",
         summary="3 tests failed",
         completed_at=completed_at,
+        command_evidence=maintenance_command_evidence(returncode=1),
     )
 
     receipts = ledger.maintenance_receipts("acme/widgets", "a" * 40)
     assert receipts["unit-tests"].status == "failed"
     assert receipts["unit-tests"].summary == "3 tests failed"
     assert ledger.maintenance_receipts("acme/widgets", "b" * 40) == {}
+
+
+def test_legacy_summary_only_maintenance_receipt_is_not_passed(tmp_path: Path) -> None:
+    """Old prose-only rows cannot satisfy the maintenance gate after upgrade."""
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    try:
+        ledger._connection.execute(
+            "INSERT INTO maintenance_receipts "
+            "(repository, head_sha, lane, status, summary, completed_at) "
+            "VALUES (?, ?, ?, 'passed', ?, ?)",
+            (
+                "acme/widgets",
+                "a" * 40,
+                "unit-tests",
+                "220 tests passed",
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        receipt = ledger.maintenance_receipts("acme/widgets", "a" * 40)["unit-tests"]
+        assert receipt.status == "invalid"
+        assert receipt.command_evidence == ()
+    finally:
+        ledger.close()
+
+
+def test_passed_maintenance_receipt_rejects_failing_command(tmp_path: Path) -> None:
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    try:
+        with pytest.raises(ValueError, match="failing command evidence"):
+            ledger.record_maintenance_receipt(
+                repository="acme/widgets",
+                head_sha="a" * 40,
+                lane="unit-tests",
+                status="passed",
+                summary="claimed passed",
+                completed_at=datetime.now(UTC),
+                command_evidence=maintenance_command_evidence(returncode=1),
+            )
+    finally:
+        ledger.close()
 
 
 def test_merge_maintainer_is_disabled_by_default(tmp_path: Path) -> None:

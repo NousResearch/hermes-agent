@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -67,6 +68,89 @@ class MaintenanceReceipt:
     status: str
     summary: str
     completed_at: datetime
+    command_evidence: tuple["MaintenanceCommandEvidence", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceCommandEvidence:
+    """Typed evidence for one command executed by a maintenance worker.
+
+    Maintenance summaries are explanatory text, not proof that a command ran.
+    Keeping argv, return code, timeout state, and output digests in the ledger
+    makes a passed maintenance receipt auditable and prevents prose-only
+    completion from advancing the release-maintenance state machine.
+    """
+
+    argv: tuple[str, ...]
+    cwd: str
+    returncode: int
+    duration_ms: int
+    timed_out: bool
+    stdout_sha256: str
+    stderr_sha256: str
+
+    def validate(self) -> None:
+        if not self.argv or any(not isinstance(arg, str) or not arg for arg in self.argv):
+            raise ValueError("maintenance command argv is invalid")
+        if not isinstance(self.cwd, str) or not self.cwd.strip():
+            raise ValueError("maintenance command cwd is invalid")
+        if isinstance(self.returncode, bool) or not isinstance(self.returncode, int):
+            raise ValueError("maintenance command return code is invalid")
+        if (
+            isinstance(self.duration_ms, bool)
+            or not isinstance(self.duration_ms, int)
+            or self.duration_ms < 0
+        ):
+            raise ValueError("maintenance command duration is invalid")
+        if not isinstance(self.timed_out, bool):
+            raise ValueError("maintenance command timeout is invalid")
+        for name in ("stdout_sha256", "stderr_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not _SHA256.fullmatch(value):
+                raise ValueError(f"maintenance command {name} is invalid")
+
+    def to_payload(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "argv": list(self.argv),
+            "cwd": self.cwd,
+            "returncode": self.returncode,
+            "duration_ms": self.duration_ms,
+            "timed_out": self.timed_out,
+            "stdout_sha256": self.stdout_sha256,
+            "stderr_sha256": self.stderr_sha256,
+        }
+
+
+_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def parse_maintenance_command_evidence(
+    payload: object,
+) -> tuple[MaintenanceCommandEvidence, ...]:
+    """Parse and validate the command evidence accepted by the ledger."""
+
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("maintenance command evidence must be a non-empty list")
+    parsed: list[MaintenanceCommandEvidence] = []
+    for item in payload:
+        if not isinstance(item, Mapping):
+            raise ValueError("maintenance command evidence item is invalid")
+        argv = item.get("argv")
+        if not isinstance(argv, list):
+            raise ValueError("maintenance command argv is invalid")
+        command = MaintenanceCommandEvidence(
+            argv=tuple(argv),
+            cwd=item.get("cwd"),
+            returncode=item.get("returncode"),
+            duration_ms=item.get("duration_ms"),
+            timed_out=item.get("timed_out"),
+            stdout_sha256=item.get("stdout_sha256"),
+            stderr_sha256=item.get("stderr_sha256"),
+        )
+        command.validate()
+        parsed.append(command)
+    return tuple(parsed)
 
 
 class LedgerStateError(RuntimeError):
@@ -170,9 +254,18 @@ class FeedbackLedger:
                 status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
                 summary TEXT NOT NULL,
                 completed_at TEXT NOT NULL,
+                command_evidence_json TEXT,
                 PRIMARY KEY (repository, head_sha, lane)
             )
             """)
+        maintenance_columns = {
+            row[1]
+            for row in self._connection.execute("PRAGMA table_info(maintenance_receipts)")
+        }
+        if "command_evidence_json" not in maintenance_columns:
+            self._connection.execute(
+                "ALTER TABLE maintenance_receipts ADD COLUMN command_evidence_json TEXT"
+            )
         self._migrate_lease_columns()
         self._connection.execute("""
             CREATE TABLE IF NOT EXISTS ci_audit_receipts (
@@ -414,8 +507,9 @@ class FeedbackLedger:
         status: str,
         summary: str,
         completed_at: datetime,
+        command_evidence: tuple[MaintenanceCommandEvidence, ...],
     ) -> None:
-        """Record one immutable, exact-head lane outcome; identical retries are idempotent."""
+        """Record one immutable, exact-head lane outcome with command proof."""
 
         completed_at = _aware_utc(completed_at, "completed_at")
         values = tuple(
@@ -425,10 +519,27 @@ class FeedbackLedger:
             raise ValueError("maintenance receipt is invalid")
         if len(summary) > 4000:
             raise ValueError("maintenance receipt summary is too long")
-        row_values = (*values, completed_at.isoformat())
+        if not isinstance(command_evidence, tuple) or not command_evidence:
+            raise ValueError("maintenance receipt has no command evidence")
+        for command in command_evidence:
+            if not isinstance(command, MaintenanceCommandEvidence):
+                raise TypeError("maintenance command evidence has invalid type")
+            command.validate()
+        if status == "passed" and any(
+            command.returncode != 0 or command.timed_out
+            for command in command_evidence
+        ):
+            raise ValueError("passed maintenance receipt has failing command evidence")
+        evidence_json = json.dumps(
+            [command.to_payload() for command in command_evidence],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        row_values = (*values, completed_at.isoformat(), evidence_json)
         with self._transaction():
             existing = self._connection.execute(
-                "SELECT repository, head_sha, lane, status, summary, completed_at "
+                "SELECT repository, head_sha, lane, status, summary, completed_at, "
+                "command_evidence_json "
                 "FROM maintenance_receipts WHERE repository = ? AND head_sha = ? AND lane = ?",
                 values[:3],
             ).fetchone()
@@ -438,8 +549,8 @@ class FeedbackLedger:
                 return
             self._connection.execute(
                 "INSERT INTO maintenance_receipts "
-                "(repository, head_sha, lane, status, summary, completed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(repository, head_sha, lane, status, summary, completed_at, "
+                "command_evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 row_values,
             )
 
@@ -447,21 +558,40 @@ class FeedbackLedger:
         self, repository: str, head_sha: str
     ) -> dict[str, MaintenanceReceipt]:
         rows = self._connection.execute(
-            "SELECT lane, status, summary, completed_at FROM maintenance_receipts "
+            "SELECT lane, status, summary, completed_at, command_evidence_json "
+            "FROM maintenance_receipts "
             "WHERE repository = ? AND head_sha = ?",
             (repository, head_sha),
         )
         return {
-            row[0]: MaintenanceReceipt(
-                repository=repository,
-                head_sha=head_sha,
-                lane=row[0],
-                status=row[1],
-                summary=row[2],
-                completed_at=datetime.fromisoformat(row[3]),
-            )
+            row[0]: self._maintenance_receipt_from_row(repository, head_sha, row)
             for row in rows
         }
+
+    @staticmethod
+    def _maintenance_receipt_from_row(
+        repository: str, head_sha: str, row: tuple[object, ...]
+    ) -> MaintenanceReceipt:
+        evidence_json = row[4]
+        try:
+            command_evidence = parse_maintenance_command_evidence(
+                json.loads(evidence_json) if isinstance(evidence_json, str) else None
+            )
+            status = str(row[1])
+            summary = str(row[2])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            command_evidence = ()
+            status = "invalid"
+            summary = f"legacy maintenance receipt lacks valid command evidence: {row[2]}"
+        return MaintenanceReceipt(
+            repository=repository,
+            head_sha=head_sha,
+            lane=str(row[0]),
+            status=status,
+            summary=summary,
+            completed_at=datetime.fromisoformat(str(row[3])),
+            command_evidence=command_evidence,
+        )
 
     def claim(
         self,

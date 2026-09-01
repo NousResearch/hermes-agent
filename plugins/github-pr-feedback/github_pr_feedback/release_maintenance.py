@@ -117,7 +117,7 @@ class ReleaseMaintenanceController:
                 self._kanban.create_or_get_task(self._audit_task(head_sha, lane))
                 tasks_created += 1
                 missing_lanes.append(lane.name)
-            elif receipt.status == "failed":
+            elif receipt.status != "passed":
                 self._kanban.create_or_get_task(
                     self._repair_task(
                         head_sha, lane.name, receipt, assignee=lane.assignee
@@ -265,6 +265,8 @@ class ReleaseMaintenanceController:
             "passed|failed",
             "--summary",
             "<bounded-summary>",
+            "--command-evidence-json",
+            "<typed-command-evidence-json>",
         ]
 
     def _key(self, head_sha: str, stage: str, lane: str) -> str:

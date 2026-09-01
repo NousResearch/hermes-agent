@@ -871,6 +871,20 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
             "passed",
             "--summary",
             "220 tests passed",
+            "--command-evidence-json",
+            json.dumps(
+                [
+                    {
+                        "argv": ["python3", "-m", "pytest", "-q"],
+                        "cwd": str(repository),
+                        "returncode": 0,
+                        "duration_ms": 125,
+                        "timed_out": False,
+                        "stdout_sha256": "a" * 64,
+                        "stderr_sha256": "b" * 64,
+                    }
+                ]
+            ),
         ]
     )
 

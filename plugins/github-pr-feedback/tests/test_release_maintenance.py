@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 from github_pr_feedback.controller import LocalGitRepository
-from github_pr_feedback.ledger import FeedbackLedger
+from github_pr_feedback.ledger import FeedbackLedger, MaintenanceCommandEvidence
 from github_pr_feedback.policy import (
     ReleaseMaintenanceLane,
     ReleaseMaintenancePolicy,
@@ -15,6 +15,22 @@ from github_pr_feedback.policy import (
 
 HEAD = "a" * 40
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+
+
+def command_evidence(
+    *, returncode: int = 0, timed_out: bool = False
+) -> tuple[MaintenanceCommandEvidence, ...]:
+    return (
+        MaintenanceCommandEvidence(
+            argv=("python3", "-m", "pytest", "-q"),
+            cwd="/tmp/widgets",
+            returncode=returncode,
+            duration_ms=125,
+            timed_out=timed_out,
+            stdout_sha256="a" * 64,
+            stderr_sha256="b" * 64,
+        ),
+    )
 
 
 def maintenance_policy() -> ReleaseMaintenancePolicy:
@@ -189,6 +205,7 @@ def test_failed_lane_routes_one_bounded_repair_without_waiving_other_lanes(
         status="failed",
         summary="three failures in the order ledger suite",
         completed_at=NOW,
+        command_evidence=command_evidence(returncode=1),
     )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
@@ -229,6 +246,7 @@ def test_all_lane_receipts_dispatch_fresh_head_final_verifier(tmp_path: Path) ->
             status="passed",
             summary="passed",
             completed_at=NOW,
+            command_evidence=command_evidence(),
         )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
@@ -269,6 +287,7 @@ def test_final_receipt_completes_wave_without_new_tasks(tmp_path: Path) -> None:
             status="passed",
             summary="passed",
             completed_at=NOW,
+            command_evidence=command_evidence(),
         )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 

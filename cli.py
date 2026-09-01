@@ -6667,6 +6667,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
+            # Durable-transcript view: on reasoning models a long tool loop
+            # replays the current turn's thinking + scaffolding on every
+            # request, so the LAST request's prompt_tokens can exceed the
+            # durable transcript by hundreds of K — all of which evaporates
+            # at the turn boundary. Rendering that raw figure makes the bar
+            # sawtooth (e.g. 850K mid-turn -> 600K next turn) and reads as a
+            # broken compaction. Anchor the display on the turn's FIRST
+            # response (minimal replay) plus a delta estimate of messages
+            # appended since, excluding stale thinking. Display-only: the
+            # compression trigger keeps using real last-request usage.
+            try:
+                from agent.model_metadata import anchored_context_tokens
+
+                _msgs = getattr(agent, "_session_messages", None)
+                _anchored = anchored_context_tokens(
+                    _msgs if isinstance(_msgs, list) else [],
+                    getattr(agent, "_turn_base_usage_anchor", None),
+                    charge_stale_thinking=False,
+                )
+                if _anchored is not None and _anchored > 0:
+                    context_tokens = _anchored
+            except Exception:
+                pass
             context_length = getattr(compressor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0

@@ -290,6 +290,30 @@ _ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset(
 )
 
 
+def _supported_media_types() -> frozenset:
+    """Formats the ACTIVE main model's server can decode.
+
+    Cloud providers take everything in _ANTHROPIC_SUPPORTED_MEDIA_TYPES.
+    The managed llama-server decodes with stb_image — no WebP — and an
+    undecodable image part fails SILENTLY (no error; the model never sees
+    an image and confabulates). Narrow the set so normalization converts
+    those formats to PNG before they enter the request or history."""
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+        from hermes_cli.local_runtime.capabilities import (
+            ACCEPTED_IMAGE_MIMES,
+            is_managed_provider,
+        )
+
+        if is_managed_provider(
+                str(_runtime_main_value("provider") or ""),
+                str(_runtime_main_value("base_url") or "")):
+            return ACCEPTED_IMAGE_MIMES
+    except Exception:  # noqa: BLE001 — best-effort narrowing only
+        pass
+    return _ANTHROPIC_SUPPORTED_MEDIA_TYPES
+
+
 def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     """Best-effort SVG → PNG rasterization. Returns True on success.
 
@@ -353,7 +377,7 @@ def _normalize_to_supported_image(
     the image is base64-embedded into conversation history, so an unsupported
     media_type can never reach the provider and wedge the session.
     """
-    if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+    if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
 
     out_dir = get_hermes_dir("cache/vision", "temp_vision_images")

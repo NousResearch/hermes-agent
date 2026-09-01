@@ -3552,11 +3552,28 @@ DEFAULT_CONFIG = {
         "profile_build": "ask",
     },
 
-    # Privacy-safe aggregate metrics written only to this profile's local
-    # telemetry directory. Collection is opt-in and no remote sink exists.
+    # Privacy-safe aggregate metrics written to this profile's local telemetry
+    # directory. Collection is opt-in (``enabled``). Transmission to the Nous
+    # telemetry service is a SEPARATE opt-in (``send``) and is off by default;
+    # see docs/observability/relay-shared-metrics.md, Appendix A, for the
+    # consent, identity, rotation, retention, and deletion decisions.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
+            # Transmit exported packages to the Nous telemetry service.
+            # Requires ``enabled``: it never switches collection on by itself,
+            # and ``send`` without ``enabled`` is logged as an error rather
+            # than silently doing nothing. A package is only sent when its
+            # whole period falls inside a recorded consent window, so data
+            # collected before consent — or while it was withdrawn — stays
+            # local.
+            "send": False,
+            # Ingest endpoint. Production by default; override for staging or
+            # a local test server. Deliberately NOT overridable by an
+            # environment variable: that would let an inherited value silently
+            # redirect telemetry a user consented to send to Nous. Non-HTTPS
+            # is refused unless the host is localhost.
+            "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
     },
 
@@ -4020,6 +4037,29 @@ DEFAULT_CONFIG = {
         # (regional endpoints silently 404 them). Override to a regional value
         # (e.g. "us-central1") only if your models are pinned to a region.
         "region": "global",
+    },
+
+    # Managed llama.cpp local runtime (see docs: user-guide/local-models).
+    # Hermes downloads official llama.cpp release binaries, then spawns and
+    # supervises one llama-server in router mode. Context sizing is policy,
+    # not preference: there are deliberately no context/VRAM knobs here.
+    "local_runtime": {
+        # Master switch for the managed runtime. Off = detection-only
+        # (Hermes still finds an external llama-server you run yourself).
+        "enabled": False,
+        # Pinned llama.cpp release tag (rolling bNNNN). Bumped by Hermes
+        # releases after the validation suite re-runs, not tracked live.
+        "tag": "b10679",
+        # Inference backend: auto = CUDA on NVIDIA, Metal on macOS, Vulkan on
+        # other GPUs, else CPU. Explicit values: cuda|metal|vulkan|hip|cpu.
+        "backend": "auto",
+        # Router process: how many models may be resident at once.
+        "models_max": 4,
+        # Port for the managed server. 0 = pick a free port at spawn.
+        "port": 0,
+        # Extra ports detection probes for an external llama-server, in
+        # addition to the default 8080.
+        "detect_ports": [],
     },
 
     # Config schema version - bump this when adding new required fields

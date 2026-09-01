@@ -2083,6 +2083,90 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     return bool(restored.get("valid"))
 
 
+def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
+    """Post-update integrity check + auto-restore for ONE home's state.db.
+
+    Shared by the root-DB and sibling-profile guards (ZIP update path and
+    git-pull path both route here). A corrupt live DB is restored from the
+    most recent valid snapshot under that home's own state-snapshots dir.
+    Never raises: a guard that crashes the update tail would be worse than
+    the corruption it detects.
+    """
+    try:
+        from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
+
+        state_path = home / "state.db"
+        if not state_path.exists():
+            return
+        ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+        if ok.get("valid"):
+            logger.debug(
+                "Post-update state.db integrity OK (%s): %s",
+                label,
+                ok.get("message"),
+            )
+            return
+        print()
+        print(
+            f"⚠ state.db is corrupted after update ({label}): "
+            + ok.get("message", "unknown error")
+        )
+        snap_root = _quick_snapshot_root(home)
+        if not snap_root.exists():
+            print("  ⚠ No pre-update snapshot for this home")
+            return
+        for snap_dir in sorted(
+            (d for d in snap_root.iterdir() if d.is_dir()), reverse=True
+        ):
+            snap_state = snap_dir / "state.db"
+            if not snap_state.exists():
+                continue
+            snap_ok = verify_sqlite_integrity(
+                snap_state, check_header=True, run_pragma=True
+            )
+            if not snap_ok.get("valid"):
+                continue
+            try:
+                if _restore_state_db_from_snapshot(state_path, snap_state):
+                    print(
+                        f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})"
+                    )
+                else:
+                    print(
+                        "  ✗ Auto-restore FAILED — restored copy also failed "
+                        "integrity"
+                    )
+            except OSError as exc:
+                print(f"  ✗ Auto-restore file copy failed: {exc}")
+            return
+        print("  ⚠ No valid pre-update snapshot found for this home")
+    except Exception as exc:
+        logger.debug(
+            "Post-update state.db guard (%s) failed: %s", label, exc
+        )
+
+
+def _verify_and_restore_state_dbs_post_update() -> None:
+    """Post-update integrity guard for the ROOT state.db AND every sibling
+    profile's state.db (#97994).
+
+    The pre-update snapshot already covers every sibling profile
+    (#66140 create_pre_update_snapshots_all_profiles), but the post-update
+    guard only ever verified the root DB — a profile database corrupted by
+    the update was never detected and never auto-restored, leaving that
+    profile's sessions silently gone while the root DB passed.
+    """
+    home = get_hermes_home()
+    _verify_and_restore_one_state_db(home, label="default home")
+    try:
+        from hermes_cli.backup import _sibling_profile_homes
+
+        for name, profile_home in _sibling_profile_homes(home):
+            _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
+    except Exception as exc:
+        logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -2433,55 +2517,12 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     except Exception as e:
         logger.debug("Model catalog seed during zip update failed: %s", e)
 
-    # ── Post-update state.db integrity guard (#68474) ─────────────────
-    # Same as the git-pull path: verify state.db survived the ZIP update
-    # and auto-restore from the most recent pre-update snapshot if needed.
+    # ── Post-update state.db integrity guard (#68474, #97994) ────────────
+    # Verify state.db survived the ZIP update in the root home AND every
+    # sibling profile, auto-restoring each from its own most recent valid
+    # pre-update snapshot when needed.
     try:
-        from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
-
-        _state_path = get_hermes_home() / "state.db"
-        if _state_path.exists():
-            _state_ok = verify_sqlite_integrity(
-                _state_path, check_header=True, run_pragma=True
-            )
-            if not _state_ok.get("valid"):
-                print()
-                print(
-                    "⚠ state.db is corrupted after update: "
-                    + _state_ok.get("message", "unknown error")
-                )
-                _snap_root = _quick_snapshot_root(get_hermes_home())
-                if _snap_root.exists():
-                    _snap_dirs = sorted(
-                        (d for d in _snap_root.iterdir() if d.is_dir()),
-                        reverse=True,
-                    )
-                    for _snap_dir in _snap_dirs:
-                        _snap_state = _snap_dir / "state.db"
-                        if _snap_state.exists():
-                            _snap_ok = verify_sqlite_integrity(
-                                _snap_state, check_header=True, run_pragma=True
-                            )
-                            if _snap_ok.get("valid"):
-                                try:
-                                    if _restore_state_db_from_snapshot(
-                                        _state_path, _snap_state
-                                    ):
-                                        print(
-                                            "  ✓ Auto-restored from snapshot "
-                                            f"{_snap_dir.name}"
-                                        )
-                                    else:
-                                        print(
-                                            "  ✗ Auto-restore FAILED — restored "
-                                            "copy also failed integrity"
-                                        )
-                                    break
-                                except OSError as _exc:
-                                    print(
-                                        f"  ✗ Auto-restore file copy failed: {_exc}"
-                                    )
-                                    break
+        _verify_and_restore_state_dbs_post_update()
     except Exception as exc:
         logger.debug(
             "Post-update state.db integrity check (zip path) failed: %s", exc
@@ -2541,7 +2582,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     from datetime import datetime, timezone
 
     stash_name = datetime.now(timezone.utc).strftime(
-        "hermes-update-autostash-%Y%m%d-%H%M%S"
+        f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
     prev_stash = subprocess.run(
@@ -2627,6 +2668,83 @@ def _resolve_stash_selector(
         if commit.strip() == stash_ref:
             return selector.strip()
     return None
+
+#: Producer/consumer contract for update autostash names: the stash subject is
+#: this prefix + a UTC YYYYMMDD-HHMMSS stamp (see _stash_local_changes_if_needed
+#: and _warn_orphaned_update_autostashes).
+_AUTOSTASH_NAME_PREFIX = "hermes-update-autostash-"
+
+#: Age past which a leftover ``hermes-update-autostash-*`` entry is called out
+#: at update time. Entries younger than this are normal (a parked stash from
+#: the desktop updater's --keep-stash run minutes ago); older ones are almost
+#: always forgotten (#63717 problem 6: an orphan persisted 9+ days unnoticed).
+_AUTOSTASH_WARN_AGE_DAYS = 7
+
+
+def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
+    """Surface leftover update autostashes older than the warn threshold.
+
+    Autostash entries legitimately outlive an update run (``--keep-stash``
+    parks them; a conflicted or failed restore preserves them for safety), but
+    nothing ever re-surfaces them afterwards — they sit in ``git stash``
+    invisibly for weeks (#63717 problem 6). This prints a short notice naming
+    the stale entries with recovery/cleanup guidance. Deliberately NOT a GC:
+    a stash entry can be the only copy of the user's uncommitted work, so
+    Hermes never drops one automatically.
+
+    Best-effort — any git failure returns 0 and must not block the update.
+    Returns the number of stale entries warned about.
+    """
+    from datetime import timedelta, timezone
+
+    try:
+        stash_list = subprocess.run(
+            git_cmd + ["stash", "list", "--format=%gd %s"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if stash_list.returncode != 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=_AUTOSTASH_WARN_AGE_DAYS
+        )
+        marker = _AUTOSTASH_NAME_PREFIX
+        stale: list[tuple[str, str]] = []
+        for line in stash_list.stdout.splitlines():
+            selector, _, subject = line.strip().partition(" ")
+            pos = subject.find(marker)
+            if pos < 0:
+                continue
+            stamp = subject[pos + len(marker):][:15]  # "YYYYMMDD-HHMMSS"
+            try:
+                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                # Unparseable name — age unknown; leave it alone rather than
+                # guess (same posture as _prune_orphan_rescue_refs).
+                continue
+            if stash_time < cutoff:
+                stale.append((selector, stamp))
+        if not stale:
+            return 0
+        print()
+        print(
+            f"⚠ {len(stale)} leftover update autostash entr"
+            f"{'y is' if len(stale) == 1 else 'ies are'} more than "
+            f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
+        )
+        for selector, stamp in stale:
+            print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
+        print("  These hold local changes stashed by earlier updates and never")
+        print("  restored. Review with: git stash show -p <entry>")
+        print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
+        return len(stale)
+    except Exception as exc:
+        logger.debug("Autostash age check failed: %s", exc)
+        return 0
+
 
 def _print_stash_cleanup_guidance(
     stash_ref: str, stash_selector: Optional[str] = None
@@ -8462,6 +8580,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
 
+        # Surface autostash entries left behind by earlier updates (#63717
+        # problem 6) — parked --keep-stash runs and failed restores preserve
+        # the stash but nothing ever mentioned it again.
+        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin", branch],
@@ -9439,72 +9562,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             logger.debug("macOS TCC anchor refresh skipped", exc_info=True)
 
-        # ── Post-update state.db integrity guard (#68474) ─────────────────
-        # Verify that state.db survived the update intact.  If the live file
-        # is now corrupted (zeroed, missing header, integrity failure),
-        # automatically restore from the pre-update snapshot rather than
-        # letting the user discover silently that their sessions are gone.
+        # ── Post-update state.db integrity guard (#68474, #97994) ─────────
+        # Verify that state.db survived the update intact in the root home
+        # AND every sibling profile. If a live file is now corrupted (zeroed,
+        # missing header, integrity failure), automatically restore from that
+        # home's own pre-update snapshot rather than letting the user discover
+        # silently that their sessions are gone.
         try:
-            from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
-
-            _state_path = get_hermes_home() / "state.db"
-            if _state_path.exists():
-                _state_ok = verify_sqlite_integrity(
-                    _state_path,
-                    check_header=True,
-                    run_pragma=True,
-                )
-                if _state_ok.get("valid"):
-                    logger.debug(
-                        "Post-update state.db integrity check: %s",
-                        _state_ok.get("message"),
-                    )
-                else:
-                    print()
-                    print(
-                        "⚠ state.db is corrupted after update: "
-                        + _state_ok.get("message", "unknown error")
-                    )
-                    _pre_snap_id = pre_update_snapshot_id
-                    if _pre_snap_id:
-                        _snap_state = (
-                            _quick_snapshot_root(get_hermes_home())
-                            / _pre_snap_id
-                            / "state.db"
-                        )
-                        if _snap_state.exists():
-                            _snap_ok = verify_sqlite_integrity(
-                                _snap_state, check_header=True, run_pragma=True
-                            )
-                            if _snap_ok.get("valid"):
-                                try:
-                                    if _restore_state_db_from_snapshot(
-                                        _state_path, _snap_state
-                                    ):
-                                        print(
-                                            "  ✓ Auto-restored from pre-update "
-                                            f"snapshot ({_pre_snap_id})"
-                                        )
-                                    else:
-                                        print(
-                                            "  ✗ Auto-restore FAILED — restored "
-                                            "copy also failed integrity"
-                                        )
-                                except OSError as _exc:
-                                    print(
-                                        f"  ✗ Auto-restore file copy failed: {_exc}"
-                                    )
-                            else:
-                                print(
-                                    "  ✗ Pre-update snapshot also failed integrity"
-                                )
-                        else:
-                            print(
-                                "  ⚠ Pre-update snapshot does not contain state.db"
-                            )
-                    else:
-                        print("  ⚠ No pre-update snapshot was taken")
-                    print()
+            _verify_and_restore_state_dbs_post_update()
         except Exception as exc:
             logger.debug("Post-update state.db integrity check failed: %s", exc)
 

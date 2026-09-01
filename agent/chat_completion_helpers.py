@@ -1055,6 +1055,59 @@ def should_use_direct_api_call(agent) -> bool:
 _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 
+def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
+    """A live phase notice while the managed local server works before the
+    first token, or None when neither phase (nor the managed server) applies:
+
+    - "⏳ loading <model> into memory — N%"  (weights streaming off disk;
+      real per-tensor percent from the router's SSE stream)
+    - "⚙ processing prompt — N of ~M tokens (P%)"  (prefill; live counter
+      from /slots, denominator estimated from the request body)
+
+    A cold local model spends ~tens of seconds loading and a long-context
+    turn spends tens more in prefill; without this, both windows render as
+    the generic "no output yet (provider may be slow or overloaded)" stall
+    warning — alarming copy for healthy, expected phases.
+    """
+    try:
+        base = str(getattr(agent, "base_url", "") or "")
+        if not base:
+            return None
+        import json as _json
+        from urllib.parse import urlparse
+
+        from hermes_cli.local_runtime.load_progress import (
+            get_loading_progress,
+            get_prefill_progress,
+        )
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        state = _json.loads(state_path().read_text(encoding="utf-8"))
+        managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
+        if not managed or urlparse(base).netloc.lower() != managed:
+            return None
+        model = str(api_kwargs.get("model", ""))
+        progress = get_loading_progress().get(model)
+        if progress is not None:
+            return (
+                f"⏳ loading {model} into memory — {progress['percent']}% "
+                "(responses start once the model is loaded)"
+            )
+        prefill = get_prefill_progress(model)
+        if prefill is not None:
+            processed = int(prefill["processed"])
+            total = estimate_request_context_tokens(api_kwargs)
+            if total and total >= processed:
+                pct = max(0, min(100, round(processed / total * 100)))
+                return f"⚙ processing prompt — {pct}%"
+            # Counter past the estimate (estimator undercounted): no honest
+            # denominator, so no percent — the UI shows label-only.
+            return "⚙ processing prompt"
+        return None
+    except Exception:  # noqa: BLE001 — a status nicety must never break a call
+        return None
+
+
 def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale budget for the inline non-streaming call.
 
@@ -5322,8 +5375,53 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Managed local server: a cold model streams weights off disk for tens
+    # of seconds before the first token can exist. Surface THAT immediately
+    # (real per-tensor percent from the router's SSE stream) instead of
+    # letting the wait fall through to the 30s "provider may be slow or
+    # overloaded" copy. Checked on a ~1s cadence only while no chunks have
+    # arrived; the probe is an in-memory snapshot read, not a network call.
+    _last_load_poll = 0.0
+    _load_notice_shown = False
+    _load_notice_misses = 0
+    _is_local_base = bool(agent.base_url) and is_local_endpoint(agent.base_url)
     while t.is_alive():
         t.join(timeout=0.3)
+
+        _hb_now = time.time()
+        # Cold-load window: last_chunk_time is touched at request-client
+        # creation and then only by REAL chunks, so "no chunk for 2s+" is
+        # true through a model load (nothing can stream while the child is
+        # still mapping weights) and false during healthy token flow —
+        # which is what keeps this poll off the streaming hot path. The
+        # probe itself is an in-memory snapshot read.
+        if (
+            _is_local_base
+            and _hb_now - last_chunk_time["t"] >= 2.0
+            and _hb_now - _last_load_poll >= 1.0
+        ):
+            _last_load_poll = _hb_now
+            _load_notice = _managed_local_load_notice(agent, api_kwargs)
+            if _load_notice is not None:
+                agent._emit_wait_notice(_load_notice)
+                agent._touch_activity("local model loading")
+                _load_notice_shown = True
+                _load_notice_misses = 0
+                # Loading IS liveness for the heartbeat; the stale detector
+                # needs no help — the local floor (900s) dwarfs any load.
+                _last_heartbeat = _hb_now
+                continue
+            if _load_notice_shown:
+                # One missed sample is routine (a /slots read straddling a
+                # batch boundary, a 2s probe timeout under load) — clearing
+                # on it made the status line strobe blank once every few
+                # seconds mid-prefill. Only a SUSTAINED absence means the
+                # phase really ended.
+                _load_notice_misses += 1
+                if _load_notice_misses >= 3:
+                    _load_notice_shown = False
+                    _load_notice_misses = 0
+                    agent._emit_wait_notice("")
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting
@@ -5333,7 +5431,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # activity on each chunk, but the gap between API call start
         # and first chunk can exceed the gateway timeout — especially
         # when the stale-stream timeout is disabled (local providers).
-        _hb_now = time.time()
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])

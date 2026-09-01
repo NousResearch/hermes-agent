@@ -327,9 +327,9 @@ def decompose_task(
         task = kb.get_task(conn, task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
-    if task.status != "triage":
+    if task.status not in ("triage", "blocked"):
         return DecomposeOutcome(
-            task_id, False, f"task is not in triage (status={task.status!r})"
+            task_id, False, f"task is not in triage/blocked (status={task.status!r})"
         )
 
     cfg = _load_config()

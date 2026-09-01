@@ -161,6 +161,83 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_false_when_task_not_triage_or_blocked(kanban_home):
+    """A card in a non-fanoutable status (here: done) is rejected at entry."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x")
+        with conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?", (tid,)
+            )
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+    assert outcome.ok is False
+    assert "not in triage" in outcome.reason
+
+
+def test_decompose_blocked_resume_fanout_via_entry_path(kanban_home):
+    """The 2026-09-01 resume fan-out must work through the REAL entry point.
+
+    A ``blocked`` card split into 3 independent children yields at least one
+    immediately-claimable child (ready) and nothing waits on the root. This is
+    the executable expectation the original card t_b5958dab demanded — now
+    exercised end-to-end through ``decompose_task`` (which previously rejected
+    any non-triage task and made the blocked branch unreachable dead code).
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="stuck card", assignee="orchestrator",
+            initial_status="blocked",
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "resume split",
+        "tasks": [
+            {"title": "research", "assignee": "researcher", "parents": []},
+            {"title": "build", "assignee": "engineer", "parents": []},
+            {"title": "verify", "assignee": "default", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer", "default"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 3
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        kids = [kb.get_task(conn, cid) for cid in outcome.child_ids]
+        # At least one child is immediately claimable.
+        assert any(k.status == "ready" for k in kids), "no child immediately claimable"
+        # No child is gated under the root (the 2026-09-01 deadlock bug).
+        gated_under_root = [
+            cid for cid in outcome.child_ids
+            if root.id in {p for p in kb.parent_ids(conn, cid)}
+        ]
+        assert gated_under_root == []
+        # Root waits on the whole graph: it is a child of every child.
+        for cid in outcome.child_ids:
+            assert root.id in set(kb.child_ids(conn, cid))
+    # Root flipped to todo (gated on children completion).
+    assert root.status == "todo"
+
+
 # --- AC1/AC2: auto-decomposer decision-shaped children land in triage ---
 
 def _auto_decompose(llm_payload, *, tid, profiles):

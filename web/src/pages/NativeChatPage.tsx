@@ -206,8 +206,18 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [mobileSessionNavigatorOpen, setMobileSessionNavigatorOpen] = useState(false);
   const wasOpenRef = useRef(false);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectInFlightRef = useRef(false);
   const seenSeqRef = useRef(new Map<string, number>());
   const reconnectingRef = useRef(false);
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!followTranscriptRef.current) return;
@@ -321,14 +331,53 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       // The current backend does not include tool activity in the session
       // snapshot, so retain live tool cards rather than fabricating history.
     };
+    let cancelled = false;
+    const scheduleReconnect = () => {
+      if (cancelled || !wasOpenRef.current || reconnectTimerRef.current !== null || reconnectInFlightRef.current) return;
+      const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
+      reconnectAttemptRef.current = attempt;
+      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
+      setStatus("Reconnecting…");
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (cancelled) return;
+        reconnectInFlightRef.current = true;
+        let connected = false;
+        void gateway.connect()
+          .then(() => { connected = true; })
+          .catch((reason: unknown) => {
+            if (!cancelled) {
+              setError(reason instanceof Error ? reason.message : String(reason));
+              setErrorAction("reconnect");
+            }
+          })
+          .finally(() => {
+            reconnectInFlightRef.current = false;
+            if (!cancelled && !connected) scheduleReconnect();
+          });
+      }, delayMs);
+    };
+    wasOpenRef.current = false;
+    reconnectAttemptRef.current = 0;
+    reconnectInFlightRef.current = false;
+    clearReconnectTimer();
     const offState = gateway.onState((state) => {
       setConnectionState(state);
       if (state !== "open") {
         if (state === "connecting") setStatus("Reconnecting…");
-        else if (state === "closed") setStatus("Disconnected");
+        else if (state === "closed") {
+          setStatus("Disconnected");
+          scheduleReconnect();
+        } else if (state === "error") {
+          setStatus("Reconnecting…");
+          scheduleReconnect();
+        }
         return;
       }
       if (!wasOpenRef.current) { wasOpenRef.current = true; return; }
+      clearReconnectTimer();
+      reconnectAttemptRef.current = 0;
+      reconnectInFlightRef.current = false;
       const sid = sessionIdRef.current;
       if (!sid || reconnectingRef.current) return;
       reconnectingRef.current = true;
@@ -364,7 +413,6 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       else setStatus("Ready");
     });
 
-    let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
       sessionIdRef.current = null;
@@ -425,6 +473,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
 
     return () => {
       cancelled = true;
+      clearReconnectTimer();
+      reconnectInFlightRef.current = false;
       offState();
       offStart();
       offDelta();
@@ -443,7 +493,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       offInfo();
       gateway.close();
     };
-  }, [freshGeneration, gateway, profile, resumeParam, routeModel, routeProvider, routeReasoning]);
+  }, [clearReconnectTimer, freshGeneration, gateway, profile, resumeParam, routeModel, routeProvider, routeReasoning]);
 
   const changeRouting = useCallback((nextModel: string, nextProvider: string, nextReasoning: NativeReasoningLevel) => {
     setSearchParams((previous) => {
@@ -552,7 +602,16 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     try { await gateway.request("clarify.respond", params); if (!questionId) setClarify(null); }
     catch (reason: unknown) { setError(reason instanceof Error ? reason.message : String(reason)); throw reason; }
   }, [clarify, gateway, sessionId]);
-  const retry = useCallback(() => { setError(null); setErrorAction(null); void gateway.connect().catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)); setErrorAction("reconnect"); }); }, [gateway]);
+  const retry = useCallback(() => {
+    clearReconnectTimer();
+    reconnectAttemptRef.current = 0;
+    setError(null);
+    setErrorAction(null);
+    void gateway.connect().catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setErrorAction("reconnect");
+    });
+  }, [clearReconnectTimer, gateway]);
   const resendFailedPrompt = useCallback(() => {
     if (failedPrompt) void submit(undefined, failedPrompt);
   }, [failedPrompt, submit]);

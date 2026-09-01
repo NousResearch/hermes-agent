@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const gateway = vi.hoisted(() => {
   class MockGateway {
+    connectCalls = 0;
     stateHandler: ((state: string) => void) | null = null;
     handlers = new Map<string, (event: { type: string; session_id?: string; payload?: unknown }) => void>();
     requests: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -22,7 +23,7 @@ const gateway = vi.hoisted(() => {
       this.handlers.set(type, handler);
       return () => this.handlers.delete(type);
     }
-    async connect() { this.stateHandler?.("open"); }
+    async connect() { this.connectCalls += 1; this.stateHandler?.("open"); }
     async request<T>(method: string, params: Record<string, unknown>) {
       this.requests.push({ method, params });
       if (method === "file.attach" && params.name === "fail.txt") throw new Error("upload failed");
@@ -398,6 +399,35 @@ describe("NativeChatPage", () => {
     expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
     expect(host.querySelector<HTMLButtonElement>("button[aria-label='Add attachment']")?.disabled).toBe(true);
     expect(host.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(true);
+  });
+
+  it("automatically reconnects after an unexpected socket close", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const client = gateway.instance!;
+    const initialConnectCalls = client.connectCalls;
+
+    await act(async () => {
+      client.stateHandler?.("closed");
+      client.stateHandler?.("closed");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    expect(client.connectCalls).toBe(initialConnectCalls + 1);
+    expect(client.requests.filter(({ method }) => method === "session.activate")).toHaveLength(1);
+  });
+
+  it("cancels a pending reconnect when the chat page unmounts", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const client = gateway.instance!;
+    const initialConnectCalls = client.connectCalls;
+
+    await act(async () => client.stateHandler?.("closed"));
+    await act(async () => root.unmount());
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(client.connectCalls).toBe(initialConnectCalls);
   });
 
   it("re-attaches the same runtime session after reconnect", async () => {

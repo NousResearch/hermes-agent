@@ -400,6 +400,43 @@ describe("NativeChatPage", () => {
     await act(async () => releaseInterrupt());
   });
 
+  it("queues a prompt while a turn is running and submits it after completion", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => gateway.instance?.emit("message.start"));
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(textarea, "queued prompt");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      host.querySelector<HTMLButtonElement>("button[type='submit']")?.click();
+    });
+
+    expect(gateway.instance?.requests.filter(({ method, params }) => method === "prompt.submit" && params.text === "queued prompt")).toHaveLength(0);
+    expect(host.querySelector("[data-slot='prompt-queue']")?.textContent).toContain("queued prompt");
+
+    await act(async () => gateway.instance?.emit("message.complete"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(gateway.instance?.requests.filter(({ method, params }) => method === "prompt.submit" && params.text === "queued prompt")).toHaveLength(1);
+  });
+
+  it("opens the command palette with the platform shortcut and focuses the composer", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true })));
+    expect(host.querySelector("[data-slot='command-palette']")).toBeTruthy();
+
+    const focusComposer = host.querySelector<HTMLButtonElement>("button[aria-label='Focus composer']");
+    expect(focusComposer).toBeTruthy();
+    await act(async () => focusComposer?.click());
+    expect(document.activeElement).toBe(host.querySelector("textarea"));
+    expect(host.querySelector("[data-slot='command-palette']")).toBeNull();
+  });
+
+  it("does not open the command palette from an IME composing shortcut", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, isComposing: true, bubbles: true })));
+    expect(host.querySelector("[data-slot='command-palette']")).toBeNull();
+  });
+
   it("offers resend for a failed submit without duplicating the user message", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;

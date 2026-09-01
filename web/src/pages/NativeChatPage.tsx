@@ -20,6 +20,7 @@ import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActiv
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
 import { MessageActions } from "@/components/chat/MessageActions";
+import { CommandPalette } from "@/components/chat/CommandPalette";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ArrowDown, Menu, MessageSquare, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
@@ -93,7 +94,7 @@ type PendingAttachment = {
   refText?: string;
   refPath?: string;
 };
-type FailedPrompt = { id: string; text: string };
+type PendingPrompt = { id: string; text: string; mode: "retry" | "queued" };
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -172,7 +173,10 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [error, setError] = useState<string | null>(null);
   const [resyncState, setResyncState] = useState<ResyncState>("idle");
   const [errorAction, setErrorAction] = useState<"reconnect" | "resend" | null>(null);
-  const [failedPrompt, setFailedPrompt] = useState<FailedPrompt | null>(null);
+  const [failedPrompt, setFailedPrompt] = useState<PendingPrompt | null>(null);
+  const [queuedPrompts, setQueuedPrompts] = useState<PendingPrompt[]>([]);
+  const queueDrainInFlightRef = useRef(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const submitInFlightRef = useRef(false);
@@ -236,6 +240,25 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     followTranscriptRef.current = true;
     element.scrollTop = element.scrollHeight;
     setShowScrollToBottom(false);
+  }, []);
+
+  const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
+  const focusComposer = useCallback(() => {
+    textareaRef.current?.focus();
+    setCommandPaletteOpen(false);
+  }, []);
+  const toggleSessionNavigator = useCallback(() => setMobileSessionNavigatorOpen((open) => !open), []);
+
+  useEffect(() => {
+    const onShortcut = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
   }, []);
 
   const updateAttachments = useCallback((next: PendingAttachment[] | ((current: PendingAttachment[]) => PendingAttachment[])) => {
@@ -466,6 +489,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       setErrorAction(null);
       setResyncState("idle");
       setFailedPrompt(null);
+      setQueuedPrompts([]);
+      queueDrainInFlightRef.current = false;
       setSubmitting(false);
       setStopping(false);
       submitInFlightRef.current = false;
@@ -552,22 +577,33 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     setFreshGeneration((generation) => generation + 1);
   }, [setSearchParams]);
 
-  const submit = useCallback(async (event?: FormEvent, retryPrompt?: FailedPrompt) => {
+  const submit = useCallback(async (event?: FormEvent, pendingPrompt?: PendingPrompt) => {
     event?.preventDefault();
     if (submitInFlightRef.current) return;
-    const text = retryPrompt?.text ?? draft.trim();
-    if ((!text && !attachmentsRef.current.some((item) => item.state === "attached")) || !sessionId || connectionState !== "open") return;
-    if (retryPrompt && failedPrompt?.id !== retryPrompt.id) return;
+    const text = pendingPrompt?.text ?? draft.trim();
+    const hasAttachment = attachmentsRef.current.some((item) => item.state === "attached");
+    if ((!text && !hasAttachment) || !sessionId || connectionState !== "open") return;
+    if (pendingPrompt?.mode === "retry" && failedPrompt?.id !== pendingPrompt.id) return;
     if (attachmentsRef.current.some((item) => item.state === "uploading" || item.state === "pending")) { setError("Please wait for attachments to finish uploading"); return; }
     if (attachmentsRef.current.some((item) => item.state === "error")) { setError("Retry or remove failed attachments before sending"); return; }
-    const promptText = retryPrompt ? retryPrompt.text : attachmentPromptText(text, attachmentsRef.current);
-    const messageId = retryPrompt?.id ?? `user-${Date.now()}`;
+    const promptText = pendingPrompt ? pendingPrompt.text : attachmentPromptText(text, attachmentsRef.current);
+    const messageId = pendingPrompt?.id ?? `user-${Date.now()}`;
+    const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
+
+    if (!pendingPrompt && turnActive) {
+      setQueuedPrompts((current) => [...current, { id: `queued-${Date.now()}-${current.length}`, text: promptText, mode: "queued" }]);
+      setDraft("");
+      updateAttachments([]);
+      setStatus("Queued");
+      return;
+    }
+
     submitInFlightRef.current = true;
     setSubmitting(true);
     setError(null);
     setErrorAction(null);
     setStatus("Sending…");
-    if (!retryPrompt) {
+    if (!pendingPrompt || pendingPrompt.mode === "queued") {
       setDraft("");
       setTranscript((messages) => [...messages, { id: messageId, role: "user", text: promptText }]);
     }
@@ -579,13 +615,22 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setErrorAction("resend");
-      setFailedPrompt({ id: messageId, text: promptText });
+      setFailedPrompt({ id: messageId, text: promptText, mode: "retry" });
       setStatus("Error");
     } finally {
       submitInFlightRef.current = false;
       setSubmitting(false);
     }
-  }, [connectionState, draft, failedPrompt?.id, gateway, sessionId, updateAttachments]);
+  }, [connectionState, draft, failedPrompt?.id, gateway, sessionId, streaming, tools, turnStartedAt, updateAttachments]);
+
+  useEffect(() => {
+    const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
+    if (turnActive || submitting || queueDrainInFlightRef.current || !sessionId || connectionState !== "open" || queuedPrompts.length === 0) return;
+    const next = queuedPrompts[0];
+    queueDrainInFlightRef.current = true;
+    setQueuedPrompts((current) => current[0]?.id === next.id ? current.slice(1) : current);
+    void submit(undefined, next).finally(() => { queueDrainInFlightRef.current = false; });
+  }, [connectionState, queuedPrompts, sessionId, streaming, submitting, submit, tools, turnStartedAt]);
 
   const applyMessageAsPrompt = useCallback((message: string) => {
     setDraft(message);
@@ -697,6 +742,16 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       className="flex min-h-0 min-w-0 flex-1 flex-col pb-4"
       aria-label="Native chat"
     >
+      {commandPaletteOpen && (
+        <CommandPalette
+          onClose={closeCommandPalette}
+          onFocusComposer={focusComposer}
+          onNewChat={startNewChat}
+          onToggleSessions={toggleSessionNavigator}
+          queuedCount={queuedPrompts.length}
+          onClearQueue={() => setQueuedPrompts([])}
+        />
+      )}
       <header
         data-slot="chat-header"
         className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-current/15 py-3"
@@ -991,6 +1046,32 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         onDragOver={(event) => { event.preventDefault(); }}
         onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}
       >
+        {queuedPrompts.length > 0 && (
+          <div
+            data-slot="prompt-queue"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 p-2 text-xs"
+            aria-label="Queued prompts"
+            aria-live="polite"
+          >
+            <span className="font-medium">Queued ({queuedPrompts.length})</span>
+            {queuedPrompts.map((item, index) => (
+              <div key={item.id} className="flex min-w-0 items-center gap-1 rounded border border-border bg-background/50 px-2 py-1">
+                <span className="max-w-56 truncate" title={item.text}>{index + 1}. {item.text}</span>
+                <Button
+                  ghost
+                  size="icon"
+                  type="button"
+                  aria-label={`Remove queued prompt ${index + 1}`}
+                  className="shrink-0"
+                  onClick={() => setQueuedPrompts((current) => current.filter((entry) => entry.id !== item.id))}
+                >
+                  <X />
+                </Button>
+              </div>
+            ))}
+            <Button ghost size="sm" type="button" aria-label="Clear prompt queue" onClick={() => setQueuedPrompts([])}>Clear</Button>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div
             data-slot="attachment-list"
@@ -1082,11 +1163,11 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
               type="submit"
               size="sm"
               prefix={<Send />}
-              aria-label="Send message"
+              aria-label={isWorking ? "Queue message" : "Send message"}
               className="shrink-0"
               disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId}
             >
-              {submitting ? "Sending…" : "Send"}
+              {submitting ? "Sending…" : isWorking ? "Queue" : "Send"}
             </Button>
             {streaming && (
               <Button

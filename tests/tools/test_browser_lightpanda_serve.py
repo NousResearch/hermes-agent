@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -112,6 +113,7 @@ class TestLaunch:
         assert err is None
         assert calls["argv"] == [
             "/opt/lightpanda", "serve", "--host", "127.0.0.1", "--port", "43111",
+            "--http-cache-dir", str(_isolate / "http-cache"),
         ]
         kw = calls["kwargs"]
         assert kw["stdin"] is subprocess.DEVNULL
@@ -128,6 +130,17 @@ class TestLaunch:
         assert record["port"] == 43111
         assert record["owner_pid"] == os.getpid()
         assert record["start_time"] == 111
+
+    def test_http_cache_dir_is_shared_across_sessions(self, monkeypatch, _isolate):
+        _, _, first = self._launch(monkeypatch)
+        with lp._servers_lock:
+            lp._servers.clear()
+        _, _, second = self._launch(monkeypatch)
+        cache = str(_isolate / "http-cache")
+        assert first["argv"][first["argv"].index("--http-cache-dir") + 1] == cache
+        assert second["argv"][second["argv"].index("--http-cache-dir") + 1] == cache
+        assert Path(cache).is_dir()
+        assert not list(Path(cache).glob("*.json"))  # never confused with a session record
 
     def test_block_private_networks_flag(self, monkeypatch):
         _, err, calls = self._launch(monkeypatch, block_private_networks=True)

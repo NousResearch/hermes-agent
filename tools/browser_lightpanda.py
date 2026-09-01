@@ -115,6 +115,19 @@ def _state_dir() -> Path:
     return path
 
 
+def _http_cache_dir() -> Path:
+    """Filesystem HTTP cache shared by every Lightpanda this Hermes spawns.
+
+    Shared rather than per-session so a cached asset survives session churn.
+    Lightpanda holds it in sqlite (WAL); a write that loses a race is a cache
+    miss, never a failed page load, and ``--http-cache-entry-limit`` (default
+    1000) bounds it without Hermes managing eviction.
+    """
+    path = _state_dir() / "http-cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _record_path(session_name: str) -> Path:
     return _state_dir() / f"{session_name}.json"
 
@@ -216,7 +229,10 @@ def launch_lightpanda(
         )
 
     port = _pick_free_loopback_port()
-    argv = [binary, "serve", "--host", "127.0.0.1", "--port", str(port)]
+    argv = [
+        binary, "serve", "--host", "127.0.0.1", "--port", str(port),
+        "--http-cache-dir", str(_http_cache_dir()),
+    ]
     if block_private_networks:
         argv.append("--block-private-networks")
     log_path = str(_state_dir() / f"{session_name}.log")

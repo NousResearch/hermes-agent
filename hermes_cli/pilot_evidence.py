@@ -97,14 +97,20 @@ def build_pilot_record(
         completeness["present"] = present
         completeness["complete"] = present == sorted(expected)
 
-    # Model/provider/token/cost: derived ONLY where recorded; otherwise
-    # explicitly unavailable — never invented.
-    usage = conn.execute(
-        "SELECT model_used, provider_used, tokens_used FROM task_runs "
-        "WHERE task_id = ? AND (model_used IS NOT NULL OR provider_used IS NOT NULL) "
-        "LIMIT 1",
-        (task_id,),
-    ).fetchone() if _has_columns(conn, "task_runs", ("model_used", "provider_used")) else None
+    # Model/provider/token/cost: the LIVE task_runs schema has no dedicated
+    # model/provider/token columns (verified at the corrected base); the
+    # fields are explicitly 'unavailable' — never fabricated.  If a future
+    # schema adds them, read each field directly (do not select-then-discard
+    # any column such as tokens_used).
+    if _has_columns(conn, "task_runs", ("model_used", "provider_used")):
+        usage = conn.execute(
+            "SELECT model_used, provider_used FROM task_runs "
+            "WHERE task_id = ? AND (model_used IS NOT NULL OR provider_used IS NOT NULL) "
+            "LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    else:
+        usage = None
     if usage and (usage[0] or usage[1]):
         model = {"model": usage[0], "provider": usage[1], "token_cost": "unavailable"}
     else:

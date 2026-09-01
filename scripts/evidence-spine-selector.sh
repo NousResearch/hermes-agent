@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# Evidence Spine P3–P4 — committed controller selector manifest (R3).
+# Evidence Spine P3–P4 — committed controller selector manifest (R4).
 #
-# R3-6: the collection step is now a REAL gate, not a decoration:
-#   * `set -u` plus explicit producer exit capture (no masked pipes);
-#   * collect-only output is saved to a per-invocation evidence file and
-#     the collection exit code is propagated, not swallowed by `| tail`;
-#   * the exact expected collected-node count for the Round-3 SHA is
-#     pinned and asserted;
-#   * a unique disposable HERMES_HOME and --basetemp are created inside
-#     the script per invocation;
-#   * core import provenance (this worktree) and the dashboard SHA/path
-#     are bound and validated BEFORE any test runs;
-#   * execution, order-1 and order-2 exit codes are preserved
-#     independently and all three are reported;
-#   * the post-run worktree status must match the pre-run classified
-#     status (tests must not dirty the candidate).
+# R4-3: the selector's cleanliness and portability gates now cover BOTH
+# repositories:
+#   * exact core import provenance (this worktree);
+#   * exact dashboard path/SHA bound via EVIDENCE_SPINE_DASHBOARD(+_SHA);
+#   * core path/SHA exported for dashboard cross-repository tests
+#     (EVIDENCE_SPINE_CORE / EVIDENCE_SPINE_CORE_SHA, dashboard tests
+#     verify the profile_registry.py file SHA themselves);
+#   * pre/post status captured SEPARATELY for core and dashboard and both
+#     must be unchanged or the selector fails;
+#   * zero hardcoded governance-evidence-spine worktree prefixes enforced
+#     across committed test/selector files in BOTH repositories;
+#   * collection, execution, order-1/order-2 and dashboard-suite exits are
+#     preserved independently and all reported;
+#   * unique disposable HERMES_HOME and --basetemp per invocation.
 #
 # Run from the core candidate worktree:
 #   scripts/evidence-spine-selector.sh
 #
 # Exit codes:
-#   0 = collection enforced, execution passed, both order tests passed,
-#       and worktree status is unchanged
+#   0 = all gates green (collection, execution, both orders, both-repo
+#       cleanliness, provenance bindings all enforced)
 #   non-zero otherwise (the failing stage is named on stderr)
 set -u
 
@@ -30,15 +30,15 @@ REPO_ROOT="$(cd "$SELECTOR_DIR/.." && pwd)"
 cd "$REPO_ROOT" || { echo "SEL_FAIL: cannot cd REPO_ROOT" >&2; exit 2; }
 
 PYTHON="${PYTHON:-/home/kensei/repos/KenseiAgent/.venv/bin/python3}"
-EVIDENCE_DIR="${EVIDENCE_DIR:-/tmp/r3-evidence}"
+EVIDENCE_DIR="${EVIDENCE_DIR:-/tmp/r4-evidence}"
 mkdir -p "$EVIDENCE_DIR"
 STAMP="$(date +%Y%m%dT%H%M%SZ)-$$"
 EVIDENCE_FILE="$EVIDENCE_DIR/selector-collect-$STAMP.txt"
 RUN_LOG="$EVIDENCE_DIR/selector-run-$STAMP.txt"
 
 # ── disposable homes / basetemps (per invocation) ─────────────────────────
-DISP_HOME="$(mktemp -d /tmp/r3-sel-home.XXXXXX)"
-BASETEMP="$(mktemp -d /tmp/r3-sel-basetemp.XXXXXX)"
+DISP_HOME="$(mktemp -d /tmp/r4-sel-home.XXXXXX)"
+BASETEMP="$(mktemp -d /tmp/r4-sel-basetemp.XXXXXX)"
 trap 'rm -rf "$DISP_HOME" "$BASETEMP"' EXIT
 export HERMES_HOME="$DISP_HOME"
 
@@ -49,8 +49,6 @@ if [ "$CORE_DIR" != "$REPO_ROOT" ]; then
   echo "SEL_FAIL: git toplevel ($CORE_DIR) != selector repo root ($REPO_ROOT)" >&2
   exit 2
 fi
-# The test process must import hermes_cli from THIS worktree, not the
-# canonical checkout.  Prove it with the same interpreter the tests use.
 export REPO_ROOT
 IMPORT_PROVENANCE="$("$PYTHON" -c "
 import sys, os
@@ -65,16 +63,14 @@ esac
 echo "CORE_SHA=$CORE_SHA"
 
 # ── provenance: dashboard checkout must match the expected tuple SHA ──────
-# R3-5: the dashboard checkout is supplied EXPLICITLY (no baked-in absolute
-# path — the committed selector set must contain zero absolute worktree
-# prefixes).  EVIDENCE_SPINE_DASHBOARD is required; the expected SHA is
-# bound by EVIDENCE_SPINE_DASHBOARD_SHA (default = frozen Round-2 dashboard).
+# R3-5/R4-2: dashboard checkout is supplied EXPLICITLY; no baked-in absolute
+# paths anywhere in the committed test/selector set.
 if [ -z "${EVIDENCE_SPINE_DASHBOARD:-}" ]; then
   echo "SEL_FAIL: EVIDENCE_SPINE_DASHBOARD is required (bind the dashboard checkout explicitly)" >&2
   exit 2
 fi
 DASH_ROOT="$EVIDENCE_SPINE_DASHBOARD"
-DASH_SHA_EXPECTED="${EVIDENCE_SPINE_DASHBOARD_SHA:-d6b8041526335c69fd9bf3c75b8399ab805de219}"
+DASH_SHA_EXPECTED="${EVIDENCE_SPINE_DASHBOARD_SHA:-a22552d3542be78fa85f13e1b44cc15a4125650d}"
 if [ ! -d "$DASH_ROOT" ]; then
   echo "SEL_FAIL: dashboard checkout missing: $DASH_ROOT" >&2
   exit 2
@@ -87,8 +83,27 @@ fi
 echo "DASH_SHA=$DASH_SHA"
 export EVIDENCE_SPINE_DASHBOARD="$DASH_ROOT"
 
-# ── pre-run classified worktree status (must be reproduced post-run) ──────
-PRE_STATUS="$(git status --porcelain --untracked-files=normal | sort)"
+# ── R4-2/R4-3: export exact core bindings for dashboard cross-repo tests ──
+export EVIDENCE_SPINE_CORE="$REPO_ROOT"
+export EVIDENCE_SPINE_CORE_SHA="$CORE_SHA"
+echo "EVIDENCE_SPINE_CORE=$EVIDENCE_SPINE_CORE"
+echo "EVIDENCE_SPINE_CORE_SHA=$EVIDENCE_SPINE_CORE_SHA"
+
+# ── R4-3.7: zero hardcoded worktree prefixes in BOTH repositories ──────────
+SCAN_PAT="worktrees/governance-evidence-""spine-p34"
+PREFIX_HITS="$(grep -rn --include='*.py' --include='*.sh' -e "$SCAN_PAT" \
+  "$REPO_ROOT/tests" "$REPO_ROOT/scripts" "$DASH_ROOT/backend" 2>/dev/null \
+  | grep -v "__pycache__" || true)"
+if [ -n "$PREFIX_HITS" ]; then
+  echo "SEL_FAIL: hardcoded governance-evidence-spine worktree prefix found:" >&2
+  echo "$PREFIX_HITS" >&2
+  exit 5
+fi
+echo "HARDCODED_PREFIX_SCAN: 0 matches (core+dashboard)"
+
+# ── R4-3.4: pre-run status captured SEPARATELY for core and dashboard ──────
+PRE_STATUS_CORE="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal | sort)"
+PRE_STATUS_DASH="$(git -C "$DASH_ROOT" status --porcelain --untracked-files=normal | sort)"
 
 FILES=(
   # ── prior controller selector (34 files) ──
@@ -126,11 +141,11 @@ FILES=(
   tests/hermes_cli/test_pilot_provenance.py
   tests/scripts/test_review_authority_corrections.py
   tests/hermes_cli/test_registry_failclosed.py
-  # ── R2/R3 correction tests ──
+  # ── R2/R3/R4 correction tests ──
   tests/hermes_cli/test_r2_corrections.py
 )
 
-# ── collection gate (R3-6.2/3/4): real exit, evidence file, exact count ────
+# ── collection gate: real exit, evidence file, exact count ─────────────────
 COLLECT_EXIT=0
 "$PYTHON" -m pytest --collect-only -q "${FILES[@]}" > "$EVIDENCE_FILE" 2>&1
 COLLECT_EXIT=$?
@@ -143,12 +158,31 @@ if [ -z "$COLLECTED_COUNT" ]; then
   echo "SEL_FAIL: could not parse collected count from $EVIDENCE_FILE" >&2
   exit 3
 fi
-EXPECTED_NODES=477
+EXPECTED_NODES=487
 echo "COLLECTED: $COLLECTED_COUNT (expected $EXPECTED_NODES, log: $EVIDENCE_FILE)"
 if [ "$COLLECTED_COUNT" != "$EXPECTED_NODES" ]; then
   echo "SEL_FAIL: collected $COLLECTED_COUNT != expected $EXPECTED_NODES" >&2
   exit 3
 fi
+
+# ── R4-3.10: dashboard-native backend tests as a DISTINCT stage ────────────
+DASH_LOG="$EVIDENCE_DIR/dashboard-tests-$STAMP.txt"
+DASH_COLLECT_LOG="$EVIDENCE_DIR/dashboard-collect-$STAMP.txt"
+(cd "$DASH_ROOT" && "$PYTHON" -m pytest --collect-only -q backend/tests/test_profile_registry_hierarchy.py) > "$DASH_COLLECT_LOG" 2>&1
+DASH_COLLECT_EXIT=$?
+DASH_COLLECTED="$(grep -E '^[0-9]+ tests? collected' "$DASH_COLLECT_LOG" | tail -1 | awk '{print $1}')"
+DASH_EXPECTED_NODES=26
+echo "DASH_COLLECTED: $DASH_COLLECTED (expected $DASH_EXPECTED_NODES, log: $DASH_COLLECT_LOG)"
+if [ "$DASH_COLLECT_EXIT" -ne 0 ] || [ "$DASH_COLLECTED" != "$DASH_EXPECTED_NODES" ]; then
+  echo "SEL_FAIL: dashboard collection exited $DASH_COLLECT_EXIT / collected $DASH_COLLECTED != expected $DASH_EXPECTED_NODES" >&2
+  exit 6
+fi
+( cd "$DASH_ROOT" && EVIDENCE_SPINE_CORE="$REPO_ROOT" EVIDENCE_SPINE_CORE_SHA="$CORE_SHA" \
+  "$PYTHON" -m pytest -q --basetemp="$BASETEMP" backend/tests/test_profile_registry_hierarchy.py \
+) > "$DASH_LOG" 2>&1
+DASH_EXEC_EXIT=$?
+DASH_PASSED="$(grep -E '^[0-9]+ passed' "$DASH_LOG" | tail -1)"
+echo "DASH_RUN: $DASH_PASSED (exit $DASH_EXEC_EXIT, log: $DASH_LOG)"
 
 # ── execution (R3-6.7): exit preserved independently ───────────────────────
 "$PYTHON" -m pytest -q --basetemp="$BASETEMP" "${FILES[@]}" 2>&1 | tee "$RUN_LOG"
@@ -164,19 +198,27 @@ ORDER1_EXIT=$?
   tests/test_phase_d_audit_wiring.py >/dev/null 2>&1
 ORDER2_EXIT=$?
 
-# ── post-run classified worktree status must match pre-run ──────────────────
-POST_STATUS="$(git status --porcelain --untracked-files=normal | sort)"
+# ── R4-3.5/6: post-run status captured separately; EITHER changed → fail ──
+POST_STATUS_CORE="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal | sort)"
+POST_STATUS_DASH="$(git -C "$DASH_ROOT" status --porcelain --untracked-files=normal | sort)"
 STATUS_CLEAN=1
-if [ "$PRE_STATUS" != "$POST_STATUS" ]; then
-  echo "SEL_FAIL: worktree status changed by the run" >&2
-  diff <(echo "$PRE_STATUS") <(echo "$POST_STATUS") >&2
+if [ "$PRE_STATUS_CORE" != "$POST_STATUS_CORE" ]; then
+  echo "SEL_FAIL: CORE worktree status changed by the run" >&2
+  diff <(echo "$PRE_STATUS_CORE") <(echo "$POST_STATUS_CORE") >&2
+  STATUS_CLEAN=0
+fi
+if [ "$PRE_STATUS_DASH" != "$POST_STATUS_DASH" ]; then
+  echo "SEL_FAIL: DASHBOARD status changed by the run" >&2
+  diff <(echo "$PRE_STATUS_DASH") <(echo "$POST_STATUS_DASH") >&2
   STATUS_CLEAN=0
 fi
 
 echo "EXEC_EXIT=$EXEC_EXIT"
 echo "ORDER1_EXIT=$ORDER1_EXIT"
 echo "ORDER2_EXIT=$ORDER2_EXIT"
+echo "DASH_COLLECT_EXIT=$DASH_COLLECT_EXIT"
+echo "DASH_EXEC_EXIT=$DASH_EXEC_EXIT"
 if [ "$STATUS_CLEAN" != "1" ]; then
   exit 4
 fi
-[ "$EXEC_EXIT" = "0" ] && [ "$ORDER1_EXIT" = "0" ] && [ "$ORDER2_EXIT" = "0" ]
+[ "$EXEC_EXIT" = "0" ] && [ "$ORDER1_EXIT" = "0" ] && [ "$ORDER2_EXIT" = "0" ] && [ "$DASH_COLLECT_EXIT" = "0" ] && [ "$DASH_EXEC_EXIT" = "0" ]

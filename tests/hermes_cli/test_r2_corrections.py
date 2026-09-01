@@ -772,6 +772,89 @@ class TestR34GlobalInvalidRegistry:
 
 # ── R2-9 ─────────────────────────────────────────────────────────────────────
 
+
+    # ── R4-1: all eight existing-invalid shapes yield global invalid_registry ──
+
+    _R41_SHAPES = {
+        "malformed_yaml": "{{{ not yaml",
+        "yaml_scalar": "just-a-string",
+        "wrong_schema_version": (
+            "schema_version: 2\n"
+            "root: {name: KENSEI}\n"
+            "profiles:\n- {name: octacon, kind: worker, parent: KENSEI, "
+            "lifecycle: active, domains: [x], gateway_unit: null}\n"
+        ),
+        "missing_schema_version": (
+            "root: {name: KENSEI}\n"
+            "profiles:\n- {name: octacon, kind: worker, parent: KENSEI, "
+            "lifecycle: active, domains: [x], gateway_unit: null}\n"
+        ),
+        "empty_profiles": (
+            "schema_version: 1\nroot: {name: KENSEI}\nprofiles: []\n"
+        ),
+        "missing_profiles": "schema_version: 1\nroot: {name: KENSEI}\n",
+        "invalid_root_structure": (
+            "schema_version: 1\nroot: KENSEI\n"
+            "profiles:\n- {name: octacon, kind: worker, parent: KENSEI, "
+            "lifecycle: active, domains: [x], gateway_unit: null}\n"
+        ),
+        "root_lacks_valid_name": (
+            "schema_version: 1\nroot: {description: no name}\n"
+            "profiles:\n- {name: octacon, kind: worker, parent: KENSEI, "
+            "lifecycle: active, domains: [x], gateway_unit: null}\n"
+        ),
+    }
+
+    @pytest.mark.parametrize("shape_name", sorted(_R41_SHAPES))
+    def test_r41_existing_invalid_shape_global_invalid(self, dash, shape_name):
+        """R4-1: every existing-invalid registry shape → global
+        invalid_registry for BOTH a listed and an omitted fs profile."""
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        (home / "governance" / "profile-registry.yaml").write_text(
+            self._R41_SHAPES[shape_name], encoding="utf-8"
+        )
+        h = profile_docs.profile_hierarchy()
+        st = {n["name"]: n.get("registry_state") for n in h["nodes"] if n["type"] != "root"}
+        assert h["root"] == "KENSEI"
+        assert st == {"octacon": "invalid_registry", "wesker": "invalid_registry"}
+
+    def test_r41_unreadable_registry_global_invalid(self, dash):
+        """R4-1: OSError on read → existing-invalid, not absent."""
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        reg = home / "governance" / "profile-registry.yaml"
+        reg.write_text("schema_version: 1\nroot: {name: KENSEI}\n", encoding="utf-8")
+        os.chmod(reg, 0o000)
+        try:
+            h = profile_docs.profile_hierarchy()
+        finally:
+            os.chmod(reg, 0o644)
+        st = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert st == {"octacon": "invalid_registry", "wesker": "invalid_registry"}
+
+    def test_r41_absent_and_valid_omit_controls(self, dash):
+        """R4-1 controls: absent → unregistered; valid-omit → unregistered."""
+        home, profile_docs = dash
+        self._mk_profiles(home)
+        # absent
+        h = profile_docs.profile_hierarchy()
+        st = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert st == {"octacon": "unregistered", "wesker": "unregistered"}
+        # valid registry omitting wesker
+        (home / "governance" / "profile-registry.yaml").write_text(
+            "schema_version: 1\n"
+            "root: {name: KENSEI, description: r}\n"
+            "profiles:\n"
+            "- {name: octacon, kind: lead, parent: KENSEI, lifecycle: active, "
+            "domains: [coding], gateway_unit: hermes-gateway-octacon}\n",
+            encoding="utf-8",
+        )
+        h = profile_docs.profile_hierarchy()
+        st = {n["name"]: n["registry_state"] for n in h["nodes"] if n["type"] != "root"}
+        assert st["octacon"] == "registered"
+        assert st["wesker"] == "unregistered"
+
 class TestR29ForceMode:
     def test_non_boolean_force_mode_rejected(self, env):
         conn, home = env

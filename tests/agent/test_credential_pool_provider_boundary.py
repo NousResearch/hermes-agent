@@ -142,6 +142,53 @@ def test_runtime_pool_key_resolves_modern_provider_in_mixed_config():
         )
 
 
+def test_keyed_provider_pool_matches_runtime_aliases():
+    configured = [
+        (
+            "b.ai",
+            {
+                "name": "B.AI",
+                "provider_key": "b-ai",
+                "base_url": "https://api.b.ai/v1",
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert credential_pool_matches_provider(
+            "b-ai", "b-ai", base_url="https://api.b.ai/v1"
+        )
+        assert credential_pool_matches_provider(
+            "b-ai", "custom", base_url="https://api.b.ai/v1"
+        )
+        assert credential_pool_matches_provider(
+            "b-ai", "custom:b.ai", base_url="https://api.b.ai/v1"
+        )
+        assert not credential_pool_matches_provider(
+            "b-ai", "custom", base_url="https://other.example/v1"
+        )
+        assert not credential_pool_matches_provider(
+            "b-ai", "deepseek", base_url="https://api.b.ai/v1"
+        )
+
+
+def test_runtime_pool_key_prefers_durable_provider_slug():
+    endpoint = "https://api.b.ai/v1"
+    configured = [
+        (
+            "b.ai",
+            {
+                "name": "B.AI",
+                "provider_key": "b-ai",
+                "base_url": endpoint,
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert resolve_runtime_pool_key("b-ai", endpoint) == "b-ai"
+        assert resolve_runtime_pool_key("custom", endpoint) == "b-ai"
+        assert resolve_runtime_pool_key("custom:b.ai", endpoint) == "b-ai"
+
+
 def test_runtime_pool_key_preserves_non_custom_identity():
     with patch("agent.credential_pool._iter_custom_providers", return_value=[]):
         assert (

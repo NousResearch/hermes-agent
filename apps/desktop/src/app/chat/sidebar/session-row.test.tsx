@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -151,6 +151,14 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 // avatar on its own. `inline-grid` is PlatformAvatar's own layout class in both
 // of its branches — brand glyph and first-letter fallback — and the row passes
 // it no display class that tailwind-merge could drop it for.
+beforeEach(() => {
+  // $sessionDotStateById derives state from this global store. Reset before
+  // each example: otherwise a prior test's runtime key can make an edge write
+  // a no-op and turn the repaint-isolation assertion into a timing flake.
+  clearAllSessionStates()
+  sessionTitle.mockClear()
+})
+
 const handoffAvatar = (container: HTMLElement) =>
   container.querySelector<HTMLElement>('span[aria-hidden="true"].inline-grid')
 
@@ -190,7 +198,7 @@ describe('SidebarSessionRow running arc', () => {
   })
 
   it('paints the arc while the session is running', () => {
-    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+    publishSessionState('s1', { ...createClientSessionState('s1'), busy: true })
 
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
@@ -222,7 +230,7 @@ describe('SidebarSessionRow running arc', () => {
     sessionTitle.mockClear()
 
     act(() => {
-      publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+      publishSessionState('s1', { ...createClientSessionState('s1'), busy: true })
     })
 
     expect(sessionTitle).toHaveBeenCalledTimes(1)

@@ -86,12 +86,14 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     const initialRowsRef = mockVirtualListPropsHistory[0].rows
     expect(initialRowsRef.length).toBeGreaterThan(VIRTUALIZE_THRESHOLD)
 
-    // Re-render parent with the exact same sessions array and props
+    // Re-render parent with the exact same sessions array. Change only an
+    // unrelated header label so the section must render while flatRows' memo
+    // dependencies remain identical.
     rerender(
       <SidebarSessionsSection
         activeSessionId={null}
         emptyState={<div>Empty</div>}
-        label="Sessions"
+        label="Sessions (rerender)"
         onArchiveSession={noop}
         onDeleteSession={noop}
         onResumeSession={noop}

@@ -280,8 +280,8 @@ import {
 } from './plugin-profile-routes'
 import { canAdmitLocalBackend, isUnlimitedPoolCapacity, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
-import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { poolTouchKeys } from './pool-touch-scope'
+import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { createKeepAwake } from './power-save'
 import { PreviewReachRegistry } from './preview-reach'
 import {

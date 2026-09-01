@@ -621,6 +621,53 @@ def test_namespaced_context_loads_assignee_rules_for_runtime_routing(
     assert policy.assignee_for("Reduce latency") == "performance-patch-steward"
 
 
+def test_inspect_pr_emits_canonical_identity_from_the_shared_github_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from github_pr_feedback.cli import _inspect_pr
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    settings = enabled_settings(repository)
+    expected = PullRequest(
+        17,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/fix",
+        "a" * 40,
+        base_branch="main",
+        base_sha="b" * 40,
+    )
+
+    class FakeGitHub:
+        def get_pull_request(self, repository: str, number: int) -> PullRequest:
+            assert repository == "acme/widgets"
+            assert number == 17
+            return expected
+
+    monkeypatch.setattr("github_pr_feedback.cli.GitHubClient", FakeGitHub)
+
+    exit_code = _inspect_pr(
+        RecordingContext(settings),
+        argparse.Namespace(repository="acme/widgets", pr_number=17),
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "base_branch": "main",
+        "base_sha": "b" * 40,
+        "head_ref_name": "codex/fix",
+        "head_repository": "acme/widgets",
+        "head_sha": "a" * 40,
+        "number": 17,
+        "repository": "acme/widgets",
+    }
+
+
 def test_namespaced_context_preserves_auto_dispatch_and_local_ci_audit_settings(
     tmp_path: Path,
 ) -> None:

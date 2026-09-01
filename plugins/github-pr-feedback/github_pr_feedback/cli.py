@@ -345,6 +345,11 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     subcommands.add_parser(
         "doctor", help="Check configuration readiness without scanning"
     )
+    inspect = subcommands.add_parser(
+        "inspect-pr", help="Read one configured PR identity through the shared GitHub gate"
+    )
+    inspect.add_argument("--repository", required=True)
+    inspect.add_argument("--pr-number", required=True, type=int)
     retry = subcommands.add_parser(
         "retry", help="Retry one failed, immutable feedback receipt"
     )
@@ -395,6 +400,8 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
         return _status()
     if action == "doctor":
         return _doctor(ctx)
+    if action == "inspect-pr":
+        return _inspect_pr(ctx, args)
     if action == "retry":
         return _retry(ctx, args)
     if action == "audit-pr":
@@ -1121,6 +1128,34 @@ def _merge_status() -> int:
     finally:
         ledger.close()
     print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+def _inspect_pr(ctx: Any, args: argparse.Namespace) -> int:
+    try:
+        policy = _load_policy_from_context(ctx)
+        if not policy.enabled or args.repository not in policy.targets:
+            raise ValueError("repository is not a configured target")
+        pull_request = GitHubClient().get_pull_request(
+            args.repository, args.pr_number
+        )
+    except (GitHubClientError, ValueError):
+        print(json.dumps({"status": "unavailable"}, sort_keys=True))
+        return 1
+    print(
+        json.dumps(
+            {
+                "base_branch": pull_request.base_branch,
+                "base_sha": pull_request.base_sha,
+                "head_ref_name": pull_request.head_ref_name,
+                "head_repository": pull_request.head_repository,
+                "head_sha": pull_request.head_sha,
+                "number": pull_request.number,
+                "repository": pull_request.base_repository,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

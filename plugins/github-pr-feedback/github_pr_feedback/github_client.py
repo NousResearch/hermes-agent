@@ -73,7 +73,9 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
         *,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
-        min_interval_seconds: float = 0.25,
+        # Keep the shared account below GitHub's primary hourly budget even
+        # when several workers and profiles are scanning continuously.
+        min_interval_seconds: float = 1.0,
     ) -> None:
         root = get_default_hermes_root() / "github-pr-feedback"
         self._path = Path(path or root / "github-request-gate.json")
@@ -163,10 +165,14 @@ class SubprocessCommandRunner:
         *,
         sleeper: Callable[[float], None] = time.sleep,
         rate_limit_backoff: float = 60.0,
+        timeout_retry_backoff: float = 1.0,
         request_gate: GitHubRequestGate | None = None,
     ) -> None:
         self._sleeper = sleeper
         self._rate_limit_backoff = max(1.0, min(float(rate_limit_backoff), 900.0))
+        self._timeout_retry_backoff = max(
+            0.0, min(float(timeout_retry_backoff), 30.0)
+        )
         self._request_gate = request_gate or GitHubRequestGate()
 
     def run(self, argv: list[str]) -> str:
@@ -195,7 +201,7 @@ class SubprocessCommandRunner:
                 # store on the first call after a idle period and blow the 30s
                 # budget even though gh itself is healthy; one retry clears it.
                 if attempt == 0:
-                    self._sleeper(self._rate_limit_backoff)
+                    self._sleeper(self._timeout_retry_backoff)
                     continue
                 raise GitHubClientError("GitHub command failed") from error
             except OSError as error:
@@ -210,9 +216,21 @@ class SubprocessCommandRunner:
 
 def _is_rate_limit_failure(stderr: str) -> bool:
     normalized = str(stderr or "").casefold()
-    return "rate limit" in normalized and (
-        "403" in normalized or "429" in normalized or "secondary" in normalized
-    )
+    if "429" in normalized or "too many requests" in normalized:
+        return True
+    if any(
+        marker in normalized
+        for marker in (
+            "rate limit",
+            "secondary rate",
+            "abuse detection",
+            "x-ratelimit-",
+        )
+    ):
+        return True
+    # Preserve ordinary permission/authentication failures as ordinary
+    # failures; only a 403 carrying a rate-limit marker is retryable.
+    return "403" in normalized and "limit" in normalized
 
 
 def _rate_limit_delay(stderr: str, *, default: float) -> float:

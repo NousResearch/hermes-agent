@@ -95,6 +95,84 @@ def test_request_gate_shares_secondary_limit_cooldown_across_instances(tmp_path)
     assert sleeps == [30.0]
 
 
+def test_request_gate_spaces_shared_requests_at_a_conservative_rate(tmp_path) -> None:
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    path = tmp_path / "github-request-gate.json"
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+
+    assert sleeps == [1.0]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    (
+        "HTTP 429: Too Many Requests",
+        "HTTP 403: secondary rate limit",
+        "x-ratelimit-remaining: 0",
+    ),
+)
+def test_subprocess_runner_retries_all_github_rate_limit_shapes(
+    monkeypatch: pytest.MonkeyPatch, stderr: str
+) -> None:
+    calls: list[list[str]] = []
+    results = iter(
+        (
+            subprocess.CompletedProcess(["gh", "api", "rate_limit"], 1, "", stderr),
+            subprocess.CompletedProcess(["gh", "api", "rate_limit"], 0, "{}", ""),
+        )
+    )
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return next(results)
+
+    monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
+    gate = RecordingGate()
+    runner = SubprocessCommandRunner(
+        sleeper=lambda _delay: None, request_gate=gate
+    )
+
+    assert runner.run(["gh", "api", "rate_limit"]) == "{}"
+    assert len(calls) == 2
+    assert gate.deferrals == [60.0]
+
+
+def test_subprocess_runner_retries_timeout_without_rate_limit_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    results = iter(
+        (
+            subprocess.TimeoutExpired(["gh", "api", "pull"], 60),
+            subprocess.CompletedProcess(["gh", "api", "pull"], 0, "{}", ""),
+        )
+    )
+
+    def fake_run(_argv, **_kwargs):
+        result = next(results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
+    runner = SubprocessCommandRunner(
+        sleeper=sleeps.append,
+        request_gate=RecordingGate(),
+    )
+
+    assert runner.run(["gh", "api", "pull"]) == "{}"
+    assert sleeps == [1.0]
+
+
 def test_subprocess_runner_does_not_retry_an_ordinary_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

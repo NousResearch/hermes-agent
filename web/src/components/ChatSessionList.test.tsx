@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   getSessions: vi.fn(),
   searchSessions: vi.fn(),
   deleteSession: vi.fn(),
+  renameSession: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ api }));
@@ -53,12 +54,15 @@ vi.mock("@/components/DeleteConfirmDialog", () => ({
 }));
 vi.mock("lucide-react", () => ({
   AlertCircle: () => null,
+  Check: () => null,
   MessageSquarePlus: () => null,
   Pin: () => null,
   PinOff: () => null,
+  Pencil: () => null,
   RefreshCw: () => null,
   Search: () => null,
   Trash2: () => null,
+  X: () => null,
 }));
 
 import { ChatSessionList, type SessionActivityStatus } from "./ChatSessionList";
@@ -91,6 +95,7 @@ beforeEach(() => {
   api.getSessions.mockResolvedValue({ sessions: [session("one"), session("two")], total: 2, limit: 30, offset: 0 });
   api.searchSessions.mockResolvedValue({ results: [] });
   api.deleteSession.mockResolvedValue({ ok: true });
+  api.renameSession.mockResolvedValue({ ok: true, title: "Renamed session" });
 });
 
 afterEach(() => {
@@ -374,5 +379,27 @@ describe("ChatSessionList pinning and search", () => {
 
     expect(api.deleteSession).toHaveBeenCalledWith("one", "");
     expect(host.querySelector("[data-testid='resume-param']")?.textContent).toBe("");
+  });
+
+  it("renames a session inline only after the backend confirms", async () => {
+    await render();
+    const rename = host.querySelector<HTMLButtonElement>(
+      '[data-session-action="rename"][data-session-id="one"]',
+    );
+    expect(rename).not.toBeNull();
+    act(() => rename?.click());
+
+    const input = host.querySelector<HTMLInputElement>("input[aria-label='Rename session']");
+    expect(input).not.toBeNull();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(input, "Renamed session");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+      host.querySelector<HTMLButtonElement>("button[aria-label='Save session name']")?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.renameSession).toHaveBeenCalledWith("one", "Renamed session", "");
+    expect(host.querySelector('[data-session-id="one"]')?.textContent).toContain("Renamed session");
   });
 });

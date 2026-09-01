@@ -13,14 +13,17 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   AlertCircle,
+  Check,
   MessageSquarePlus,
   Pin,
   PinOff,
+  Pencil,
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -114,6 +117,10 @@ export function ChatSessionList({
   }));
   const [reloadNonce, setReloadNonce] = useState(0);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const sessionsRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
@@ -261,6 +268,43 @@ export function ChatSessionList({
     );
   }, [onNewChat, onPicked, setSearchParams]);
 
+  const startRename = useCallback((session: SessionInfo) => {
+    setRenameError(null);
+    setEditingSessionId(session.id);
+    setRenameValue(session.title?.trim() && session.title !== "Untitled" ? session.title : "");
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setEditingSessionId(null);
+    setRenameValue("");
+    setRenameError(null);
+  }, []);
+
+  const saveRename = useCallback(async (event?: FormEvent) => {
+    event?.preventDefault();
+    const id = editingSessionId;
+    const title = renameValue.trim();
+    if (!id) return;
+    if (!title) {
+      setRenameError("Session name cannot be empty");
+      return;
+    }
+    setRenamingId(id);
+    setRenameError(null);
+    try {
+      const response = await api.renameSession(id, title, scopeKey);
+      if (response.ok === false) throw new Error("Failed to rename session");
+      const nextTitle = response.title?.trim() || title;
+      setSessions((current) => current?.map((session) => session.id === id ? { ...session, title: nextTitle } : session) ?? null);
+      setSearchResults((current) => current?.map((session) => session.id === id ? { ...session, title: nextTitle } : session) ?? null);
+      cancelRename();
+    } catch (reason: unknown) {
+      setRenameError(errorMessage(reason, "Failed to rename session"));
+    } finally {
+      setRenamingId(null);
+    }
+  }, [cancelRename, editingSessionId, renameValue, scopeKey]);
+
   const handleDelete = useCallback(
     async (id: string) => {
       setDeleteError(null);
@@ -353,56 +397,92 @@ export function ChatSessionList({
             isActive && "border-primary bg-primary/10",
           )}
         >
-          <button
-            type="button"
-            data-session-select={session.id}
-            onClick={() => pick(session.id)}
-            aria-current={isActive ? "true" : undefined}
-            className={cn(
-              "min-w-0 flex-1 px-2 py-2 text-left",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
-              isActive ? "text-foreground" : "text-text-secondary hover:text-foreground",
-            )}
-          >
-            <span className="block w-full truncate text-sm font-medium">
-              {rowLabel(session, untitledLabel)}
-            </span>
-            {searchSnippet && (
-              <span className="mt-0.5 block w-full truncate text-xs text-text-secondary">
-                {searchSnippet}
-              </span>
-            )}
-            <span
+          {editingSessionId === session.id ? (
+            <form className="flex min-w-0 flex-1 items-center gap-1 px-2 py-2" onSubmit={(event) => void saveRename(event)}>
+              <label className="sr-only" htmlFor={`rename-session-${session.id}`}>Rename session</label>
+              <input
+                id={`rename-session-${session.id}`}
+                aria-label="Rename session"
+                className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[16px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring sm:text-sm"
+                value={renameValue}
+                autoFocus
+                onChange={(event) => setRenameValue(event.target.value)}
+                disabled={renamingId === session.id}
+              />
+              <Button ghost size="icon" type="submit" aria-label="Save session name" disabled={renamingId === session.id}>
+                <Check />
+              </Button>
+              <Button ghost size="icon" type="button" aria-label="Cancel rename" onClick={cancelRename} disabled={renamingId === session.id}>
+                <X />
+              </Button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              data-session-select={session.id}
+              onClick={() => pick(session.id)}
+              aria-current={isActive ? "true" : undefined}
               className={cn(
-                "mt-1 flex items-center gap-1 text-xs",
-                activityStatus === "error" ? "text-destructive" :
-                  activityStatus === "working" ? "text-primary" :
-                    activityStatus === "waiting" ? "text-warning" :
-                      activityStatus === "ready" ? "text-success" : "text-text-tertiary",
+                "min-w-0 flex-1 px-2 py-2 text-left",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                isActive ? "text-foreground" : "text-text-secondary hover:text-foreground",
               )}
-              aria-label={`Session status: ${statusLabel}`}
             >
-              <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-              {statusLabel}
-            </span>
-            <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 text-xs text-text-tertiary">
-              <span>{timeAgo(session.last_active)}</span>
-              {session.message_count > 0 && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span>{session.message_count} {t.common.msgs ?? "msgs"}</span>
-                </>
+              <span className="block w-full truncate text-sm font-medium">
+                {rowLabel(session, untitledLabel)}
+              </span>
+              {searchSnippet && (
+                <span className="mt-0.5 block w-full truncate text-xs text-text-secondary">
+                  {searchSnippet}
+                </span>
               )}
-              {session.source && session.source !== "cli" && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span className="truncate">{session.source}</span>
-                </>
-              )}
-            </span>
-          </button>
+              <span
+                className={cn(
+                  "mt-1 flex items-center gap-1 text-xs",
+                  activityStatus === "error" ? "text-destructive" :
+                    activityStatus === "working" ? "text-primary" :
+                      activityStatus === "waiting" ? "text-warning" :
+                        activityStatus === "ready" ? "text-success" : "text-text-tertiary",
+                )}
+                aria-label={`Session status: ${statusLabel}`}
+              >
+                <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                {statusLabel}
+              </span>
+              <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 text-xs text-text-tertiary">
+                <span>{timeAgo(session.last_active)}</span>
+                {session.message_count > 0 && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span>{session.message_count} {t.common.msgs ?? "msgs"}</span>
+                  </>
+                )}
+                {session.source && session.source !== "cli" && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span className="truncate">{session.source}</span>
+                  </>
+                )}
+              </span>
+            </button>
+          )}
 
           <div className="flex shrink-0 items-start gap-0.5 px-1 py-1 opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+            <Button
+              ghost
+              size="icon"
+              type="button"
+              data-session-action="rename"
+              data-session-id={session.id}
+              aria-label="Rename session"
+              className="h-7 w-7 text-text-secondary hover:text-primary focus-visible:opacity-100"
+              onClick={(event) => {
+                event.stopPropagation();
+                startRename(session);
+              }}
+            >
+              <Pencil />
+            </Button>
             <Button
               ghost
               size="icon"
@@ -439,7 +519,7 @@ export function ChatSessionList({
         </div>
       );
     },
-    [activeSessionId, deleteConfirmation, deleteLabel, pinIdsForScope, pick, sessionStatuses, t.common.msgs, togglePin, untitledLabel],
+    [activeSessionId, cancelRename, deleteConfirmation, deleteLabel, editingSessionId, pinIdsForScope, pick, renameValue, renamingId, saveRename, sessionStatuses, startRename, t.common.msgs, togglePin, untitledLabel],
   );
 
   const content = useMemo(() => {
@@ -595,6 +675,12 @@ export function ChatSessionList({
         <div className="mx-2 mb-2 flex items-start gap-2 text-xs text-destructive" role="alert">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="wrap-break-word">{deleteError}</span>
+        </div>
+      )}
+      {renameError && (
+        <div className="mx-2 mb-2 flex items-start gap-2 text-xs text-destructive" role="alert">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="wrap-break-word">{renameError}</span>
         </div>
       )}
 

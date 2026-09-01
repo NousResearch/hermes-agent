@@ -82,7 +82,7 @@ function clarifyFromSnapshot(snapshot?: ClarifySnapshot): ClarificationRequest |
   if (!snapshot || typeof snapshot.request_id !== "string") return null;
   return { request_id: snapshot.request_id, question: typeof snapshot.question === "string" ? snapshot.question : undefined, choices: Array.isArray(snapshot.choices) ? snapshot.choices.filter((x): x is string => typeof x === "string") : null, multi_select: snapshot.multi_select === true, questions: Array.isArray(snapshot.questions) ? snapshot.questions as ClarificationRequest["questions"] : undefined, answers: snapshot.answers };
 }
-type TextPayload = { text?: unknown; message?: unknown; kind?: unknown; running?: unknown; turn_started_at?: unknown; status?: unknown; request_id?: unknown; answer?: unknown; question?: unknown; choices?: unknown; command?: unknown; description?: unknown; tool_id?: unknown; name?: unknown; context?: unknown; args?: unknown; result?: unknown; summary?: unknown; progress?: unknown; questions?: unknown; multi_select?: unknown; allow_permanent?: unknown; seq?: unknown; event_id?: unknown; eventId?: unknown };
+type TextPayload = { text?: unknown; message?: unknown; kind?: unknown; running?: unknown; turn_started_at?: unknown; status?: unknown; request_id?: unknown; answer?: unknown; question?: unknown; choices?: unknown; command?: unknown; description?: unknown; tool_id?: unknown; name?: unknown; context?: unknown; args?: unknown; result?: unknown; summary?: unknown; progress?: unknown; questions?: unknown; multi_select?: unknown; allow_permanent?: unknown; seq?: unknown; event_id?: unknown; eventId?: unknown; elapsed_ms?: unknown; elapsedMs?: unknown };
 
 type ResyncState = "idle" | "syncing" | "synced" | "partial" | "error";
 
@@ -93,6 +93,7 @@ type PendingAttachment = {
   error?: string;
   refText?: string;
   refPath?: string;
+  previewUrl?: string;
 };
 type PendingPrompt = { id: string; text: string; mode: "retry" | "queued" };
 
@@ -117,6 +118,12 @@ function fileDataUrl(file: Blob): Promise<string> {
   });
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function attachmentPromptText(text: string, attachments: PendingAttachment[]): string {
   const refs = attachments.filter((item) => item.state === "attached").flatMap((item) => [item.refText, item.refPath]).filter(Boolean);
   return refs.length ? [text, refs.join("\n")].filter(Boolean).join("\n\n") : text;
@@ -131,6 +138,13 @@ function eventText(event: GatewayEvent): string {
   if (typeof payload?.text === "string") return payload.text;
   if (typeof payload?.message === "string") return payload.message;
   return "";
+}
+
+function eventElapsedMs(payload: TextPayload, startedAt?: number): number | undefined {
+  const explicit = payload.elapsed_ms ?? payload.elapsedMs;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) return explicit;
+  if (startedAt !== undefined) return Math.max(0, Date.now() - startedAt);
+  return undefined;
 }
 
 export function shouldFollowTranscript(distanceFromBottom: number): boolean {
@@ -184,6 +198,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   const stagingRef = useRef(new Set<string>());
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageSequenceRef = useRef(0);
   const composingRef = useRef(false);
@@ -269,26 +284,47 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     });
   }, []);
 
+  const removeAttachment = useCallback((id: string) => {
+    uploadControllersRef.current.get(id)?.abort();
+    uploadControllersRef.current.delete(id);
+    const item = attachmentsRef.current.find((entry) => entry.id === id);
+    if (item?.previewUrl && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(item.previewUrl);
+    updateAttachments((current) => current.filter((entry) => entry.id !== id));
+  }, [updateAttachments]);
+
+  const clearAttachments = useCallback(() => {
+    for (const controller of uploadControllersRef.current.values()) controller.abort();
+    uploadControllersRef.current.clear();
+    for (const item of attachmentsRef.current) {
+      if (item.previewUrl && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(item.previewUrl);
+    }
+    updateAttachments([]);
+  }, [updateAttachments]);
+
   const stageAttachment = useCallback(async (item: PendingAttachment) => {
     if (!sessionIdRef.current) return;
     if (stagingRef.current.has(item.id)) return;
     stagingRef.current.add(item.id);
+    const controller = new AbortController();
+    uploadControllersRef.current.set(item.id, controller);
     updateAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: "uploading", error: undefined } : entry));
     try {
       const dataUrl = await fileDataUrl(item.file);
       const result = item.file.type.startsWith("image/")
         ? await gateway.request<{ attached?: boolean; path?: string; ref_path?: string; ref_text?: string }>("image.attach_bytes", {
           session_id: sessionIdRef.current, content_base64: dataUrl.slice(dataUrl.indexOf(",") + 1), filename: item.file.name,
-        })
+        }, 120_000, controller.signal)
         : await gateway.request<{ attached?: boolean; path?: string; ref_path?: string; ref_text?: string }>("file.attach", {
           session_id: sessionIdRef.current, name: item.file.name, path: "", data_url: dataUrl,
-        });
+        }, 120_000, controller.signal);
       if (result.attached === false) throw new Error("Attachment was rejected");
       updateAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: "attached", refText: result.ref_text, refPath: result.ref_path ?? result.path } : entry));
     } catch (reason: unknown) {
+      if (controller.signal.aborted) return;
       updateAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: "error", error: reason instanceof Error ? reason.message : String(reason) } : entry));
     } finally {
       stagingRef.current.delete(item.id);
+      uploadControllersRef.current.delete(item.id);
     }
   }, [gateway, updateAttachments]);
 
@@ -300,7 +336,12 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         setError(`${file.name} is too large (max 25 MB)`);
         continue;
       }
-      accepted.push({ id: `${Date.now()}-${Math.random()}`, file, state: "pending" });
+      accepted.push({
+        id: `${Date.now()}-${Math.random()}`,
+        file,
+        state: "pending",
+        previewUrl: file.type.startsWith("image/") && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : undefined,
+      });
     }
     if (!accepted.length) return;
     updateAttachments((current) => [...current, ...accepted]);
@@ -447,9 +488,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     const offInterim = gateway.on("message.interim", (event) => { const p = accept(event, true); const text = eventText(event); if (!p || !text) return; setTranscript((messages) => [...messages, { id: `interim-${++messageSequenceRef.current}`, role: "assistant", text }]); });
     const offToolGenerating = gateway.on("tool.generating", (event) => { const p = accept(event, true); if (p) setStatus(`Preparing tool: ${String(p.name ?? "tool")}`); });
     const offComplete = gateway.on("message.complete", (event) => { if (!accept(event, true)) return; const text = eventText(event); setTranscript((messages) => messages.map((message) => message.id === assistantIdRef.current ? { ...message, ...(text && !message.text ? { text } : {}), streaming: false } : message)); assistantIdRef.current = null; setStreaming(false); setTurnStartedAt(null); setStatus("Ready"); });
-    const offToolStart = gateway.on("tool.start", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); setStatus(`Running tool: ${String(p.name ?? "tool")}`); setTools((items) => items.some((item) => item.id === id) ? items : [...items, { id, name: String(p.name ?? "tool"), state: "running", context: typeof p.context === "string" ? p.context : undefined, args: p.args }]); });
-    const offToolProgress = gateway.on("tool.progress", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? ""); if (!id) return; const progress = typeof p.progress === "string" ? p.progress : typeof p.text === "string" ? p.text : ""; if (progress) setStatus(`Working: ${progress}`); setTools((items) => items.map((item) => item.id === id ? { ...item, progress: progress || item.progress } : item)); });
-    const offToolComplete = gateway.on("tool.complete", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); setTools((items) => { const existing = items.some((item) => item.id === id); return existing ? items.map((item) => item.id === id ? { ...item, state: "complete", args: p.args ?? item.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : item.summary } : item) : [...items, { id, name: String(p.name ?? "tool"), state: "complete", args: p.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : undefined }]; }); });
+    const offToolStart = gateway.on("tool.start", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); const startedAt = Date.now(); setStatus(`Running tool: ${String(p.name ?? "tool")}`); setTools((items) => items.some((item) => item.id === id) ? items : [...items, { id, name: String(p.name ?? "tool"), state: "running", context: typeof p.context === "string" ? p.context : undefined, args: p.args, startedAt }]); });
+    const offToolProgress = gateway.on("tool.progress", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? ""); if (!id) return; const progress = typeof p.progress === "string" ? p.progress : typeof p.text === "string" ? p.text : ""; if (progress) setStatus(`Working: ${progress}`); setTools((items) => items.map((item) => item.id === id ? { ...item, progress: progress || item.progress, elapsedMs: eventElapsedMs(p, item.startedAt) } : item)); });
+    const offToolComplete = gateway.on("tool.complete", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); setTools((items) => { const existing = items.find((item) => item.id === id); const elapsed = eventElapsedMs(p, existing?.startedAt); return existing ? items.map((item) => item.id === id ? { ...item, state: "complete", args: p.args ?? item.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : item.summary, elapsedMs: elapsed ?? item.elapsedMs } : item) : [...items, { id, name: String(p.name ?? "tool"), state: "complete", args: p.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : undefined, elapsedMs: elapsed }]; }); });
     const offApproval = gateway.on("approval.request", (event) => { const p = accept(event, true); if (!p || typeof p.request_id !== "string") return; setApproval({ request_id: p.request_id, command: typeof p.command === "string" ? p.command : undefined, description: typeof p.description === "string" ? p.description : undefined, choices: Array.isArray(p.choices) ? p.choices.filter((x): x is string => typeof x === "string") : undefined, allow_permanent: p.allow_permanent !== false }); });
     const offClarify = gateway.on("clarify.request", (event) => { const p = accept(event, true); if (!p || typeof p.request_id !== "string") return; setClarify({ request_id: p.request_id, question: typeof p.question === "string" ? p.question : undefined, choices: Array.isArray(p.choices) ? p.choices.filter((x): x is string => typeof x === "string") : null, multi_select: p.multi_select === true, questions: Array.isArray(p.questions) ? p.questions as ClarificationRequest["questions"] : undefined }); });
     const offError = gateway.on("error", (event) => { if (!accept(event, true)) return; setError(eventText(event) || "Gateway error"); setStreaming(false); setTurnStartedAt(null); setStatus("Error"); });
@@ -480,7 +521,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       setStreaming(false);
       followTranscriptRef.current = true;
       setShowScrollToBottom(false);
-      updateAttachments([]);
+      clearAttachments();
       seenSeqRef.current.clear();
       seenEventIdsRef.current.clear();
       messageSequenceRef.current = 0;
@@ -547,9 +588,10 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       offError();
       offStatus();
       offInfo();
+      clearAttachments();
       gateway.close();
     };
-  }, [clearReconnectTimer, freshGeneration, gateway, profile, resumeParam, routeModel, routeProvider, routeReasoning]);
+  }, [clearAttachments, clearReconnectTimer, freshGeneration, gateway, profile, resumeParam, routeModel, routeProvider, routeReasoning]);
 
   const changeRouting = useCallback((nextModel: string, nextProvider: string, nextReasoning: NativeReasoningLevel) => {
     setSearchParams((previous) => {
@@ -593,7 +635,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     if (!pendingPrompt && turnActive) {
       setQueuedPrompts((current) => [...current, { id: `queued-${Date.now()}-${current.length}`, text: promptText, mode: "queued" }]);
       setDraft("");
-      updateAttachments([]);
+      clearAttachments();
       setStatus("Queued");
       return;
     }
@@ -609,7 +651,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     }
     try {
       await gateway.request("prompt.submit", { session_id: sessionId, text: promptText });
-      updateAttachments([]);
+      clearAttachments();
       setFailedPrompt(null);
       setStatus("Working…");
     } catch (reason: unknown) {
@@ -621,7 +663,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       submitInFlightRef.current = false;
       setSubmitting(false);
     }
-  }, [connectionState, draft, failedPrompt?.id, gateway, sessionId, streaming, tools, turnStartedAt, updateAttachments]);
+  }, [clearAttachments, connectionState, draft, failedPrompt?.id, gateway, sessionId, streaming, tools, turnStartedAt]);
 
   useEffect(() => {
     const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
@@ -974,7 +1016,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                   )}
                 >
                   {message.role === "assistant"
-                    ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} />
+                    ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} streaming={message.streaming}
+                    />
                     : message.text}
                   {message.text && (
                     <MessageActions
@@ -1085,7 +1128,16 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 data-slot="attachment"
                 className="flex min-w-0 items-center gap-1 border border-midground/15 bg-background/40 px-2 py-1 text-xs"
               >
-                <span className="max-w-48 truncate" title={item.file.name}>{item.file.name}</span>
+                {item.previewUrl && (
+                  <img
+                    data-slot="attachment-preview"
+                    src={item.previewUrl}
+                    alt={`Preview of ${item.file.name}`}
+                    className="h-8 w-8 shrink-0 rounded object-cover"
+                  />
+                )}
+                <span className="min-w-0 max-w-48 truncate" title={item.file.name}>{item.file.name}</span>
+                <span className="shrink-0 text-text-secondary">{formatFileSize(item.file.size)}</span>
                 <span className="text-text-secondary">
                   {item.state === "uploading" ? "Uploading…" : item.state === "error" ? item.error : item.state === "attached" ? "Ready" : "Queued"}
                 </span>
@@ -1107,7 +1159,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                   type="button"
                   aria-label={`Remove ${item.file.name}`}
                   className="shrink-0 text-text-secondary hover:text-destructive"
-                  onClick={() => updateAttachments((current) => current.filter((entry) => entry.id !== item.id))}
+                  onClick={() => removeAttachment(item.id)}
                 >
                   <X />
                 </Button>
@@ -1119,6 +1171,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           <input
             ref={fileInputRef}
             type="file"
+            accept="image/*,.pdf,.txt,.md,.csv,.json,.yaml,.yml,.js,.jsx,.ts,.tsx,.py,.html,.css"
             multiple
             className="hidden"
             onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }}

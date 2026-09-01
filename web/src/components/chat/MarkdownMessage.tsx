@@ -1,5 +1,8 @@
 import { useMemo, type ElementType, type ReactNode } from "react";
 
+import { detectArtifact } from "@/lib/artifact-detect";
+
+import { ArtifactCard } from "./ArtifactCard";
 import { CodeBlock } from "./CodeBlock";
 
 type Block =
@@ -12,22 +15,28 @@ type Block =
 export type MarkdownMessageProps = {
   content: string;
   className?: string;
+  streaming?: boolean;
 };
 
 /** Safe, intentionally small Markdown renderer for assistant messages.
  * HTML is never interpreted; only a conservative set of elements is emitted.
  */
-export function MarkdownMessage({ content, className = "" }: MarkdownMessageProps) {
+export function MarkdownMessage({ content, className = "", streaming = false }: MarkdownMessageProps) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   return (
     <div className={`space-y-3 text-sm leading-relaxed text-foreground ${className}`.trim()}>
-      {blocks.map((block, index) => <BlockView key={index} block={block} />)}
+      {blocks.map((block, index) => <BlockView key={index} block={block} streaming={streaming} />)}
     </div>
   );
 }
 
-function BlockView({ block }: { block: Block }) {
-  if (block.type === "code") return <CodeBlock code={block.code} language={block.language} />;
+function BlockView({ block, streaming }: { block: Block; streaming: boolean }) {
+  if (block.type === "code") {
+    const artifact = detectArtifact(block.language, block.code);
+    return artifact
+      ? <ArtifactCard code={block.code} detection={artifact} streaming={streaming} />
+      : <CodeBlock code={block.code} language={block.language} />;
+  }
   if (block.type === "heading") {
     const Tag = `h${block.level}` as ElementType;
     return <Tag className="font-semibold">{inline(block.text)}</Tag>;

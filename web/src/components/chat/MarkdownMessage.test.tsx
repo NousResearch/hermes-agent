@@ -63,6 +63,15 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("pre")?.className).toContain("overflow-x-auto");
   });
 
+  it("promotes a substantial HTML fence to an artifact card with preview and download actions", async () => {
+    const html = `<!doctype html><html><head><title>Demo app</title></head><body><main>${"content ".repeat(30)}</main></body></html>`;
+    await renderMessage(`\`\`\`html\n${html}\n\`\`\``);
+    expect(container.querySelector("[data-slot='artifact-card']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Preview artifact']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Download artifact']")).toBeTruthy();
+    expect(container.querySelector("pre")).toBeNull();
+  });
+
   it("copies code and reports copied state", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

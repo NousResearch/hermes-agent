@@ -262,6 +262,8 @@ describe("NativeChatPage", () => {
 
   it("stages image and file attachments with the gateway payloads", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:photo-preview") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
     const input = host.querySelector<HTMLInputElement>("input[type=file]");
     expect(input).toBeTruthy();
     const image = new File(["image-bytes"], "photo.png", { type: "image/png" });
@@ -279,6 +281,8 @@ describe("NativeChatPage", () => {
     expect(gateway.instance?.requests.find(({ method }) => method === "file.attach")?.params).toMatchObject({
       session_id: "session-1", name: "notes.txt", path: "", data_url: expect.stringContaining("data:text/plain"),
     });
+    expect(host.querySelector("[data-slot='attachment-preview']")?.getAttribute("src")).toBe("blob:photo-preview");
+    expect(host.querySelector("[data-slot='attachment']")?.textContent).toMatch(/\d+ B/);
   });
 
   it("keeps attachment order, supports removal, and shows failed uploads with retry", async () => {
@@ -332,6 +336,15 @@ describe("NativeChatPage", () => {
     expect(Array.from(timeline?.querySelectorAll("[data-tool-id]") ?? []).map((item) => item.getAttribute("data-tool-id"))).toEqual(["tool-1", "tool-2"]);
     expect(timeline?.querySelector("[data-tool-id='tool-1']")?.getAttribute("data-tool-state")).toBe("complete");
     expect(timeline?.querySelector("[data-tool-id='tool-2']")?.getAttribute("data-tool-state")).toBe("running");
+  });
+
+  it("renders tool timing from the completion event", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => {
+      gateway.instance?.emit("tool.start", { tool_id: "timed-tool", name: "terminal" });
+      gateway.instance?.emit("tool.complete", { tool_id: "timed-tool", name: "terminal", elapsed_ms: 1500 });
+    });
+    expect(host.querySelector("[data-tool-id='timed-tool']")?.textContent).toContain("1.5s");
   });
 
   it("renders tool cards and sends exact approval and clarify response payloads", async () => {

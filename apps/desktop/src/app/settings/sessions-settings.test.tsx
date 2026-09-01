@@ -49,7 +49,8 @@ vi.mock('@/i18n', () => ({
           updateDirFailed: 'Could not update default directory',
           clearDirFailed: 'Could not clear default directory',
           sidebarOpenInNewTabTitle: 'Open or focus a tab',
-          sidebarOpenInNewTabDesc: 'Ordinary sidebar session clicks open or focus a tab. Turn off to open in the main tab.'
+          sidebarOpenInNewTabDesc:
+            'Ordinary sidebar session clicks open or focus a tab. Turn off to open in the main tab.'
         }
       }
     }

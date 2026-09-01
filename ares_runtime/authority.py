@@ -8,6 +8,7 @@ are deterministic and replayable.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .collaboration import ContractError, digest
@@ -24,6 +25,18 @@ def _require_str(value: Any, code: str, field: str = "") -> str:
     if not isinstance(value, str) or not value:
         raise ContractError(code, field)
     return value
+
+
+def _normalized_time(value: Any, field: str) -> str:
+    """Accept only offset-bearing ISO instants and canonicalize to UTC."""
+    raw = _require_str(value, "INVALID_TIME_BOUND", field)
+    try:
+        instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractError("INVALID_TIME_BOUND", field) from exc
+    if instant.tzinfo is None:
+        raise ContractError("INVALID_TIME_BOUND", field)
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def normalize_scope(raw: Any) -> dict[str, Any]:
@@ -50,12 +63,10 @@ def normalize_scope(raw: Any) -> dict[str, Any]:
                 raise ContractError("UNKNOWN_FIELD", sorted(unknown_time)[0])
             if not value:
                 raise ContractError("INVALID_TIME_SCOPE")
-            for bound in ("not_before", "not_after"):
-                if bound in value:
-                    _require_str(value[bound], "INVALID_TIME_BOUND", "time." + bound)
-            if "not_before" in value and "not_after" in value and value["not_before"] > value["not_after"]:
+            normalized_time = {bound: _normalized_time(value[bound], "time." + bound) for bound in ("not_before", "not_after") if bound in value}
+            if "not_before" in normalized_time and "not_after" in normalized_time and normalized_time["not_before"] > normalized_time["not_after"]:
                 raise ContractError("INVALID_TIME_SCOPE")
-            normalized[field] = dict(value)
+            normalized[field] = normalized_time
         else:
             normalized[field] = _require_str(value, "INVALID_" + field.upper(), field)
     if not normalized:
@@ -118,11 +129,12 @@ class AuthorityScopeV1:
         self._holder = _DEFAULT_HOLDER if holder is None else _require_str(holder, "INVALID_HOLDER")
         self._settlements: dict[str, dict[str, Any]] = {}
         self._open_count = 0
-        self._consumed_count = 0
+        self._charged_count = 0
+        self._delegated_count = 0
 
     @property
     def scope(self) -> dict[str, Any]:
-        return dict(self._scope)
+        return {key: (dict(value) if isinstance(value, Mapping) else value) for key, value in self._scope.items()}
 
     @property
     def generation(self) -> int:
@@ -153,6 +165,10 @@ class AuthorityScopeV1:
         inherited.update(normalized_child)
         if not is_subset_scope(inherited, self._scope):
             raise ContractError("ATTENUATION_ESCALATION")
+        child_uses = inherited.get("use_count", 1)
+        if "use_count" in self._scope and self._charged_count + self._delegated_count + child_uses > self._scope["use_count"]:
+            raise ContractError("USE_COUNT_EXHAUSTED")
+        self._delegated_count += child_uses
         return AuthorityScopeV1(scope=inherited, generation=child_generation, holder=child_holder)
 
     def reserve(self, *, consumption_ref: str, args_digest: str, target_ref: str | None = None) -> dict[str, Any]:
@@ -161,8 +177,10 @@ class AuthorityScopeV1:
         args_digest = _require_str(args_digest, "INVALID_ARGS_DIGEST")
         if consumption_ref in self._settlements:
             raise ContractError("DUPLICATE_CONSUMPTION_REF")
-        if "use_count" in self._scope and self._open_count >= self._scope["use_count"]:
+        if "use_count" in self._scope and self._charged_count >= self._scope["use_count"]:
             raise ContractError("USE_COUNT_EXHAUSTED")
+        if "target" in self._scope and target_ref is None:
+            raise ContractError("TARGET_REQUIRED")
         if target_ref is not None:
             target_ref = _require_str(target_ref, "INVALID_TARGET_REF")
             if "target" in self._scope and target_ref != self._scope["target"]:
@@ -174,6 +192,7 @@ class AuthorityScopeV1:
             "target_ref": target_ref,
         }
         self._open_count += 1
+        self._charged_count += 1
         return self._receipt(consumption_ref)
 
     def commit(self, consumption_ref: str, *, effect_receipt_digest: str) -> dict[str, Any]:
@@ -197,8 +216,8 @@ class AuthorityScopeV1:
         record["state"] = state
         record.update(extra)
         self._open_count -= 1
-        if state == "committed":
-            self._consumed_count += 1
+        if state == "released":
+            self._charged_count -= 1
         return self._receipt(consumption_ref)
 
     def _receipt(self, consumption_ref: str) -> dict[str, Any]:
@@ -210,7 +229,9 @@ class AuthorityScopeV1:
             "holder": self._holder,
             "record": dict(record),
             "open_reservations": self._open_count,
-            "consumed_total": self._consumed_count,
+            "charged_total": self._charged_count,
+            "consumed_total": self._charged_count,
+            "delegated_total": self._delegated_count,
         }
         receipt["receipt_digest"] = digest(receipt)
         return receipt
@@ -224,6 +245,8 @@ class AuthorityScopeV1:
         if not isinstance(parent, AuthorityScopeV1):
             raise ContractError("INVALID_SCOPE_OBJECT")
         contained = self.is_subset(parent)
+        if self._generation <= parent._generation:
+            raise ContractError("NON_MONOTONE_GENERATION")
         witness = {
             "schema": SCHEMA_VERSION,
             "witness_kind": "subset",
@@ -231,6 +254,8 @@ class AuthorityScopeV1:
             "parent_fingerprint": parent.fingerprint(),
             "child_generation": self._generation,
             "parent_generation": parent._generation,
+            "child_holder": self._holder,
+            "parent_holder": parent._holder,
             "contained": contained,
         }
         witness["witness_digest"] = digest(witness)

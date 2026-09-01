@@ -66,8 +66,8 @@ def test_paused_with_in_flight_effect_flags_attention() -> None:
     projection = operator_run_projection(state, source_event_exists=_exists)
     assert projection["axes"]["effect_risk"] == "high"
     codes = [item["code"] for item in projection["attention"]]
-    assert "IN_FLIGHT_EFFECT_OUTSIDE_RUNNING" in codes
-    flagged = next(item for item in projection["attention"] if item["code"] == "IN_FLIGHT_EFFECT_OUTSIDE_RUNNING")
+    assert "UNSETTLED_EFFECT_OUTSIDE_RUNNING" in codes
+    flagged = next(item for item in projection["attention"] if item["code"] == "UNSETTLED_EFFECT_OUTSIDE_RUNNING")
     assert flagged["detail_refs"] == ["effect:deploy-1"]
 
 

@@ -50,11 +50,11 @@ def test_normalize_time_bounds() -> None:
     with pytest.raises(ContractError):
         normalize_scope({"time": {}})
     with pytest.raises(ContractError):
-        normalize_scope({"time": {"not_before": "b", "not_after": "a"}})
+        normalize_scope({"time": {"not_before": "2026-02-01T00:00:00Z", "not_after": "2026-01-01T00:00:00Z"}})
     with pytest.raises(ContractError):
         normalize_scope({"time": {"not_before": 7}})
-    assert normalize_scope({"time": {"not_before": "a", "not_after": "b"}}) == {
-        "time": {"not_before": "a", "not_after": "b"}
+    assert normalize_scope({"time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-02T00:00:00Z"}}) == {
+        "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-01-02T00:00:00Z"}
     }
 
 
@@ -81,7 +81,7 @@ def test_subset_field_matrix() -> None:
         "tool": "t",
         "target": "p",
         "use_count": 5,
-        "time": {"not_before": "a", "not_after": "z"},
+        "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"},
     }
     assert is_subset_scope({}, parent_scope)
     assert is_subset_scope(parent_scope, parent_scope)
@@ -89,16 +89,16 @@ def test_subset_field_matrix() -> None:
     assert not is_subset_scope({"tool": "t"}, parent_scope)
     assert not is_subset_scope({"tool": "t", "use_count": 5}, parent_scope)
     assert not is_subset_scope(
-        {"tool": "t", "target": "p", "time": {"not_before": "a", "not_after": "z"}}, parent_scope
+        {"tool": "t", "target": "p", "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"}}, parent_scope
     )
     # Fully restated child with narrowed bounds is a subset.
     assert is_subset_scope(
-        {"tool": "t", "target": "p", "use_count": 5, "time": {"not_before": "b", "not_after": "y"}},
+        {"tool": "t", "target": "p", "use_count": 5, "time": {"not_before": "2026-02-01T00:00:00Z", "not_after": "2026-11-30T00:00:00Z"}},
         parent_scope,
     )
-    assert not is_subset_scope({"tool": "u", "target": "p", "use_count": 5, "time": {"not_before": "a", "not_after": "z"}}, parent_scope)
-    assert not is_subset_scope({"tool": "t", "target": "p", "use_count": 6, "time": {"not_before": "a", "not_after": "z"}}, parent_scope)
-    assert not is_subset_scope({"tool": "t", "target": "p", "use_count": 5, "time": {"not_before": "9", "not_after": "z"}}, parent_scope)
+    assert not is_subset_scope({"tool": "u", "target": "p", "use_count": 5, "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"}}, parent_scope)
+    assert not is_subset_scope({"tool": "t", "target": "p", "use_count": 6, "time": {"not_before": "2026-01-01T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"}}, parent_scope)
+    assert not is_subset_scope({"tool": "t", "target": "p", "use_count": 5, "time": {"not_before": "2025-12-31T00:00:00Z", "not_after": "2026-12-31T00:00:00Z"}}, parent_scope)
     # Child-only restriction against a less-restricted parent is narrower;
     # a child claiming a larger count than the parent allows is not.
     assert is_subset_scope({"tool": "t", "use_count": 1}, {"tool": "t", "use_count": 2})
@@ -135,7 +135,7 @@ def test_valid_attenuation_and_witness() -> None:
     assert witness["witness_digest"].startswith("sha256:")
     with pytest.raises(ContractError) as e:
         p.subset_witness(child)
-    assert e.value.code == "ATTENUATION_ESCALATION"
+    assert e.value.code == "NON_MONOTONE_GENERATION"
 
 
 def test_scope_fingerprint_deterministic() -> None:
@@ -160,14 +160,14 @@ def test_crash_after_effect_is_indeterminate() -> None:
 
 def test_commit_release_and_double_settlement() -> None:
     s = make_parent()
-    s.reserve(consumption_ref="r1", args_digest="sha256:a")
+    s.reserve(consumption_ref="r1", args_digest="sha256:a", target_ref="path:/tmp/x")
     r = s.commit("r1", effect_receipt_digest="sha256:e1")
     assert r["record"]["state"] == "committed"
     assert r["consumed_total"] == 1
     with pytest.raises(ContractError) as e:
         s.release("r1")
     assert e.value.code == "ALREADY_SETTLED"
-    s.reserve(consumption_ref="r2", args_digest="sha256:b")
+    s.reserve(consumption_ref="r2", args_digest="sha256:b", target_ref="path:/tmp/x")
     assert s.release("r2")["record"]["state"] == "released"
 
 
@@ -176,9 +176,9 @@ def test_unknown_and_duplicate_refs_fail_closed() -> None:
     with pytest.raises(ContractError) as e:
         s.commit("ghost", effect_receipt_digest="sha256:x")
     assert e.value.code == "UNKNOWN_CONSUMPTION_REF"
-    s.reserve(consumption_ref="r1", args_digest="sha256:a")
+    s.reserve(consumption_ref="r1", args_digest="sha256:a", target_ref="path:/tmp/x")
     with pytest.raises(ContractError) as e:
-        s.reserve(consumption_ref="r1", args_digest="sha256:a")
+        s.reserve(consumption_ref="r1", args_digest="sha256:a", target_ref="path:/tmp/x")
     assert e.value.code == "DUPLICATE_CONSUMPTION_REF"
 
 
@@ -193,8 +193,8 @@ def test_target_binding_enforced() -> None:
 
 def test_finite_allocation_exhaustion() -> None:
     s = AuthorityScopeV1(scope={"use_count": 2}, generation=0)
-    s.reserve(consumption_ref="r1", args_digest="sha256:a")
-    s.reserve(consumption_ref="r2", args_digest="sha256:b")
+    s.reserve(consumption_ref="r1", args_digest="sha256:a", target_ref="path:/tmp/x")
+    s.reserve(consumption_ref="r2", args_digest="sha256:b", target_ref="path:/tmp/x")
     with pytest.raises(ContractError) as e:
         s.reserve(consumption_ref="r3", args_digest="sha256:c")
     assert e.value.code == "USE_COUNT_EXHAUSTED"

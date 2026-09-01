@@ -1735,6 +1735,7 @@ def operator_run_projection(
     for record in effect_records:
         if not isinstance(record, Mapping):
             raise ContractError("INVALID_EFFECT_RECORD")
+        _operator_run_reject_summary_keys(record, "effect")
         effect_ref = record.get("effect_ref")
         _check_ref(effect_ref, "effect_ref")
         effect_state = record.get("state")
@@ -1757,6 +1758,7 @@ def operator_run_projection(
     for record in permit_records:
         if not isinstance(record, Mapping):
             raise ContractError("INVALID_PERMIT_RECORD")
+        _operator_run_reject_summary_keys(record, "permit")
         permit_ref = record.get("permit_ref")
         _check_ref(permit_ref, "permit_ref")
         permit_state = record.get("state")
@@ -1779,12 +1781,21 @@ def operator_run_projection(
     checkpoint_ref = recovery.get("checkpoint_ref")
     if checkpoint_ref is not None:
         _check_ref(checkpoint_ref, "checkpoint_ref")
+        if not source_event_exists(checkpoint_ref):
+            raise ContractError("MISSING_SOURCE_EVENT", checkpoint_ref)
+    if recovery_state in {"checkpointed", "resumed_safe", "resumed_unsafe"} and checkpoint_ref is None:
+        raise ContractError("CHECKPOINT_REQUIRED")
     recovery_refs = _operator_run_check_refs(recovery.get("evidence_refs", ()), "recovery.evidence_refs")
     for ref in recovery_refs:
         if not source_event_exists(ref):
             raise ContractError("MISSING_SOURCE_EVENT", ref)
 
-    versions = {str(key): str(value) for key, value in sorted((source_versions or {}).items())}
+    if source_versions is not None and (
+        not isinstance(source_versions, Mapping)
+        or not all(isinstance(key, str) and isinstance(value, str) and value for key, value in source_versions.items())
+    ):
+        raise ContractError("INVALID_SOURCE_VERSIONS")
+    versions = dict(sorted((source_versions or {}).items()))
     for key in versions:
         _check_ref(key, "source_versions")
 
@@ -1804,9 +1815,9 @@ def operator_run_projection(
     if authority_violated:
         attention.append({"axis": "authority", "code": "REVOKED_PERMIT_WITH_UNSETTLED_EFFECT",
                           "detail_refs": sorted({ref for item in revoked for ref in item["evidence_refs"]} | {item["effect_ref"] for item in unsettled})})
-    if any(item["state"] == "in_flight" for item in effects) and lifecycle in {"paused", "completed", "cancelled", "failed"}:
-        attention.append({"axis": "effect_risk", "code": "IN_FLIGHT_EFFECT_OUTSIDE_RUNNING",
-                          "detail_refs": sorted(item["effect_ref"] for item in effects if item["state"] == "in_flight")})
+    if unsettled and lifecycle in {"paused", "completed", "cancelled", "failed"}:
+        attention.append({"axis": "effect_risk", "code": "UNSETTLED_EFFECT_OUTSIDE_RUNNING",
+                          "detail_refs": sorted(item["effect_ref"] for item in unsettled)})
     if recovery_state == "resumed_unsafe":
         attention.append({"axis": "recovery", "code": "UNSAFE_RESUME",
                           "detail_refs": sorted(set(recovery_refs) | ({checkpoint_ref} if checkpoint_ref else set()))})

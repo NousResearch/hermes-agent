@@ -2,8 +2,8 @@
 
 Studio's group chat is the reproduction reported on #96811, and it reaches
 Hermes as a LIBRARY rather than through the gateway: its Python bridge
-pre-creates the session row and then constructs ``AIAgent(...)`` directly with
-a fresh physical ``session_id`` for every reply.
+constructs ``AIAgent(...)`` directly with a fresh physical ``session_id`` for
+every reply, and only then persists the session row.
 
 ``tests/agent/test_declared_conversation_scope.py`` pins the declaration
 contract on synthetic agent doubles, and

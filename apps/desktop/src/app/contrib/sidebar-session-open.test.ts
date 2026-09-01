@@ -81,6 +81,7 @@ describe('openSidebarSession', () => {
       ownerRoute: { connectionId: 'connection-b', profile: 'profile-b', targetProfile: 'profile-b' },
       workspaceMode: 'sessions'
     })
+    expect(mocks.forgetSessionOwnerHintsForSession).not.toHaveBeenCalled()
   })
 
   it('queues an exact resume when the persisted preference selects main', () => {

@@ -138,6 +138,10 @@ def test_workspace_error_blocks_capability_without_retrying(isolated_home, monke
     assert crashed == [], "a blocked card is not accounted as a crash"
     assert task.status == "blocked"
     assert task.block_kind == "capability"
+    # MINOR (Rodge round-1): the workspace block must stamp last_failure_error
+    # so the assessor sees a reason string, like the other failure branches.
+    assert task.last_failure_error and "workspace" in task.last_failure_error.lower(), \
+        f"assessor must see a reason string, got {task.last_failure_error!r}"
     assert task.consecutive_failures == 0, \
         "workspace_error must not consume the failure budget"
     assert circuit == "closed", \
@@ -166,3 +170,32 @@ def test_no_checkpoint_keeps_bounded_retry(isolated_home, monkeypatch):
         "a below-budget violation must not tick the unified failure counter"
     assert circuit == "closed", "no_checkpoint is not a fleet outage"
     assert streak == 1, "a single genuine violation starts the bounded streak"
+
+
+def test_benign_workspace_mention_is_no_checkpoint_not_workspace_error(
+    isolated_home, monkeypatch,
+):
+    """Regression (Rodge round-1, t_8fc16a73): the bare noun ``workspace``
+    appears in benign model reasoning (measured 126/166 real worker logs), so a
+    genuine no_checkpoint whose finished-model log tail merely mentions
+    ``workspace`` must NOT be misclassified ``workspace_error`` (which would
+    block the card as capability instead of the bounded retry it needs). Only a
+    real contention signature (e.g. ``not inside a git repo``) trips
+    workspace_error."""
+    tid, crashed, run, task, circuit, streak = _trigger(
+        isolated_home, monkeypatch,
+        log_text=(
+            "I am working in the workspace at /Users/werolloperator/Projects. "
+            "The worktree is checked out. The task is complete — I forgot to "
+            "call kanban_complete."
+        ),
+    )
+    assert run is not None and task is not None
+    assert run.metadata.get("violation_class") == "no_checkpoint", (
+        f"benign 'workspace'/'worktree' mention must stay no_checkpoint, "
+        f"got {run.metadata.get('violation_class')!r}"
+    )
+    assert tid in crashed, "a benign log tail is still a bounded-retry crash"
+    assert task.status == "ready", "must re-queue for bounded retry, not block"
+    assert task.consecutive_failures == 0
+    assert circuit == "closed"

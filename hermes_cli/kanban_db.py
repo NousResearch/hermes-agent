@@ -8310,11 +8310,20 @@ _RESPAWN_BLOCKER_RE = re.compile(
 # workspace: the worker bailed because of git-worktree / workspace-path
 # contention. Retrying into the same broken workspace would just loop, so the
 # card is blocked (``capability``) instead (2026-09-01 split, t_8fc16a73).
+#
+# Only SPECIFIC contention phrases are matched — never the bare nouns
+# ``workspace`` / ``worktree`` / the ``.worktrees`` path — because those appear
+# in benign model reasoning text (measured 126/166 real worker logs, 2026-09-01)
+# and would misclassify a genuine no_checkpoint (finished but forgot to
+# checkpoint) whose log tail merely mentions "workspace" as workspace_error →
+# blocked instead of the bounded retry it needs. A true git worktree /
+# workspace-path contention failure always carries one of these exact
+# signatures.
 _WORKSPACE_ERROR_RE = re.compile(
-    r"\b(workspace|worktree|not inside a git repo|does not point at a git "
-    r"repo root|non-absolute workspace|already checked out at|already "
-    r"registered|directory not empty|failed to create worktree|git "
-    r"worktree|\.worktrees)\b",
+    r"\b(not inside a git repo|does not point at a git "
+    r"repo root|non-absolute workspace|is already checked out at|"
+    r"failed to create worktree|already exists and is not an empty "
+    r"directory)\b",
     re.IGNORECASE,
 )
 
@@ -9992,7 +10001,14 @@ def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = N
                     # Blocked by a broken workspace — NOT a crash and NOT a
                     # failure: the card is parked for an assessor, and it does
                     # not consume the failure budget or the violation streak.
-                    pass
+                    # Still stamp ``last_failure_error`` (like the
+                    # rate_limited and protocol_violation branches) so the
+                    # assessor / board UI sees the reason string instead of a
+                    # bare capability block with nothing to act on.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget

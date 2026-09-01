@@ -222,27 +222,48 @@ def _count_non_kanban_tool_calls(db, session_id: str) -> int:
     return count
 
 
-def _run_tool_evidence(session_id: str) -> Optional[int]:
-    """Return the run's non-kanban tool-call count, or ``None`` when the
-    session transcript cannot be located (fail open — never refuse on missing
-    evidence infrastructure, only on a positive finding of zero non-kanban
-    tool calls)."""
+def _run_produced_kanban_children(db, session_id: str) -> bool:
+    """True when the run called ``kanban_create`` / ``kanban_link``.
+
+    An orchestrator worker decomposes a goal by fanning out kanban_create /
+    kanban_link children and then completes its OWN card — with no non-kanban
+    tool call in the run. That decomposition IS the work, so the tool-evidence
+    gate must exempt it (else a legitimate orchestrator completion is bounced as
+    "zero evidence"). Rodge round-1 (t_8fc16a73): an orchestrator worker has
+    HERMES_KANBAN_TASK == its own id, so the ``!= task_id`` open path does not
+    cover it.
+    """
+    try:
+        rows = db.get_messages(session_id)
+    except Exception:
+        return False
+    for m in rows or []:
+        if m.get("role") != "assistant":
+            continue
+        tcs = m.get("tool_calls")
+        if isinstance(tcs, str):
+            try:
+                tcs = json.loads(tcs)
+            except (ValueError, TypeError):
+                tcs = None
+        for tc in tcs or []:
+            fn = ((tc or {}).get("function") or {}).get("name") or ""
+            if fn in ("kanban_create", "kanban_link"):
+                return True
+    return False
+
+
+def _open_session_db(session_id: str):
+    """Locate the session DB for ``session_id``, returning ``(db, profile)``
+    or ``(None, None)`` when it cannot be resolved (fail open). Shares the
+    lookup between the evidence count and the orchestrator exemption."""
     if not session_id:
-        return None
+        return None, None
     try:
         from tools.session_search_tool import _locate_session_db
-        db, _prof = _locate_session_db(session_id)
+        return _locate_session_db(session_id)
     except Exception:
-        return None
-    if db is None:
-        return None
-    try:
-        return _count_non_kanban_tool_calls(db, session_id)
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
+        return None, None
 
 
 def _consecutive_no_evidence_blocks(conn, task_id: str) -> int:
@@ -278,11 +299,29 @@ def _complete_tool_evidence_rejection(task_id: str) -> Optional[str]:
     budget sees it instead of the board silently rubber-stamping empty runs.
 
     Returns ``None`` to allow the completion. Orchestrator / CLI completions
-    (no worker task scope) and runs whose transcript cannot be read fail open.
+    (no worker task scope), runs whose transcript cannot be read, and runs that
+    produced kanban_create / kanban_link children (an orchestrator decomposition
+    IS the work) all fail open.
     """
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None  # orchestrator / CLI path — not a worker completion.
-    evidence = _run_tool_evidence(os.environ.get("HERMES_SESSION_ID") or "")
+    session_id = os.environ.get("HERMES_SESSION_ID") or ""
+    db, _prof = _open_session_db(session_id)
+    if db is None:
+        return None  # cannot locate transcript — fail open.
+    try:
+        # An orchestrator worker decomposing a goal calls kanban_create /
+        # kanban_link and then completes its own card with NO non-kanban tool
+        # call. That fan-out is real work, so it is exempt from the evidence
+        # gate (Rodge round-1, t_8fc16a73).
+        if _run_produced_kanban_children(db, session_id):
+            return None
+        evidence = _count_non_kanban_tool_calls(db, session_id)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
     if evidence is None or evidence > 0:
         return None  # fail open, or the run did real work — allow.
 

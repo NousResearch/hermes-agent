@@ -134,45 +134,43 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
 
     path = Path(db_path) if db_path is not None else Path(_default_db_path())
 
-    while True:
-        with _lock:
-            generation = _generations.get(path)
-            if generation is not None:
-                current = _stat_db_file_identity(path)
-                if (
-                    current is not None
-                    and generation.identity is not None
-                    and current != generation.identity
-                ):
-                    # File replaced: retire the live generation (its
-                    # holders keep it until they release) and fall
-                    # through to opening a fresh one below.
-                    _retire_generation_locked(path, generation)
-                    generation = None
-                else:
-                    generation.refcount += 1
-                    return generation.db
-
-        # Open a fresh generation OUTSIDE the lock: construction can
-        # take seconds (write-lock patience) and must not block every
-        # other state.db acquisition in the process.
-        db = _open_session_db(path)
-        db._shared_registry_owned = True
-        identity = _stat_db_file_identity(path)
-        with _lock:
-            existing = _generations.get(path)
-            if existing is not None and existing is not generation:
-                # Someone else opened a generation while we were
-                # constructing.  Ours loses — close it (outside the
-                # lock) and use theirs.
-                existing.refcount += 1
-                winner = existing.db
+    with _lock:
+        generation = _generations.get(path)
+        if generation is not None:
+            current = _stat_db_file_identity(path)
+            if (
+                current is not None
+                and generation.identity is not None
+                and current != generation.identity
+            ):
+                # File replaced: retire the live generation (its
+                # holders keep it until they release) and fall
+                # through to opening a fresh one below.
+                _retire_generation_locked(path, generation)
             else:
-                _generations[path] = _Generation(db, identity)
-                winner = db
-        if winner is not db:
-            _teardown(db)
-        return winner
+                generation.refcount += 1
+                return generation.db
+
+    # Open a fresh generation OUTSIDE the lock: construction can
+    # take seconds (write-lock patience) and must not block every
+    # other state.db acquisition in the process.
+    db = _open_session_db(path)
+    db._shared_registry_owned = True
+    identity = _stat_db_file_identity(path)
+    with _lock:
+        existing = _generations.get(path)
+        if existing is not None:
+            # Someone else opened a generation while we were
+            # constructing (or retired ours and installed a new one).
+            # Ours loses — close it (outside the lock) and use theirs.
+            existing.refcount += 1
+            winner = existing.db
+        else:
+            _generations[path] = _Generation(db, identity)
+            winner = db
+    if winner is not db:
+        _teardown(db)
+    return winner
 
 
 def _retire_generation_locked(path: Path, generation: _Generation) -> None:

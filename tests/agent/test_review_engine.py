@@ -119,6 +119,7 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
+            "reasoning_effort": "high",
         }}},
     )
     cfg = re_mod._load_review_credentials_cfg()
@@ -128,6 +129,7 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         "base_url": "",
         "api_key": "",
         "api_mode": "",
+        "reasoning_effort": "high",
     }
 
 
@@ -231,7 +233,11 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_credentials_cfg",
+        lambda: {"provider": "cliproxyapi", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
+    )
 
     msgs = [
         {"role": "user", "content": "open a PR for the fix"},
@@ -244,6 +250,7 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert "PR #77 opened" in built["context"]
     assert "check the tests" in built["context"]
     assert "reviewer" in built["goal"].lower()
+    assert built["override_reasoning_effort"] == "high"
 
     # The completion re-enters via the shared queue like any subagent.
     deadline = time.monotonic() + 5.0

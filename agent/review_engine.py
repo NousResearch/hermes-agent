@@ -231,6 +231,12 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
         "base_url": base_url,
         "api_key": str(review.get("api_key") or "").strip(),
         "api_mode": str(review.get("api_mode") or "").strip(),
+        # The review path reuses delegate_task's internal credentials_cfg
+        # override, but child reasoning was historically still read only from
+        # global delegation.reasoning_effort. Carry this review-specific value
+        # in the same trusted config bundle so /review can be strong without
+        # making every ordinary delegate_task child expensive.
+        "reasoning_effort": review.get("reasoning_effort", ""),
     }
 
 

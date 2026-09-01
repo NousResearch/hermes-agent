@@ -735,6 +735,27 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
+def _matrix_allow_public_rooms() -> bool:
+    """True when public room creation is allowed. YAML wins over env."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        tools = ((read_raw_config() or {}).get("matrix") or {}).get("tools") or {}
+        if isinstance(tools, dict) and "allow_public_rooms" in tools:
+            val = tools.get("allow_public_rooms")
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in ("true", "1", "yes", "on")
+            return bool(val)
+    except Exception:
+        pass
+    raw = os.getenv("MATRIX_ALLOW_PUBLIC_ROOMS")
+    if raw is not None:
+        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+    return False
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -2473,8 +2494,11 @@ class MatrixAdapter(BasePlatformAdapter):
         preset: str = "private_chat") -> Optional[str]:
         if not self._client:
             return None
-        if preset == "public_chat" and not _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS"):
-            logger.warning("Matrix: refusing to create public room without MATRIX_ALLOW_PUBLIC_ROOMS=true")
+        if preset == "public_chat" and not _matrix_allow_public_rooms():
+            logger.warning(
+                "Matrix: refusing to create public room without "
+                "matrix.tools.allow_public_rooms / MATRIX_ALLOW_PUBLIC_ROOMS"
+            )
             return None
         try:
             preset_enum = {

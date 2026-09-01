@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import math
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -48,6 +49,73 @@ class MemoryProviderConfigUpdate(BaseModel):
 
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}
+
+
+class MCPRemoteOAuthTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str = Field(min_length=1, max_length=255)
+    server: str = Field(min_length=1, max_length=255)
+
+    @field_validator("profile", "server")
+    @classmethod
+    def validate_target_identifier(cls, value: str) -> str:
+        if value != value.strip() or any(
+            ord(char) < 32 or ord(char) == 127 for char in value
+        ):
+            raise ValueError("target identifier is invalid")
+        return value
+
+
+class MCPRemoteOAuthStart(MCPRemoteOAuthTarget):
+    callback_url: Optional[str] = None
+
+    @field_validator("callback_url")
+    @classmethod
+    def validate_callback_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value or len(value) > 2048 or any(
+            ord(char) < 32 or ord(char) == 127 for char in value
+        ):
+            raise ValueError("callback_url is invalid")
+        parsed = urlsplit(value)
+        loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.scheme not in ({"http", "https"} if loopback else {"https"})
+        ):
+            raise ValueError("callback_url must be HTTPS or a loopback HTTP URL")
+        return value
+
+
+class MCPRemoteOAuthFlow(MCPRemoteOAuthTarget):
+    flow_id: str = Field(min_length=1, max_length=255)
+
+    @field_validator("flow_id")
+    @classmethod
+    def validate_flow_identifier(cls, value: str) -> str:
+        if value != value.strip() or any(
+            ord(char) < 32 or ord(char) == 127 for char in value
+        ):
+            raise ValueError("flow identifier is invalid")
+        return value
+
+
+class MCPRemoteOAuthRelay(MCPRemoteOAuthFlow):
+    code: str = Field(min_length=1, max_length=4096)
+    state: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("code", "state")
+    @classmethod
+    def validate_relay_material(cls, value: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("OAuth relay material is invalid")
+        return value
 
 
 class CustomEndpointUpdate(BaseModel):
@@ -763,4 +831,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

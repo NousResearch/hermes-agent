@@ -22,6 +22,9 @@ from hermes_cli.web_deps import late, LateState
 from hermes_cli.web_models import (
     MCPCatalogInstall,
     MCPEnabledToggle,
+    MCPRemoteOAuthFlow,
+    MCPRemoteOAuthRelay,
+    MCPRemoteOAuthStart,
     MCPServerCreate,
     MCPServersReplace,
 )
@@ -56,6 +59,155 @@ _MAX_PENDING_MCP_OAUTH_FLOWS = LateState("_MAX_PENDING_MCP_OAUTH_FLOWS")
 # Config read-modify-write serialization for off-loop handlers (defined in
 # web_server.py; LateState supports ``with``-blocks, so this is the live lock).
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
+
+
+@router.get("/api/capabilities")
+async def mission_control_mcp_oauth_capability(
+    request: Request,
+    profile: str,
+    server: str,
+):
+    """Advertise the bounded MCP OAuth contract for one configured target."""
+    from hermes_cli.mcp_config import _get_mcp_servers
+
+    _require_token(request)
+
+    def _read():
+        with _config_profile_scope(profile):
+            return _get_mcp_servers()
+
+    servers = await asyncio.to_thread(_read)
+    cfg = servers.get(server)
+    if not isinstance(cfg, dict) or not cfg.get("url") or cfg.get("auth") != "oauth":
+        raise HTTPException(status_code=404, detail="OAuth MCP target not found")
+    return {
+        "capabilities": {
+            "mcp_oauth_flow_v1": {"callback_mode": "relay"},
+        }
+    }
+
+
+@router.post("/api/mcp/oauth/start")
+async def mission_control_start_mcp_oauth(
+    body: MCPRemoteOAuthStart,
+    request: Request,
+):
+    """Start the existing Hermes OAuth engine for a Mission Control target."""
+    from hermes_cli.mcp_config import _get_mcp_servers
+    from hermes_constants import get_hermes_home
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    _require_token(request)
+    _gc_mcp_oauth_flows()
+
+    def _read():
+        with _config_profile_scope(body.profile):
+            return _get_mcp_servers(), str(
+                get_hermes_home().expanduser().resolve(strict=False)
+            )
+
+    servers, flow_home = await asyncio.to_thread(_read)
+    cfg = servers.get(body.server)
+    if not isinstance(cfg, dict) or not cfg.get("url") or cfg.get("auth") != "oauth":
+        raise HTTPException(status_code=404, detail="OAuth MCP target not found")
+
+    flow_id = secrets.token_urlsafe(24)
+    flow = DashboardOAuthFlow(
+        flow_id=flow_id,
+        server_name=body.server,
+        profile=body.profile,
+        hermes_home=flow_home,
+        redirect_uri=body.callback_url,
+        reconnect_live=False,
+    )
+    with _mcp_oauth_flows_lock:
+        pending = sum(not existing.worker_done for existing in _mcp_oauth_flows.values())
+        if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many MCP OAuth flows are already in progress",
+            )
+        if any(
+            existing.server_name == body.server
+            and existing.hermes_home == flow_home
+            and not existing.worker_done
+            for existing in _mcp_oauth_flows.values()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"MCP OAuth for '{body.server}' is already in progress",
+            )
+        _mcp_oauth_flows[flow_id] = flow
+
+    threading.Thread(
+        target=_run_dashboard_mcp_oauth,
+        args=(flow, dict(cfg)),
+        daemon=True,
+        name=f"mcp-oauth-{body.server}",
+    ).start()
+    try:
+        authorization_url = await flow.wait_for_authorization_url(timeout=30)
+    except Exception as exc:
+        flow.mark_error(str(exc))
+        raise HTTPException(status_code=502, detail="MCP OAuth could not start") from exc
+    return {"flow_id": flow_id, "authorization_url": authorization_url}
+
+
+def _mission_control_flow(flow_id: str, profile: str, server: str):
+    flow = _mcp_oauth_flows.get(flow_id)
+    if (
+        flow is None
+        or flow.profile != profile
+        or flow.server_name != server
+    ):
+        raise HTTPException(status_code=404, detail="OAuth flow not found or expired")
+    return flow
+
+
+@router.get("/api/mcp/oauth/status")
+async def mission_control_mcp_oauth_status(
+    request: Request,
+    profile: str,
+    server: str,
+    flow_id: str,
+):
+    _require_token(request)
+    _gc_mcp_oauth_flows()
+    flow = _mission_control_flow(flow_id, profile, server)
+    status = {
+        "approved": "succeeded",
+        "error": "failed",
+    }.get(flow.snapshot()["status"], "pending")
+    return {"status": status}
+
+
+@router.post("/api/mcp/oauth/relay")
+async def mission_control_relay_mcp_oauth(
+    body: MCPRemoteOAuthRelay,
+    request: Request,
+):
+    _require_token(request)
+    _gc_mcp_oauth_flows()
+    flow = _mission_control_flow(body.flow_id, body.profile, body.server)
+    try:
+        flow.deliver_callback(code=body.code, state=body.state, error=None)
+    except ValueError as exc:
+        if "already received" in str(exc):
+            raise HTTPException(status_code=409, detail="OAuth callback already used") from exc
+        raise HTTPException(status_code=404, detail="OAuth flow not found or expired") from exc
+    return {"status": "pending"}
+
+
+@router.post("/api/mcp/oauth/cancel")
+async def mission_control_cancel_mcp_oauth(
+    body: MCPRemoteOAuthFlow,
+    request: Request,
+):
+    _require_token(request)
+    _gc_mcp_oauth_flows()
+    flow = _mission_control_flow(body.flow_id, body.profile, body.server)
+    flow.mark_error("Cancelled by Mission Control")
+    return {"ok": True}
 
 
 @router.get("/api/mcp/servers")

@@ -251,6 +251,7 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
     "VERIFICATION",
     "ADVISORY",
 })
+_LINTER_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][0-9]{3,4}$")
 _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
     r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
@@ -583,6 +584,12 @@ def _canonical_base64_candidate(candidate: str) -> bool:
         # Exact status labels are not an encoding channel; treating them as
         # Base64 strands workers while replaying ordinary CLI output.
         return False
+    if _LINTER_DIAGNOSTIC_CODE.fullmatch(candidate):
+        # Ruff/flake8-style findings are ordinary bounded CI metadata. They
+        # are not source excerpts or opaque encoded payloads, even when a
+        # tool result is carried as a SanitizedSegment rather than generated
+        # context where the source-atom mask would already apply.
+        return False
     if _BOUNDED_DURATION.fullmatch(candidate):
         return False
     if re.fullmatch(r"0x[0-9a-fA-F]+", candidate):
@@ -636,6 +643,11 @@ def _canonical_chunked_base64_candidate(candidate: str) -> bool:
 
     chunks = re.findall(r"[A-Za-z0-9_+/=-]{2,4}", candidate)
     if len(chunks) < 3:
+        return False
+    if all(_LINTER_DIAGNOSTIC_CODE.fullmatch(chunk) for chunk in chunks):
+        # A run of bounded Ruff/flake8 findings is structured CI output, not
+        # a wrapped encoding. Without this guard, ``E501 F821 W391`` is joined
+        # across spaces and can happen to decode canonically.
         return False
     width = len(chunks[0])
     if not all(len(chunk) == width for chunk in chunks[:-1]):

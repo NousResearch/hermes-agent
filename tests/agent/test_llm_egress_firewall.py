@@ -969,6 +969,30 @@ def test_json_protocol_acronym_is_not_a_base64_false_positive(tmp_path):
     assert firewall(tmp_path).preflight(request, _route()).allowed
 
 
+@pytest.mark.parametrize("diagnostic_code", ["E501", "F821", "F401", "W391"])
+def test_linter_diagnostic_codes_are_not_base64_false_positives(
+    tmp_path, diagnostic_code
+):
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                SanitizedSegment(
+                    f"hygiene findings: {diagnostic_code} E501 F821 W391"
+                )
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
 @pytest.mark.parametrize(
     "schema_atom",
     [

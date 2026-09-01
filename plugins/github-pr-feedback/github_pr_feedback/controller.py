@@ -49,6 +49,8 @@ LOCAL_CI_FEEDBACK_ID = "local-ci-audit-v2"
 _ADDITIONAL_GOVERNED_VENV_ROOTS = (Path("/Users/mikedemott/TradingBotV18/.venv"),)
 _SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
 DEFAULT_CLAIM_LEASE = timedelta(minutes=5)
+LOCAL_CI_RETRY_BACKOFF = timedelta(minutes=5)
+LOCAL_CI_RETRY_MAX_ATTEMPTS = 8
 _SELF_RESOLUTION_PREFIXES = (
     "addressed ",
     "implemented in ",
@@ -1128,7 +1130,7 @@ class ScanController:
                         pass
                     elif feedback_pending:
                         skipped["feedback_pending"] += 1
-                    elif local_ci_receipt_status is not None:
+                    elif local_ci_receipt_status in {"claimed", "completed"}:
                         skipped["local_ci_exact_head_seen"] += 1
                     elif actions_state_unavailable:
                         skipped["github_ci_state_unavailable"] += 1
@@ -1140,7 +1142,9 @@ class ScanController:
                         skipped["admission_cap"] += 1
                     else:
                         audit_error = self._dispatch_local_ci(
-                            pull_request, current=current
+                            pull_request,
+                            current=current,
+                            retry_failed=local_ci_receipt_status == "failed",
                         )
                         if audit_error != "duplicate":
                             attempted += 1
@@ -1409,7 +1413,11 @@ class ScanController:
 
 
     def _dispatch_local_ci(
-        self, listed: PullRequest, *, current: PullRequest | None = None
+        self,
+        listed: PullRequest,
+        *,
+        current: PullRequest | None = None,
+        retry_failed: bool = False,
     ) -> str | None:
         audit_policy = self._policy.local_ci_audit
         if audit_policy is None:
@@ -1442,16 +1450,25 @@ class ScanController:
             head_sha=current.head_sha,
         )
         claimed_at = self._clock()
-        lease = _claim_with_orphan_recovery(
-            self._ledger,
-            self._kanban,
-            receipt,
-            board=self._policy.board or "",
-            owner=self._claim_owner,
-            claimed_at=claimed_at,
-            stale_before=claimed_at - self._claim_lease,
-            exact_dispatch_only=True,
-        )
+        if retry_failed:
+            lease = self._ledger.retry(
+                receipt,
+                owner=self._claim_owner,
+                claimed_at=claimed_at,
+                retry_after=LOCAL_CI_RETRY_BACKOFF,
+                max_attempts=LOCAL_CI_RETRY_MAX_ATTEMPTS,
+            )
+        else:
+            lease = _claim_with_orphan_recovery(
+                self._ledger,
+                self._kanban,
+                receipt,
+                board=self._policy.board or "",
+                owner=self._claim_owner,
+                claimed_at=claimed_at,
+                stale_before=claimed_at - self._claim_lease,
+                exact_dispatch_only=True,
+            )
         if lease is None:
             return "duplicate"
         self._ledger.record_expected_head(receipt, lease, receipt.head_sha)
@@ -1493,7 +1510,12 @@ class ScanController:
                     file=sys.stderr,
                 )
             try:
-                self._ledger.fail(receipt, str(error) or "task creation failed", lease)
+                self._ledger.fail(
+                    receipt,
+                    str(error) or "task creation failed",
+                    lease,
+                    failed_at=self._clock(),
+                )
             except LedgerStateError:
                 pass
             if isinstance(error, ExactHeadUnavailable):

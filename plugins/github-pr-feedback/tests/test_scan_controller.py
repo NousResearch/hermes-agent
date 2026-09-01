@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1844,6 +1845,101 @@ def test_scan_prioritizes_oldest_missing_receipt_within_local_ci_read_cap(
     assert result.skipped["local_ci_open_pr_scan_cap"] == 1
     assert github.feedback_calls == [("acme/widgets", 17)]
     assert github.current_calls == [("acme/widgets", 17)]
+    ledger.close()
+
+
+def test_local_ci_backlog_advances_past_failed_dispatches_to_unattempted_pr(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    assert policy.local_ci_audit is not None
+    policy = replace(
+        policy,
+        local_ci_audit=replace(policy.local_ci_audit, max_open_prs_per_scan=1),
+    )
+    target = policy.targets["acme/widgets"]
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    pull_requests = tuple(
+        PullRequest(
+            number,
+            "OPEN",
+            "acme/widgets",
+            "acme/widgets",
+            "owner",
+            f"codex/{number}",
+            sha,
+        )
+        for number in range(17, 30)
+    )
+    failed_at = datetime(2026, 8, 30, tzinfo=UTC)
+    for pull in pull_requests[:12]:
+        receipt = FeedbackReceipt(
+            "acme/widgets",
+            pull.number,
+            "pr_local_ci",
+            _local_ci_feedback_id(pull),
+            pull.head_sha,
+        )
+        lease = ledger.claim(
+            receipt,
+            owner="old-auditor",
+            claimed_at=failed_at,
+            stale_before=failed_at - timedelta(minutes=5),
+        )
+        assert lease is not None
+        ledger.fail(receipt, "worktree pool was full", lease)
+
+    selected_numbers = [
+        _select_local_ci_candidates(policy, ledger, target, pull_requests)[0].number
+        for _ in range(13)
+    ]
+
+    assert selected_numbers == list(range(17, 30))
+    ledger.close()
+
+
+def test_scan_retries_failed_local_ci_dispatch_and_reclaims_its_slot(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    pull = admitted_pull_request(sha)
+    github = FakeGitHub(pull, ())
+    github.actions_are_enabled = False
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    receipt = FeedbackReceipt(
+        "acme/widgets", 17, "pr_local_ci", _local_ci_feedback_id(pull), sha
+    )
+    claimed = ledger.claim(
+        receipt,
+        owner="old-auditor",
+        claimed_at=datetime(2026, 8, 30, tzinfo=UTC),
+        stale_before=datetime(2026, 8, 29, tzinfo=UTC),
+    )
+    assert claimed is not None
+    ledger.fail(
+        receipt,
+        "worktree pool was full",
+        claimed,
+        failed_at=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+
+    result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
+
+    assert result.created == 1
+    assert len(kanban.tasks) == 1
+    assert receipt_status(ledger, receipt) == "completed"
+    assert receipt_lease_version(ledger, receipt) == 2
     ledger.close()
 
 

@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .policy import FeedbackReceipt
@@ -195,6 +195,13 @@ class FeedbackLedger:
                 updated_at TEXT NOT NULL,
                 scanned_at TEXT NOT NULL,
                 PRIMARY KEY (repository, pr_number)
+            )
+            """)
+        self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS local_ci_selection_cursors (
+                repository TEXT PRIMARY KEY,
+                cursor INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """)
         self._connection.execute("""
@@ -501,6 +508,52 @@ class FeedbackLedger:
             raise LedgerStateError("stored feedback receipt status is invalid")
         return str(status)
 
+    def exact_receipt_state(self, receipt: FeedbackReceipt) -> tuple[str, int] | None:
+        """Return exact dispatch status and attempts for bounded retry selection."""
+
+        row = self._connection.execute(
+            "SELECT status, attempts FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
+            "AND feedback_kind = ? AND feedback_id = ? AND head_sha = ?",
+            receipt.key,
+        ).fetchone()
+        if row is None:
+            return None
+        status = str(row[0])
+        if status not in {"claimed", "completed", "failed"}:
+            raise LedgerStateError("stored feedback receipt status is invalid")
+        return status, int(row[1] or 0)
+
+    def local_ci_selection_cursor(self, repository: str) -> int:
+        """Return the durable round-robin offset for one repository catalogue."""
+
+        row = self._connection.execute(
+            "SELECT cursor FROM local_ci_selection_cursors WHERE repository = ?",
+            (repository,),
+        ).fetchone()
+        return max(0, int(row[0])) if row is not None else 0
+
+    def advance_local_ci_selection_cursor(
+        self,
+        repository: str,
+        *,
+        cursor: int,
+        candidate_count: int,
+        updated_at: datetime,
+    ) -> None:
+        """Persist the next bounded catalogue offset after one scan window."""
+
+        if candidate_count < 1:
+            raise ValueError("candidate_count must be positive")
+        updated = _aware_utc(updated_at, "updated_at")
+        next_cursor = int(cursor) % candidate_count
+        with self._transaction():
+            self._connection.execute(
+                "INSERT INTO local_ci_selection_cursors(repository, cursor, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(repository) DO UPDATE SET cursor = excluded.cursor, "
+                "updated_at = excluded.updated_at",
+                (repository, next_cursor, updated.isoformat()),
+            )
+
     def pending_task_bindings_for_head(
         self, receipt: FeedbackReceipt
     ) -> tuple[PendingTaskBinding, ...]:
@@ -787,6 +840,8 @@ class FeedbackLedger:
         *,
         owner: str,
         claimed_at: datetime,
+        retry_after: timedelta = timedelta(0),
+        max_attempts: int | None = None,
     ) -> ClaimLease | None:
         """Atomically retry a receipt after an explicitly recorded dispatch failure."""
 
@@ -794,15 +849,29 @@ class FeedbackLedger:
         if not owner:
             raise ValueError("claim owner must be a non-empty string")
         claimed_at = _aware_utc(claimed_at, "claimed_at")
+        if retry_after < timedelta(0):
+            raise ValueError("retry_after must not be negative")
+        if max_attempts is not None and max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
         with self._transaction():
             row = self._connection.execute(
-                "SELECT lease_version FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
+                "SELECT attempts, claimed_at, lease_version FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
                 "AND feedback_kind = ? AND feedback_id = ? AND head_sha = ? AND status = 'failed'",
                 receipt.key,
             ).fetchone()
             if row is None:
                 return None
-            version = int(row[0] or 0) + 1
+            attempts = int(row[0] or 0)
+            if max_attempts is not None and attempts >= max_attempts:
+                return None
+            if row[1] is not None:
+                try:
+                    failed_at = datetime.fromisoformat(str(row[1])).astimezone(UTC)
+                except (TypeError, ValueError):
+                    failed_at = claimed_at
+                if failed_at + retry_after > claimed_at:
+                    return None
+            version = int(row[2] or 0) + 1
             result = self._connection.execute(
                 "UPDATE feedback_receipts SET status = 'claimed', last_error = NULL, attempts = attempts + 1, "
                 "claim_owner = ?, claimed_at = ?, lease_version = ? "
@@ -841,16 +910,29 @@ class FeedbackLedger:
                     (task_id, *receipt.key),
                 )
 
-    def fail(self, receipt: FeedbackReceipt, error: str, lease: ClaimLease) -> None:
+    def fail(
+        self,
+        receipt: FeedbackReceipt,
+        error: str,
+        lease: ClaimLease,
+        *,
+        failed_at: datetime | None = None,
+    ) -> None:
         error = error.strip() if isinstance(error, str) else ""
         if not error:
             raise ValueError("error must be a non-empty string")
+        failed_at_value = (
+            _aware_utc(failed_at, "failed_at").isoformat()
+            if failed_at is not None
+            else None
+        )
         with self._transaction():
             result = self._connection.execute(
-                "UPDATE feedback_receipts SET status = 'failed', last_error = ? "
+                "UPDATE feedback_receipts SET status = 'failed', last_error = ?, "
+                "claimed_at = COALESCE(?, claimed_at) "
                 "WHERE repository = ? AND pr_number = ? AND feedback_kind = ? AND feedback_id = ? "
                 "AND head_sha = ? AND status = 'claimed' AND claim_owner = ? AND lease_version = ?",
-                (error[:1000], *receipt.key, lease.owner, lease.version),
+                (error[:1000], failed_at_value, *receipt.key, lease.owner, lease.version),
             )
             if result.rowcount != 1:
                 raise LedgerStateError("receipt lease is not held")

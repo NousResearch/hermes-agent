@@ -2061,6 +2061,111 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     ]
 
 
+def test_blocked_merge_handoff_blocks_task_with_exact_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
+    from github_pr_feedback.cli import _audit_pr
+    from github_pr_feedback.github_client import CheckState, PullRequestMergeState
+
+    head_sha = "a" * 40
+    base_sha = "b" * 40
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    manifest = repository / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("[lanes.fast]\nargv = ['pytest']\n", encoding="utf-8")
+    settings = enabled_settings(repository)
+    settings["local_ci_audit"] = {
+        "enabled": True,
+        "assignee": "pr-local-ci-auditor",
+        "post_results": False,
+    }
+    receipt = CIAuditReceipt(
+        receipt_id="p" * 64,
+        identity=CIAuditIdentity("acme/widgets", 17, base_sha, head_sha),
+        manifest_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        status="passed",
+        started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
+        actions_state=CheckState(False, True, 0),
+        commands=(),
+    )
+
+    class GitHub:
+        def get_merge_state(self, _repository: str, _pr_number: int):
+            return PullRequestMergeState(
+                repository="acme/widgets",
+                number=17,
+                state="OPEN",
+                is_draft=False,
+                merged=False,
+                mergeable=True,
+                merge_state_status="CLEAN",
+                base_branch="main",
+                base_sha=base_sha,
+                head_repository="acme/widgets",
+                author_login="owner",
+                head_ref_name="codex/fix",
+                head_sha=head_sha,
+                merge_commit_oid=None,
+            )
+
+    class Ledger:
+        def close(self) -> None:
+            pass
+
+    blocked: list[tuple[CIAuditReceipt, list[str]]] = []
+    completed: list[CIAuditReceipt] = []
+    monkeypatch.setattr("github_pr_feedback.cli.GitHubClient", GitHub)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli.FeedbackLedger.for_current_profile", lambda: Ledger()
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_grouped_exact_head_audit",
+        lambda *_args, **_kwargs: receipt,
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_single_pr_merge_handoff",
+        lambda *_args, **_kwargs: {
+            "status": "blocked",
+            "blockers": ["ci_receipt_not_passing", "review_required"],
+        },
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._block_current_ci_task",
+        lambda audit, blockers: blocked.append((audit, blockers)),
+    )
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._complete_current_ci_task",
+        lambda audit: completed.append(audit),
+    )
+
+    result = _audit_pr(
+        RecordingContext(settings),
+        argparse.Namespace(
+            repository="acme/widgets",
+            pr_number=17,
+            head_sha=head_sha,
+            worktree=str(repository),
+        ),
+    )
+
+    assert result == 1
+    assert blocked == [(receipt, ["ci_receipt_not_passing", "review_required"])]
+    assert completed == []
+    rendered = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rendered[-1] == {
+        "blockers": ["ci_receipt_not_passing", "review_required"],
+        "receipt_id": receipt.receipt_id,
+        "retryable": False,
+        "status": "audit_handoff_blocked",
+    }
+
+
 def test_audit_reuses_exact_head_manifest_receipt_without_rerunning_lane(
     tmp_path: Path,
 ) -> None:

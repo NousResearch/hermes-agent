@@ -830,6 +830,13 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             _complete_current_ci_task(receipt)
             handoff_completed = True
         except (CIValidationError, GitHubClientError, RuntimeError):
+            if not handoff_blocked:
+                try:
+                    _block_current_ci_task(
+                        receipt, ["transient_handoff_failure"], kind="transient"
+                    )
+                except RuntimeError:
+                    pass
             print(
                 json.dumps(
                     {
@@ -925,6 +932,42 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
         raise RuntimeError("Hermes runtime unavailable for Kanban audit completion") from exc
     if completed.returncode != 0:
         raise RuntimeError("Kanban audit completion failed")
+
+
+def _block_current_ci_task(
+    receipt: CIAuditReceipt,
+    blockers: list[str],
+    *,
+    kind: str | None = None,
+) -> None:
+    """Persist a blocked or transient handoff on the current Kanban task."""
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return
+    board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    reason = f"Exact-head CI receipt {receipt.receipt_id}: "
+    reason += ", ".join(blockers) if blockers else "handoff did not complete"
+    argv = [sys.executable, "-m", "hermes_cli.main", "kanban"]
+    if board:
+        argv.extend(["--board", board])
+    argv.extend(["block", task_id])
+    if kind is not None:
+        argv.extend(["--kind", kind])
+    argv.append(reason)
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except OSError as exc:
+        raise RuntimeError("Hermes runtime unavailable for Kanban audit block") from exc
+    if completed.returncode != 0:
+        raise RuntimeError("Kanban audit block failed")
 
 
 def _terminate_current_ci_worker() -> None:

@@ -2216,10 +2216,10 @@ _start_idle_reaper()
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
         try:
-            _db = SessionDB()
+            _db = get_shared_session_db()
             _db_error = None
         except Exception as exc:
             _db_error = str(exc)
@@ -2245,9 +2245,9 @@ def _db_for_profile(profile: str | None = None):
     if profile_home is None:
         return _get_db(), False
     try:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
-        return SessionDB(db_path=Path(profile_home) / "state.db"), True
+        return get_shared_session_db(Path(profile_home) / "state.db"), True
     except Exception as exc:
         logger.warning(
             "TUI profile session store unavailable for %s: %s",
@@ -2309,11 +2309,11 @@ def _open_profile_session_db(profile_home):
     the build's ``agent_error`` path) instead of swallowing it back onto the
     launch handle.
     """
-    from hermes_state import SessionDB
+    from hermes_state import get_shared_session_db
 
     db_path = Path(profile_home) / "state.db"
     try:
-        return SessionDB(db_path=db_path)
+        return get_shared_session_db(db_path)
     except Exception as exc:
         raise RuntimeError(
             f"profile session store unavailable: {db_path}: {exc}"
@@ -3938,7 +3938,8 @@ def _ensure_session_db_row(session: dict) -> bool:
         from hermes_state import SessionDB
 
         try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            from hermes_state import get_shared_session_db
+            db = get_shared_session_db(Path(profile_home) / "state.db")
         except Exception:
             logger.debug("failed to open profile db for session row", exc_info=True)
             return False
@@ -4068,7 +4069,8 @@ def _ensure_session_db_row(session: dict) -> bool:
     finally:
         if close_db:
             try:
-                db.close()
+                from hermes_state import release_or_close
+                release_or_close(db)
             except Exception:
                 pass
     return True
@@ -4152,7 +4154,8 @@ def _session_db(session: dict):
         from hermes_state import SessionDB
 
         try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
+            from hermes_state import get_shared_session_db
+            db, close_db = get_shared_session_db(Path(profile_home) / "state.db"), True
         except Exception:
             logger.debug("failed to open profile db for session", exc_info=True)
     else:
@@ -4162,7 +4165,8 @@ def _session_db(session: dict):
     finally:
         if close_db and db is not None:
             with contextlib.suppress(Exception):
-                db.close()
+                from hermes_state import release_or_close
+                release_or_close(db)
 
 
 def _rewind_active_session_history(

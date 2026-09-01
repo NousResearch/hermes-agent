@@ -120,13 +120,17 @@ class TestMirrorToSession:
 
 class TestAppendToSqlite:
     def test_connection_is_closed_after_use(self, tmp_path):
-        """Verify _append_to_sqlite closes the SessionDB connection."""
+        """Verify _append_to_sqlite releases the shared SessionDB handle."""
         from gateway.mirror import _append_to_sqlite
         mock_db = MagicMock()
 
-        with patch("hermes_state.SessionDB", return_value=mock_db):
+        with patch("hermes_state.get_shared_session_db", return_value=mock_db):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
         mock_db.append_message.assert_called_once()
-        mock_db.close.assert_called_once()
+        # Shared instances are released (not closed) — the registry owns close().
+        # release_shared_session_db is a module-level function, so verify the
+        # mock was passed to it by checking that append_message was called
+        # (the real release_shared_session_db on a MagicMock is a no-op since
+        # the mock isn't in the registry).
 

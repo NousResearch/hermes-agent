@@ -77,7 +77,8 @@ def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
     try:
         db = future.result()
         if db is not None:
-            db.close()
+            from hermes_state import release_or_close
+            release_or_close(db)
     except Exception:
         pass
 
@@ -6399,7 +6400,7 @@ def run_job(
         # run forever.
         _session_db_timeout = _get_session_db_timeout()
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
             if _session_db_timeout > 0:
                 _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -6410,7 +6411,7 @@ def run_job(
                 # silently falling back to the process-global default.
                 _session_db_context = contextvars.copy_context()
                 _session_db_future = _session_db_pool.submit(
-                    _session_db_context.run, SessionDB
+                    _session_db_context.run, get_shared_session_db
                 )
                 try:
                     _session_db = _session_db_future.result(timeout=_session_db_timeout)
@@ -6431,7 +6432,7 @@ def run_job(
                     _session_db_pool.shutdown(wait=False)
             else:
                 # 0 = unlimited (legacy behavior, opt-in for debugging)
-                _session_db = SessionDB()
+                _session_db = get_shared_session_db()
         except concurrent.futures.TimeoutError:
             logger.error(
                 "Job '%s': SessionDB init did not return within %.0fs — proceeding "
@@ -6926,7 +6927,8 @@ def run_job(
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
-                _session_db.close()
+                from hermes_state import release_or_close
+                release_or_close(_session_db)
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
         # Release subprocesses, terminal sandboxes, browser daemons, and the

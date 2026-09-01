@@ -401,9 +401,9 @@ def _(rid, params: dict) -> dict:
     # shared launch db, which outlives the RPC and is never closed here.
     owns_db = False
     if profile_home is not None:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
-        db = SessionDB(db_path=profile_home / "state.db")
+        db = get_shared_session_db(profile_home / "state.db")
         owns_db = True
     else:
         db = _get_db()
@@ -461,7 +461,8 @@ def _(rid, params: dict) -> dict:
                 if live is not None:
                     if owns_db:
                         with contextlib.suppress(Exception):
-                            db.close()
+                            from hermes_state import release_or_close
+                            release_or_close(db)
                     live["last_active"] = time.time()
                     # This resume reattaches the live record. A lazy session
                     # (no state.db row yet — every fresh Bot Chat) that was
@@ -3301,7 +3302,8 @@ def _(rid, params: dict) -> dict:
             # DEDICATED handle, same ownership rule as session.resume: ours
             # until the branched agent takes it below. _make_agent raising, or
             # _init_session raising, both leave here without that transfer.
-            branch_db = SessionDB(db_path=Path(parent_home) / "state.db")
+            from hermes_state import get_shared_session_db
+            branch_db = get_shared_session_db(Path(parent_home) / "state.db")
             branch_owns_db = True
         home_token = (
             set_hermes_home_override(parent_home) if parent_home else None
@@ -3364,7 +3366,8 @@ def _(rid, params: dict) -> dict:
     finally:
         if branch_owns_db and branch_db is not None:
             with contextlib.suppress(Exception):
-                branch_db.close()
+                from hermes_state import release_or_close
+                release_or_close(branch_db)
     branched_session = _sessions.get(new_sid)
     return _ok(
         rid,

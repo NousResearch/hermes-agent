@@ -187,12 +187,14 @@ def _(rid, params: dict) -> dict:
 
             from pathlib import Path
 
-            wdb = SessionDB(db_path=Path(profile_path) / "state.db")
+            from hermes_state import get_shared_session_db
+            wdb = get_shared_session_db(Path(profile_path) / "state.db")
             try:
                 return bool(wdb.unarchive_recoverable_session(session_id))
             finally:
                 try:
-                    wdb.close()
+                    from hermes_state import release_or_close
+                    release_or_close(wdb)
                 except Exception:
                     pass
         except Exception:

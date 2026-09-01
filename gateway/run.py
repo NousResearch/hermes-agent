@@ -7863,7 +7863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         failure after recording that recoverable state so ``__init__`` can
         record ``_session_db_init_error`` for the #88235 broadcast.
         """
-        from hermes_state import AsyncSessionDB, SessionDB, _default_db_path
+        from hermes_state import AsyncSessionDB, SessionDB, _default_db_path, get_shared_session_db
         from gateway.session_db_recovery import RecoverableHandleCache
 
         path = Path(_default_db_path())
@@ -7905,7 +7905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # unavailability the store is already reporting.
                 raise RuntimeError("SessionStore SQLite handle unavailable")
             try:
-                return AsyncSessionDB(SessionDB())
+                return AsyncSessionDB(get_shared_session_db())
             except Exception as exc:
                 logger.warning("SQLite session store not available: %s", exc)
                 raise
@@ -7956,8 +7956,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             inner = getattr(db, "_db", db)
             if inner is None or not hasattr(inner, "close"):
                 return
+            from hermes_state import release_or_close
             try:
-                inner.close()
+                release_or_close(inner)
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 
@@ -16478,6 +16479,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 GatewayRunner.close_all_session_db_handles(self)
             except Exception as _e:
                 logger.debug("Runner SessionDB handle sweep error: %s", _e)
+            # Final sweep: close any shared SessionDB instances still held by
+            # the process-wide registry (in-process tools, cron, mirror, etc.
+            # that opened via get_shared_session_db but weren't released by
+            # the sweeps above).  This is the safety net that guarantees no
+            # WAL write lock survives past gateway shutdown (#90837).
+            try:
+                from hermes_state import close_shared_session_dbs
+                closed = close_shared_session_dbs()
+                if closed:
+                    logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
+            except Exception as _e:
+                logger.debug("Shared SessionDB close error: %s", _e)
             GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
@@ -32274,17 +32287,18 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         if tick_count % AUTO_ARCHIVE_EVERY == 0:
             try:
                 from hermes_cli.config import load_config as _load_full_config
-                from hermes_state import SessionDB
+                from hermes_state import get_shared_session_db, release_shared_session_db
                 _sess_cfg = (_load_full_config().get("sessions") or {})
                 if _sess_cfg.get("auto_archive", False):
-                    _adb = SessionDB()
+                    _adb = get_shared_session_db()
                     try:
                         _adb.maybe_auto_archive(
                             idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                             min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         )
                     finally:
-                        _adb.close()
+                        from hermes_state import release_or_close
+                        release_or_close(_adb)
             except Exception as e:
                 logger.debug("Auto-archive tick error: %s", e)
 

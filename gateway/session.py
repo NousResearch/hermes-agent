@@ -1370,12 +1370,16 @@ class SessionStore:
         once it expires, one caller reopens while concurrent callers keep
         using the JSONL fallback.
         """
-        from hermes_state import SessionDB, _default_db_path
+        from hermes_state import SessionDB, _default_db_path, get_shared_session_db
 
         path = Path(db_path) if db_path is not None else Path(_default_db_path())
         def _open():
             try:
-                return SessionDB(db_path=path) if db_path is not None else SessionDB()
+                # Route through the process-wide shared registry (#90837):
+                # every long-lived in-process caller (store, runner, cron,
+                # mirror, slash commands, tools) shares ONE writer
+                # connection per path instead of each minting its own.
+                return get_shared_session_db(path)
             except RuntimeError as e:
                 if "live-system guard" in str(e):
                     # Test-isolation guard fired: a pytest-context process
@@ -1605,8 +1609,11 @@ class SessionStore:
         pinner owns its lifecycle.
         """
         def _close(db) -> None:
+            # Shared instances no-op on close() (the registry owns the
+            # lifecycle).  Release the refcount instead (#90837).
+            from hermes_state import release_or_close
             try:
-                db.close()
+                release_or_close(db)
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 

@@ -2049,13 +2049,13 @@ def _build_child_agent(
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is not None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
             _parent_db_path = getattr(parent_session_db, "db_path", None)
             child_session_db = (
-                SessionDB(db_path=_parent_db_path)
+                get_shared_session_db(_parent_db_path)
                 if _parent_db_path is not None
-                else SessionDB()
+                else get_shared_session_db()
             )
         except Exception:
             logger.debug(
@@ -2124,7 +2124,8 @@ def _build_child_agent(
             # don't outlive the failed spawn.
             if child_session_db is not None:
                 try:
-                    child_session_db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(child_session_db)
                 except Exception:
                     pass
             raise

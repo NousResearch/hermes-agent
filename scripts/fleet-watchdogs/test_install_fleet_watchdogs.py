@@ -56,9 +56,9 @@ def test_changed_file_installed_with_backup():
 
         src = os.path.join(src_dir, "watch.sh")
         dest = os.path.join(dest_dir, "watch.sh")
-        with open(src, "w") as f:
+        with open(src, "w", encoding='utf-8') as f:
             f.write("#!/bin/sh\n# NEW version\n")
-        with open(dest, "w") as f:
+        with open(dest, "w", encoding='utf-8') as f:
             f.write("#!/bin/sh\n# OLD version\n")
 
         status, dst, backup = ifw.install_file(src, dest_dir)
@@ -66,10 +66,10 @@ def test_changed_file_installed_with_backup():
         check("status installed", status, "installed")
         check("same dest path", str(dst), str(Path(dest).resolve()))
         check("backup parent dir", str(Path(backup).parent), str(Path(dest_dir).resolve()))
-        check("dest has new content", open(dest).read(), "#!/bin/sh\n# NEW version\n")
+        check("dest has new content", open(dest, 'r', encoding='utf-8').read(), "#!/bin/sh\n# NEW version\n")
         check(
             "backup has old content",
-            open(str(backup)).read(),
+            open(str(backup), 'r', encoding='utf-8').read(),
             "#!/bin/sh\n# OLD version\n",
         )
         check("backup name has predeploy marker", "bak-predeploy-" in os.path.basename(str(backup)), True)
@@ -88,9 +88,9 @@ def test_idempotent_no_resinstall_no_backup():
         src = os.path.join(src_dir, "watch.py")
         dest = os.path.join(dest_dir, "watch.py")
         content = "print('current')\n"
-        with open(src, "w") as f:
+        with open(src, "w", encoding='utf-8') as f:
             f.write(content)
-        with open(dest, "w") as f:
+        with open(dest, "w", encoding='utf-8') as f:
             f.write(content)
 
         status, dst, backup = ifw.install_file(src, dest_dir)
@@ -115,16 +115,16 @@ def test_unrelated_scripts_untouched():
 
         src = os.path.join(src_dir, "watch.py")
         unrelated = os.path.join(dest_dir, "other-watch.py")
-        with open(src, "w") as f:
+        with open(src, "w", encoding='utf-8') as f:
             f.write("new\n")
-        with open(unrelated, "w") as f:
+        with open(unrelated, "w", encoding='utf-8') as f:
             f.write("untouched\n")
-        before = open(unrelated).read()
+        before = open(unrelated, 'r', encoding='utf-8').read()
         before_mtime = os.path.getmtime(unrelated)
 
         ifw.install_file(src, dest_dir)
 
-        check("unrelated still same content", open(unrelated).read(), before)
+        check("unrelated still same content", open(unrelated, 'r', encoding='utf-8').read(), before)
         check("unrelated mtime unchanged", os.path.getmtime(unrelated), before_mtime)
         listing = sorted(os.listdir(dest_dir))
         check("only dest watch.py + unrelated present", listing, ["other-watch.py", "watch.py"])
@@ -141,7 +141,7 @@ def test_copy_not_symlink():
         os.makedirs(dest_dir)
 
         src = os.path.join(src_dir, "watch.sh")
-        with open(src, "w") as f:
+        with open(src, "w", encoding='utf-8') as f:
             f.write("#!/bin/sh\n")
 
         status, dst, _ = ifw.install_file(src, dest_dir)

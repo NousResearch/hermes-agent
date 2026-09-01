@@ -221,11 +221,12 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",))
     agent = _FakeAgent(home, title="Bot Chat")
+    message = 'status? give me the "final" numbers $(and this is not shell)'
 
     result = json.loads(
         bot_mode_dm.message_agent_tool(
             target="@researcher",
-            message='status? give me the "final" numbers $(and this is not shell)',
+            message=message,
             agent=agent,
         )
     )
@@ -256,7 +257,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "-Q",
     ]
     # message body rides the temp file, never the command line
-    assert "final" not in command
+    assert message not in command
     assert "$(" not in command
 
     # attribution prefix applied server-side; body verbatim inside the file
@@ -387,6 +388,36 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     )
 
     assert returncode == 7
+    assert not dm_file.exists()
+
+
+def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
+    tmp_path, monkeypatch
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+    responses = [
+        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
+        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    ]
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    returncode = bot_mode_dm._run_delivery(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 0
+    assert len(calls) == 2
+    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
+        subprocess.DEVNULL,
+        subprocess.DEVNULL,
+    ]
     assert not dm_file.exists()
 
 

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
 import hermes_state
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
@@ -60,6 +63,53 @@ def _create_pre_actor_database(path) -> None:
 def _read_legacy_state(path: str) -> tuple[str, int]:
     state = rooms.room_state(path, room_id="room-1")
     return state["authority_gateway_id"], state["latest_seq"]
+
+
+def _sync_policy_checkpoint_process(db_path: str, latest_seq: int, results) -> None:
+    try:
+        cursor = HostedRoomPolicyCheckpoint(db_path).sync(
+            room_id="room-1",
+            latest_seq=latest_seq,
+        )
+        results.put(("fresh", cursor, None))
+    except Exception as exc:  # pragma: no cover - asserted in parent process
+        results.put(("fresh", None, repr(exc)))
+
+
+def _sync_stale_policy_page_process(
+    db_path: str,
+    page_read,
+    release_page,
+    results,
+) -> None:
+    original_read = rooms.read_events
+
+    def read_first_event_only(*args, **kwargs):
+        page = original_read(*args, **kwargs)
+        first_page = [
+            event for event in page["events"] if int(event["seq"]) <= 1
+        ]
+        page_read.set()
+        if not release_page.wait(timeout=60):
+            raise RuntimeError("stale checkpoint page was not released")
+        return {
+            **page,
+            "events": first_page,
+            "cursor": 1,
+            "has_more": True,
+        }
+
+    rooms.read_events = read_first_event_only
+    try:
+        cursor = HostedRoomPolicyCheckpoint(db_path).sync(
+            room_id="room-1",
+            latest_seq=1,
+        )
+        results.put(("stale", cursor, None))
+    except Exception as exc:  # pragma: no cover - asserted in parent process
+        results.put(("stale", None, repr(exc)))
+    finally:
+        rooms.read_events = original_read
 
 
 def _create(db, room_id="room-1"):
@@ -128,6 +178,107 @@ def _assert_retired_identity_stays_reserved(db, room_id, *, fresh_id):
     }
 
     assert _create(db, fresh_id)["room_id"] == fresh_id
+
+
+def test_control_reserve_proves_stop_terminal_and_demotion_headroom():
+    assert rooms.CONTROL_EVENT_COUNT_RESERVE >= (
+        rooms.STOP_EVENT_COUNT_RESERVE
+        + rooms.TERMINAL_RECOVERY_COUNT_RESERVE
+        + rooms.DEMOTION_CONTROL_EVENT_COUNT_RESERVE
+    )
+    assert rooms.CONTROL_EVENT_BYTE_RESERVE >= (
+        rooms.STOP_EVENT_BYTE_RESERVE
+        + rooms.TERMINAL_RECOVERY_BYTE_RESERVE
+        + rooms.DEMOTION_CONTROL_EVENT_BYTE_RESERVE
+    )
+
+
+def test_open_admission_reservation_is_durable_across_transactions(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    monkeypatch.setattr(rooms, "TERMINAL_RECOVERY_COUNT_RESERVE", 2)
+
+    _append(
+        db,
+        room_id="room-1",
+        event_id="discussion-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first", "thread_id": "thread-1"},
+        require_open_admissions=True,
+    )
+    _append(
+        db,
+        room_id="room-1",
+        event_id="discussion-1-follow-up",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "replace", "thread_id": "thread-1"},
+        require_open_admissions=True,
+    )
+
+    with rooms._connect(db) as conn:
+        assert rooms._terminal_publication_liabilities(conn) == {
+            rooms._discussion_liability_key("room-1", "thread-1")
+        }
+    _append(
+        db,
+        room_id="room-1",
+        event_id="unrelated-terminal",
+        kind="turn.cancelled",
+        actor=GATEWAY_A,
+        payload={
+            "task_id": "unrelated-task",
+            "discussion_event_id": "discussion-1-follow-up",
+        },
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+    )
+    with rooms._connect(db) as conn:
+        assert rooms._terminal_publication_liabilities(conn) == {
+            rooms._discussion_liability_key("room-1", "thread-1")
+        }
+    with pytest.raises(rooms.HostedRoomError, match="unpublished terminal work"):
+        _append(
+            db,
+            room_id="room-1",
+            event_id="discussion-2",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "second", "thread_id": "thread-2"},
+            require_open_admissions=True,
+        )
+
+    replay = rooms.read_events(db, room_id="room-1", since_seq=0, limit=10)
+    assert "discussion-2" not in {event["event_id"] for event in replay["events"]}
+
+
+def test_ordinary_control_event_cannot_consume_exclusive_demotion_slots(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 0)
+    monkeypatch.setattr(rooms, "CONTROL_EVENT_COUNT_RESERVE", 2)
+
+    with pytest.raises(rooms.HostedRoomError, match="preserve terminal recovery"):
+        rooms.claim_authority(
+            db,
+            room_id="room-1",
+            expected_gateway_id="gateway-a",
+            expected_epoch=1,
+            new_gateway_id="gateway-b",
+            event_id="control-would-consume-demotion-slot",
+            now=11,
+        )
+
+    state = rooms.room_state(db, room_id="room-1")
+    assert state["authority_gateway_id"] == "gateway-a"
+    assert state["authority_epoch"] == 1
 
 
 def test_create_room_is_idempotent_but_conflicts_fail_closed(tmp_path):
@@ -396,7 +547,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
     _create(db)
 
     with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
-        _append(
+        rooms.append_event(
             db,
             room_id="room-1",
             event_id="turn-1",
@@ -738,6 +889,7 @@ def test_room_log_pages_are_bounded_by_serialized_event_bytes(tmp_path, monkeypa
             kind="message.user",
             actor=USER,
             payload={"text": "x" * 180, "index": index},
+            now=20.0,
         )
 
     one_event = rooms.read_events(db, room_id="room-1", limit=1)
@@ -872,6 +1024,404 @@ def test_active_rooms_and_event_storage_are_bounded(tmp_path, monkeypatch):
     assert _disband(db, room_id="room-2")["event"]["kind"] == "room.disbanded"
 
 
+def test_room_stop_uses_control_reserve_without_reopening_user_capacity(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first"},
+    )
+    with sqlite3.connect(db) as conn:
+        current_bytes = conn.execute(
+            "SELECT event_bytes FROM hosted_rooms WHERE room_id='room-1'"
+        ).fetchone()[0]
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+    monkeypatch.setattr(rooms, "MAX_ROOM_EVENT_BYTES", current_bytes)
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", current_bytes)
+
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        _append(
+            db,
+            room_id="room-1",
+            event_id="message-2",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "second"},
+        )
+
+    state = rooms.room_state(db, room_id="room-1")
+    stop = rooms.request_room_stop(
+        db,
+        room_id="room-1",
+        cancel_id="stop-at-limit",
+        expected_gateway_id=state["authority_gateway_id"],
+        expected_epoch=state["authority_epoch"],
+    )
+    assert stop["kind"] == "room.stop_requested"
+
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        _append(
+            db,
+            room_id="room-1",
+            event_id="message-3",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "third"},
+        )
+
+
+def test_stop_reserve_cannot_exhaust_critical_control_capacity(tmp_path, monkeypatch):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first"},
+    )
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+    monkeypatch.setattr(rooms, "STOP_EVENT_COUNT_RESERVE", 1)
+    monkeypatch.setattr(rooms, "CONTROL_EVENT_COUNT_RESERVE", 4)
+    state = rooms.room_state(db, room_id="room-1")
+
+    rooms.request_room_stop(
+        db,
+        room_id="room-1",
+        cancel_id="stop-1",
+        expected_gateway_id=state["authority_gateway_id"],
+        expected_epoch=state["authority_epoch"],
+    )
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        rooms.request_room_stop(
+            db,
+            room_id="room-1",
+            cancel_id="stop-2",
+            expected_gateway_id=state["authority_gateway_id"],
+            expected_epoch=state["authority_epoch"],
+        )
+
+    assert _disband(db, room_id="room-1")["event"]["kind"] == "room.disbanded"
+
+
+def test_stop_reserve_preserves_terminal_recovery_capacity(tmp_path, monkeypatch):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first"},
+    )
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+    monkeypatch.setattr(rooms, "STOP_EVENT_COUNT_RESERVE", 2)
+    monkeypatch.setattr(rooms, "TERMINAL_RECOVERY_COUNT_RESERVE", 1)
+    state = rooms.room_state(db, room_id="room-1")
+
+    for index in range(2):
+        rooms.request_room_stop(
+            db,
+            room_id="room-1",
+            cancel_id=f"stop-{index}",
+            expected_gateway_id=state["authority_gateway_id"],
+            expected_epoch=state["authority_epoch"],
+        )
+
+    terminal = rooms.append_events(
+        db,
+        events=[
+            {
+                "room_id": "room-1",
+                "event_id": "terminal-1",
+                "kind": "turn.cancelled",
+                "actor": GATEWAY_A,
+                "payload": {"task_id": "task-1"},
+                "authority_gateway_id": state["authority_gateway_id"],
+                "authority_epoch": state["authority_epoch"],
+            }
+        ],
+        allow_terminal_recovery=True,
+    )
+
+    assert terminal[0]["kind"] == "turn.cancelled"
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        rooms.append_events(
+            db,
+            events=[
+                {
+                    "room_id": "room-1",
+                    "event_id": "terminal-2",
+                    "kind": "turn.cancelled",
+                    "actor": GATEWAY_A,
+                    "payload": {"task_id": "task-2"},
+                    "authority_gateway_id": state["authority_gateway_id"],
+                    "authority_epoch": state["authority_epoch"],
+                }
+            ],
+            allow_terminal_recovery=True,
+        )
+
+
+_TERMINAL_CORRELATION_FIELDS = (
+    "task_id",
+    "discussion_event_id",
+    "member_id",
+    "thread_id",
+    "turn_id",
+)
+
+
+def _terminal_recovery_events(state, *, suffix, member_payload, terminal_payload):
+    member_event_id = f"member-{suffix}"
+    terminal_payload = {
+        "message_event_id": member_event_id,
+        "passed": False,
+        **terminal_payload,
+    }
+    return [
+        {
+            "room_id": "room-1",
+            "event_id": member_event_id,
+            "kind": "message.member",
+            "actor": {"kind": "member", "id": "ops"},
+            "payload": member_payload,
+            "authority_gateway_id": state["authority_gateway_id"],
+            "authority_epoch": state["authority_epoch"],
+        },
+        {
+            "room_id": "room-1",
+            "event_id": f"terminal-{suffix}",
+            "kind": "turn.settled",
+            "actor": GATEWAY_A,
+            "payload": terminal_payload,
+            "authority_gateway_id": state["authority_gateway_id"],
+            "authority_epoch": state["authority_epoch"],
+        },
+    ]
+
+
+def _terminal_recovery_capacity_fixture(db, monkeypatch):
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first"},
+    )
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+    monkeypatch.setattr(rooms, "STOP_EVENT_COUNT_RESERVE", 0)
+    monkeypatch.setattr(rooms, "TERMINAL_RECOVERY_COUNT_RESERVE", 2)
+    return rooms.room_state(db, room_id="room-1")
+
+
+def _valid_terminal_correlation():
+    return {
+        "task_id": "task-1",
+        "discussion_event_id": "discussion-1",
+        "member_id": "member-1",
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+    }
+
+
+def test_terminal_recovery_plan_accepts_complete_correlation(tmp_path, monkeypatch):
+    db = tmp_path / "state.db"
+    state = _terminal_recovery_capacity_fixture(db, monkeypatch)
+    correlation = _valid_terminal_correlation()
+
+    published = rooms.append_events(
+        db,
+        events=_terminal_recovery_events(
+            state,
+            suffix="valid",
+            member_payload=correlation,
+            terminal_payload=correlation,
+        ),
+        allow_terminal_recovery=True,
+    )
+
+    assert [event["kind"] for event in published] == [
+        "message.member",
+        "turn.settled",
+    ]
+
+
+def test_terminal_recovery_validates_an_idempotent_member_prefix(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="message-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first"},
+    )
+    state = rooms.room_state(db, room_id="room-1")
+    correlation = _valid_terminal_correlation()
+    events = _terminal_recovery_events(
+        state,
+        suffix="prefix",
+        member_payload=correlation,
+        terminal_payload=correlation,
+    )
+    rooms.append_events(db, events=[events[0]])
+    monkeypatch.setattr(rooms, "MAX_EVENTS_PER_ROOM", 2)
+    monkeypatch.setattr(rooms, "STOP_EVENT_COUNT_RESERVE", 0)
+    monkeypatch.setattr(rooms, "TERMINAL_RECOVERY_COUNT_RESERVE", 1)
+
+    mismatched = [dict(events[0]), dict(events[1])]
+    mismatched[1] = {
+        **mismatched[1],
+        "payload": {
+            **mismatched[1]["payload"],
+            "turn_id": "different-turn",
+        },
+    }
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        rooms.append_events(
+            db,
+            events=mismatched,
+            allow_terminal_recovery=True,
+        )
+    assert rooms.room_state(db, room_id="room-1")["latest_seq"] == 2
+
+    published = rooms.append_events(
+        db,
+        events=events,
+        allow_terminal_recovery=True,
+    )
+    assert published[0]["idempotent"] is True
+    assert published[1]["kind"] == "turn.settled"
+
+
+@pytest.mark.parametrize("field", _TERMINAL_CORRELATION_FIELDS)
+@pytest.mark.parametrize(
+    "malformation", ["missing", "empty", "non-string", "mismatch"]
+)
+def test_malformed_terminal_correlation_does_not_consume_reserve(
+    tmp_path, monkeypatch, field, malformation
+):
+    db = tmp_path / "state.db"
+    state = _terminal_recovery_capacity_fixture(db, monkeypatch)
+    member_payload = _valid_terminal_correlation()
+    terminal_payload = _valid_terminal_correlation()
+    if malformation == "missing":
+        member_payload.pop(field)
+        terminal_payload.pop(field)
+    elif malformation == "empty":
+        member_payload[field] = ""
+    elif malformation == "non-string":
+        terminal_payload[field] = 7
+    else:
+        terminal_payload[field] = f"different-{field}"
+
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        rooms.append_events(
+            db,
+            events=_terminal_recovery_events(
+                state,
+                suffix="invalid",
+                member_payload=member_payload,
+                terminal_payload=terminal_payload,
+            ),
+            allow_terminal_recovery=True,
+        )
+    assert rooms.room_state(db, room_id="room-1")["latest_seq"] == 1
+
+    correlation = _valid_terminal_correlation()
+    published = rooms.append_events(
+        db,
+        events=_terminal_recovery_events(
+            state,
+            suffix="valid",
+            member_payload=correlation,
+            terminal_payload=correlation,
+        ),
+        allow_terminal_recovery=True,
+    )
+    assert len(published) == 2
+
+
+@pytest.mark.parametrize("message_event_id", [None, "", 7, "member-other"])
+def test_invalid_terminal_message_reference_does_not_consume_reserve(
+    tmp_path, monkeypatch, message_event_id
+):
+    db = tmp_path / "state.db"
+    state = _terminal_recovery_capacity_fixture(db, monkeypatch)
+    correlation = _valid_terminal_correlation()
+    events = _terminal_recovery_events(
+        state,
+        suffix="invalid",
+        member_payload=correlation,
+        terminal_payload=correlation,
+    )
+    events[1]["payload"]["message_event_id"] = message_event_id
+
+    with pytest.raises(rooms.HostedRoomError, match="history limit"):
+        rooms.append_events(
+            db,
+            events=events,
+            allow_terminal_recovery=True,
+        )
+    assert rooms.room_state(db, room_id="room-1")["latest_seq"] == 1
+
+    published = rooms.append_events(
+        db,
+        events=_terminal_recovery_events(
+            state,
+            suffix="valid",
+            member_payload=correlation,
+            terminal_payload=correlation,
+        ),
+        allow_terminal_recovery=True,
+    )
+    assert len(published) == 2
+
+
+@pytest.mark.parametrize(
+    ("member_payload", "terminal_payload"),
+    [([], {}), ({}, []), ("member", {}), ({}, "terminal")],
+)
+def test_terminal_recovery_plan_rejects_non_object_payloads(
+    member_payload, terminal_payload
+):
+    pending = [
+        (
+            0,
+            {
+                "event_id": "member-1",
+                "kind": "message.member",
+                "payload_json": json.dumps(member_payload),
+            },
+        ),
+        (
+            1,
+            {
+                "event_id": "terminal-1",
+                "kind": "turn.settled",
+                "payload_json": json.dumps(terminal_payload),
+            },
+        ),
+    ]
+
+    assert rooms._is_terminal_recovery_plan(pending) is False
+
+
 def test_room_listing_is_paged_and_old_tombstones_are_pruned(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
     monkeypatch.setattr(rooms, "MAX_DISBANDED_ROOM_TOMBSTONES", 1)
@@ -925,6 +1475,279 @@ def test_byte_pressure_pruning_keeps_retired_room_id_reserved(
     _disband(db, room_id="room-full", now=20)
 
     _assert_retired_identity_stays_reserved(db, "room-full", fresh_id="room-new")
+
+
+def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    identity = driver.TaskIdentity(
+        room_id="room-1",
+        task_id="task-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+    driver.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": "ops",
+            "prompt": "Inspect.",
+            "source_event_seq": 1,
+        },
+        clock=lambda: 20,
+    )
+    driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=lambda: 20,
+    )
+    HostedRoomPolicyCheckpoint(db)
+    _disband(db, room_id="room-1", now=50)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO hosted_room_policy_cursors(
+                   room_id, through_seq, stopped_through_seq, updated_at
+               ) VALUES ('room-1', 1, 0, 50)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_threads
+               VALUES ('room-1', 'thread-1', 'user-1', 1, 0)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_events
+               VALUES ('room-1', 'thread-1', 'user-1', 1, '{}')"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_watermarks
+               VALUES ('room-1', 'thread-1', 'ops', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_publications
+               VALUES ('room-1', 'task-1', 'turn.settled', 0, 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript
+               VALUES (
+                   'room-1', 'thread-1', 1, 'message.user', NULL
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_messaging_refs (
+                room_id TEXT NOT NULL,
+                marker TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript_state
+               VALUES ('room-1', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_messaging_refs
+               VALUES ('room-1', 'outside-pr-b')"""
+        )
+
+    assert (
+        rooms.prune_disbanded_rooms(
+            db,
+            now=50 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        == 1
+    )
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_rooms",
+            "hosted_room_events",
+            "hosted_room_driver_tasks",
+            "hosted_room_driver_leases",
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_threads",
+            "hosted_room_policy_events",
+            "hosted_room_policy_watermarks",
+            "hosted_room_policy_publications",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT marker FROM hosted_room_messaging_refs").fetchone()[0]
+            == "outside-pr-b"
+        )
+
+
+def test_policy_checkpoint_discards_a_stale_page_from_another_process(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    for index in (1, 2):
+        _append(
+            db,
+            room_id="room-1",
+            event_id=f"user-{index}",
+            kind="message.user",
+            actor=USER,
+            payload={"text": f"message {index}", "thread_id": "thread-1"},
+            now=10 + index,
+        )
+    HostedRoomPolicyCheckpoint(db)
+
+    context = multiprocessing.get_context("spawn")
+    page_read = context.Event()
+    release_page = context.Event()
+    results = context.Queue()
+    stale = context.Process(
+        target=_sync_stale_policy_page_process,
+        args=(str(db), page_read, release_page, results),
+    )
+    fresh = context.Process(
+        target=_sync_policy_checkpoint_process,
+        args=(str(db), 2, results),
+    )
+    stale.start()
+    fresh_started = False
+    try:
+        if not page_read.wait(timeout=60):
+            raise AssertionError(
+                "stale worker did not read its page: "
+                f"exitcode={stale.exitcode}, alive={stale.is_alive()}"
+            )
+        fresh.start()
+        fresh_started = True
+        fresh.join(timeout=60)
+        assert fresh.exitcode == 0
+        release_page.set()
+        stale.join(timeout=60)
+        assert stale.exitcode == 0
+
+        outcomes = {}
+        for _ in range(2):
+            label, cursor, error = results.get(timeout=5)
+            outcomes[label] = (cursor, error)
+        assert outcomes == {
+            "fresh": (2, None),
+            "stale": (2, None),
+        }
+    finally:
+        release_page.set()
+        processes = ((fresh, fresh_started), (stale, True))
+        for process, started in processes:
+            if not started:
+                continue
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+        results.close()
+
+    with sqlite3.connect(db) as conn:
+        cursor = conn.execute(
+            """SELECT through_seq FROM hosted_room_policy_cursors
+               WHERE room_id='room-1'"""
+        ).fetchone()
+        thread = conn.execute(
+            """SELECT discussion_event_id, latest_user_seq
+               FROM hosted_room_policy_threads WHERE room_id='room-1'"""
+        ).fetchone()
+    assert cursor == (2,)
+    assert thread == ("user-2", 2)
+
+
+def test_policy_sync_cannot_recreate_projection_after_room_pruning(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="user-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "hello", "thread_id": "thread-1"},
+        now=11,
+    )
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    original_read = rooms.read_events
+
+    def read_then_prune(*args, **kwargs):
+        page = original_read(*args, **kwargs)
+        _disband(db, room_id="room-1", now=20)
+        rooms.prune_disbanded_rooms(
+            db,
+            now=20 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        return page
+
+    monkeypatch.setattr(rooms, "read_events", read_then_prune)
+    with pytest.raises(rooms.RoomNotFoundError, match="not found"):
+        checkpoint.sync(room_id="room-1", latest_seq=1)
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_events",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_policy_sync_stale_page_cannot_regress_cursor_or_thread_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="user-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "first", "thread_id": "thread-1"},
+        now=11,
+    )
+    stale = HostedRoomPolicyCheckpoint(db)
+    winner = HostedRoomPolicyCheckpoint(db)
+    original_read = rooms.read_events
+    nested = False
+
+    def read_then_advance(*args, **kwargs):
+        nonlocal nested
+        page = original_read(*args, **kwargs)
+        if not nested:
+            nested = True
+            _append(
+                db,
+                room_id="room-1",
+                event_id="user-2",
+                kind="message.user",
+                actor=USER,
+                payload={"text": "second", "thread_id": "thread-1"},
+                now=12,
+            )
+            assert winner.sync(room_id="room-1", latest_seq=2) == 2
+        return page
+
+    monkeypatch.setattr(rooms, "read_events", read_then_advance)
+    assert stale.sync(room_id="room-1", latest_seq=1) == 2
+
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+            ("room-1",),
+        ).fetchone()
+        thread = conn.execute(
+            """SELECT discussion_event_id, latest_user_seq
+               FROM hosted_room_policy_threads
+               WHERE room_id=? AND thread_id=?""",
+            ("room-1", "thread-1"),
+        ).fetchone()
+    assert int(cursor["through_seq"]) == 2
+    assert int(thread["latest_user_seq"]) == 2
+    assert thread["discussion_event_id"] == "user-2"
 
 
 def test_pre_actor_draft_database_migrates_with_explicit_legacy_identity(tmp_path):

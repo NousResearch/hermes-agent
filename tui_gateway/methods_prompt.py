@@ -592,21 +592,96 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    from tools.bot_relay import DeliveryAuthor
-
-    # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
-    raw_author = params.get("_turn_author")
-    if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
-        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
-    turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
-    if err is not None:
-        return err
+    if internal_hosted_submit:
+        if session.get("source") != "bot_room":
+            return _err(rid, 4120, "hosted room turns require a bot_room session")
+        if not isinstance(hosted_task, dict) or not callable(hosted_terminal_callback):
+            return _err(rid, 4120, "invalid hosted room turn proof")
+        required_hosted_fields = {
+            "room_id",
+            "task_id",
+            "thread_id",
+            "turn_id",
+            "execution_generation",
+        }
+        if set(hosted_task) != required_hosted_fields or not all(
+            isinstance(hosted_task.get(field), str) and hosted_task[field]
+            for field in required_hosted_fields - {"execution_generation"}
+        ) or not isinstance(hosted_task.get("execution_generation"), int):
+            return _err(rid, 4120, "invalid hosted room turn proof")
+        # Persist the authority identity independently from the bounded display
+        # title. Older Desktop clients can later submit directly into this
+        # session, so the compatibility fence must recover the real room id.
+        session["hosted_room_id"] = hosted_task["room_id"]
+    else:
+        # Older Desktop builds know the `Group: <room-id>` session title but
+        # not the hosted authority marker. Once a gateway owns that room, a
+        # direct prompt into its member session would start a second renderer
+        # driver. Fence it server-side instead of trusting client awareness.
+        room_id = str(session.get("hosted_room_id") or "").strip()
+        session_key = str(session.get("session_key") or "").strip()
+        if not room_id and session_key:
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        room_id = str(
+                            db.get_session_model_config_value(
+                                session_key, "hosted_room_id", ""
+                            )
+                            or ""
+                        ).strip()
+            except Exception:
+                room_id = ""
+        title = str(session.get("title") or "")
+        if room_id or title.startswith("Group: "):
+            try:
+                from gateway.hosted_rooms import (
+                    HostedRoomError,
+                    RoomProbeUnavailableError,
+                    default_db_path,
+                    probe_hosted_room,
+                )
+                from tui_gateway.hosted_room_driver import (
+                    RoomSessionIdentityUnavailableError,
+                    recover_room_id_from_session_title,
+                )
+
+                db_path = default_db_path()
+                if not room_id:
+                    recovered_room_id = recover_room_id_from_session_title(
+                        db_path,
+                        title,
+                    )
+                    room_id = recovered_room_id or title.removeprefix(
+                        "Group: "
+                    ).strip()
+                hosted = probe_hosted_room(db_path, room_id=room_id)
+            except (RoomProbeUnavailableError, RoomSessionIdentityUnavailableError):
+                return _err(
+                    rid,
+                    5122,
+                    "Could not verify this group. Try again after the gateway recovers.",
+                )
+            except HostedRoomError:
+                # Legacy Desktop sessions used the display name after
+                # "Group: "; those names are not hosted room ids.
+                pass
+            except Exception:
+                return _err(
+                    rid,
+                    5122,
+                    "Could not verify this group. Try again after the gateway recovers.",
+                )
+            else:
+                if hosted:
+                    return _err(
+                        rid,
+                        4122,
+                        "This room is managed by its gateway. Update Hermes Desktop to continue it.",
+                    )
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
@@ -621,28 +696,39 @@ def _(rid, params: dict) -> dict:
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
-        # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
+        # A rewind/regenerate replays a turn from what the transcript shows. A
+        # skill turn shows its invocation, so re-expand it here — otherwise
+        # re-running `/work fix it` sends the agent nine literal characters
+        # instead of the skill it originally loaded.
+        text = _expand_skill_invocation_for_replay(
+            text, str(session.get("session_key") or "")
+        )
+    isolation_cfg = _load_dashboard_process_isolation_config()
+    turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
+        return _err(
+            rid,
+            4121,
+            "hosted room turns do not support isolated compute workers yet",
+        )
+    # Re-bind to the current client transport for this request. This keeps
+    # streaming events on the active websocket even if an earlier disconnect
+    # or fallback moved the session transport to stdio.
+    if (t := current_transport()) is not None:
+        session["transport"] = t
     while True:
         with session["history_lock"]:
-            if not session.get("running"):
+            if session.get("_hosted_interrupt_claim") is not None:
+                return _err(rid, 4091, "hosted room member session is stopping")
+            if session.get("running"):
+                if internal_hosted_submit:
+                    return _err(rid, 4091, "hosted room member session is busy")
+                # Don't reject a mid-turn prompt — queue it (and, by default,
+                # interrupt the live turn) so it runs as the next turn. The
+                # provider interrupt itself must happen after this lock is
+                # released: a non-interruptible tool may keep it waiting.
+                busy_transport = t or session.get("transport")
+            else:
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
@@ -671,6 +757,8 @@ def _(rid, params: dict) -> dict:
         else None
     )
     with session["history_lock"]:
+        if session.get("_hosted_interrupt_claim") is not None:
+            return _err(rid, 4091, "hosted room member session is stopping")
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -1084,6 +1172,8 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
+        if internal_hosted_submit:
+            session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
 
     if turn_isolation:
@@ -1154,13 +1244,34 @@ def _(rid, params: dict) -> dict:
         # only errors when the build itself fails or the bounded cap expires.
         err = _wait_agent_for_prompt(session, rid, sid)
         if err:
+            error_message = (err.get("error") or {}).get(
+                "message", "agent initialization failed"
+            )
+            if hosted_terminal_callback is not None:
+                terminal_receipt_committed = False
+                try:
+                    terminal_receipt, terminal_receipt_committed = (
+                        _persist_hosted_terminal_receipt(
+                            session,
+                            {"status": "failed", "text": "", "error": error_message},
+                        )
+                    )
+                    hosted_terminal_callback(terminal_receipt)
+                except Exception:
+                    logger.exception(
+                        "hosted room agent initialization terminal receipt commit failed"
+                    )
+                finally:
+                    if terminal_receipt_committed:
+                        with session["history_lock"]:
+                            session.pop("_hosted_room_task", None)
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
             _emit_terminal_turn_error(
                 sid,
                 session,
-                (err.get("error") or {}).get("message", "agent initialization failed"),
+                error_message,
                 # Agent construction never reached the provider: this is a
                 # local-runtime failure (env/config/venv), not an API error.
                 error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
@@ -1190,7 +1301,14 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            terminal_callback=hosted_terminal_callback,
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

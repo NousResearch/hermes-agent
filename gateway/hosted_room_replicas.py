@@ -30,12 +30,19 @@ from typing import Any
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS,
+    MAX_ACTIVE_ROOMS,
     MAX_EVENT_JSON_BYTES,
     MAX_ROOM_ID_CHARS,
     HostedRoomError,
     RoomConflictError,
+    _CRITICAL_CONTROL_EVENT_KINDS,
+    _assert_event_capacity,
     _canonical_json,
+    _closing_discussion_liability_keys,
     _connect,
+    _correlated_terminal_task_ids,
+    _is_terminal_recovery_plan,
+    _terminal_publication_liabilities,
     _transaction,
     _validate_identifier,
     _validate_members,
@@ -196,10 +203,12 @@ def ingest_page(
                 raise ReplicaError("replica room capacity exhausted")
             stored_epoch = 0
             last_seq = 0
+            stored_latest_seq = 0
             stored_bytes = 0
         else:
             stored_epoch = int(row["authority_epoch"])
             last_seq = int(row["last_seq"])
+            stored_latest_seq = int(row["latest_seq"])
             stored_bytes = int(row["event_bytes"])
 
         if authority["epoch"] < stored_epoch:
@@ -245,6 +254,7 @@ def ingest_page(
         latest_seq = page.get("latest_seq")
         if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
             latest_seq = new_last
+        observed_latest_seq = max(stored_latest_seq, latest_seq, new_last)
         if row is None:
             conn.execute(
                 """INSERT INTO hosted_room_replicas
@@ -259,7 +269,7 @@ def ingest_page(
                     authority["gateway_id"],
                     authority["epoch"],
                     new_last,
-                    max(latest_seq, new_last),
+                    observed_latest_seq,
                     added_bytes,
                     now,
                     now,
@@ -278,7 +288,7 @@ def ingest_page(
                     authority["gateway_id"],
                     authority["epoch"],
                     new_last,
-                    max(latest_seq, new_last),
+                    observed_latest_seq,
                     added_bytes,
                     now,
                     room_id,
@@ -289,7 +299,7 @@ def ingest_page(
         "stored_seq": new_last,
         "ingested": len(new_events),
         "authority": authority,
-        "caught_up": new_last >= max(latest_seq, new_last),
+        "caught_up": new_last >= observed_latest_seq,
     }
 
 
@@ -356,7 +366,7 @@ def promote_replica(
         _initialize_replica_schema(conn)
         replica = conn.execute(
             """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, last_seq, event_bytes
+                      authority_epoch, last_seq, latest_seq, event_bytes
                  FROM hosted_room_replicas WHERE room_id=?""",
             (room_id,),
         ).fetchone()
@@ -375,11 +385,25 @@ def promote_replica(
             (room_id,),
         ).fetchone():
             raise RoomConflictError("room_id belongs to a disbanded room")
+        active_rooms = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM hosted_rooms WHERE disbanded_at IS NULL"
+            ).fetchone()[0]
+        )
+        if active_rooms >= MAX_ACTIVE_ROOMS:
+            raise HostedRoomError(
+                "This host has too many active Group Chats. Delete one and try again."
+            )
 
         previous_gateway = str(replica["authority_gateway_id"])
         previous_epoch = int(replica["authority_epoch"])
         target_epoch = previous_epoch + 1
         last_seq = int(replica["last_seq"])
+        latest_seq = int(replica["latest_seq"])
+        if last_seq < latest_seq:
+            raise ReplicaError(
+                "replica is not caught up; ingest every remaining log page before promotion"
+            )
         claim_seq = last_seq + 1
         claim_event_id = f"system:authority-claimed:{target_epoch}"
         claim_actor_json = _canonical_json(
@@ -405,6 +429,7 @@ def promote_replica(
             + len(claim_payload_json.encode("utf-8"))
         )
 
+        replica_bytes = int(replica["event_bytes"])
         conn.execute(
             """INSERT INTO hosted_rooms
                (room_id, name, members_json, authority_gateway_id,
@@ -417,20 +442,120 @@ def promote_replica(
                 replica["members_json"],
                 local_gateway,
                 target_epoch,
-                claim_seq + 1,
-                int(replica["event_bytes"]) + claim_bytes,
+                1,
+                0,
                 now,
                 now,
             ),
         )
-        conn.execute(
-            """INSERT INTO hosted_room_events
-               (room_id, seq, event_id, kind, actor_json, authority_epoch,
-                payload_json, created_at)
-               SELECT room_id, seq, event_id, kind, actor_json,
-                      authority_epoch, payload_json, created_at
-                 FROM hosted_room_replica_events WHERE room_id=?""",
+        replica_events = iter(
+            conn.execute(
+                """SELECT room_id, seq, event_id, kind, actor_json,
+                          authority_epoch, payload_json, created_at
+                     FROM hosted_room_replica_events
+                    WHERE room_id=? ORDER BY seq""",
+                (room_id,),
+            )
+        )
+        replay_bytes = 0
+        next_seq = 1
+        event = next(replica_events, None)
+        while event is not None:
+            batch = [event]
+            following = next(replica_events, None)
+            if following is not None and str(event["kind"]) == "message.member":
+                candidate = [(0, dict(event)), (1, dict(following))]
+                if _is_terminal_recovery_plan(candidate):
+                    batch.append(following)
+                    following = next(replica_events, None)
+
+            batch_bytes: list[int] = []
+            for batch_event in batch:
+                if int(batch_event["seq"]) != next_seq + len(batch_bytes):
+                    raise ReplicaGapError("replica history is not contiguous")
+                batch_bytes.append(
+                    len(
+                        (
+                            str(batch_event["event_id"])
+                            + str(batch_event["kind"])
+                            + str(batch_event["actor_json"])
+                            + str(batch_event["payload_json"])
+                        ).encode("utf-8")
+                    )
+                )
+            promoted_room = conn.execute(
+                "SELECT next_seq, event_bytes FROM hosted_rooms WHERE room_id=?",
+                (room_id,),
+            ).fetchone()
+            batch_plan = [
+                (index, dict(batch_event))
+                for index, batch_event in enumerate(batch)
+            ]
+            terminal_recovery = _is_terminal_recovery_plan(batch_plan)
+            replay_events = [event for _, event in batch_plan]
+            closing_discussion_keys = _closing_discussion_liability_keys(
+                conn,
+                room_id=room_id,
+                events=replay_events,
+            )
+            _assert_event_capacity(
+                conn,
+                room_id=room_id,
+                room=promoted_room,
+                additional_bytes=sum(batch_bytes),
+                additional_events=len(batch),
+                allow_control=all(
+                    str(batch_event["kind"]) in _CRITICAL_CONTROL_EVENT_KINDS
+                    for batch_event in batch
+                ),
+                allow_stop=all(
+                    str(batch_event["kind"]) == "room.stop_requested"
+                    for batch_event in batch
+                ),
+                allow_terminal_recovery=(
+                    terminal_recovery or bool(closing_discussion_keys)
+                ),
+                released_task_ids=(
+                    _correlated_terminal_task_ids(
+                        conn,
+                        room_id=room_id,
+                        events=replay_events,
+                    )
+                    if terminal_recovery
+                    else frozenset()
+                ),
+                released_liability_keys=closing_discussion_keys,
+            )
+            for batch_event, event_bytes in zip(batch, batch_bytes, strict=True):
+                conn.execute(
+                    """INSERT INTO hosted_room_events
+                       (room_id, seq, event_id, kind, actor_json, authority_epoch,
+                        payload_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    tuple(batch_event),
+                )
+                replay_bytes += event_bytes
+                next_seq += 1
+            conn.execute(
+                """UPDATE hosted_rooms
+                      SET next_seq=?, event_bytes=?, updated_at=?
+                    WHERE room_id=?""",
+                (next_seq, replay_bytes, now, room_id),
+            )
+            event = following
+        if next_seq != claim_seq or replay_bytes != replica_bytes:
+            raise ReplicaError("replica history metadata does not match stored events")
+        promoted_room = conn.execute(
+            "SELECT next_seq, event_bytes FROM hosted_rooms WHERE room_id=?",
             (room_id,),
+        ).fetchone()
+        _assert_event_capacity(
+            conn,
+            room_id=room_id,
+            room=promoted_room,
+            additional_bytes=claim_bytes,
+            additional_events=1,
+            allow_control=True,
         )
         conn.execute(
             """INSERT INTO hosted_room_events
@@ -446,6 +571,12 @@ def promote_replica(
                 claim_payload_json,
                 now,
             ),
+        )
+        conn.execute(
+            """UPDATE hosted_rooms
+               SET next_seq=?, event_bytes=?, updated_at=?
+               WHERE room_id=?""",
+            (claim_seq + 1, replica_bytes + claim_bytes, now, room_id),
         )
         conn.execute(
             "DELETE FROM hosted_room_replica_events WHERE room_id=?", (room_id,)
@@ -464,6 +595,31 @@ def promote_replica(
     }
 
 
+def validate_demotion_observation(
+    *,
+    room_id: Any,
+    observed_gateway_id: Any,
+    observed_epoch: Any,
+) -> tuple[str, str, int]:
+    """Normalize one externally observed authority lineage."""
+
+    room_id = _validate_identifier(
+        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    )
+    observed_gateway_id = _validate_identifier(
+        observed_gateway_id,
+        label="observed_gateway_id",
+        max_chars=MAX_ACTOR_ID_CHARS,
+    )
+    if (
+        isinstance(observed_epoch, bool)
+        or not isinstance(observed_epoch, int)
+        or observed_epoch < 1
+    ):
+        raise ReplicaError("observed_epoch must be a positive integer")
+    return room_id, observed_gateway_id, observed_epoch
+
+
 def demote_room(
     db_path: Path | str,
     *,
@@ -480,26 +636,17 @@ def demote_room(
     the observed lineage so no further local sends can be committed at the
     stale epoch. Idempotent for repeated observations of the same lineage.
     """
-    room_id = _validate_identifier(
-        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
+    room_id, observed_gateway_id, observed_epoch = validate_demotion_observation(
+        room_id=room_id,
+        observed_gateway_id=observed_gateway_id,
+        observed_epoch=observed_epoch,
     )
-    observed_gateway_id = _validate_identifier(
-        observed_gateway_id,
-        label="observed_gateway_id",
-        max_chars=MAX_ACTOR_ID_CHARS,
-    )
-    if (
-        isinstance(observed_epoch, bool)
-        or not isinstance(observed_epoch, int)
-        or observed_epoch < 1
-    ):
-        raise ReplicaError("observed_epoch must be a positive integer")
     now = time.time() if now is None else float(now)
     local_gateway = local_authority_gateway_id()
 
     with _replica_transaction(db_path) as conn:
         row = conn.execute(
-            """SELECT authority_gateway_id, authority_epoch, next_seq
+            """SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes
                  FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""",
             (room_id,),
         ).fetchone()
@@ -525,6 +672,13 @@ def demote_room(
             raise ReplicaError(
                 "room is not locally authoritative; nothing to demote"
             )
+        if any(
+            liability_room_id == room_id
+            for liability_room_id, _ in _terminal_publication_liabilities(conn)
+        ):
+            raise ReplicaError(
+                "room has unpublished terminal work; publish it before demotion"
+            )
         seq = int(row["next_seq"])
         lost_actor_json = _canonical_json(
             {"kind": "system", "id": "authority-control"},
@@ -540,6 +694,21 @@ def demote_room(
             label="payload",
             max_bytes=MAX_EVENT_JSON_BYTES,
         )
+        lost_event_id = f"system:authority-lost:{observed_epoch}"
+        lost_bytes = (
+            len(lost_event_id.encode("utf-8"))
+            + len(b"authority.lost")
+            + len(lost_actor_json.encode("utf-8"))
+            + len(lost_payload_json.encode("utf-8"))
+        )
+        _assert_event_capacity(
+            conn,
+            room_id=room_id,
+            room=row,
+            additional_bytes=lost_bytes,
+            allow_control=True,
+            remaining_demotion_control_events=0,
+        )
         conn.execute(
             """INSERT INTO hosted_room_events
                (room_id, seq, event_id, kind, actor_json, authority_epoch,
@@ -548,7 +717,7 @@ def demote_room(
             (
                 room_id,
                 seq,
-                f"system:authority-lost:{observed_epoch}",
+                lost_event_id,
                 lost_actor_json,
                 observed_epoch,
                 lost_payload_json,
@@ -558,9 +727,10 @@ def demote_room(
         conn.execute(
             """UPDATE hosted_rooms
                   SET authority_gateway_id=?, authority_epoch=?,
-                      next_seq=next_seq+1, revision=revision+1, updated_at=?
+                      next_seq=next_seq+1, event_bytes=event_bytes+?,
+                      revision=revision+1, updated_at=?
                 WHERE room_id=?""",
-            (observed_gateway_id, observed_epoch, now, room_id),
+            (observed_gateway_id, observed_epoch, lost_bytes, now, room_id),
         )
     return {
         "room_id": room_id,

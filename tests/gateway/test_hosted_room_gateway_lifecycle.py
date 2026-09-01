@@ -91,7 +91,8 @@ async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch
     def get_service():
         return service if state["running"] else None
 
-    def start_service():
+    def start_service(*, start_allowed=None):
+        assert start_allowed is not None and start_allowed.is_set()
         state["starts"] += 1
         state["running"] = True
         return service
@@ -118,7 +119,8 @@ async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeyp
 
     starts = {"count": 0}
 
-    def fail_start():
+    def fail_start(*, start_allowed=None):
+        assert start_allowed is not None and start_allowed.is_set()
         starts["count"] += 1
         raise RuntimeError("worker unavailable")
 
@@ -185,7 +187,7 @@ def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
             )
         )
     finally:
-        assert resumed.stop(timeout=5.0)
+        assert resumed.stop(timeout=1.0)
 
     assert rpc.submits == ["ops"]
     assert hosted_room_driver.list_tasks(db, room_id="room-1", status="settled")
@@ -226,8 +228,8 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
         )
         time.sleep(0.05)
     finally:
-        assert gateway.stop(timeout=5.0)
-        assert dashboard.stop(timeout=5.0)
+        assert gateway.stop(timeout=1.0)
+        assert dashboard.stop(timeout=1.0)
 
     assert len(gateway_rpc.submits) + len(dashboard_rpc.submits) == 1
     events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]

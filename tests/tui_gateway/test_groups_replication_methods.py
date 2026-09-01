@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 import tui_gateway.server as srv
+from tui_gateway import methods_groups
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
 
@@ -14,8 +15,12 @@ MEMBERS = [{"kind": "bot", "id": "planner"}]
 def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
+    (path / "profiles" / "ops").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(path))
-    return path
+    methods_groups.stop_hosted_room_service(timeout=1.0)
+    methods_groups.start_hosted_room_service()
+    yield path
+    methods_groups.stop_hosted_room_service(timeout=1.0)
 
 
 def _result(envelope):
@@ -124,7 +129,18 @@ def test_demote_fences_local_room_against_newer_epoch(home):
     _result(
         srv._methods["groups.create"](
             1,
-            {"room_id": "room-1", "name": "Local room", "members": MEMBERS},
+            {
+                "room_id": "room-1",
+                "name": "Local room",
+                "members": [
+                    {
+                        "member_id": "default",
+                        "profile": "default",
+                        "handle": "hermes",
+                    },
+                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
+                ],
+            },
         )
     )
     observed_gateway = "install:" + "b" * 32
@@ -153,6 +169,35 @@ def test_demote_fences_local_room_against_newer_epoch(home):
     )
     assert "error" in envelope
     assert local_authority_gateway_id() != observed_gateway
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        (
+            {
+                "room_id": 123,
+                "observed_gateway_id": "install:" + "b" * 32,
+                "observed_epoch": 2,
+            },
+            "room_id must be a string",
+        ),
+        (
+            {
+                "room_id": "missing-room",
+                "observed_gateway_id": "install:" + "b" * 32,
+                "observed_epoch": 2,
+            },
+            "room not found",
+        ),
+    ],
+)
+def test_demote_preserves_domain_validation_errors(home, params, match):
+    envelope = srv._methods["groups.demote"](1, params)
+
+    error = _error(envelope)
+    assert error["code"] == 4119
+    assert match in error["message"]
 
 
 def test_replicate_rejects_gapped_page(home, tmp_path):

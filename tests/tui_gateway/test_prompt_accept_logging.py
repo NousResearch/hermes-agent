@@ -181,3 +181,180 @@ def test_finished_record_fires_on_returned_error(turn_env, caplog):
     finished = _records(caplog, "tui turn finished")
     assert len(finished) == 1
     assert "status=error" in finished[0].getMessage()
+
+
+def test_blocked_context_reference_completes_hosted_terminal_callback(
+    turn_env,
+    monkeypatch,
+):
+    from agent import context_references, model_metadata
+
+    run_calls = []
+    callbacks = []
+    persisted = []
+    retired = []
+    agent = types.SimpleNamespace(
+        session_id="agent-sid-1",
+        model="test-model",
+        base_url="",
+        api_key="",
+        provider="test",
+        clear_interrupt=lambda: None,
+        run_conversation=lambda *a, **k: run_calls.append((a, k)),
+    )
+    session = _session(
+        agent=agent,
+        running=True,
+        _hosted_room_task={
+            "room_id": "room-1",
+            "task_id": "task-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "execution_generation": 1,
+        },
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *a, **k: 100,
+    )
+    monkeypatch.setattr(
+        context_references,
+        "preprocess_context_references",
+        lambda *a, **k: types.SimpleNamespace(
+            blocked=True,
+            warnings=["Context reference exceeds the safe limit."],
+            message="",
+        ),
+    )
+
+    def persist(_session, receipt):
+        persisted.append(receipt)
+        return ({**receipt, "settlement_id": "reply:task-1:1"}, True)
+
+    monkeypatch.setattr(server, "_persist_hosted_terminal_receipt", persist)
+    monkeypatch.setattr(
+        server,
+        "_retire_turn_marker",
+        lambda _session, marker_key: retired.append(marker_key),
+    )
+
+    server._run_prompt_submit(
+        "rid",
+        "ui-sid",
+        session,
+        "inspect @file",
+        terminal_callback=callbacks.append,
+    )
+
+    assert run_calls == []
+    assert persisted == [
+        {
+            "status": "failed",
+            "text": "",
+            "error": "Context reference exceeds the safe limit.",
+        }
+    ]
+    assert callbacks == [
+        {
+            **persisted[0],
+            "settlement_id": "reply:task-1:1",
+        }
+    ]
+    assert retired == ["gw-session-key"]
+
+
+def test_agent_init_failure_completes_hosted_terminal_callback(
+    turn_env,
+    monkeypatch,
+):
+    callbacks = []
+    persisted = []
+    agent_builds = []
+    hosted_task = {
+        "room_id": "room-1",
+        "task_id": "task-1",
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "execution_generation": 1,
+    }
+    session = _session(source="bot_room")
+
+    monkeypatch.setattr(server, "_voice_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        server,
+        "_sess_nowait",
+        lambda _params, _rid: (session, None),
+    )
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_uses_compute_host",
+        lambda _session, _config: False,
+    )
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_args: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda sid, _session: agent_builds.append(sid),
+    )
+    monkeypatch.setattr(
+        server,
+        "_wait_agent_for_prompt",
+        lambda _session, _rid, _sid: {
+            "error": {"message": "agent initialization failed: invalid config"}
+        },
+    )
+    monkeypatch.setattr(
+        server, "_emit_terminal_turn_error", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "failed agent initialization must not run the hosted prompt"
+        ),
+    )
+
+    def persist(_session, receipt):
+        persisted.append(receipt)
+        return ({**receipt, "settlement_id": "reply:task-1:1"}, True)
+
+    monkeypatch.setattr(server, "_persist_hosted_terminal_receipt", persist)
+
+    result = server._methods["prompt.submit"](
+        "rid",
+        {
+            "session_id": "ui-sid",
+            "text": "continue",
+            "_hosted_task": hosted_task,
+            "_hosted_terminal_callback": callbacks.append,
+        },
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert agent_builds == ["ui-sid"]
+    assert persisted == [
+        {
+            "status": "failed",
+            "text": "",
+            "error": "agent initialization failed: invalid config",
+        }
+    ]
+    assert callbacks == [
+        {
+            **persisted[0],
+            "settlement_id": "reply:task-1:1",
+        }
+    ]
+    assert session["running"] is False
+    assert "_hosted_room_task" not in session

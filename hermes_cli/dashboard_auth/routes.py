@@ -36,14 +36,17 @@ from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
     InvalidCodeError, InvalidCredentialsError, ProviderError, Session)
 from hermes_cli.dashboard_auth.cookies import (
-    clear_pkce_cookie, clear_session_cookies, clear_sso_attempt_cookie, detect_https,
-    parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
-    set_session_cookies)
-from hermes_cli.dashboard_auth.login_page import (
-    render_login_html, render_native_provider_choice_html)
-from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
-from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+    clear_pkce_cookie,
+    clear_session_cookies,
+    clear_sso_attempt_cookie,
+    detect_https,
+    parse_pkce_payload,
+    read_pkce_cookie,
+    read_session_cookies,
+    set_pkce_cookie,
+    set_session_cookies,
+)
+from hermes_cli.dashboard_auth.login_page import render_login_html
 
 _log = logging.getLogger(__name__)
 
@@ -293,10 +296,23 @@ async def auth_callback(
     error_description: str = ""):
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
-        _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
-        raise _http(400, "Missing PKCE state cookie")
-    # ``next`` and ``broker`` come from the server-set cookie ONLY: the IDP
-    # echoes back just code+state, so any such query param is attacker controlled.
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            reason="missing_pkce_cookie",
+            ip=_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Missing PKCE state cookie",
+        )
+
+    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
+    # ``next`` segment is optional (only present when /auth/login was
+    # given a next= query). All keys live in the same flat namespace;
+    # ``next`` carries a URL-encoded path so it never contains ``;``.
+    # parse_pkce_payload URL-decodes the wire value (the setter encodes
+    # the whole payload so no raw ``;``/``"``/``\`` reaches the wire)
+    # before the ``;`` split.
     parts = parse_pkce_payload(pkce_raw)
     provider_name = parts.get("provider", "")
     p = get_provider(provider_name)
@@ -468,13 +484,25 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     # equality BEFORE verifying credentials so a flow started for provider A cannot be completed
     # with provider B's credentials.
     pkce_raw = read_pkce_cookie(request)
-    pkce_parts = parse_pkce_payload(pkce_raw) if pkce_raw else {}
-    broker_state = pkce_parts.get("broker", "")
-    if broker_state and pkce_parts.get("provider", "") != body.provider:
-        _audit(request, AuditEvent.NATIVE_TOKEN_FAILURE, provider=body.provider,
-               reason="provider_mismatch")
-        raise _http(400, "This native sign-in was started for a different provider; "
-                         "use that provider's form or restart sign-in.")
+    if pkce_raw:
+        pkce_parts = parse_pkce_payload(pkce_raw)
+        broker_state = pkce_parts.get("broker", "")
+        cookie_provider = pkce_parts.get("provider", "")
+    if broker_state and cookie_provider != body.provider:
+        audit_log(
+            AuditEvent.NATIVE_TOKEN_FAILURE,
+            provider=body.provider,
+            reason="provider_mismatch",
+            ip=ip,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This native sign-in was started for a different provider; "
+                "use that provider's form or restart sign-in."
+            ),
+        )
+
     try:
         session = p.complete_password_login(username=body.username, password=body.password)
     except InvalidCredentialsError:

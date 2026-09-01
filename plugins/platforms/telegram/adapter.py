@@ -13,7 +13,6 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
-from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +68,32 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
     if result.timed_out:
         raise asyncio.TimeoutError()
     return result.value
+
+
+def _iter_exception_graph(error: BaseException) -> "Iterator[BaseException]":
+    """Yield ``error`` and every ``__cause__``/``__context__`` ancestor.
+
+    PTB wraps httpx exceptions (``TimedOut`` wrapping ``httpx.PoolTimeout``
+    wrapping …), and re-raised errors accumulate ``__context__`` chains, so a
+    classifier must inspect the whole graph, not just the top frame. DFS with
+    an identity-based ``seen`` set guards the cycles malformed chains can
+    contain. Shared by the connect-timeout and pool-timeout classifiers.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+    while stack:
+        cur = stack.pop()
+        ident = id(cur)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield cur
+        cause = getattr(cur, "__cause__", None)
+        context = getattr(cur, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
 
 
 async def _first_completed(*futures: "asyncio.Future") -> None:
@@ -1288,9 +1313,15 @@ class TelegramAdapter(BasePlatformAdapter):
         return isinstance(error, OSError)
 
     @staticmethod
-    def _exception_graph_matches(error: Exception, name_marker: str, *text_markers: str) -> bool:
-        """True when any exception in ``error``'s cause/context graph matches by class name or text."""
+    def _looks_like_connect_timeout(error: Exception) -> bool:
+        """Return True when a Telegram TimedOut wraps a connect-timeout.
+
+        A plain Telegram TimedOut may mean the request reached Telegram and
+        should not be re-sent. A ConnectTimeout means the TCP connection was
+        never established, so retrying is safe and prevents silent drops.
+        """
         for cur in _iter_exception_graph(error):
+            name = cur.__class__.__name__.lower()
             text = str(cur).lower()
             if name_marker in cur.__class__.__name__.lower() or any(m in text for m in text_markers):
                 return True
@@ -1304,8 +1335,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _looks_like_pool_timeout(error: Exception) -> bool:
-        """True when a TimedOut wraps ``httpx.PoolTimeout``: PTB says "Request was *not* sent", so
-        re-sending cannot duplicate. Matches class AND text to survive rewording."""
+        """Return True when a Telegram TimedOut wraps an httpx pool timeout.
+
+        PTB converts ``httpx.PoolTimeout`` into ``telegram.error.TimedOut`` with
+        a message that explicitly states the request was *not* sent
+        (``"Pool timeout: All connections in the connection pool are occupied.
+        Request was *not* sent to Telegram."``). Because the request never left
+        the process, re-sending is safe and cannot duplicate -- the opposite of
+        a generic TimedOut, which may have reached Telegram. We match the
+        wrapped ``httpx.PoolTimeout`` class as well as the message string so the
+        check survives PTB message-wording changes.
+        """
         for cur in _iter_exception_graph(error):
             name = cur.__class__.__name__.lower()
             text = str(cur).lower()
@@ -1679,80 +1719,83 @@ class TelegramAdapter(BasePlatformAdapter):
                     _redact_telegram_error_text(exc))
             return False
 
-    async def _drain_polling_connections(self) -> None:
-        """Reset the httpx pool used for getUpdates polling before a reconnect.
+    async def _drain_polling_connections(self) -> bool:
+        """Reset the httpx connection pool used for getUpdates polling.
 
-        Half-closed connections (esp. via proxies) occupy pool slots until "Pool timeout: All connections in the connection pool
-        are occupied". Only ``_request[0]`` (getUpdates) is reset; the general request stays untouched so concurrent sends are
-        never interrupted. Relies on PTB 22.x's private ``(get_updates, general)`` tuple — review on PTB 23+."""
+        Returns ``False`` when Hermes abandons ``shutdown()`` at its bounded
+        deadline. The old shutdown task may still be running in that case, so
+        callers must quarantine this request and rebuild the adapter instead of
+        re-initializing or reconnecting with it.
+
+        Network errors (especially through proxies like sing-box) can leave
+        httpx connections in a half-closed state that still occupy pool slots.
+        After enough reconnect cycles the pool fills up entirely, causing
+        ``Pool timeout: All connections in the connection pool are occupied.``
+
+        We reset ONLY ``_request[0]`` (the getUpdates request) — the general
+        request (``_request[1]``) is left untouched so concurrent
+        ``send_message`` / ``edit_message`` calls are never interrupted.
+
+        Implementation note: accesses ``Bot._request[0]`` which is the
+        get-updates ``BaseRequest`` in the PTB 22.x internal tuple
+        ``(get_updates_request, general_request)``.  There is no public
+        accessor for the polling request; review if upgrading to PTB 23+.
+        """
         if not (self._app and self._app.bot):
-            return
+            return True
         try:
             polling_req = self._app.bot._request[0]  # noqa: SLF001
         except Exception:
-            return
-        # Bounded wall-clock deadline (not asyncio.wait_for): httpcore's pool close runs under
-        # AsyncShieldCancellation and a wedged CLOSE-WAIT socket can hang it forever.
-        if not await self._bounded_request_step(polling_req.shutdown(), "Polling request shutdown failed/timed out (non-fatal)"):
-            # initialize() only rebuilds the client when ``client.is_closed``; an abandoned aclose()
-            # leaves it false, so start_polling would reuse the CLOSE-WAIT socket (alive but deaf).
-            # Swap in a fresh client before initialize(). See #87057.
-            self._orphan_and_rebuild_polling_client(polling_req)
-        if await self._bounded_request_step(polling_req.initialize(), "Polling request re-initialize failed/timed out (non-fatal)"):
-            logger.debug("[%s] Polling request pool drained before reconnect", self.name)
-        else:
-            self._orphan_and_rebuild_polling_client(polling_req)
-
-    async def _bounded_request_step(self, awaitable, failure_msg: str) -> bool:
-        """Await a request shutdown()/initialize() under ``_DRAIN_TIMEOUT``; False (debug-logged) on failure."""
-        try:
-            await _await_with_thread_deadline(awaitable, timeout=_DRAIN_TIMEOUT)
             return True
-        except Exception:
-            logger.debug("[%s] " + failure_msg, self.name, exc_info=True)
-            return False
-
-    def _orphan_and_rebuild_polling_client(self, polling_req) -> None:
-        """Replace a wedged HTTPXRequest client after a hung aclose(): swap in a fresh client and close
-        the old one in a detached, bounded task so it can't block the reconnect ladder.
-
-        PTB's ``HTTPXRequest.initialize()`` only calls ``_build_client()`` when the current client reports
-        ``is_closed``. If ``shutdown()`` was abandoned on a CLOSE-WAIT socket, that flag stays false and the
-        next ``start_polling()`` reuses the dead getUpdates connection (#87057).
-        """
-        old = getattr(polling_req, "_client", None)
-        build = getattr(polling_req, "_build_client", None)
-        if old is None or not callable(build) or getattr(old, "is_closed", True):
-            return
         try:
-            polling_req._client = build()  # noqa: SLF001
+            # Bounded: a wedged CLOSE-WAIT socket can make this close hang
+            # forever and freeze the reconnect ladder (#66377). The wall-clock
+            # primitive — not asyncio.wait_for — abandons cancellation-resistant
+            # httpcore cleanup (#58236/#63309). Keep its structured outcome so
+            # our own abandonment is distinguishable from a shutdown coroutine
+            # that completed by raising TimeoutError or another exception.
+            shutdown_result = await run_bounded_async(
+                polling_req.shutdown(),
+                _DRAIN_TIMEOUT,
+                label="telegram-polling-shutdown",
+            )
+            if shutdown_result.timed_out:
+                logger.error(
+                    "[%s] Polling request shutdown exceeded the Hermes drain "
+                    "deadline; quarantining it before reconnect",
+                    self.name,
+                )
+                return False
         except Exception:
-            logger.debug("[%s] Failed to rebuild polling HTTP client after hung drain", self.name, exc_info=True)
-            return
-        logger.warning("[%s] Replaced wedged getUpdates HTTP client after drain timeout (likely CLOSE-WAIT socket)", self.name)
-
-        async def _orphan_aclose() -> None:
-            try:
-                aclose = getattr(old, "aclose", None)
-                if not callable(aclose):
-                    return
-                # Same cancellation-swallowing httpcore scope as shutdown(): wall-clock deadline.
-                await _await_with_thread_deadline(aclose(), timeout=_DRAIN_TIMEOUT)
-            except Exception:
-                logger.debug("[%s] Orphan polling client aclose failed (non-fatal)", self.name, exc_info=True)
-
+            logger.debug(
+                "[%s] Polling request shutdown completed with an error "
+                "(non-fatal)",
+                self.name, exc_info=True,
+            )
         try:
-            task = asyncio.ensure_future(_orphan_aclose())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(_consume_abandoned_task)
+            await _await_with_thread_deadline(
+                polling_req.initialize(), timeout=_DRAIN_TIMEOUT
+            )
+            logger.debug(
+                "[%s] Polling request pool drained before reconnect", self.name
+            )
         except Exception:
-            pass
+            logger.debug(
+                "[%s] Polling request re-initialize failed/timed out (non-fatal)",
+                self.name, exc_info=True,
+            )
+        return True
 
-    def _fence_polling(self) -> None:
-        """Mark polling closed: no progress accepted, send path degraded."""
-        self._polling_progress_accepting = False
-        self._send_path_degraded = True
+    async def _quarantine_abandoned_polling_request(self) -> None:
+        """Hand an abandoned polling request off for fresh-adapter recovery."""
+        message = (
+            "Telegram polling request shutdown did not finish before the drain "
+            "deadline; rebuilding the adapter instead of reusing a request whose "
+            "shutdown may still be running."
+        )
+        logger.error("[%s] %s", self.name, message)
+        self._set_fatal_error("telegram_network_error", message, retryable=True)
+        await self._handoff_polling_fatal_error()
 
     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
         """Start accepting progress for a new getUpdates polling generation."""
@@ -2203,9 +2246,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if getattr(self, "_polling_teardown_started", False):
             return
-        await self._drain_polling_connections()
-        if self._teardown_started:
+        polling_request_reusable = await self._drain_polling_connections()
+        if getattr(self, "_polling_teardown_started", False):
             return
+        if not polling_request_reusable:
+            await self._quarantine_abandoned_polling_request()
+            return
+
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
@@ -2626,10 +2673,19 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(RETRY_DELAY)
             if self._teardown_started:
                 return
-            await self._drain_polling_connections()
-            if self._teardown_started:
+            polling_request_reusable = await self._drain_polling_connections()
+            if getattr(self, "_polling_teardown_started", False):
                 return
-            # Stable local ref: a concurrent disconnect() may null self._app across the awaits above.
+            if not polling_request_reusable:
+                await self._quarantine_abandoned_polling_request()
+                return
+
+            # Capture a stable local reference: self._app can be reassigned to
+            # None by a concurrent disconnect() while we're suspended across
+            # the awaits above (same race #55992 fixed on the network path).
+            # Re-reading self._app after that point would raise
+            # AttributeError deep inside start_polling instead of failing fast
+            # here, where the except below reschedules or escalates to fatal.
             app = self._app
             # Capture a stable local reference: self._app can be reassigned to None by a concurrent
             # disconnect() while we're suspended across the awaits above (same race #55992 fixed on the

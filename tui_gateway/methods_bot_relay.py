@@ -214,5 +214,12 @@ def register(server) -> None:
     _registry.install(server)
     from . import methods_groups
 
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
+    server.get_hosted_room_service = methods_groups.get_hosted_room_service
+    server._WORKER_UNAVAILABLE = methods_groups._WORKER_UNAVAILABLE
+    methods_groups.bind_server(server)
+    methods_groups.register(server)
+    from . import methods_groups
+
     methods_groups.register(server)
     server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS

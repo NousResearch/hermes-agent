@@ -9802,16 +9802,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         last_active = session_row.get("last_active") or session_row.get("started_at")
         return float(last_active or 0) > float(last_read)
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+    def get_session_by_title(
+        self,
+        title: str,
+        *,
+        source: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Look up an exact title, optionally within one owning surface."""
         with self._read_ctx() as conn:
+            source_clause = " AND s.source = ?" if source is not None else ""
+            order_clause = (
+                " ORDER BY CASE WHEN COALESCE(s.message_count, 0) > 0 "
+                "THEN 0 ELSE 1 END, s.started_at ASC, s.id ASC"
+                if source is not None
+                else ""
+            )
+            params = (title, source) if source is not None else (title,)
             cursor = conn.execute(
                 "SELECT s.*, "
                 "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
                 "FROM sessions s "
                 "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.title = ?",
-                (title,),
+                f"WHERE s.title = ?{source_clause}{order_clause} LIMIT 1",
+                params,
             )
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None

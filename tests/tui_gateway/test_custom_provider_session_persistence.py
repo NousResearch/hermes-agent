@@ -682,6 +682,33 @@ class TestFollowProfileConfigRuntimeOverrides:
         server._ensure_session_db_row(session)
         assert captured["model_config"].get("follow_profile_config") is True
 
+    def test_ensure_db_row_persists_hosted_room_identity(self, monkeypatch):
+        import tui_gateway.server as server
+
+        captured = {}
+
+        class FakeDB:
+            def create_session(self, *args, **kwargs):
+                captured["model_config"] = kwargs.get("model_config")
+                return None
+
+            def set_session_pinned(self, *_args, **_kwargs):
+                return None
+
+        monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+        monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
+        room_id = "room-" + "x" * 120
+        session = {
+            "session_key": "key-room",
+            "source": "bot_room",
+            "room_plumbing": True,
+            "hosted_room_id": room_id,
+        }
+
+        server._ensure_session_db_row(session)
+
+        assert captured["model_config"]["hosted_room_id"] == room_id
+
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
@@ -845,5 +872,4 @@ class TestRuntimeModelConfigDropsStaleKeys:
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
-
 

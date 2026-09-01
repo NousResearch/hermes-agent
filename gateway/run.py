@@ -9379,6 +9379,62 @@ class GatewayRunner(
             logger.warning("Legacy session recovery on startup failed: %s", exc)
         return exact, fallback
 
+    @staticmethod
+    def _start_hosted_room_worker_sync(start_allowed: threading.Event):
+        """Start the local Group Chat worker without importing the dashboard."""
+
+        import tui_gateway.server  # noqa: F401
+        from tui_gateway import methods_groups
+
+        service = methods_groups.get_hosted_room_service()
+        if service is None:
+            service = methods_groups.start_hosted_room_service(
+                start_allowed=start_allowed,
+            )
+        if service is None:
+            if not start_allowed.is_set():
+                return None
+            raise RuntimeError("Group Chat worker has no bound session backend")
+        status = service.runtime.status()
+        if not status.get("running") or status.get("stopping"):
+            raise RuntimeError("Group Chat worker did not start")
+        return service
+
+    async def _ensure_hosted_room_worker(self):
+        start_allowed = getattr(self, "_hosted_room_start_allowed", None)
+        if start_allowed is None:
+            start_allowed = threading.Event()
+            if getattr(self, "_running", True):
+                start_allowed.set()
+            self._hosted_room_start_allowed = start_allowed
+        return await asyncio.to_thread(
+            self._start_hosted_room_worker_sync,
+            start_allowed,
+        )
+
+    async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
+        """Keep the room worker alive for the messaging gateway lifetime."""
+
+        while self._running:
+            await self._ensure_hosted_room_worker()
+            # ``to_thread`` recovery can finish after shutdown has already
+            # observed no active service and completed its first stop attempt.
+            # Stop that late-created runtime before leaving the watcher.
+            if not self._running:
+                await self._stop_hosted_room_worker()
+                return
+            await asyncio.sleep(interval)
+
+    async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
+        """Pause room execution durably without interrupting accepted turns."""
+
+        from tui_gateway import methods_groups
+
+        return await asyncio.to_thread(
+            methods_groups.stop_hosted_room_service,
+            timeout=timeout,
+        )
+
     def _start_loop_heartbeat_task(self) -> None:
         """Start the loop-liveness heartbeat task (#66892), idempotent.
 
@@ -10184,6 +10240,19 @@ class GatewayRunner(
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
+
+        try:
+            await self._ensure_hosted_room_worker()
+        except Exception:
+            logger.error(
+                "Group Chat worker failed to start; mutating Group Chat commands "
+                "will fail closed until supervision recovers it",
+                exc_info=True,
+            )
+        self._spawn_supervised(
+            self._hosted_room_worker_watcher,
+            "hosted_room_worker",
+        )
 
         self._start_loop_heartbeat_task()
 
@@ -12030,9 +12099,28 @@ class GatewayRunner(
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
 
+            start_allowed = getattr(self, "_hosted_room_start_allowed", None)
+            if start_allowed is not None:
+                start_allowed.clear()
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+
+            stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
+            if callable(stop_room_worker):
+                try:
+                    stopped = await stop_room_worker(timeout=5.0)
+                    if not stopped:
+                        logger.warning(
+                            "Group Chat worker is still settling durable work; "
+                            "the next gateway start will recover it"
+                        )
+                except Exception:
+                    logger.warning(
+                        "Group Chat worker could not stop cleanly; the next gateway "
+                        "start will recover durable work",
+                        exc_info=True,
+                    )
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

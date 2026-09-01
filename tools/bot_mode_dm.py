@@ -567,11 +567,24 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
             if stdin_file:
                 # Keep the file open until the transport exits; cleanup occurs
                 # after subprocess.run returns, not merely after stdin reaches EOF.
+                from tools.environments.local import build_subprocess_env
+
+                child_env = build_subprocess_env(
+                    scrub_secrets=False,
+                    inherit_profile_home=False,
+                    extra={"PYTHONIOENCODING": "utf-8"},
+                )
                 with open(dm_file, "r", encoding="utf-8") as stream:
-                    return subprocess.run(argv, stdin=stream, check=False).returncode
+                    return subprocess.run(
+                        argv,
+                        stdin=stream,
+                        check=False,
+                        env=child_env,
+                    ).returncode
             proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
             )
@@ -587,6 +600,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                     proc = subprocess.run(
                         [*argv, "--query-file", dm_file],
                         check=False,
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                     )

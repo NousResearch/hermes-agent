@@ -7543,8 +7543,10 @@ def get_recommended_default_model(provider: str = ""):
                 get_curated_nous_model_ids,
                 get_pricing_for_provider,
                 check_nous_free_tier,
+                nous_policy_allowed_ids,
                 partition_nous_models_by_tier,
                 pick_silent_default_model,
+                restrict_to_nous_policy,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -7561,9 +7563,18 @@ def get_recommended_default_model(provider: str = ""):
             except Exception:
                 portal_url = ""
 
+            # This endpoint picks the model a user lands on without choosing it,
+            # so an unreachable one here is worse than in a picker. Narrow before
+            # the tier split, so a rescued id still has to pass the free/paid
+            # predicate.
+            _policy_allowed = nous_policy_allowed_ids()
+
             if free_tier:
                 model_ids, pricing = union_with_portal_free_recommendations(
                     model_ids, pricing, portal_url
+                )
+                model_ids = restrict_to_nous_policy(
+                    model_ids, _policy_allowed, rescue_empty=True,
                 )
                 model_ids, _unavailable = partition_nous_models_by_tier(
                     model_ids, pricing, free_tier=True
@@ -7571,6 +7582,9 @@ def get_recommended_default_model(provider: str = ""):
             else:
                 model_ids, pricing = union_with_portal_paid_recommendations(
                     model_ids, pricing, portal_url
+                )
+                model_ids = restrict_to_nous_policy(
+                    model_ids, _policy_allowed, rescue_empty=True,
                 )
 
             model = pick_silent_default_model(model_ids, provider="nous")

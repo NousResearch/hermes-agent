@@ -2934,7 +2934,10 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    return slugs
+    # Nous excluded: its picker branch builds from the curated list and it
+    # cannot reach the api_key-only pathway, so a prefetched entry is written
+    # and never read.
+    return [s for s in slugs if s != "nous"]
 
 
 def list_authenticated_providers(
@@ -3464,6 +3467,19 @@ def list_authenticated_providers(
                 # Portal recommendation fetch failed — fall back to the
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
+                pass
+            # Outside the try above, so a failed recommendation fetch still
+            # yields a policy-filtered curated list.
+            try:
+                from hermes_cli.models import (
+                    nous_policy_allowed_ids as _nous_policy,
+                    restrict_to_nous_policy as _nous_restrict,
+                )
+
+                model_ids = _nous_restrict(
+                    model_ids, _nous_policy(), rescue_empty=True,
+                )
+            except Exception:
                 pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the

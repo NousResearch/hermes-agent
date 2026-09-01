@@ -549,6 +549,82 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+_ORPHAN_RESCUE_REFS_TO_KEEP = 10
+_ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
+
+def _prune_orphan_rescue_refs(
+    git_cmd,
+    cwd,
+    branch,
+    keep=_ORPHAN_RESCUE_REFS_TO_KEEP,
+    max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS,
+) -> None:
+    """Expire old orphan rescue refs so backups stay bounded.
+
+    Each orphan-history divergence (#87694) parks the pre-reset HEAD under
+    ``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``. A rescue ref
+    pins every object reachable from that commit against ``git gc`` — and in
+    the incident shape those objects include a full working-tree snapshot
+    (the autostash orphan commit), which can be multi-GB when the tree holds
+    large stray files. Left alone, a repeatedly corrupted install would grow
+    ``.git`` without bound.
+
+    Two independent limits, both enforced on every orphan incident:
+
+    - **Count cap:** keep only the ``keep`` most-recent refs.
+    - **Age expiry:** drop any ref older than ``max_age_days``, parsed from
+      the ``YYYYMMDD-HHMMSS`` timestamp embedded in the ref name (refs with
+      unparseable names are left alone rather than guessed at).
+
+    Ref names sort chronologically (timestamp prefix), so lexicographic
+    order from ``for-each-ref`` is also creation order. Deleting a ref makes
+    its objects eligible for ``git gc``; actual disk reclaim happens on the
+    next gc (git auto-gc, or the user running ``git gc``). Best-effort: any
+    failure here must not block the update itself.
+    """
+    try:
+        list_result = subprocess.run(
+            git_cmd + [
+                "for-each-ref",
+                "--format=%(refname)",
+                "--sort=refname",
+                f"refs/hermes-update-backups/orphan-{branch}-*",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if list_result.returncode != 0:
+            return
+        refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
+        stale = set(refs[:-keep] if keep > 0 else refs)
+        # Age expiry: ref names embed a UTC YYYYMMDD-HHMMSS timestamp right
+        # after the branch segment; anything older than max_age_days goes.
+        if max_age_days > 0:
+            from datetime import timedelta, timezone
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            prefix = f"refs/hermes-update-backups/orphan-{branch}-"
+            for ref in refs:
+                stamp = ref[len(prefix):][:15]  # "YYYYMMDD-HHMMSS"
+                try:
+                    ref_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    continue
+                if ref_time < cutoff:
+                    stale.add(ref)
+        for ref in sorted(stale):
+            subprocess.run(
+                git_cmd + ["update-ref", "-d", ref],
+                cwd=cwd,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+    except OSError:
+        pass
+
 # Files that define the editable install. A pull that touches none of them
 # cannot have invalidated it.
 _INSTALL_DEFINING_FILES = (
@@ -8710,6 +8786,64 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # Same branch as the update target — a true upstream
                     # force-push/rebase. Local changes are already stashed;
                     # reset to match the remote exactly (original behaviour).
+                    #
+                    # Divergence here comes in two shapes: ordinary (a common
+                    # ancestor still exists — the reset below is a normal,
+                    # safe re-sync onto the remote) and orphan (no common
+                    # ancestor at all, e.g. a corrupted local HEAD or a repo
+                    # re-init — see #87694). In the orphan case `reset --hard`
+                    # would silently discard the entire local commit graph
+                    # with no way back, so park pre_pull_sha behind a rescue
+                    # ref first.
+                    merge_base_result = subprocess.run(
+                        git_cmd + ["merge-base", "HEAD", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    has_common_ancestor = bool(
+                        merge_base_result.returncode == 0
+                        and merge_base_result.stdout.strip()
+                    )
+                    if not has_common_ancestor and pre_pull_sha:
+                        from datetime import datetime as _dt, timezone
+
+                        # Suffix with the pre-pull SHA (not just a second-
+                        # resolution timestamp) so two updates racing within
+                        # the same second (e.g. a retried update) get distinct
+                        # refs instead of the second `update-ref` silently
+                        # overwriting the first backup.
+                        rescue_ref = (
+                            f"refs/hermes-update-backups/orphan-{branch}-"
+                            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                            f"-{pre_pull_sha[:12]}"
+                        )
+                        update_ref_result = subprocess.run(
+                            git_cmd + ["update-ref", rescue_ref, pre_pull_sha],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                        )
+                        if update_ref_result.returncode == 0:
+                            print(
+                                "  ⚠ Local history shares no common ancestor with "
+                                f"origin/{branch} (orphan divergence) — backed up "
+                                f"current HEAD to {rescue_ref} before resetting. "
+                                f"This backup expires after "
+                                f"{_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days."
+                            )
+                        else:
+                            # update-ref's return code is intentionally not
+                            # fatal (disk full, permissions) — but don't tell
+                            # the user a backup exists when the write failed.
+                            print(
+                                "  ⚠ Local history shares no common ancestor with "
+                                f"origin/{branch} (orphan divergence) — attempted "
+                                f"to back up current HEAD to {rescue_ref} before "
+                                "resetting, but the backup write failed "
+                                f"(pre-reset SHA was {pre_pull_sha})."
+                            )
+                        _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
                     print(
                         "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                     )

@@ -22,6 +22,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from scripts.add_contributor import find_mapping_file
 from scripts.ci.review_status import action_required, publish
 
 ARTIFACT = "contributor-check"
@@ -74,7 +75,14 @@ def is_mapped(email: str, legacy_map: str) -> bool:
         return True
     if GITHUB_NOREPLY.search(email):
         return True
-    if Path("contributors/emails", email).is_file():
+    # Case-insensitive on purpose, via the same helper add_contributor.py and
+    # audit_pr_attribution.py use so the three cannot drift. Email hostnames are
+    # case-insensitive per DNS, so a mapping file whose name differs only by case
+    # already covers this address. A plain ``is_file()`` is case-SENSITIVE on the
+    # Linux runner, so it would report the address unmapped and send the
+    # contributor to add_contributor.py -- which refuses a variant spelling,
+    # because the two files cannot coexist on a macOS/Windows checkout.
+    if find_mapping_file(email, Path("contributors/emails")) is not None:
         return True
     return f'"{email}"' in legacy_map
 

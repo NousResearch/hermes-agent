@@ -15,6 +15,14 @@ Idempotent: if the mapping already exists with the same login, prints
 "present" and exits 0. If the email maps to a DIFFERENT login (here or in the
 legacy AUTHOR_MAP), refuses with exit 1 so a typo can't silently reassign
 someone's commits.
+
+Also refuses with exit 1 when the email differs only by CASE from an existing
+mapping file. Email hostnames are case-insensitive per DNS, so the two are one
+address — and on a case-insensitive filesystem (macOS/Windows) the two files
+cannot coexist, leaving the checkout permanently dirty and blocking
+``git rebase``. Refusal is deliberate even when the login matches: a variant
+spelling means two commit authors share one machine-default email, and only a
+human can decide who owns it.
 """
 
 import re
@@ -42,6 +50,47 @@ def read_mapping_file(path: Path) -> str | None:
     except OSError:
         pass
     return None
+
+
+def find_mapping_file(email: str, emails_dir: Path | None = None) -> str | None:
+    """Return the mapping filename matching ``email`` case-insensitively.
+
+    A mapping filename IS an email address, and the hostname part of an email
+    is case-insensitive per DNS — so two files differing only by case are two
+    spellings of one address.
+
+    This compares names from ``iterdir()`` rather than probing with
+    ``Path.is_file()``, on purpose: ``is_file()`` answers True for a variant
+    spelling on a case-insensitive filesystem (macOS/Windows) and False on a
+    case-sensitive one (Linux), so any check built on it behaves differently
+    per platform. Comparing real directory entry names is a pure string
+    operation and gives the same answer everywhere — which is what makes this
+    testable on any host.
+
+    Returns the exact stored spelling (which may equal ``email``), or ``None``.
+    """
+    directory = EMAILS_DIR if emails_dir is None else emails_dir
+    # casefold(), not lower(): it folds pairs lower() misses (German ß/ss), and
+    # a case-insensitive filesystem's own folding is at least as aggressive, so
+    # this must not be narrower than the filesystem's.
+    target = email.casefold()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return None
+    exact: str | None = None
+    variant: str | None = None
+    for entry in entries:
+        if entry.name.casefold() != target or not entry.is_file():
+            continue
+        if entry.name == email:
+            exact = entry.name
+        elif variant is None:
+            variant = entry.name
+    # Prefer the exact spelling when both are present (a case-sensitive
+    # filesystem can hold both, which is the state this guard exists to stop
+    # from spreading).
+    return exact if exact is not None else variant
 
 
 def _legacy_login(email: str) -> str | None:

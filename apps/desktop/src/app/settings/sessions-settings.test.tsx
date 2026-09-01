@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 
+import { SessionsSettings } from './sessions-settings'
+
 const listAllProfileSessions = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -70,7 +72,6 @@ describe('SessionsSettings sidebar tab preference', () => {
   })
 
   it('shows the tab-first default and lets the user switch to opening in main', async () => {
-    const { SessionsSettings } = await import('./sessions-settings')
     render(
       <MemoryRouter>
         <SessionsSettings />

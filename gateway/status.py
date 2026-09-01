@@ -383,6 +383,24 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def get_process_create_time_epoch(pid: int) -> Optional[float]:
+    """Return a process's creation time as a TRUE epoch float (seconds).
+
+    ``_get_process_start_time`` returns the PID-reuse fingerprint, whose units
+    are platform-dependent (centisecond-epoch on macOS/Windows, clock ticks
+    since boot on Linux). That is correct for identity comparison but NOT
+    comparable to ``time.time()``. Uptime/grace arithmetic needs a real epoch,
+    so read psutil directly: it is a hard dependency and exposes a
+    cross-platform process creation timestamp. Fails closed (None) on any
+    error.
+    """
+    try:
+        import psutil  # type: ignore
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 

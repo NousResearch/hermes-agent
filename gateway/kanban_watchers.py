@@ -243,7 +243,11 @@ def _root_gateway_in_grace(kanban_root: Path) -> bool:
 
     Anchored to the root process start time (recorded in gateway.pid), not the
     dispatch heartbeat, so a healthy non-root OWNER that refreshes its own
-    heartbeat still honours the bounded root preference. Fail-safe: any probe
+    heartbeat still honours the bounded root preference. The uptime is computed
+    from a TRUE epoch creation timestamp (``psutil.create_time()``) — NOT the
+    PID-reuse fingerprint from ``get_running_pid_identity_strict``, whose units
+    are platform-dependent (centisecond-epoch on macOS, ticks-since-boot on
+    Linux) and therefore not comparable to ``time.time()``. Fail-safe: any probe
     error returns False (do not defer).
     """
     try:
@@ -258,13 +262,17 @@ def _root_gateway_in_grace(kanban_root: Path) -> bool:
         return False
     if identity is None:
         return False
-    _pid, start = identity
-    if start is None:
+    _pid, _start = identity
+    if not _pid or _pid <= 0:
+        return False
+    create_time = _st.get_process_create_time_epoch(_pid)
+    if create_time is None:
         return False
     try:
-        return (time.time() - float(start)) <= _DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS
+        uptime = time.time() - float(create_time)
     except (TypeError, ValueError):
         return False
+    return 0 < uptime <= _DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS
 
 
 def _should_seize_dispatcher(

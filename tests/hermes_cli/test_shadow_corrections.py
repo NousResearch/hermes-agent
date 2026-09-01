@@ -37,25 +37,28 @@ class TestC5Provenance:
             tid = _mk(conn, created_by=token)
             assert sc.suggest(conn, tid) is None, token
 
-    def test_registry_verified_profile_author_is_human(self, env, tmp_path):
+    def test_registry_verified_profile_author_is_human(self, env, tmp_path, monkeypatch):
+        """R2-7 supersedes C5: registry membership alone is NOT human; the
+        author additionally needs the structured interactive marker."""
         conn, home = env
-        # Deploy a registry containing the author profile
         gov = home / "governance"
         gov.mkdir(parents=True, exist_ok=True)
         import yaml
-        (gov / "profile-registry.yaml").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "root": {"name": "KENSEI", "description": "root"},
-                "profiles": [
-                    {"name": "misa-misa", "kind": "lead", "parent": "KENSEI",
-                     "lifecycle": "active", "domains": [], "gateway_unit": None},
-                ],
-            })
-        )
+        (gov / "profile-registry.yaml").write_text(yaml.safe_dump({
+            "schema_version": 1,
+            "root": {"name": "KENSEI", "description": "root"},
+            "profiles": [
+                {"name": "misa-misa", "kind": "lead", "parent": "KENSEI",
+                 "lifecycle": "active", "domains": [], "gateway_unit": None},
+            ],
+        }))
         tid = _mk(conn, created_by="misa-misa")
+        # Without interactive marker: not human (R2-7 contract)
+        assert sc.suggest(conn, tid) is None
+        # With marker: eligible
+        monkeypatch.setattr(sc, "_task_has_interactive_marker", lambda c, t: True)
         s = sc.suggest(conn, tid)
-        assert s is not None  # registry-verified interactive profile author
+        assert s is not None
 
     def test_unknown_profile_author_not_human(self, env):
         conn, home = env

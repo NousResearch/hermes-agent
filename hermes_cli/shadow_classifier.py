@@ -38,23 +38,74 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-CLASSIFIER_VERSION = "shadow-classifier-2"
+CLASSIFIER_VERSION = "shadow-classifier-3"
 EVENT_KIND = "risk_classification_suggested"
 
-# C5: trusted human creation seams.  Anything outside this set (or not
-# registry-verified as an interactive profile author) is NOT eligible.
+# R2-1: atomic exactly-once invariant for suggestion events.
+_SUGGESTION_UNIQUENESS_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_task_version "
+    "ON task_events (task_id, kind, "
+    "CAST(json_extract(payload, '$.classifier_version') AS TEXT)) "
+    "WHERE kind = 'risk_classification_suggested'"
+)
+
+
+def ensure_suggestion_uniqueness(conn: sqlite3.Connection) -> bool:
+    """R2-1: install the atomic uniqueness invariant with transaction
+    preservation (execute(), never executescript) and fail-closed duplicate
+    detection.  Returns True when the invariant is installed; False when
+    legacy duplicates block it (never silently deduped).
+    """
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='ux_shadow_task_version'"
+    ).fetchone()
+    if row is not None:
+        return True
+    dupes = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        "  SELECT task_id, json_extract(payload, '$.classifier_version') AS v"
+        "  FROM task_events WHERE kind = 'risk_classification_suggested'"
+        "  GROUP BY task_id, v HAVING COUNT(*) > 1)"
+    ).fetchone()[0]
+    if dupes:
+        return False  # fail closed; reconciliation plan required (R2-3 pattern)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_task_version "
+        "ON task_events (task_id, kind, "
+        "CAST(json_extract(payload, '$.classifier_version') AS TEXT)) "
+        "WHERE kind = 'risk_classification_suggested'"
+    )
+    return True
+
+
+# R2-7: trusted creation seams that THEMSELVES prove human creation.
 TRUSTED_HUMAN_CREATED_BY = {"dashboard", "ideabox", "idea-box", "cli"}
 
-# Automation/derived-origin stamps that must never classify as human,
-# even if they later appear in a registry by mistake.
+# Automation/derived-origin stamps that must never classify as human.
 _AUTOMATION_STAMPS = {
-    "feature-pipeline", "feature-pipeline", "denji-governance", "system",
+    "feature-pipeline", "denji-governance", "system",
     "swarm", "cron", "webhook", "job", "automation", "scheduler",
     "worker", "pipeline", "governance", "decompose", "triage-router",
     "orchestrator", "market-scanner", "skill-broker", "skill-research",
 }
 
 _BOUNDARY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_\-.:]{0,63}$")
+
+# R2-7: structured interactive-human marker contract.  A profile-author
+# stamp is eligible ONLY when a caller-proven interactive marker exists
+# (an event/field distinguishing interactive user requests from
+# agent/cron/webhook creation).  Default seam name; tests may stub.
+INTERACTIVE_MARKER_EVENT_KIND = "task.created_interactively"
+
+
+def _task_has_interactive_marker(conn: sqlite3.Connection, task_id) -> bool:
+    """True only when a structured interactive-creation marker exists for
+    the task (caller-proven; no prose inference)."""
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? LIMIT 1",
+        (task_id, INTERACTIVE_MARKER_EVENT_KIND),
+    ).fetchone()
+    return row is not None
 
 
 def _bounded(token: str) -> str:
@@ -64,8 +115,12 @@ def _bounded(token: str) -> str:
 
 
 def _registry_profile_names(hermes_home: Optional[Path] = None) -> Optional[set[str]]:
-    """Registry-verified profile names, or None when the registry is
-    absent/unreadable (provenance then cannot be verified → fail closed).
+    """R2-7: registry-verified profile names via the FULL core validator.
+
+    Uses ``profile_registry.load_registry()`` so an invalid registry
+    (bad enums, unknown parents, cycles, duplicates) yields None —
+    malformed data can never authorise eligibility.  Returns None when
+    the registry is absent/unreadable/invalid (fail closed).
     """
     home = hermes_home or Path(
         __import__("os").environ.get("HERMES_HOME", "") or
@@ -75,31 +130,28 @@ def _registry_profile_names(hermes_home: Optional[Path] = None) -> Optional[set[
     if not path.exists():
         return None
     try:
-        import yaml
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        from hermes_cli.profile_registry import load_registry
+        reg = load_registry(path)
     except Exception:
         return None
-    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), list):
-        return None
-    return {
-        e["name"] for e in raw["profiles"]
-        if isinstance(e, dict) and isinstance(e.get("name"), str)
-    }
+    return {p["name"] for p in reg["profiles"]}
 
 
 def is_human_created(
     task_row: "sqlite3.Row | dict",
+    conn: Optional[sqlite3.Connection] = None,
     hermes_home: Optional[Path] = None,
 ) -> bool:
     """Prove human creation ONLY from structured seams (fail closed).
 
-    Eligible origins:
-      * trusted creation seams: dashboard / idea-box / cli;
-      * an interactive profile-author stamp that is VERIFIED present in
-        the deployed profile registry.
+    R2-7: eligible origins are
+      * trusted creation seams that themselves prove human creation
+        (dashboard / idea-box / cli), or
+      * a registry-verified profile author WITH a caller-proven structured
+        interactive-creation marker (``task.created_interactively``) —
+        registry membership alone is NOT human evidence.
 
-    Everything else — unknown tokens, automation stamps, missing or
-    malformed identity — is NOT human.  Token shape is never evidence.
+    Malformed registries authorise nobody.  Token shape is never evidence.
     """
     created_by = (
         task_row["created_by"] if not isinstance(task_row, dict)
@@ -110,15 +162,17 @@ def is_human_created(
     created_by = created_by.strip()
     if not _BOUNDARY_TOKEN_RE.match(created_by):
         return False
-    if created_by in _AUTOMATION_STAMPS or created_by in _AUTOMATION_STAMPS:
+    if created_by in _AUTOMATION_STAMPS:
         return False
     if created_by in TRUSTED_HUMAN_CREATED_BY:
         return True
-    # Profile-author stamps: only registry-verified names qualify.
+    # Profile authors: registry-verified AND structured interactive marker.
     names = _registry_profile_names(hermes_home)
-    if names is None:
-        return False  # no registry → cannot verify → fail closed
-    return created_by in names
+    if names is None or created_by not in names:
+        return False
+    if conn is None:
+        return False  # cannot verify the marker without the connection
+    return _task_has_interactive_marker(conn, task_row["id"] if not isinstance(task_row, dict) else task_row.get("id"))
 
 
 def suggest(
@@ -141,7 +195,17 @@ def suggest(
     ).fetchone()
     if row is None:
         return None
-    if not is_human_created(row, hermes_home=hermes_home):
+    # Normalise to dict so plain (non-Row-factory) connections work too.
+    if isinstance(row, dict):
+        task = row
+    else:
+        try:
+            task = {k: row[k] for k in row.keys()}
+        except (AttributeError, IndexError):
+            task = dict(zip(
+                ("id", "title", "tier", "task_kind", "priority",
+                 "max_runtime_seconds", "created_by"), row))
+    if not is_human_created(task, conn=conn, hermes_home=hermes_home):
         return None
 
     # C5: idempotence — search ALL prior events for this classifier
@@ -158,9 +222,9 @@ def suggest(
         if payload.get("classifier_version") == classifier_version:
             return None  # already classified by this version
 
-    kind = row["task_kind"] or "task"
-    priority = int(row["priority"] or 0)
-    budget = row["max_runtime_seconds"]
+    kind = task["task_kind"] or "task"
+    priority = int(task["priority"] or 0)
+    budget = task["max_runtime_seconds"]
 
     reasons: list[str] = []
     if kind in ("bug", "gate"):
@@ -194,8 +258,11 @@ def insert_shadow_event(
 ) -> Optional[int]:
     """Insert the shadow suggestion event idempotently (task+version).
 
+    R2-1: atomic via the uniqueness invariant — concurrent writers race on
+    INSERT, the loser's IntegrityError resolves as idempotent replay.
     Never modifies the tasks row.  Returns the event row id, or None when
-    this task+version was already classified (searches ALL prior events).
+    this task+version was already classified or the invariant is blocked
+    by legacy duplicates (fail closed; see ensure_suggestion_uniqueness).
     """
     version = suggestion["classifier_version"]
     prior = conn.execute(
@@ -209,17 +276,23 @@ def insert_shadow_event(
             continue
         if payload.get("classifier_version") == version:
             return None
-    cur = conn.execute(
-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, NULL, ?, ?, ?)",
-        (
-            task_id,
-            EVENT_KIND,
-            json.dumps(suggestion, sort_keys=True),
-            int(time.time()),
-        ),
-    )
-    return int(cur.lastrowid)
+    if not ensure_suggestion_uniqueness(conn):
+        return None  # legacy duplicates: fail closed, migration plan required
+    try:
+        cur = conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, NULL, ?, ?, ?)",
+            (
+                task_id,
+                EVENT_KIND,
+                json.dumps(suggestion, sort_keys=True),
+                int(time.time()),
+            ),
+        )
+        return int(cur.lastrowid)
+    except sqlite3.IntegrityError:
+        # R2-1: concurrent writer won the uniqueness race — idempotent replay.
+        return None
 
 
 def classification_disagreement(

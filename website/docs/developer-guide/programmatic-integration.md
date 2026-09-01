@@ -58,6 +58,17 @@ terminal.resize         clipboard.paste         image.attach
 
 Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
+### Per-turn system context on `prompt.submit`
+
+`prompt.submit` accepts an optional one-turn system overlay:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `system_message` | Optional string appended to the session's system context for **this turn only**; the prior prompt is restored after the turn. Wins when both aliases are present. |
+| `instructions` | Alias for the same overlay, used when `system_message` is absent. |
+
+A key that is present but not a non-blank string is refused with code `4004` — there is no fallback to the other alias. While a turn is running, an overlay-bearing prompt always queues as a distinct model request; it is never steered or redirected into the live turn (steering would drop the overlay's system context).
+
 ### Rewinding history on `prompt.submit`
 
 A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored transcript before running the new turn. Because that write is a destructive rewrite of the session's durable rows, the gateway honors it only when the client states its intent:

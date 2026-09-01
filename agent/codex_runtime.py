@@ -143,6 +143,11 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                     billing_base_url=agent.base_url,
                     billing_mode="subscription_included",
                     api_call_count=1,
+                    provider_name="",
+                    native_tokens_prompt=0,
+                    native_tokens_cached=0,
+                    cache_discount=0.0,
+                    total_cost=0.0,
                 )
             except Exception as exc:
                 logger.debug(
@@ -234,6 +239,11 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 if cost_result.status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
+                provider_name="",
+                native_tokens_prompt=0,
+                native_tokens_cached=0,
+                cache_discount=0.0,
+                total_cost=0.0,
             )
         except Exception as exc:
             logger.debug(

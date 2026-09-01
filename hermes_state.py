@@ -8883,6 +8883,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        provider_name: Optional[str] = None,
+        native_tokens_prompt: int = 0,
+        native_tokens_cached: int = 0,
+        cache_discount: float = 0.0,
+        total_cost: float = 0.0,
     ) -> None:
         """Update token counters and backfill model if not already set.
 
@@ -9030,6 +9035,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     cost_status=cost_status,
                     cost_source=cost_source,
                     api_call_count=api_call_count,
+                    provider_name=provider_name,
+                    native_tokens_prompt=native_tokens_prompt,
+                    native_tokens_cached=native_tokens_cached,
+                    cache_discount=cache_discount,
+                    total_cost=total_cost,
                 )
         self._execute_write(_do)
 
@@ -9053,6 +9063,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cost_source: Optional[str],
         api_call_count: int,
         task: str = "",
+        provider_name: Optional[str] = None,
+        native_tokens_prompt: int = 0,
+        native_tokens_cached: int = 0,
+        cache_discount: float = 0.0,
+        total_cost: float = 0.0,
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
 
@@ -9098,8 +9113,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    task, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   provider_name, native_tokens_prompt, native_tokens_cached,
+                   cache_discount, total_cost,
                    first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
@@ -9112,6 +9129,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
                    cost_status = COALESCE(excluded.cost_status, cost_status),
                    cost_source = COALESCE(excluded.cost_source, cost_source),
+                   provider_name = COALESCE(excluded.provider_name, provider_name),
+                   native_tokens_prompt = native_tokens_prompt + excluded.native_tokens_prompt,
+                   native_tokens_cached = native_tokens_cached + excluded.native_tokens_cached,
+                   cache_discount = COALESCE(excluded.cache_discount, cache_discount),
+                   total_cost = total_cost + excluded.total_cost,
                    last_seen = excluded.last_seen""",
             (
                 session_id,
@@ -9130,6 +9152,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 float(actual_cost_usd or 0.0),
                 cost_status,
                 cost_source,
+                (provider_name or "").strip() or "",
+                native_tokens_prompt or 0,
+                native_tokens_cached or 0,
+                float(cache_discount or 0.0),
+                float(total_cost or 0.0),
                 now,
                 now,
             ),
@@ -9161,6 +9188,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reasoning_tokens: int = 0,
         estimated_cost_usd: Optional[float] = None,
         api_call_count: int = 1,
+        provider_name: Optional[str] = None,
+        native_tokens_prompt: int = 0,
+        native_tokens_cached: int = 0,
+        cache_discount: float = 0.0,
+        total_cost: float = 0.0,
     ) -> None:
         """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
 
@@ -9208,6 +9240,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 api_call_count=(
                     1 if api_call_count is None else int(api_call_count)
                 ),
+                provider_name=provider_name,
+                native_tokens_prompt=native_tokens_prompt,
+                native_tokens_cached=native_tokens_cached,
+                cache_discount=cache_discount,
+                total_cost=total_cost,
                 task=task,
             )
         self._execute_write(_do)

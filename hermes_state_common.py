@@ -471,6 +471,17 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     actual_cost_usd REAL NOT NULL DEFAULT 0,
     cost_status TEXT,
     cost_source TEXT,
+    -- OpenRouter-reported upstream billing fields (2026-09-01). provider_name
+    -- is the ACTUAL upstream host (DeepInfra, StreamLake, ...) that served
+    -- the call, distinct from billing_provider which is always 'openrouter'.
+    -- The native_tokens_* / cache_discount / total_cost values are returned
+    -- verbatim by OpenRouter on every response; persisting them ends the
+    -- all-rows-are-'openrouter' blindness that hid the 11x overspend.
+    provider_name TEXT NOT NULL DEFAULT '',
+    native_tokens_prompt INTEGER NOT NULL DEFAULT 0,
+    native_tokens_cached INTEGER NOT NULL DEFAULT 0,
+    cache_discount REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
     first_seen REAL,
     last_seen REAL,
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)

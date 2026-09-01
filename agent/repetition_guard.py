@@ -1,4 +1,4 @@
-"""Cheap content-sanity checks for the truncated-response continuation path.
+"""Cheap content-sanity checks for completed model output.
 
 A model in a degenerate repetition loop can spend its ENTIRE output budget echoing one fragment;
 the ``finish_reason=length`` continuation would then stitch it into the final response with a
@@ -9,7 +9,6 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 
 from __future__ import annotations
 
-import math
 from collections import Counter
 
 # Below this length the check doesn't run: short truncations trivially
@@ -28,6 +27,13 @@ _DOMINANCE_RATIO = 0.5
 # to know the reply degenerated and was cut off.
 REPETITION_LOOP_INTERRUPTED = "[the reply degenerated into a repetition loop and was interrupted]"
 
+# Sampling bounds keep the general path linear in output size with a small,
+# fixed multiplier. A dominant contiguous run necessarily crosses many of
+# these evenly spaced anchors.
+_MAX_ANCHOR_SAMPLES = 32
+_MAX_ANCHOR_MATCHES = 8
+
+
 # ``is_runaway_repetition``: a multi-line partial must be mostly copies of a few lines. Batch-style
 # output (distinct INSERT rows, similar table rows) shares long prefixes and trips the window
 # scan, but every line is distinct; a loop re-emits the same line(s).
@@ -35,11 +41,9 @@ _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 
 
 def is_repetition_dominated(text: str) -> bool:
-    """True when a single 60+ char substring recurs often enough to cover at least half
-    of ``text`` — the signature of a repetition loop. Fail-open for non-string/short input.
-
-    That shape is the signature of a model repetition loop (issue #86581), and continuing such a fragment is
-    pointless — the continuation nudge would just stitch more repeated text into the final response.
+    """True when a contiguous run of at least five exact repetitions covers at least half
+    of ``text`` — the signature of a model repetition loop (issue #86581). Coverage is measured
+    with the true period, so long multi-line loop units count fully. Fail-open for short input.
     """
     if not isinstance(text, str):
         return False
@@ -51,19 +55,65 @@ def is_repetition_dominated(text: str) -> bool:
     if _line_repetition_dominated(text, n):
         return True
 
-    # General path: fixed-size windows sliding one char at a time, catching loops that
-    # don't align to line boundaries. A window must appear ``needed`` times to cover
-    # >= _DOMINANCE_RATIO (and >= _MIN_REPEAT_COUNT).
+    return _periodic_run_dominated(text, n)
+
+
+def _periodic_run_dominated(text: str, n: int) -> bool:
+    """Detect a dominant exact periodic run from evenly spaced anchors.
+
+    Matching a 60-character anchor at a later position supplies a candidate
+    period. Expanding the equality ``text[i] == text[i + period]`` in both
+    directions recovers the full run, so coverage is measured using the true
+    repeating unit rather than crediting every occurrence with only 60 chars.
+    """
     window = _REPEAT_WINDOW
-    needed = max(_MIN_REPEAT_COUNT, math.ceil(n * _DOMINANCE_RATIO / window))
-    counts: dict[str, int] = {}
-    for i in range(n - window + 1):
-        key = text[i : i + window]
-        c = counts.get(key, 0) + 1
-        if c >= needed:
-            return True
-        counts[key] = c
+    max_start = n - window
+    if max_start < 1:
+        return False
+
+    sample_step = max(
+        1,
+        (max_start + _MAX_ANCHOR_SAMPLES - 2) // (_MAX_ANCHOR_SAMPLES - 1),
+    )
+    sample_starts = list(range(0, max_start + 1, sample_step))
+    if sample_starts[-1] != max_start:
+        sample_starts.append(max_start)
+
+    for start in sample_starts:
+        anchor = text[start : start + window]
+        search_from = start + 1
+        for _ in range(_MAX_ANCHOR_MATCHES):
+            match = text.find(anchor, search_from)
+            if match < 0:
+                break
+            period = match - start
+            if _candidate_run_dominated(text, n, start, period, window):
+                return True
+            search_from = match + 1
     return False
+
+
+def _candidate_run_dominated(
+    text: str,
+    n: int,
+    start: int,
+    period: int,
+    matched: int,
+) -> bool:
+    """Expand one known equal window and judge its exact run coverage."""
+    left = start
+    while left > 0 and text[left - 1] == text[left - 1 + period]:
+        left -= 1
+
+    right = start + matched
+    while right + period < n and text[right] == text[right + period]:
+        right += 1
+
+    run_length = right + period - left
+    return (
+        run_length >= _MIN_REPEAT_COUNT * period
+        and run_length >= n * _DOMINANCE_RATIO
+    )
 
 
 def is_runaway_repetition(text: str) -> bool:

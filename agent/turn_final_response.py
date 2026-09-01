@@ -12,8 +12,19 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.repetition_guard import is_repetition_dominated
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
+from agent.turn_truncation import partial_result
+
+_REPETITION_STOPPED = (
+    "🔁 Response dominated by repeated text — stopping before delivery.",
+    "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop while "
+    "writing this response, so the repeated output was discarded.\n\n"
+    "→ Switch to a different model with `/model`\n"
+    "→ Or resend your message (your conversation history is preserved)",
+    "Model output entered a repetition loop; refusing to return a degenerate response.",
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -50,6 +61,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    effective_task_id: Any = None,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -239,6 +251,16 @@ def finish_text_response(
                 _frag.pop("_length_continuation_nudge", None)
 
     final_response = agent._strip_think_blocks(final_response).strip()
+
+    # A provider may end a degenerate loop normally with finish_reason="stop" instead of
+    # exhausting its output cap (#100716). Check every completed visible text response before
+    # any verify/kanban interim emission or durable transcript write.
+    if final_response and is_repetition_dominated(final_response):
+        line, user_response, error = _REPETITION_STOPPED
+        agent._vprint(f"{agent.log_prefix}{line}", force=True)
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", partial_result(messages, api_call_count, user_response, error))
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
     if _promoted:

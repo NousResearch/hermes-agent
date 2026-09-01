@@ -22,7 +22,9 @@ from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
     _cli_recover_attempts,
+    _split_recover_statements,
     classify_lost_and_found_row,
+    load_recover_sql,
     map_lost_and_found_rows,
     rebuild_fts_indexes,
     stub_missing_parent_sessions,
@@ -1218,3 +1220,124 @@ def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path)
     # The stderr tail is load-bearing: the caller keys the header-zeroing retry
     # on "not a database" appearing in it, so the drain must preserve it.
     assert "file is not a database" in attempts[-1]["dump_stderr_tail"]
+# ── load_recover_sql: the 2026-09-01 wide-corruption regression ────────────
+#
+# run_cli_lost_and_found_recover used to pipe .recover's dump straight into
+# a second `sqlite3` CLI process to load it. That CLI's own SQL parser has
+# a hard ~1MB single-statement size limit and zero tolerance for invalid
+# UTF-8 inside a literal — both broke the load leg outright during the
+# 2026-09-01 wide state.db corruption (see hermes-fixer's
+# docs/handoff-next-agent.md and Obsidian ADR 0030). These tests exercise
+# load_recover_sql directly — no real `.recover`-capable sqlite3 CLI needed,
+# so they always run (unlike the CLI-gated tests above).
+
+
+def test_split_recover_statements_respects_quoted_semicolons() -> None:
+    sql = (
+        "CREATE TABLE t(x);"
+        "INSERT INTO t VALUES('a;b''c;d');"
+        "INSERT INTO t VALUES(X'0102030B3B');"  # blob literal containing 0x3B (';')
+    )
+    statements = list(_split_recover_statements(sql))
+    assert statements == [
+        "CREATE TABLE t(x)",
+        "INSERT INTO t VALUES('a;b''c;d')",
+        "INSERT INTO t VALUES(X'0102030B3B')",
+    ]
+
+
+def test_load_recover_sql_survives_oversized_statement(tmp_path: Path) -> None:
+    """A single statement well past the sqlite3 CLI's ~1MB parse limit.
+
+    The old CLI-pipe load leg failed the whole recovery on a statement this
+    size; the incident's real .recover dumps carried INSERT statements up
+    to 192KB. This one is well over 1MB to prove there is no size ceiling
+    on the Python-driver path.
+    """
+    big_value = "x" * (2 * 1024 * 1024)
+    sql = "CREATE TABLE t(x);" f"INSERT INTO t VALUES('{big_value}');"
+    lf_path = tmp_path / "lost_and_found.db"
+
+    report = load_recover_sql(sql, lf_path)
+
+    assert report["failed"] == 0
+    assert report["executed"] == 2
+    conn = sqlite3.connect(str(lf_path))
+    try:
+        (value,) = conn.execute("SELECT x FROM t").fetchone()
+        assert value == big_value
+    finally:
+        conn.close()
+
+
+def test_load_recover_sql_skips_bad_statements_without_aborting(
+    tmp_path: Path,
+) -> None:
+    """One unexecutable statement (garbage content, invalid syntax) must not
+    lose every statement after it — the old CLI-pipe path could die mid
+    stream on the first bad statement while _lost_and_found_db_usable still
+    reported the scratch DB as usable, silently dropping every row after
+    the failure point.
+    """
+    # A literal carrying a lone UTF-16 surrogate: decodes via
+    # surrogateescape on the dump side but cannot be handed back to
+    # SQLite's C API, so it must fail *this one statement*, not the load.
+    garbage = "\udcff\udcfe"
+    sql = (
+        "CREATE TABLE t(x);"
+        "INSERT INTO t VALUES('before');"
+        f"INSERT INTO t VALUES('{garbage}');"
+        "INSERT INTO nonexistent_table VALUES('also bad');"
+        "INSERT INTO t VALUES('after');"
+    )
+    lf_path = tmp_path / "lost_and_found.db"
+
+    report = load_recover_sql(sql, lf_path)
+
+    assert report["failed"] >= 1
+    conn = sqlite3.connect(str(lf_path))
+    try:
+        rows = {row[0] for row in conn.execute("SELECT x FROM t")}
+    finally:
+        conn.close()
+    assert "before" in rows
+    assert "after" in rows
+
+
+def test_load_recover_sql_toggles_writable_schema_for_schema_inserts(
+    tmp_path: Path,
+) -> None:
+    """A direct `INSERT INTO sqlite_schema` (.recover's re-registration of a
+    virtual-table shadow-table wrapper, e.g. messages_fts) fails outright
+    without `PRAGMA writable_schema=ON` — found live during the 2026-09-01
+    recovery. Confirms the toggle is applied around exactly that statement
+    and cleared immediately after (ordinary CREATE TABLEs that follow must
+    NOT run with it left on, or SQLite registers them as plain tables
+    instead of letting a virtual-table module claim them).
+    """
+    sql = (
+        "CREATE TABLE real_table(x);"
+        "INSERT INTO sqlite_schema VALUES("
+        "'table','ghost_shadow','ghost_shadow',0,"
+        "'CREATE TABLE ghost_shadow(a,b)');"
+        "CREATE TABLE after_schema_insert(y);"
+    )
+    lf_path = tmp_path / "lost_and_found.db"
+
+    report = load_recover_sql(sql, lf_path)
+
+    assert report["failed"] == 0, report["failure_samples"]
+    conn = sqlite3.connect(str(lf_path))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        # writable_schema must be OFF again by the time the next CREATE runs.
+        assert "after_schema_insert" in tables
+        assert "real_table" in tables
+        assert "ghost_shadow" in tables
+    finally:
+        conn.close()

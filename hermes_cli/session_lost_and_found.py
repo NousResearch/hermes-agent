@@ -181,12 +181,125 @@ def _cli_supports_recover(binary: str) -> bool:
 
 
 SQLITE_HEADER_LENGTH = 100
+# Statements whose target is sqlite_schema/sqlite_master directly (the
+# .recover output's own re-registration of a virtual-table's shadow-table
+# wrapper, e.g. `INSERT INTO sqlite_schema VALUES('table','messages_fts',...,
+# 'CREATE VIRTUAL TABLE messages_fts USING fts5(...)')`) require
+# `PRAGMA writable_schema=ON`; every other statement — including the shadow
+# TABLE CREATEs that follow — must run with it OFF or SQLite registers them
+# as ordinary tables instead of letting the virtual-table module claim them.
+# Found live during the 2026-09-01 wide-corruption recovery (see
+# hermes-fixer docs/handoff-next-agent.md and Obsidian ADR 0030).
+_SQLITE_SCHEMA_INSERT_RE = re.compile(
+    r"^\s*INSERT\s+INTO\s+(sqlite_schema|sqlite_master)\b", re.IGNORECASE
+)
+
+
+def _split_recover_statements(sql_text: str):
+    """Split ``.recover`` output into individual statements on ``;``.
+
+    Respects ``'...'`` string/blob (``X'...'``) literal boundaries — a
+    doubled ``''`` inside a literal is an escaped single quote, per the SQL
+    spec — so a semicolon embedded in recovered row content never splits a
+    statement early.
+    """
+    start = 0
+    in_string = False
+    i = 0
+    n = len(sql_text)
+    while i < n:
+        ch = sql_text[i]
+        if in_string:
+            if ch == "'":
+                if i + 1 < n and sql_text[i + 1] == "'":
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+            continue
+        if ch == "'":
+            in_string = True
+            i += 1
+            continue
+        if ch == ";":
+            stmt = sql_text[start:i].strip()
+            if stmt:
+                yield stmt
+            start = i + 1
+        i += 1
+    tail = sql_text[start:].strip()
+    if tail:
+        yield tail
+
+
+def load_recover_sql(sql_text: str, lf_path: Path) -> dict[str, Any]:
+    """Execute ``.recover``-emitted SQL against a fresh ``lf_path`` database.
+
+    Statement-at-a-time via Python's ``sqlite3`` driver rather than piping
+    the dump into a second ``sqlite3`` CLI process. The CLI's own SQL parser
+    has a hard ~1MB single-statement size limit and zero tolerance for
+    invalid-UTF-8 content inside a literal — both killed the load leg
+    outright during the 2026-09-01 wide-corruption incident, on statements
+    up to 192KB carrying recovered row content, well past what a healthy
+    recovery needs to tolerate. A single unexecutable statement (a torn
+    cell recovered as syntactically-valid-but-garbage content, the same
+    class as that incident's one genuinely lost row) is skipped and
+    counted, not fatal to the whole load — the old CLI-pipe path could
+    silently stop mid-stream on the first bad statement while still
+    reporting the scratch DB as "usable" (it only checks for the presence
+    of *some* table), which is a silent-data-loss shape worse than a loud
+    per-statement skip.
+
+    Uses ``journal_mode=DELETE``: with WAL, ``close()`` on a freshly-loaded
+    large file inside the ``BEGIN;...COMMIT;`` envelope ``.recover`` emits
+    has been observed to truncate the file to 0 bytes on this platform.
+    """
+    if lf_path.exists():
+        lf_path.unlink()
+    conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    executed = 0
+    failed = 0
+    failures: list[str] = []
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        for stmt in _split_recover_statements(sql_text):
+            schema_insert = _SQLITE_SCHEMA_INSERT_RE.match(stmt) is not None
+            try:
+                if schema_insert:
+                    conn.execute("PRAGMA writable_schema=ON")
+                conn.execute(stmt)
+                executed += 1
+            except (sqlite3.Error, UnicodeError) as exc:
+                # UnicodeError: a literal carrying invalid-UTF-8 bytes can
+                # decode via surrogateescape but then fail to re-encode when
+                # the driver hands it to SQLite's C API. Same accepted-loss
+                # class as a torn cell that decodes to nonsense — count and
+                # move on rather than aborting the whole load over it.
+                failed += 1
+                if len(failures) < 20:
+                    failures.append(f"{exc}: {stmt[:200]!r}")
+            finally:
+                if schema_insert:
+                    conn.execute("PRAGMA writable_schema=OFF")
+    finally:
+        conn.close()
+    return {
+        "executed": executed,
+        "failed": failed,
+        "failure_samples": failures,
+    }
 
 
 def run_cli_lost_and_found_recover(
     source: Path, lf_path: Path, sqlite3_bin: str, *, timeout: float = 3600.0,
 ) -> dict[str, Any]:
-    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB.
+    """Run ``sqlite3 <source> .recover`` and load the dump via Python.
+
+    ``--ignore-freelist`` avoids resurrecting deleted rows; older shells
+    without that option fall back to a plain ``.recover``. Only the *dump*
+    leg shells out to the CLI (``.recover`` is a CLI-only feature, not part
+    of Python's ``sqlite3`` module) — the load leg is :func:`load_recover_sql`,
+    not a second CLI process. See that function's docstring for why.
 
     A file whose page-1 header is garbage (SIGKILL mid-write) is refused outright by the shell
     (``file is not a database``, rc 26) although the data pages after it survive. ``.recover``

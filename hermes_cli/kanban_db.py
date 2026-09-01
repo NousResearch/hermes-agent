@@ -1325,6 +1325,28 @@ class Event:
     run_id: Optional[int] = None
 
 
+
+@dataclass(frozen=True)
+class ActiveExecution:
+    """Durable identity of the canonical, currently-running task attempt."""
+
+    task_id: str
+    run_id: int
+    revision: int
+
+
+@dataclass(frozen=True)
+class ExternalReceipt:
+    """Immutable evidence that an external operation receipt was verified."""
+
+    operation_id: str
+    task_id: str
+    run_id: int
+    revision: int
+    receipt: bytes
+    receipt_sha256: str
+    verified_at: int
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1448,6 +1470,16 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_external_receipts (
+    operation_id  TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    run_id        INTEGER NOT NULL,
+    revision      INTEGER NOT NULL,
+    receipt       BLOB NOT NULL,
+    receipt_sha256 TEXT NOT NULL,
+    verified_at   INTEGER NOT NULL
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -1523,6 +1555,8 @@ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, cre
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_external_receipts_task
+    ON task_external_receipts(task_id, run_id, revision);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
@@ -4282,6 +4316,141 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     except OSError:
         pass
     return att
+def get_active_execution(
+    conn: sqlite3.Connection, task_id: str
+) -> ActiveExecution:
+    """Return the active run and its latest execution-event cursor.
+
+    External receipt events are evidence about an execution, not execution
+    lifecycle changes, so they deliberately do not advance the revision.
+    """
+    row = conn.execute(
+        "SELECT t.id AS task_id, r.id AS run_id, "
+        "(SELECT MAX(e.id) FROM task_events e "
+        " WHERE e.task_id = t.id AND e.run_id = r.id "
+        " AND e.kind != 'external_receipt_verified') AS revision "
+        "FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.id = ? AND t.status = 'running' AND t.completed_at IS NULL "
+        "AND r.task_id = t.id AND r.status = 'running' AND r.ended_at IS NULL",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["revision"] is None:
+        raise ValueError("inactive-kanban-execution")
+    return ActiveExecution(
+        task_id=str(row["task_id"]),
+        run_id=int(row["run_id"]),
+        revision=int(row["revision"]),
+    )
+
+
+def get_external_receipt(
+    conn: sqlite3.Connection, operation_id: str
+) -> Optional[ExternalReceipt]:
+    """Return previously admitted immutable external evidence."""
+    row = conn.execute(
+        "SELECT operation_id, task_id, run_id, revision, receipt, "
+        "receipt_sha256, verified_at FROM task_external_receipts "
+        "WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return ExternalReceipt(
+        operation_id=str(row["operation_id"]),
+        task_id=str(row["task_id"]),
+        run_id=int(row["run_id"]),
+        revision=int(row["revision"]),
+        receipt=bytes(row["receipt"]),
+        receipt_sha256=str(row["receipt_sha256"]),
+        verified_at=int(row["verified_at"]),
+    )
+
+
+def record_verified_external_receipt(
+    conn: sqlite3.Connection,
+    *,
+    operation_id: str,
+    task_id: str,
+    run_id: int,
+    revision: int,
+    receipt: bytes,
+    receipt_sha256: str,
+    verified_at: Optional[int] = None,
+) -> ExternalReceipt:
+    """Atomically preserve verified external evidence without advancing work."""
+    if not operation_id or not isinstance(receipt, bytes):
+        raise ValueError("invalid-external-receipt")
+    actual_hash = hashlib.sha256(receipt).hexdigest()
+    if not secrets.compare_digest(actual_hash, receipt_sha256):
+        raise ValueError("external-receipt-hash-mismatch")
+    when = int(time.time()) if verified_at is None else int(verified_at)
+    with write_txn(conn):
+        prior = conn.execute(
+            "SELECT operation_id, task_id, run_id, revision, receipt, "
+            "receipt_sha256, verified_at FROM task_external_receipts "
+            "WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if prior is not None:
+            evidence = ExternalReceipt(
+                operation_id=str(prior["operation_id"]),
+                task_id=str(prior["task_id"]),
+                run_id=int(prior["run_id"]),
+                revision=int(prior["revision"]),
+                receipt=bytes(prior["receipt"]),
+                receipt_sha256=str(prior["receipt_sha256"]),
+                verified_at=int(prior["verified_at"]),
+            )
+            if (
+                evidence.task_id != task_id
+                or evidence.run_id != run_id
+                or evidence.revision != revision
+                or evidence.receipt != receipt
+                or evidence.receipt_sha256 != receipt_sha256
+            ):
+                raise ValueError("conflicting-external-receipt")
+            return evidence
+        active = get_active_execution(conn, task_id)
+        if active.run_id != run_id:
+            raise ValueError("stale-kanban-run")
+        if active.revision != revision:
+            raise ValueError("stale-kanban-revision")
+        conn.execute(
+            "INSERT INTO task_external_receipts "
+            "(operation_id, task_id, run_id, revision, receipt, "
+            "receipt_sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                operation_id,
+                task_id,
+                run_id,
+                revision,
+                sqlite3.Binary(receipt),
+                receipt_sha256,
+                when,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "external_receipt_verified",
+            {
+                "operation_id": operation_id,
+                "revision": revision,
+                "receipt_sha256": receipt_sha256,
+            },
+            run_id=run_id,
+        )
+    return ExternalReceipt(
+        operation_id=operation_id,
+        task_id=task_id,
+        run_id=run_id,
+        revision=revision,
+        receipt=receipt,
+        receipt_sha256=receipt_sha256,
+        verified_at=when,
+    )
+
+
 
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:

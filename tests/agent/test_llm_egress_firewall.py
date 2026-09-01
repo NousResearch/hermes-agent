@@ -764,6 +764,23 @@ def test_tool_and_skill_identifier_shapes_are_not_base64_false_positives(tmp_pat
     assert "base64_payload" not in decision.reason_codes
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "find smoke_rl_normalizer_20260823.py",
+        "pytest tests/test_rl_agent_backtest_autosave.py -xvs",
+        "Model fallback: devstral-small-2:24b",
+        "read file L214-363; output 200p; result passed/1",
+        "I missed part of the SHA1; commit a0a7a6dc1f82ef7a1309864a9eb0b41",
+        "python -e ./package.json; rendered n--- marker",
+    ],
+)
+def test_normal_worker_diagnostics_do_not_trigger_base64_block(tmp_path, text):
+    """Worker diagnostics seen in the live crash log are not payloads."""
+    decision = firewall(tmp_path).preflight(_sanitized_request(text), _route())
+    assert "base64_payload" not in decision.reason_codes
+
+
 def test_generated_kanban_context_allows_normal_worker_vocabulary(tmp_path):
     """Generated worker context must not trip the payload detector on prose."""
     request = TypedOutboundRequest(

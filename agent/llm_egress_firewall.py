@@ -251,6 +251,8 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
     "VERIFICATION",
     "ADVISORY",
     "FAIL",
+    "SHA1",
+    "CRITICAL",
 })
 _LINTER_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][0-9]{3,4}$")
 _PYTHON_DUNDER_IDENTIFIER = re.compile(r"^__[a-z][a-z0-9_]{0,62}__$")
@@ -263,6 +265,33 @@ _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
     r"|[a-z][a-z0-9]{0,63}(?:-[a-z][a-z0-9]{0,63}){1,7}"
     r"|[A-Z][0-9]{3,4})"
+)
+# Bounded operational tokens are emitted by ordinary CLI/test tooling. They
+# can decode as Base64 by coincidence, but are not opaque encoded payloads.
+_BOUNDED_SHORT_CLI_OPTION = re.compile(r"^-[A-Za-z]{1,8}$")
+_BOUNDED_LINE_RANGE_OR_UNIT = re.compile(
+    r"^(?:L?[0-9]{1,6}(?:-[0-9]{1,6})?|[0-9]{1,6}[A-Za-z])$"
+)
+_BOUNDED_STATUS_COUNT = re.compile(
+    r"^(?:passed|failed|skipped|warnings?)/[0-9]{1,6}$"
+)
+_BOUNDED_VERSIONED_IDENTIFIER = re.compile(
+    r"^(?:[a-z][a-z0-9]*(?:[-_][a-z][a-z0-9]*){1,7}[-_]?[0-9][a-z0-9]*"
+    r"|[a-z][a-z0-9]*(?:_[a-z0-9]+){1,7}_[0-9]{4,8})$"
+)
+_BOUNDED_TEST_ARTIFACT = re.compile(
+    r"^(?:tmp|test)_[a-z0-9]+(?:_[a-z0-9]+){2,7}$"
+)
+_BOUNDED_FUNCTION_IDENTIFIER = re.compile(
+    r"^_[a-z][a-z0-9]*(?:_[a-z0-9]+){2,7}_"
+    r"(?:task|test|runner|command|path|id|status|result)$"
+)
+_BOUNDED_COMMAND_PATH = re.compile(r"^/[a-z][a-z0-9_.-]{2,31}$")
+_BOUNDED_RENDER_MARKER = re.compile(r"^[nN]---$")
+_BOUNDED_SOURCE_CONTROL_FRAGMENT = re.compile(r"^[0-9a-f]{13,39}$")
+_SOURCE_CONTROL_CONTEXT = re.compile(
+    r"\b(?:commit|sha(?:1|256)?|head|base|revision|digest|hash)\b",
+    re.IGNORECASE,
 )
 # Any-case letters + optional trailing slash: GitHub-style org/repo slugs
 # ("NousResearch/hermes") and vault/skill paths ("Memories/Shared/") use
@@ -428,6 +457,8 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "find-and-replace",
         "function_call",
         "function_call_output",
+        "+for",
+        "repeated_exact_failure_block",
         "_force_close_actionable_pending_routes_for_cycle",
         "github-code-review",
         "grep/rg/find/ls",
@@ -600,6 +631,23 @@ def _canonical_base64_candidate(candidate: str) -> bool:
         # Python's bounded dunder names are source-language structure, not
         # encoded content (for example __file__ and __main__ in CI scripts).
         return False
+    if (
+        _BOUNDED_VERSIONED_IDENTIFIER.fullmatch(candidate)
+        or _BOUNDED_TEST_ARTIFACT.fullmatch(candidate)
+        or _BOUNDED_FUNCTION_IDENTIFIER.fullmatch(candidate)
+    ):
+        # Filenames, test names, model slugs, and config identifiers are
+        # normal generated/tool context. They are not encoded content merely
+        # because their lexical shape happens to decode canonically.
+        return False
+    if (
+        _BOUNDED_SHORT_CLI_OPTION.fullmatch(candidate)
+        or _BOUNDED_LINE_RANGE_OR_UNIT.fullmatch(candidate)
+        or _BOUNDED_STATUS_COUNT.fullmatch(candidate)
+        or _BOUNDED_COMMAND_PATH.fullmatch(candidate)
+        or _BOUNDED_RENDER_MARKER.fullmatch(candidate)
+    ):
+        return False
     if _BOUNDED_SLASH_WORDS.fullmatch(candidate):
         # Bounded relative paths such as venv/lib/python3 are ordinary local
         # CI metadata, not encoded content. Keep the grammar narrow so an
@@ -719,10 +767,21 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
         for match in _BASE64_CANDIDATE.finditer(value):
             candidate = match.group(1)
             prefix = value[max(0, match.start() - 16) : match.start()].lower()
+            source_control_window = value[
+                max(0, match.start() - 48) : min(len(value), match.end() + 16)
+            ]
             if re.fullmatch(
                 r"[0-9a-f]{7,12}|[0-9a-f]{40}|[0-9a-f]{64}",
                 candidate.lower(),
             ):
+                continue
+            if (
+                _BOUNDED_SOURCE_CONTROL_FRAGMENT.fullmatch(candidate.lower())
+                and _SOURCE_CONTROL_CONTEXT.search(source_control_window)
+            ):
+                # Shortened git object IDs are ordinary source-control
+                # metadata when explicitly labeled as such. Without that
+                # context, arbitrary hex remains fail-closed.
                 continue
             if candidate.isdigit():
                 before = value[: match.start(1)].rstrip()[-1:]

@@ -72,7 +72,7 @@ class TestDelegateRequirements(unittest.TestCase):
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
-        self.assertIn("output_schema", task_props)
+        self.assertNotIn("output_schema", task_props)
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.

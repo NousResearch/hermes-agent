@@ -2176,6 +2176,12 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
+        # Optional finite role map exposed to the model as tasks[].route. Route
+        # entries are trusted operator config and may override provider/model,
+        # reasoning_effort, max_iterations, and child_timeout_seconds.
+        # Reserved route "inherit" always keeps the parent model/reasoning.
+        "default_route": "",
+        "routes": {},
         "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap

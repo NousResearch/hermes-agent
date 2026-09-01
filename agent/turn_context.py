@@ -1010,6 +1010,7 @@ def _memory_turn_start_and_prefetch(
     with suppress(Exception):
         agent._memory_manager.on_turn_start(
             agent._user_turn_count, _query,
+            model=getattr(agent, "model", "") or "",
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
         )

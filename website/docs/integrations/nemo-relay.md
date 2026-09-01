@@ -146,7 +146,7 @@ Relay layers its normal user and system component configuration with the file se
 
 ### 3. Start Hermes and run one turn
 
-Hermes is the Relay host. Do not start a separate Relay daemon or run `nemo-relay run`. In a fresh Hermes process, the first `AIAgent` conversation validates and activates the enabled Relay components before it starts the session scope. Restart Hermes after changing `plugins.toml`.
+Start Hermes normally. Restart it after changing `plugins.toml`.
 
 ```bash
 hermes chat --oneshot -q "Use the terminal tool to run pwd, then report the result."
@@ -158,7 +158,32 @@ This command closes its Relay session before it exits, giving Relay a chance to 
 
 ```bash
 wc -l ./hermes-relay/events.jsonl
-tail -n 1 ./hermes-relay/events.jsonl
+tail -n 1 ./hermes-relay/events.jsonl | python3 -m json.tool
+```
+
+One successful local run with Relay 0.8.2 produced the following output. The record count varies with the number of model and tool calls.
+
+```text
+      20 ./hermes-relay/events.jsonl
+{
+    "atof_version": "0.1",
+    "attributes": [],
+    "category": "agent",
+    "category_profile": null,
+    "data": {},
+    "data_schema": null,
+    "kind": "scope",
+    "metadata": {
+        "hermes.execution_surface": "cli",
+        "hermes.relay.runtime_instance": "4ed9c79b6b884804bd88f2f06ac9bd8d",
+        "hermes.relay.schema_version": "hermes.relay.runtime.v1"
+    },
+    "name": "hermes.session",
+    "parent_uuid": "01a05d86-14be-7070-ad53-75748fb61039",
+    "scope_category": "end",
+    "timestamp": "2026-09-01T15:11:04.748905+00:00",
+    "uuid": "01a05d86-14be-7070-ad53-759c730c8834"
+}
 ```
 
 On native Windows PowerShell:
@@ -176,14 +201,17 @@ To disable this Relay plugin configuration, remove `HERMES_NEMO_RELAY_PLUGINS_TO
 
 Hermes owns the integration points, so Relay can preserve the [scope hierarchy and ownership](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#scope-hierarchy-and-ownership) instead of inferring relationships from separate logs.
 
-| Hermes activity | What Relay records | Limitation |
-|---|---|---|
-| Session | A `hermes.session` [agent scope](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#scope-types); a delegated session is nested under the turn that started it when Hermes has that relationship | Returning one response does not always close the scope. It closes at an explicit Hermes session-finalization boundary, a segment rotation, or normal shutdown of the owning process. See Relay's [scope-lifetime model](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#scope-lifetimes). |
-| Turn | A `hermes.turn` child scope with its outcome | If two turns overlap in the same Hermes session, the later turn continues without Relay instrumentation or middleware. Separate sessions remain [context-isolated](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#context-isolation). |
-| Model request | A `hermes.logical_llm_call` scope with a child for each actual provider attempt, including retries and fallbacks | OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages use [typed Relay provider codecs](https://docs.nvidia.com/nemo/relay/v0.8.2/integrate-into-frameworks/provider-codecs#built-in-provider-codecs). Other routes use a JSON-compatible projection and do not get provider-normalized fields. |
-| Streaming model request | Stream lifecycle, compact per-chunk receipt metadata, a reconstructed final response when supported, and the outcome | Chunk receipts contain indices and available event, finish, and usage metadata—not the raw streamed text. Detail depends on the provider and [streaming response codec](https://docs.nvidia.com/nemo/relay/v0.8.2/integrate-into-frameworks/provider-response-codecs#streaming-responses). |
-| Tool call | Tool name, arguments, result, timing, and outcome through a [managed tool boundary](https://docs.nvidia.com/nemo/relay/v0.8.2/instrument-applications/instrument-tool-call) | Relay sees the Hermes-level call, not subprocess, network-service, or MCP-server internals unless those are instrumented separately. |
-| Delegated agent | A child agent scope under the spawning turn when that relationship is available | A separate process must use [cross-process context propagation](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#cross-process-propagation) if you need one trace across the process boundary. |
+| Hermes activity | What Relay records |
+|---|---|
+| Session | A `hermes.session` [agent scope](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/scopes#scope-types). |
+| Turn | A `hermes.turn` child scope with its outcome. |
+| Model request | A `hermes.logical_llm_call` scope with one child for each provider attempt, including retries and fallbacks; request and response data, provider and model metadata, available usage, timing, and outcome. OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages use [typed Relay provider codecs](https://docs.nvidia.com/nemo/relay/v0.8.2/integrate-into-frameworks/provider-codecs#built-in-provider-codecs). |
+| Streaming model request | Stream lifecycle, compact `llm.chunk` receipt marks, available finish and usage metadata, a reconstructed final response when supported, and the outcome. |
+| Tool call | Tool name, arguments, result, timing, outcome, and call ID through a [managed tool boundary](https://docs.nvidia.com/nemo/relay/v0.8.2/instrument-applications/instrument-tool-call). Calls to Hermes skill, memory, scheduler, and MCP tools appear as normal tool scopes. |
+| Skill load | A best-effort [`skill.load` mark](https://docs.nvidia.com/nemo/relay/v0.8.2/about-nemo-relay/concepts/events#automatic-skill-load-marks) when Relay recognizes a first-class skill tool such as `skill_view` or a request to read a complete `SKILL.md`. The mark records the detected skill name and load source; the enclosing tool event records whether execution succeeded. |
+| Delegated agent | A child `hermes.session` agent scope under the turn that started it when Hermes has that relationship. |
+
+Hermes can also emit optional, privacy-bounded Relay records when [shared metrics](#shared-metrics-are-separate) are enabled: `hermes.task_run`, `hermes.model_call`, `hermes.tool_call`, `hermes.tool_approval`, `hermes.client.active`, `hermes.skill.lifecycle`, and `hermes.skill.load`. Skill lifecycle records cover successful create, install, edit, patch, archive, restore, and stale transitions. Skill-load records describe first use, reuse, and reuse after a patch. These optional `hermes.skill.*` records deliberately omit skill names and content and are separate from Relay's standard `skill.load` mark.
 
 Read a normal trace from `hermes.session` to `hermes.turn`, then to a logical model call, provider attempt, tool call, or delegated child session. Known model protocols use names such as `openai.chat_completions`; `metadata.hermes.provider` records the provider Hermes actually called.
 
@@ -461,7 +489,7 @@ telemetry:
 
 | Boundary | Behavior |
 |---|---|
-| Includes | Bounded aggregate counters, normalized model and provider route names, Hermes version, OS family, architecture, install method, and a random persistent `install_id` scoped to one `HERMES_HOME`. Model and provider names are syntax-limited, not selected from a closed allowlist. |
+| Includes | Bounded aggregate counters for client activity, task outcomes, model routes, tool outcomes and approvals, and skill loads and lifecycle changes; normalized model and provider route names; Hermes version, OS family, architecture, install method; and a random persistent `install_id` scoped to one `HERMES_HOME`. Model and provider names are syntax-limited, not selected from a closed allowlist. |
 | Does not include | Prompts, responses, endpoints, error messages, session IDs, task IDs, or request IDs. Shared metrics also has no remote delivery. |
 | Storage and reset | Stores local SQLite state and JSON packages under `$HERMES_HOME/telemetry/shared_metrics`. Disabling collection does not delete them. Stop Hermes and remove that directory to clear the state and reset the install identity. |
 | Runtime interaction | Uses the same Relay runtime. Its bounded lifecycle events can appear in configured Relay exporters, and its task/session packaging flush can wait on a slow process-wide subscriber. |

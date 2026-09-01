@@ -7857,6 +7857,67 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     sys.exit(1)
 
 
+def _drain_or_signal_gateway_for_update(
+    pid: int,
+    drain_budget: float,
+    label: str,
+) -> bool:
+    """Decide how ``hermes update`` hands a running gateway over to new code.
+
+    Three-way triage shared by the systemd and bare-process restart paths:
+
+    1. **Gateway is an ancestor of this process** — THREE-WAY DEADLOCK BREAK
+       (#100179). When ``hermes update`` runs INSIDE the gateway's own
+       process tree (the hermes-auto-update cron job is the canonical case),
+       waiting for that gateway to exit is a circular wait::
+
+           gateway  waits on all in-flight work units (#77184)
+             └─ cron agent session waits on the `hermes update` process
+                  └─ `hermes update` waits on the gateway to exit  ← back to A
+
+       The wedged-loop probe cannot break it: the cron session posts
+       activity every ~180s (process-tool poll return), so it is "actively
+       waiting forever" and never marked wedged — the gateway burns the full
+       force-drain cap (1800s) before killing its own updater's session.
+       Fire-and-forget instead: signal the restart and return immediately;
+       the gateway's own restart flow completes once THIS process (and
+       therefore the cron work unit holding it) exits.
+    2. **Event loop provably wedged** (#81642) — SIGUSR1 can never drain it;
+       bounded escalation (SIGTERM grace → SIGKILL) instead of burning the
+       full drain budget.
+    3. **Live, out-of-tree gateway** — the normal graceful SIGUSR1 drain,
+       waiting up to ``drain_budget`` for the process to exit (unchanged,
+       including the #86684 cron floor).
+
+    Returns True when the gateway was signalled/stopped successfully.
+    """
+    from hermes_cli.gateway import (
+        GATEWAY_LOOP_WEDGED,
+        _escalate_wedged_gateway,
+        _graceful_restart_via_sigusr1,
+        _is_pid_ancestor_of_current_process,
+        _request_gateway_self_restart,
+        probe_gateway_loop_liveness,
+    )
+
+    if _is_pid_ancestor_of_current_process(pid):
+        print(
+            f"  → {label}: update is running inside this gateway's "
+            "process tree — signalling restart and letting the gateway "
+            "drain itself (avoids the cron-update deadlock, #100179)"
+        )
+        return _request_gateway_self_restart(pid)
+    if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+        print(
+            f"  ⚠ {label}: gateway event loop is unresponsive — "
+            "skipping drain, forcing a bounded stop..."
+        )
+        _escalate_wedged_gateway(pid)
+        return True
+    print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
+    return _graceful_restart_via_sigusr1(pid, drain_timeout=drain_budget)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -9918,77 +9979,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                         _graceful_ok = False
                         if _main_pid > 0:
-                            from hermes_cli.gateway import (
-                                GATEWAY_LOOP_WEDGED,
-                                _escalate_wedged_gateway,
-                                _is_pid_ancestor_of_current_process,
-                                _request_gateway_self_restart,
-                                probe_gateway_loop_liveness,
+                            # Three-way triage (ancestor fire-and-forget
+                            # #100179 / wedged escalation #81642 / normal
+                            # graceful drain) — shared with the bare-process
+                            # path below.
+                            _graceful_ok = _drain_or_signal_gateway_for_update(
+                                _main_pid, _drain_budget, svc_name
                             )
-
-                            if _is_pid_ancestor_of_current_process(_main_pid):
-                                # THREE-WAY DEADLOCK BREAK (#100179).
-                                #
-                                # When `hermes update` runs INSIDE the gateway's
-                                # own process tree — the hermes-auto-update cron
-                                # job is the canonical case — waiting for that
-                                # gateway to exit is a circular wait:
-                                #
-                                #   gateway  waits on all in-flight work units
-                                #            (#77184 don't-amputate-turns)
-                                #     └─ cron agent session waits on the
-                                #        `hermes update` process to exit
-                                #          └─ `hermes update` waits on the
-                                #             gateway to exit  ← back to A
-                                #
-                                # The wedged-loop probe cannot break it: the cron
-                                # session posts activity every ~180s (process-tool
-                                # poll return), so it is "actively waiting
-                                # forever" and never marked wedged. The gateway
-                                # then burns the full force-drain cap (1800s)
-                                # before killing its own updater's session.
-                                #
-                                # Fire-and-forget instead: signal the restart and
-                                # return immediately. The gateway's own restart
-                                # flow completes normally once THIS process (and
-                                # therefore the cron work unit holding it) exits.
-                                print(
-                                    f"  → {svc_name}: update is running inside "
-                                    "this gateway's process tree — signalling "
-                                    "restart and letting the gateway drain "
-                                    "itself (avoids the cron-update deadlock)"
-                                )
-                                _graceful_ok = _request_gateway_self_restart(
-                                    _main_pid
-                                )
-                            elif (
-                                probe_gateway_loop_liveness(_main_pid)
-                                == GATEWAY_LOOP_WEDGED
-                            ):
-                                # Loop-liveness probe says the gateway's event
-                                # loop is provably dead (#81642): SIGUSR1 can
-                                # never drain it, so waiting the full budget
-                                # (180s default) only wedges the update too.
-                                # Bounded escalation (SIGTERM grace → SIGKILL,
-                                # ~10s) then restart the unit. A busy gateway
-                                # keeps a fresh heartbeat and never takes this
-                                # path — its drain (incl. the #86684 cron
-                                # floor) is untouched.
-                                print(
-                                    f"  ⚠ {svc_name}: gateway event loop is "
-                                    "unresponsive — skipping drain, forcing "
-                                    "a bounded stop..."
-                                )
-                                _escalate_wedged_gateway(_main_pid)
-                                _graceful_ok = True
-                            else:
-                                print(
-                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
-                                )
-                                _graceful_ok = _graceful_restart_via_sigusr1(
-                                    _main_pid,
-                                    drain_timeout=_drain_budget,
-                                )
 
                         if _graceful_ok:
                             # Gateway exited after a planned restart.
@@ -10260,54 +10257,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # gateway doesn't support SIGUSR1 or doesn't exit within
                 # the drain budget, fall back to SIGTERM — the watcher
                 # still sees the exit and relaunches either way.
-                # Announce the drain first: this wait can hold for the full
+                # Three-way triage (ancestor fire-and-forget #100179 /
+                # wedged escalation #81642 / normal graceful drain) — shared
+                # with the systemd path above.  The helper announces the
+                # chosen path first: a drain wait can hold for the full
                 # budget per gateway with no other output, and on surfaces
-                # that stream update progress (the desktop updater most of
-                # all) the silence reads as a hung update (#44515).
-                print(
-                    f"  → {proc.profile}: draining gateway PID {pid} "
-                    f"(up to {int(_drain_budget)}s)..."
+                # that stream update progress the silence reads as a hung
+                # update (#44515).
+                drained = _drain_or_signal_gateway_for_update(
+                    pid, _drain_budget, proc.profile
                 )
-                from hermes_cli.gateway import (
-                    GATEWAY_LOOP_WEDGED,
-                    _escalate_wedged_gateway,
-                    _is_pid_ancestor_of_current_process,
-                    _request_gateway_self_restart,
-                    probe_gateway_loop_liveness,
-                )
-
-                if _is_pid_ancestor_of_current_process(pid):
-                    # Same three-way deadlock break as the systemd path
-                    # (#100179): this update is running inside that gateway's
-                    # process tree (hermes-auto-update cron), so waiting for it
-                    # to exit is a circular wait — the gateway waits on the
-                    # cron work unit, the cron session waits on this process,
-                    # this process waits on the gateway. Signal and return.
-                    print(
-                        f"  → {proc.profile}: update runs inside this gateway's "
-                        "process tree — signalling restart without waiting "
-                        "(avoids the cron-update deadlock)"
-                    )
-                    drained = _request_gateway_self_restart(pid)
-                elif probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
-                    # Loop-liveness probe: this gateway's event loop is
-                    # provably dead (#81642) — SIGUSR1/SIGTERM shutdown can
-                    # never run, so the drain wait would burn the full budget
-                    # and stall the update. Bounded stop instead (SIGTERM
-                    # grace → SIGKILL, ~10s). A busy-but-alive gateway keeps
-                    # a fresh heartbeat and never takes this branch, so live
-                    # drains (incl. the #86684 cron floor) are unaffected.
-                    print(
-                        f"  ⚠ {proc.profile}: gateway event loop is "
-                        "unresponsive — skipping drain, forcing a bounded stop..."
-                    )
-                    _escalate_wedged_gateway(pid)
-                    drained = True
-                else:
-                    drained = _graceful_restart_via_sigusr1(
-                        pid,
-                        drain_timeout=_drain_budget,
-                    )
                 if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)

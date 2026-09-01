@@ -103,3 +103,65 @@ class TestSelfRestartFireAndForget:
 
         assert ok is True
         assert waited == [(4242, 7.0)], "drain path must still wait for exit"
+
+
+class TestDrainOrSignalTriage:
+    """_drain_or_signal_gateway_for_update routes the three cases correctly."""
+
+    def _patched(self, monkeypatch, *, ancestor, wedged):
+        from hermes_cli import gateway as gw
+
+        calls = {"self_restart": [], "escalate": [], "drain": []}
+        monkeypatch.setattr(
+            gw, "_is_pid_ancestor_of_current_process", lambda pid: ancestor
+        )
+        monkeypatch.setattr(
+            gw,
+            "probe_gateway_loop_liveness",
+            lambda pid: gw.GATEWAY_LOOP_WEDGED if wedged else "alive",
+        )
+        monkeypatch.setattr(
+            gw,
+            "_request_gateway_self_restart",
+            lambda pid: calls["self_restart"].append(pid) or True,
+        )
+        monkeypatch.setattr(
+            gw, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
+        )
+        monkeypatch.setattr(
+            gw,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, drain_timeout: calls["drain"].append((pid, drain_timeout))
+            or True,
+        )
+        return calls
+
+    def test_ancestor_gateway_is_signalled_fire_and_forget(self, monkeypatch):
+        """In-tree gateway (#100179): SIGUSR1 request, NO drain wait."""
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=True, wedged=False)
+        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
+        assert calls["self_restart"] == [1234]
+        assert calls["drain"] == [], "drain-waiting on an ancestor IS the deadlock"
+        assert calls["escalate"] == []
+
+    def test_wedged_gateway_is_escalated(self, monkeypatch):
+        """Provably-dead loop (#81642): bounded escalation, no drain wait."""
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=False, wedged=True)
+        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
+        assert calls["escalate"] == [1234]
+        assert calls["drain"] == []
+        assert calls["self_restart"] == []
+
+    def test_live_out_of_tree_gateway_still_drain_waits(self, monkeypatch):
+        """Normal out-of-tree update keeps the full graceful drain semantics."""
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=False, wedged=False)
+        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
+        assert calls["drain"] == [(1234, 900.0)]
+        assert calls["self_restart"] == []
+        assert calls["escalate"] == []

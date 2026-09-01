@@ -82,6 +82,7 @@ def _custom_provider_ssl_context(base_url: str):
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5.1",             ""),
     ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-5",                ""),
     ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
@@ -266,6 +267,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5.1",
         "anthropic/claude-fable-5",
         "anthropic/claude-opus-5",
         "anthropic/claude-opus-4.8",

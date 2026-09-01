@@ -3265,6 +3265,35 @@ def get_env_prefer_dotenv(key: str) -> str:
     return raw or scoped_value
 
 
+# Providers we've already warned about env-key → pool ingestion for, once per
+# process. See _warn_env_ingestion_once (#81952 expected-behavior #3).
+_ENV_INGESTION_WARNED: Set[str] = set()
+
+
+def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
+    """WARN (once per process per provider) when an env credential is newly
+    ingested into a paid provider's pool.
+
+    Auto-ingesting OPENROUTER_API_KEY is what ARMS silent OpenRouter spend —
+    every downstream auto-detect (resolve_provider pool probe, aux fallback)
+    keys off the pool having credentials. Ingestion itself stays allowed (the
+    user exported the key = arguable intent, per #81952), but it must never be
+    silent.
+    """
+    if provider in _ENV_INGESTION_WARNED:
+        return
+    _ENV_INGESTION_WARNED.add(provider)
+    logger.warning(
+        "Ingested %s from environment into the %s credential pool — this "
+        "enables %s spend. Remove the key or run "
+        "hermes auth remove %s <n> to suppress.",
+        env_var,
+        provider,
+        "OpenRouter" if provider == "openrouter" else provider,
+        provider,
+    )
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -3335,7 +3364,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             if _is_source_suppressed(provider, source):
                 return changed, active_sources
             active_sources.add(source)
-            changed |= _upsert_entry(
+            ingested = _upsert_entry(
                 entries,
                 provider,
                 source,
@@ -3346,6 +3375,9 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                     base_url=OPENROUTER_BASE_URL,
                 ),
             )
+            changed |= ingested
+            if ingested:
+                _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)

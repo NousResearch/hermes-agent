@@ -1334,8 +1334,15 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
-# Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3.6-flash"
+# Default auxiliary models per provider.
+# _OPENROUTER_MODEL is the BUILT-IN fallback used only when the user never set
+# auxiliary.openrouter_model — it MUST be a :free SKU: this lane engages
+# silently (auxiliary tasks, no user prompt), and a paid built-in default here
+# meant silent real OpenRouter spend the user never opted into (#81952). The
+# SKU matches the one the free_only warning below recommends. User-configured
+# auxiliary.openrouter_model values are honored untouched (paid allowed when
+# the user chose it; _warn_paid_lane_once still fires for that case).
+_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"

@@ -55,10 +55,7 @@ class FakeReviewAgent:
     def interrupt(self, message=None):
         pass
 
-    def shutdown_memory_provider(self):
-        pass
-
-    def close(self):
+    def release_clients(self):
         pass
 
 

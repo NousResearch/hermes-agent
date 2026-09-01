@@ -152,7 +152,7 @@ describe("ChatSessionList activity status", () => {
   it("keeps the mobile session search field at a 16px-safe size", async () => {
     await render();
     const search = host.querySelector<HTMLInputElement>("input[type=search]");
-    expect(search?.className).toContain("text-base");
+    expect(search?.className).toContain("text-[16px]");
     expect(search?.className).toContain("sm:text-xs");
   });
 

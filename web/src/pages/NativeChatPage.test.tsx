@@ -113,11 +113,11 @@ describe("NativeChatPage", () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
 
     const textarea = host.querySelector<HTMLTextAreaElement>("textarea");
-    expect(textarea?.className).toContain("text-base");
+    expect(textarea?.className).toContain("text-[16px]");
     expect(textarea?.className).toContain("sm:text-sm");
 
     for (const select of Array.from(host.querySelectorAll("select"))) {
-      expect(select.className).toContain("text-base");
+      expect(select.className).toContain("text-[16px]");
       expect(select.className).toContain("sm:text-xs");
     }
   });

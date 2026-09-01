@@ -1187,7 +1187,8 @@ def install(
 
 
 def _confirm_gateway_stable(
-    initial_pids: list[int], confirm_s: float, interval_s: float
+    initial_pids: list[int], confirm_s: float, interval_s: float,
+    all_profiles: bool = False,
 ) -> list[int]:
     """Re-check a freshly detected gateway for ``confirm_s`` seconds.
 
@@ -1206,7 +1207,7 @@ def _confirm_gateway_stable(
     confirm_deadline = time.monotonic() + confirm_s
     while time.monotonic() < confirm_deadline:
         time.sleep(interval_s)
-        pids = list(find_gateway_pids())
+        pids = list(find_gateway_pids(all_profiles=all_profiles))
         if not pids:
             return []
     return pids
@@ -1216,6 +1217,7 @@ def _wait_for_gateway_ready(
     timeout_s: float = 6.0,
     interval_s: float = 0.4,
     confirm_s: float = 2.0,
+    all_profiles: bool = False,
 ) -> list[int]:
     """Poll for a live gateway process for up to ``timeout_s`` seconds.
 
@@ -1225,6 +1227,10 @@ def _wait_for_gateway_ready(
     after spawn must not earn a ✓, #91675). If it vanishes during the
     confirmation window, polling resumes until the deadline.
 
+    ``all_profiles`` widens the scan across every profile's gateway — the
+    post-update resume path relaunches the whole fleet, not just the active
+    profile.
+
     Returns the list of PIDs found. Empty list means nothing (stable) came
     up in time — the caller should surface that to the user as a failed
     start.
@@ -1233,9 +1239,11 @@ def _wait_for_gateway_ready(
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        pids = list(find_gateway_pids())
+        pids = list(find_gateway_pids(all_profiles=all_profiles))
         if pids:
-            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s)
+            confirmed = _confirm_gateway_stable(
+                pids, confirm_s, interval_s, all_profiles=all_profiles
+            )
             if confirmed:
                 return confirmed
             continue  # died during confirmation — keep polling until deadline

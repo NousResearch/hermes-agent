@@ -7451,6 +7451,52 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     token["unmapped"] = failed_unmapped
     if failed_profiles or failed_unmapped:
         raise RuntimeError("Could not restart every paused Windows gateway")
+
+    # A truthy return from the launch helpers only proves the detached
+    # watcher process was created — not that the gateway it respawns
+    # survived. A parent Job Object that denies CREATE_BREAKAWAY_FROM_JOB
+    # kills the freshly respawned gateway on updater teardown before it
+    # writes a single log line, yet "✓ Restarting" was printed anyway
+    # (#48820, 3rd/4th repro). Verify a stable gateway process actually
+    # exists before vouching for the resume, using the same
+    # provisional-hit + confirmation-window poll every other spawn path
+    # uses (#91675). all_profiles=True because the resume covers the fleet.
+    if relaunched or unmapped_relaunched:
+        try:
+            from hermes_cli import gateway_windows
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load Windows gateway liveness helpers: {exc}"
+            ) from exc
+        ready_pids = gateway_windows._wait_for_gateway_ready(
+            timeout_s=30.0, all_profiles=True
+        )
+        if not ready_pids:
+            token["profiles"] = dict(profiles)
+            token["unmapped"] = list(unmapped)
+            print()
+            print(
+                "  ⚠ Windows gateway restart could not be verified — no stable "
+                "gateway process appeared after relaunch."
+            )
+            print(
+                "    (The respawned gateway may have been killed by a parent "
+                "Job Object during updater teardown, #48820.)"
+            )
+            print("    Recover with: hermes gateway restart")
+            raise RuntimeError(
+                "Windows gateway relaunch after update was not verified alive"
+            )
+        # Persist the PIDs this ✓ vouches for so a death AFTER the updater
+        # exits (parent Job Object teardown, #91675) is reported by the next
+        # CLI invocation instead of staying silent. Best-effort.
+        try:
+            gateway_windows._write_start_attestation(
+                ready_pids, "post-update relaunch"
+            )
+        except Exception:
+            pass
+
     token["resume_needed"] = False
 
     if relaunched:

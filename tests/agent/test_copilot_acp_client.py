@@ -356,6 +356,9 @@ def _run_prompt_with_scripted_wire(model, session_result):
                 str(m.get("modelId") or "").strip()
                 for m in ((session.get("models") or {}).get("availableModels") or [])
                 if isinstance(m, dict)
+                and str(
+                    ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+                ).strip().lower() != "disabled"
             }
             if not available or requested_model in available:
                 wire.request(
@@ -402,6 +405,25 @@ def test_set_model_skipped_for_unadvertised_model():
 
 def test_set_model_skipped_for_provider_virtual_slug():
     reqs = _run_prompt_with_scripted_wire("copilot-acp", _SESSION_WITH_MODELS)
+    assert all(m != "session/set_model" for m, _ in reqs)
+
+
+def test_set_model_skipped_for_policy_disabled_model():
+    # A policy-disabled id may still be advertised; selecting it silently
+    # serves the default model, so it must not be treated as offered.
+    session = {
+        "sessionId": "s1",
+        "models": {
+            "availableModels": [
+                {"modelId": "claude-sonnet-5"},
+                {
+                    "modelId": "claude-fable-5",
+                    "_meta": {"copilotEnablement": "disabled"},
+                },
+            ]
+        },
+    }
+    reqs = _run_prompt_with_scripted_wire("claude-fable-5", session)
     assert all(m != "session/set_model" for m, _ in reqs)
 
 

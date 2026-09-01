@@ -199,8 +199,11 @@ def _format_messages_as_prompt(
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
-    if model:
-        sections.append(f"Hermes requested model hint: {model}")
+    # Deliberately no "requested model" line in the prompt: the model is
+    # applied for real via ACP session/set_model, and when the backend can't
+    # honor it (org-policy-disabled id) a prompt-text mention makes the
+    # serving model FALSELY self-identify as the requested one. Identity
+    # must come from the backend, not from prompt suggestion.
 
     # Copilot has no tools of its own that would collide with Hermes', so it
     # forwards the whole toolset (no allowlist).
@@ -585,12 +588,22 @@ class CopilotACPClient:
             # and never fail the whole turn over model selection.
             if requested_model and requested_model != "copilot-acp":
                 try:
-                    available = {
-                        str(m.get("modelId") or "").strip()
+                    advertised = [
+                        m
                         for m in (
                             (session.get("models") or {}).get("availableModels") or []
                         )
                         if isinstance(m, dict)
+                    ]
+                    available = {
+                        str(m.get("modelId") or "").strip()
+                        for m in advertised
+                        # Org-policy-disabled ids can still appear in the list;
+                        # selecting one silently serves the default model, so
+                        # treat them as not offered.
+                        if str(
+                            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+                        ).strip().lower() != "disabled"
                     }
                     if not available or requested_model in available:
                         _request(

@@ -499,6 +499,26 @@ def test_nested_project_folders_pick_the_deepest_match():
     assert by_id["p_outer"]["sessionCount"] == 1  # /work/other → only the outer project
 
 
+def test_pinned_session_stays_with_persisted_workspace_when_cwd_visits_another_project():
+    """A pin nails membership to the stored git_repo_root, not a later cwd."""
+    proj1 = _project("p1", "Project 1", ["/work/proj1"])
+    proj2 = _project("p2", "Project 2", ["/work/proj2"])
+    resolve = _resolver(
+        {
+            "/work/proj1": ("/work/proj1", "/work/proj1"),
+            "/work/proj2": ("/work/proj2", "/work/proj2"),
+        }
+    )
+    pinned = _session("/work/proj2", repo_root="/work/proj1", pinned=True)
+    loose = _session("/work/proj2", repo_root="/work/proj1")
+
+    tree = pt.build_tree([proj1, proj2], [pinned, loose], [], resolve, hydrate=True)
+    by_id = {p["id"]: p for p in tree["projects"]}
+
+    assert [s["id"] for s in _sessions_of(by_id["p1"])] == [pinned["id"]]
+    assert [s["id"] for s in _sessions_of(by_id["p2"])] == [loose["id"]]
+
+
 def test_junk_root_never_becomes_an_auto_project():
     # A session whose git root is HERMES_HOME (config/state) must not spawn a
     # phantom project; it lands in the Home bucket. A real repo alongside it

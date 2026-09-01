@@ -336,6 +336,15 @@ class _FolderIndex:
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
     cwd = _field(session, "cwd")
+    # A pin is a keep-here mark. Group by the persisted workspace root — not a
+    # later cwd visit, and not a live git probe of that visit — so creating a
+    # nested Project 2 (or an agent stepping into it) cannot steal a pinned
+    # chat from the project it was nailed to.
+    if session.get("pinned"):
+        persisted = _field(session, "git_repo_root")
+        pinned_match, _ = index.match(persisted or cwd)
+        if pinned_match:
+            return pinned_match
     repo_root = _session_repo_root(session, resolve)
     # A root-only row (empty cwd) still belongs to the project owning its root.
     candidates = [t for t in dict.fromkeys((cwd, repo_root)) if t]

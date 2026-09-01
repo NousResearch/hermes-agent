@@ -2845,6 +2845,23 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if isinstance(_aux_ceiling, int) and 0 < _aux_ceiling < self.threshold_tokens:
             self.threshold_tokens = _aux_ceiling
 
+    def lift_aux_context_ceiling(self) -> bool:
+        """Drop the feasibility probe's aux ceiling and re-install the configured trigger, so the probe can
+        re-clamp against the CURRENT summariser instead of ratcheting down. Re-derived through ``_derive_trigger``
+        (threshold edits, per-model override, small-window floor, output reservation, cap), not a snapshot.
+        The ceiling is kept when the window cannot be validated. True when a ceiling was lifted."""
+        if getattr(self, "_aux_context_ceiling", None) is None:
+            return False
+        context_length = self.context_length
+        if not isinstance(context_length, int) or context_length <= 0:
+            return False
+        derived = self._derive_trigger(self.model, context_length, self.provider)
+        self._aux_context_ceiling = None
+        self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = derived
+        # The mode-aware property recomputes retention from the restored trigger.
+        self._tail_token_budget = None
+        return True
+
     @staticmethod
     def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
         """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""

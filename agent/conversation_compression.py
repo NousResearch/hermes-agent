@@ -2014,9 +2014,9 @@ def _lower_threshold_to_aux_context(
         compressor._tail_token_budget = None
     elif isinstance(summary_target_ratio, (int, float)):
         compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
+    # threshold_percent stays the floored configured ratio: the ceiling alone expresses the clamp, and a raw
+    # aux/main ratio would land below _effective_threshold_percent's small-window floor.
     main_ctx = compressor.context_length
-    if main_ctx:
-        compressor.threshold_percent = new_threshold / main_ctx
     safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
     # Mirror the compressor's threshold math (percent floor, output reservation, 64K floor): a suggestion it
     # would override is silently ignored and this warning reappears every session. External engines: keep it plain.
@@ -2157,6 +2157,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"auxiliary.compression.context_length to override the "
                 f"detected value if it is wrong."
             )
+        # Idempotent and symmetric: compare against the CONFIGURED trigger, so a ceiling installed for an earlier,
+        # smaller summariser is lifted once auxiliary.compression points at a model that fits again.
+        _lift = getattr(agent.context_compressor, "lift_aux_context_ceiling", None)
+        if callable(_lift):
+            _lift()
         if aux_context < agent.context_compressor.threshold_tokens:
             _lower_threshold_to_aux_context(
                 agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
@@ -2175,15 +2180,20 @@ def check_compression_model_feasibility(agent: Any) -> None:
 
 
 def revalidate_compression_feasibility(agent: Any) -> None:
-    """Re-run the aux feasibility probe after the main runtime changed (model switch, fallback activation,
-    primary restore). ``update_model()`` already voided the previous ceiling; probing now clamps the trigger
-    before the first compaction on the new window rather than after it (#114707). A probe failure leaves the
-    latch unset so the lazy probe at the next compaction re-raises hard rejections."""
+    """Re-run the aux feasibility probe after the main runtime or the auxiliary compression route changed
+    (model switch, fallback activation, primary restore, live config edit). The probe re-derives the trigger
+    before comparing, so it clamps before the first compaction on the new window rather than after it and
+    lifts a ceiling the new summariser no longer needs (#114707). A probe failure leaves the latch unset so the
+    lazy probe at the next compaction re-raises hard rejections."""
     agent._compression_feasibility_checked = False
     if not getattr(agent, "context_compressor", None):
         return
     try:
         check_compression_model_feasibility(agent)
+    except ValueError as exc:
+        # Hard rejection on a running session: keep it alive; the next compaction re-raises.
+        logger.warning("Compression feasibility re-check rejected the auxiliary compression model: %s", exc)
+        return
     except Exception as exc:
         logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
         return

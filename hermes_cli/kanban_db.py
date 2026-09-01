@@ -7611,7 +7611,7 @@ def decompose_triage_task(
 ) -> Optional[list[str]]:
     """Fan a triage OR blocked task out into child tasks and promote the root to ``todo``.
 
-    The root task stays alive and becomes the parent of every child —
+    The root task stays alive and becomes a *child* of every child —
     when all children reach ``done``, the root promotes to ``ready`` and
     its assignee (typically the orchestrator profile) wakes back up to
     judge completion or spawn more work.
@@ -7702,7 +7702,6 @@ def decompose_triage_task(
     # _append_event calls.
     now = int(time.time())
     child_ids: list[str] = []
-    any_dispatchable = False
     with write_txn(conn):
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
@@ -7815,24 +7814,6 @@ def decompose_triage_task(
                 )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
-            if child_status == "todo":
-                any_dispatchable = True
-
-        # Creation-time readiness assertion (2026-09-01 deadlock cleanup):
-        # refuse a fan-out whose link set has NO immediately-dispatchable
-        # member. If every child is triage-parked (decision-shaped or an
-        # unknown assignee), the root — now waiting on the whole graph — can
-        # never promote because ``recompute_ready`` only lifts 'todo'/'blocked'
-        # children, never parked triage ones. That is a silent deadlock, not a
-        # postponed dispatch. The operator must fix the routing/accept the
-        # parked children instead of fanning out into a graph that can never
-        # run.
-        if not any_dispatchable:
-            raise ValueError(
-                "decomposed children have no immediately-dispatchable member "
-                "(all triage-parked for PM acceptance); refusing a fan-out "
-                "that would deadlock the parent"
-            )
 
         # Link children to their sibling parents (within the decomposed graph).
         for idx, child in enumerate(children):

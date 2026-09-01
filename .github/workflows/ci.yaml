@@ -122,14 +122,13 @@ jobs:
     # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
     # single job in the workflow — while still running the full pytest lanes.
     #
-    # ⛔ TEMPORARILY DISABLED (Aug 2, 2026, Teknium) — the suite is red on
-    # every PR and on main itself since the Aug 1 night engines/npm churn
-    # (#76499 → #76562 → #76575): the mock-backend Electron window never
-    # gets a title, so boot/chat/setup/interim specs all fail identically
-    # regardless of the PR's diff (verified on #76573 and the docs-only
-    # #76582). Tracking issue: #76627 (assigned: Ari). To re-enable,
-    # delete the `false &&` below — nothing else changed.
-    if: ${{ false && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true') }}
+    # Re-enabled (Sep 2026, #76627): the Aug 2 disable ("mock-backend
+    # Electron window never gets a title" after the Aug 1 engines/npm
+    # churn #76499/#76562/#76575) was root-fixed by #99671, which made
+    # the e2e harness resolve the Electron binary per platform/layout
+    # (apps/desktop/e2e/electron-binary.ts). The suite is green again on
+    # Node 26 + npm 12 — no runner rollback needed.
+    if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:

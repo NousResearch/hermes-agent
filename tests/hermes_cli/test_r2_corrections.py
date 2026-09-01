@@ -107,8 +107,11 @@ class TestR22CallerTransaction:
         later rollback cannot undo it."""
         conn, home = env
         tid = _task(conn)
+        # kanban_db uses isolation_level=None (autocommit); emulate a caller
+        # with an explicit open transaction the way write_txn callers do.
+        conn.execute("BEGIN")
         conn.execute("UPDATE tasks SET title = 'canary-title' WHERE id = ?", (tid,))
-        # caller has an UNCOMMITTED write here
+        # caller has an UNCOMMITTED write inside an explicit transaction
         he.ensure_uniqueness_invariants(conn)
         conn.rollback()
         title = conn.execute("SELECT title FROM tasks WHERE id = ?", (tid,)).fetchone()[0]

@@ -70,16 +70,15 @@ KIND_EVIDENCE = "hermaguard_evidence_recorded"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
-# C3: atomic exactly-once invariants (created idempotently).
-_UNIQUENESS_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ux_hermaguard_task_kind_review
-    ON task_events (
-        task_id,
-        kind,
-        CAST(json_extract(payload, '$.review_event_id') AS INTEGER)
-    )
-    WHERE kind IN ('hermaguard_required', 'hermaguard_evidence_recorded')
-"""
+# R2-2/R2-3: atomic uniqueness invariants (installed via execute(), never
+# executescript — Python SQLite's executescript implicitly COMMITS the
+# caller's pending transaction).
+_UNIQUENESS_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_hermaguard_task_kind_review "
+    "ON task_events (task_id, kind, "
+    "CAST(json_extract(payload, '$.review_event_id') AS INTEGER)) "
+    "WHERE kind IN ('hermaguard_required', 'hermaguard_evidence_recorded')"
+)
 
 
 def _bounded(token: str) -> bool:
@@ -87,8 +86,101 @@ def _bounded(token: str) -> bool:
 
 
 def ensure_uniqueness_invariants(conn: sqlite3.Connection) -> None:
-    """Create the atomic uniqueness invariants (idempotent)."""
-    conn.executescript(_UNIQUENESS_SQL)
+    """Install the atomic uniqueness invariants.
+
+    R2-2: uses execute() (transaction-preserving) so a caller's open
+    transaction is NOT implicitly committed.  Raises MigrationBlocked on
+    legacy duplicate residue (R2-3) — never silently dedupes.
+    """
+    result = ensure_uniqueness_invariants_safe(conn)
+    if not result["installed"]:
+        raise MigrationBlocked(result)
+
+
+def ensure_uniqueness_invariants_safe(conn: sqlite3.Connection) -> dict[str, Any]:
+    """R2-3: fail-closed migration for the uniqueness invariant.
+
+    Returns {"installed": bool, "duplicate_groups": int, "detail": str}.
+    Detects legacy duplicate (task_id, kind, review_event_id) groups BEFORE
+    index creation; never deletes or rewrites append-only governance
+    evidence.  Use :func:`migration_plan` for a separately callable report;
+    applying destructive dedupe requires later approval.
+    """
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND name='ux_hermaguard_task_kind_review'"
+    ).fetchone()
+    if row is not None:
+        return {"installed": True, "duplicate_groups": 0,
+                "detail": "invariant already installed"}
+    dupes = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        "  SELECT task_id, kind, "
+        "  CAST(json_extract(payload, '$.review_event_id') AS INTEGER) AS rid"
+        "  FROM task_events WHERE kind IN (?, ?)"
+        "  GROUP BY task_id, kind, rid HAVING COUNT(*) > 1)",
+        (KIND_REQUIRED, KIND_EVIDENCE),
+    ).fetchone()[0]
+    if dupes:
+        return {
+            "installed": False,
+            "duplicate_groups": int(dupes),
+            "detail": (
+                "legacy duplicate hermaguard evidence rows block the unique "
+                "index; run migration_plan() and reconcile separately"
+            ),
+        }
+    try:
+        conn.execute(_UNIQUENESS_SQL)
+        return {"installed": True, "duplicate_groups": 0,
+                "detail": "invariant installed"}
+    except sqlite3.IntegrityError:
+        # Race with another installer that found duplicates first.
+        return {"installed": False, "duplicate_groups": -1,
+                "detail": "index creation failed; inspect task_events residue"}
+
+
+def migration_plan(conn: sqlite3.Connection) -> dict[str, Any]:
+    """R2-3: read-only reconciliation plan for legacy duplicates.
+
+    Reports ONLY safe identifiers/counts — never payloads.  Applying any
+    dedupe is outside this build and requires later approval.
+    """
+    rows = conn.execute(
+        "SELECT task_id, kind, "
+        "CAST(json_extract(payload, '$.review_event_id') AS INTEGER) AS rid, "
+        "COUNT(*) AS n FROM task_events WHERE kind IN (?, ?) "
+        "GROUP BY task_id, kind, rid HAVING COUNT(*) > 1 ORDER BY task_id",
+        (KIND_REQUIRED, KIND_EVIDENCE),
+    ).fetchall()
+    affected = sorted({r["task_id"] for r in rows})
+    return {
+        "duplicate_groups": len(rows),
+        "affected_task_ids": list(affected),
+        "total_surplus_rows": int(sum(max(0, r["n"] - 1) for r in rows)),
+        "plan": "dedupe requires separate operator approval; this build "
+                "fails closed and preserves append-only history",
+    }
+
+
+class MigrationBlocked(RuntimeError):
+    """R2-3: uniqueness invariant cannot install over duplicate residue."""
+
+
+def _resolve_mode(force_mode: Any) -> bool:
+    """R2-9: strict, consistent mode resolution.
+
+    Accepts only None (defer to config), True or False.  Any other type
+    (strings, ints, etc.) fails closed → False.  The explicit boolean is
+    honoured consistently at every boundary.
+    """
+    if force_mode is None:
+        return event_mode_enabled()
+    if force_mode is True:
+        return True
+    if force_mode is False:
+        return False
+    return False  # invalid type fails closed
 
 
 def event_mode_enabled(kanban_cfg: Optional[dict] = None) -> bool:
@@ -147,7 +239,7 @@ def emit_requirement_on_review(
     Returns the new event row id, or None when disabled/ineligible/
     idempotent replay.
     """
-    enabled = event_mode_enabled() if force_mode is None else force_mode
+    enabled = _resolve_mode(force_mode)
     if not enabled:
         return None
     trow = conn.execute(
@@ -202,7 +294,7 @@ def record_evidence(
     C3: atomic via the uniqueness invariant; races are idempotent replay.
     Returns the event row id or None on rejection/idempotent replay.
     """
-    enabled = event_mode_enabled() if force_mode is None else force_mode
+    enabled = _resolve_mode(force_mode)
     if not enabled:
         return None
     if status not in ("pass", "fail", "error"):
@@ -273,10 +365,36 @@ def evidence_valid_for_review(
     review_event_id: int,
     artifact_dir: str | Path,
 ) -> bool:
-    """C2: valid pass evidence for THIS cycle, with the report's CURRENT
-    bytes still matching the stored digest (tamper-evident at gate time)."""
+    """R2-4: full chain validation at gate time.
+
+    Evidence passes ONLY when ALL hold:
+      1. the referenced review_requested event exists for the same task;
+      2. a matching hermaguard_required event exists for the same task and
+         review ID (evidence without a requirement never opens the gate);
+      3. the evidence belongs to that exact cycle (not superseded);
+      4. the report is contained, current, and its SHA-256 matches the
+         stored digest;
+      5. status == pass and the digest is well-formed.
+    """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
+        # Chain link 1: review event exists for this task.
+        review_ok = conn.execute(
+            "SELECT 1 FROM task_events WHERE id = ? AND task_id = ? "
+            "AND kind = 'review_requested'",
+            (int(review_event_id), task_id),
+        ).fetchone()
+        if review_ok is None:
+            return False
+        # Chain link 2: a requirement exists for the same task + cycle.
+        requirement = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? "
+            "AND CAST(json_extract(payload, '$.review_event_id') AS INTEGER) = ?",
+            (task_id, KIND_REQUIRED, int(review_event_id)),
+        ).fetchone()
+        if requirement is None:
+            return False
+        # Chain link 3: evidence bound to the exact (non-superseded) cycle.
         row = conn.execute(
             "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
             "AND CAST(json_extract(payload, '$.review_event_id') AS INTEGER) = ? "
@@ -292,6 +410,14 @@ def evidence_valid_for_review(
             return False
         stored = str(payload.get("report_sha256", ""))
         if not HEX64_RE.match(stored):
+            return False
+        # Chain link 4 (anti-supersession): no newer review cycle exists.
+        newer = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'review_requested' "
+            "AND id > ? LIMIT 1",
+            (task_id, int(review_event_id)),
+        ).fetchone()
+        if newer is not None:
             return False
         relative = payload.get("report")
         if not isinstance(relative, str) or not relative or os.path.isabs(relative):
@@ -353,7 +479,7 @@ def reconcile_missed_requirements(
     config produces zero writes.  Each miss repaired exactly once via the
     uniqueness invariant.  Read-only otherwise.
     """
-    enabled = event_mode_enabled() if force_mode is None else force_mode
+    enabled = _resolve_mode(force_mode)
     if not enabled:
         return {"created": [], "repaired": 0, "policy_version": POLICY_VERSION}
     conn = sqlite3.connect(str(db_path))
@@ -392,10 +518,13 @@ def hook_request_review(
 ) -> None:
     """Call-site hook for request_review: best-effort, never raises.
 
-    C4: no-ops unless the event mode is explicitly enabled.
+    C4/R2-9: resolves the effective mode ONCE via _resolve_mode — an
+    explicit True/False is honoured consistently (config off + explicit
+    True still records; config on + explicit False still no-ops); invalid
+    types fail closed.
     """
     try:
-        if not event_mode_enabled():
+        if not _resolve_mode(force_mode):
             return
         emit_requirement_on_review(conn, task_id, review_event_id, force_mode=True)
     except Exception:

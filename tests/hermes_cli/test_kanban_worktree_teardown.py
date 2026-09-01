@@ -107,6 +107,41 @@ def test_unpushed_commits_preserved(repo: Path) -> None:
     assert wt.is_dir()
 
 
+def test_dirty_worktree_preserved_and_wip_committed(repo: Path) -> None:
+    """Force-finalize teardown of a dirty worktree persists the diff first.
+
+    The WIP commit must land on the task branch BEFORE any teardown so the
+    branch holds the only durable copy of a half-done diff; the worktree is
+    then preserved (the diff is unpushed), and it can be recreated from the
+    branch tip.
+    """
+    wt = _make_worktree(repo, "t_hhhh8888")
+    (wt / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
+    (wt / "wip2.txt").write_text("more\n", encoding="utf-8")
+    kb._cleanup_worktree_workspace("t_hhhh8888", str(wt))
+
+    # Diff preserved on disk AND committed onto the task branch.
+    assert wt.is_dir()
+    assert (wt / "wip.txt").exists()
+    tip = _git("-C", str(repo), "log", "-1", "--format=%s",
+               "wt/t_hhhh8888").strip()
+    assert tip == "WIP: force-finalized t_hhhh8888"
+    # Both staged-unstaged/untracked files are in the WIP commit (git add -A).
+    ntracks = _git("-C", str(repo), "ls-tree", "-r", "--name-only",
+                   "wt/t_hhhh8888")
+    assert "wip.txt" in ntracks
+    assert "wip2.txt" in ntracks
+    # The diff is durable on the branch: even if the containing worktree is
+    # then force-removed (the destructive teardown a force-finalize would do),
+    # the branch tip still holds the diff and the worktree can be recreated
+    # by checking that branch back out.
+    _git("-C", str(repo), "worktree", "remove", str(wt), "--force")
+    recreated = repo / ".worktrees" / "t_hhhh8888-recreated"
+    _git("-C", str(repo), "worktree", "add", str(recreated), "wt/t_hhhh8888")
+    assert (recreated / "wip.txt").exists()
+    assert (recreated / "wip2.txt").exists()
+
+
 def test_custom_branch_survives_worktree_removal(repo: Path) -> None:
     wt = _make_worktree(repo, "t_dddd4444", branch="feature/custom")
     kb._cleanup_worktree_workspace("t_dddd4444", str(wt), "feature/custom")

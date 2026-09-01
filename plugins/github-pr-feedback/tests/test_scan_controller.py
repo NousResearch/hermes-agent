@@ -1938,7 +1938,11 @@ def test_scan_retries_failed_local_ci_dispatch_and_reclaims_its_slot(
         not_before="2026-08-24T00:00:00Z",
         local_ci_audit=True,
     )
-    pull = admitted_pull_request(sha)
+    pull = replace(
+        admitted_pull_request(sha),
+        base_branch="stable",
+        base_sha="b" * 40,
+    )
     github = FakeGitHub(pull, ())
     github.actions_are_enabled = False
     kanban = RecordingKanban()

@@ -426,7 +426,7 @@ class GitHubClient:
                 "--limit",
                 str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
-                "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
+                "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
             ]
         )
         if not isinstance(payload, list) or any(
@@ -457,7 +457,7 @@ class GitHubClient:
                 "--limit",
                 str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
-                "number,state,headRepository,author,headRefName,headRefOid,updatedAt,labels",
+                "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
             ]
         )
         if not isinstance(payload, list) or any(
@@ -1100,6 +1100,8 @@ def _listed_pull_request(base_repository: str, row: dict[str, Any]) -> PullReque
             head_ref_name=row["headRefName"],
             head_sha=row["headRefOid"],
             labels=tuple(label["name"] for label in raw_labels),
+            base_branch=row["baseRefName"],
+            base_sha=row["baseRefOid"],
             updated_at=_timestamp(row["updatedAt"]),
         )
     except (KeyError, TypeError, ValueError) as error:

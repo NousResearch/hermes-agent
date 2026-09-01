@@ -60,6 +60,229 @@ _NL_LANG_PACKS: Dict[str, Dict[str, Any]] = {
         "min_stem": 4,
         "fallback": "keep",
     },
+    # --- Cyrillic packs (script selection + word-score refinement) --------
+    "ru": {
+        # Russian flexes by suffix across cases/numbers. The 2-char ending
+        # table plus trailing-vowel drop cover frequent forms like
+        # «алиасов»→«алиас*», «серверы»→«сервер*».
+        "stopwords": frozenset(
+            """
+            в во и с со на по за из у о к от до для при без над под про между через
+            перед после об а но или же бы ли то это тот та те эта эти этот
+            что как где когда какой какая какое какие каким каком каких сколько почему зачем кто чего
+            чем чём кому кого
+            мой моя мои моё мое твой твоя твои наша наш наши ваша ваш ваши его её ее
+            их там тут здесь
+            есть был была было были будет будут
+            все всё ещё еще уже очень можно нужно надо нельзя
+            сделать сделай сделайте помоги помогите проверь проверьте покажи покажите
+            расскажи расскажите объясни объясните напиши напишите добавь добавьте
+            найди найдите посмотри посмотрите оцени оцените запусти запустите
+            установи установите настрой настройте проанализируй сравни прописано
+            который которая которое которые которого
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            в во на по из у о к от до для что как где когда какой какая
+            сколько почему зачем это или но мой наш все ещё уже можно
+            нужно надо есть был была было которые
+            """.split()
+        ),
+        "suffixes": ("ами", "ями", "иях", "ях", "ов", "ев", "ей", "ой", "ый", "ий", "ая", "яя", "ое", "ее", "ые", "ие", "ет", "ут", "ют", "ат", "ят", "ла", "ло", "ли", "ть"),
+        "endings": frozenset({"ов", "ев", "ём", "ах", "ях", "ом", "ам", "ям", "ей", "ий", "ый", "ой", "ую", "юю", "ая", "яя", "ое", "ее", "ие", "ые", "им", "ым", "их", "ых", "ую"}),
+        "vowels": "аеёиоуыэюя",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "be": {
+        # Belarusian: similar to Russian but with differences in dative case
+        # (-ому/-эму vs -ому/-ему) and accusative (-ага/-яга vs -ага/-яга).
+        # Many Russian patterns apply, but specific stop-words and affixes differ.
+        "stopwords": frozenset(
+            """
+            ў з ды ў за над пад паміж праз перад пасля пра аб але ці ці ня што як дзе калі які якая якое якія колькі
+            чаму навошта хто чаго чым чым каму каго
+            мой мая мае маё твае твая твае яго яе іх
+            наш наша нашы ваша ваша вашы іх ён яна яны мы вы яны
+            таксама тут гэты гэтая гэта тыя гэтых гэтым гэтай
+            няма было была было будуць робіць
+            усё яшчэ яшчэ ўжо вельмі можна трэба нельга
+            зрабіць зрабіце дапамажы дапамажыце праверце паглядзіце растлумачце напішыце дадайце знайдзіце пазнайте запускайце наладзьце
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            ды ня быць жыць колькі сервераў ніякі ніхто нічога цёмны цёмная блізу побач адразу зараз кожны
+            """.split()
+        ),
+        "suffixes": ("амі", "ямі", "ах", "ях", "ав", "еў", "ей", "ой", "ы", "я", "а", "я", "ое", "ее", "ыя", "ія", "ець", "уць", "юць", "ац", "яц", "ла", "ло", "лі", "ць"),
+        "endings": frozenset({"ав", "еў", "ом", "ам", "ям", "эй", "ій", "ы", "я", "ую", "юю", "ая", "яя", "ое", "ее", "ія", "ыя", "ім", "ым", "іх", "ых", "ую"}),
+        "vowels": "аеёіоўыэюя",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "uk": {
+        # Ukrainian: richer vowel system than Russian (и, ї, є), different
+        # plural/morphological patterns, more verb conjugation flexibility.
+        "stopwords": frozenset(
+            """
+            і з в у за над під між через перед після про чи або чи не що як де коли який яка яке які скільки
+            чому навіщо хто чого чим чим кому когось
+            мій моя мої моє твій твоя твої твоє його її наш наша наші ваше ваша ваші своє
+            він вона воно вони ми ви я вони
+            також тут цей ця це ці той та те ті
+            немає було була буде будуть робити
+            ще вже дуже можна треба не можна
+            зробити зробіть допоможіть допомогти перевірте подивіться розкажіть напишіть додайте знайдіть побачте запустіть налаштуйте проаналізуй порівняй
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            з в у за на під між через перед після про чи що як де коли який скільки
+            чому не може бути з ним ними цим нашим нашими цій цьому цієї цього цих цьому цьому наших
+            він вона воно вони вже ще можна треба
+            """.split()
+        ),
+        "suffixes": ("ами", "ями", "ах", "ях", "ів", "їв", "ост", "ість", "ості", "істі", "еть", "уть", "ють", "аць", "яць", "ати", "яти", "ала", "ало", "али", "ять"),
+        "endings": frozenset({"ів", "їв", "ом", "ам", "ям", "ій", "ий", "і", "ю", "єю", "єю", "ая", "яя", "еє", "іє", "ії", "ими", "ями", "их", "іх", "ю", "єм", "ім"}),
+        "vowels": "аеёіїоуыэюя",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    # --- Slavic language packs (Cyrillic + Latin variants) ------------------
+    "sr": {
+        # Serbian: standard Cyrillic orthography. Morphologically similar to
+        # Russian/Bulgarian but with specific stop-word frequency patterns.
+        "stopwords": frozenset(
+            """
+            у и са на по за из од до у о к от за при без над под преко између пред после око али или да ли је који које која које колико
+            зашто због чега како гдје када шта тко ту овдје тај та она оне они то ти ви не могу треба морам направити направи помогни помоги провери провјери покажи покажите прочитај прочитајте објасни објасните додај додајте
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            у и са на по од до за при без али или је који која која која колико зашто как га дје кад не могу треба
+            """.split()
+        ),
+        "suffixes": ("ама", "ема", "ах", "ях", "ова", "ева", "ијех", "ојих", "их", "их", "еј", "иј"),
+        "endings": frozenset({"ов", "ев", "ом", "ам", "ям", "ей", "ий", "ый", "ой", "ую", "юю", "ая", "яя", "ое", "ее", "ие", "ые"}),
+        "vowels": "аеёиоуыэюя",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "bg": {
+        # Bulgarian: lost cases compared to Russian, richer prefix system,
+        # definite articles are suffixes (-ът, -та, -то). Shorter words than Russian.
+        "stopwords": frozenset(
+            """
+            в и от на при без над под между през преди след около но или да ли който която което които колко
+            защо заради какъв каква какви къде кога какво кой коя кои той тя то те тези този тази тези него нея ни нас вас те
+            може трябва искам искам искам искам искам искам искам искам искам искам искам искам
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            в и от на при без над под между през преди след около но или да ли който колко защо какъв къде кога не може нужно
+            """.split()
+        ),
+        "suffixes": ("ваща", "вашите", "вали", "ване", "ности", "ите", "вал", "вала", "ния", "ние", "ност", "тва", "ве", "та", "то", "те"),
+        "endings": frozenset({"ва", "ве", "во", "ва", "ти", "ли", "ни", "не", "ме", "ре", "де", "ле", "се"}),
+        "vowels": "аеииоуъюя",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "mk": {
+        # Macedonian: very close to Bulgarian but different article suffixes.
+        # Fewer case variations than Russian. Uses both Cyrillic and Latin; here covering Cyrillic.
+        "stopwords": frozenset(
+            """
+            во и со од на под преку помеѓу пред зад после за низ кон ама но или дали кој која кое кои колку
+            зошто поради што каков каква какви каде кога тој таа тоа тие ние вие ќе биде сум би можам треба сакам
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            во и со од на под преку помеѓу пред зад после за низ кон ама но или дали кој колку зошто што каде кога не биде
+            """.split()
+        ),
+        "suffixes": ("ите", "ва", "ве", "во", "та", "те", "то", "ти", "ни", "ме", "ре", "де", "ле", "си"),
+        "endings": frozenset({"ва", "ве", "во", "та", "ти", "ли", "ни", "ме", "ре", "де", "ле", "си"}),
+        "vowels": "аеиеоуи",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "hr": {
+        # Croatian (Latin script): shares base morphology with Serbian/Bosnian
+        # but uses Latin orthography. Very similar to sr/bs in inflection.
+        "stopwords": frozenset(
+            """
+            u i sa na po za iz od do u o k za pri bez nad pod preko između pred poslije oko ali ili da li je koji koje koja koje koliko
+            zasto zbog cime kako gdje kad sta tko tu gdje taj ta one oni to ti vi ne mogu treba moram napraviti napravi pomogni provjeri pokazi objasni dodaj
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            u i sa na po za od pri bez ali li je koji koliko zasto kako gdje kad ne mogu treba
+            """.split()
+        ),
+        "suffixes": ("ama", "ema", "ah", "ovah", "ova", "evih", "iju", "iju", "ej", "ij"),
+        "endings": frozenset({"ov", "ev", "om", "am", "im", "ej", "ij", "uy", "oy", "uyu", "uyu", "aya", "yaya", "oe", "eee", "ie", "ye"}),
+        "vowels": "aeiouy",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "cs": {
+        # Czech: complex inflection (7 cases), rich consonant clusters, short vowels.
+        # Highly fusional — stems often change completely.
+        "stopwords": frozenset(
+            """
+            v a s s na po mezi přes před po nad pod s se ke z u o od do pro při bez nade pode pro před po mezi před za ale nebo jestli
+            který která které kolik jak kde kdy co ten ta ty tato tato tady já my vy oni on ona ono
+            může chce musí budu bude chtít potřebuji mohu mám
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            v s na po mezi přes před za nad pod s ke z u o od do pro při bez ale nebo jestli který kolik jak kde kdy co ten ta
+            """.split()
+        ),
+        "suffixes": ("ám", "ám", "ách", "ích", "ím", "ém", "ou", "ou", "ých", "ých", "ému", "ému", "ého", "éha", "ího", "ého"),
+        "endings": frozenset({"am", "em", "im", "om", "um", "ý", "á", "é", "í", "ó", "ú", "ů", "ov", "ev", "iv"}),
+        "vowels": "aeiouýúěščřžďťň",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
+    "sk": {
+        # Slovak: very close to Czech but with more long vowels, some phonetic simplifications.
+        # Similar morphology, different stopword frequency.
+        "stopwords": frozenset(
+            """
+            v a s na po medzi cez pred po nad pod s sa ku z u o od do pre pri bez nad pod medzi cez pred za alebo či
+            ktorý ktorá ktoré koľko aký aká aké kedy kde čo ten tá tie táto táto tu ja my vy oni on ona ono
+            môže chcieť musieť budem bude chcem potrebujem môžem mám
+            """.split()
+        ),
+        "affinity_stopwords": frozenset(
+            """
+            v s na po medzi cez pred za nad pod s ku z u o od do pre pri bez alebo či ako ktorý koľko aký kde kedy čo ten tá
+            """.split()
+        ),
+        "suffixes": ("ám", "ám", "ách", "och", "ím", "ém", "ou", "ou", "ých", "ých", "ému", "ému", "ého", "ého", "ieho", "ého"),
+        "endings": frozenset({"am", "em", "im", "om", "um", "ý", "á", "e", "i", "o", "u", "ov", "ev", "iv"}),
+        "vowels": "aeiouýäú",
+        "trailing_vowel_drop": True,
+        "min_stem": 4,
+        "fallback": "drop1",
+    },
     # --- Latin-script language packs (pure data) --------------------------
     "es": {
         "stopwords": frozenset(
@@ -90,7 +313,7 @@ _NL_LANG_PACKS: Dict[str, Dict[str, Any]] = {
         "stopwords": frozenset(
             """
             le la les un une des du au aux et ou mais si ne pas de en dans sur
-            sous avec sans pour par comme que quoi quel quelle quels quelles
+            sous avec sans pour par comme comment que quoi quel quelle quels quelles
             quand où qui combien mon ma mes ton ta tes son sa ses notre nos
             votre vos leur leurs est sont était était sera seront ce cet cette
             ces il elle ils elles je tu nous vous on faire dis disons montre

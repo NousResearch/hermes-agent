@@ -3,6 +3,7 @@ import json
 import pytest
 
 from tests.fakes.mcp_oauth_peer import (
+    FakeOAuthMCPPeer,
     KnownCredentialLoss,
     OAuthArtifactState,
     OAuthFailurePoint,
@@ -10,7 +11,8 @@ from tests.fakes.mcp_oauth_peer import (
     raise_known_mutation,
     seed_old_oauth_state,
 )
-from tests.fakes.mcp_oauth_peer import FakeOAuthMCPPeer, InjectedOAuthFailure
+from tests.fakes.mcp_oauth_peer import InjectedOAuthFailure
+from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
 
 def test_seed_and_capture_old_oauth_state_round_trip(tmp_path, monkeypatch):
@@ -123,3 +125,95 @@ def test_fake_peer_persists_only_completed_stage_effects(tmp_path, monkeypatch, 
     with pytest.raises(InjectedOAuthFailure):
         peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
     assert capture_oauth_state(tmp_path, "reports").labels() == expected_labels
+
+
+_GH_76590 = pytest.mark.xfail(
+    strict=True,
+    raises=KnownCredentialLoss,
+    reason="GH #76590: failed MCP OAuth reauthorization mutates active credentials",
+)
+
+_DASHBOARD_FAILURES = [
+    pytest.param(
+        OAuthFailurePoint.PROTECTED_RESOURCE_DISCOVERY,
+        None,
+        id="before-write-preserves-old",
+    ),
+    pytest.param(
+        OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY,
+        ("MISSING", "MISSING", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION,
+        ("MISSING", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.AUTHORIZATION_URL_PUBLICATION,
+        ("MISSING", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.CALLBACK_RECEIPT,
+        ("MISSING", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.TOKEN_EXCHANGE,
+        ("MISSING", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.TOKEN_PERSISTENCE,
+        ("NEW", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+    pytest.param(
+        OAuthFailurePoint.MCP_INITIALIZATION,
+        ("NEW", "PARTIAL", "PARTIAL"),
+        marks=_GH_76590,
+    ),
+]
+
+
+@pytest.mark.parametrize(("failure_point", "broken_labels"), _DASHBOARD_FAILURES)
+def test_dashboard_failed_reauth_preserves_active_state(
+    tmp_path, monkeypatch, failure_point, broken_labels
+):
+    from hermes_cli import mcp_config, web_server
+    from tools.mcp_oauth_manager import reset_manager_for_tests
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+    before = seed_old_oauth_state(tmp_path, "reports")
+    peer = FakeOAuthMCPPeer(failure_point)
+    flow = DashboardOAuthFlow(
+        flow_id=f"dashboard-{failure_point.value}",
+        server_name="reports",
+        profile=None,
+        hermes_home=str(tmp_path),
+        redirect_uri="https://dashboard.invalid/api/mcp/oauth/callback/reports",
+    )
+    monkeypatch.setattr(mcp_config, "_probe_single_server", peer.probe)
+    monkeypatch.setattr(mcp_config, "_save_mcp_server", lambda *_args: True)
+
+    web_server._run_dashboard_mcp_oauth(
+        flow, {"url": "https://mcp.invalid/mcp", "auth": "oauth"}
+    )
+
+    assert flow.status == "error"
+    assert flow.worker_done is True
+    assert failure_point.value in (flow.error or "")
+    assert "ACCESS_TOKEN_FOR_TEST_ONLY" not in (flow.error or "")
+    after = capture_oauth_state(tmp_path, "reports")
+    if broken_labels is None:
+        assert after == before
+    else:
+        raise_known_mutation(
+            before=before,
+            after=after,
+            expected_labels=broken_labels,
+            surface="dashboard",
+            failure_point=failure_point,
+        )

@@ -130,6 +130,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or normalized.startswith(_MINIMAX_ANTHROPIC_PREFIXES)
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        or base_url_host_matches(normalized, "api.xkiro.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 

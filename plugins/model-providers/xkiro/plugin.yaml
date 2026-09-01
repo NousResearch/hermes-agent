@@ -1,0 +1,5 @@
+name: xkiro-provider
+kind: model-provider
+version: 1.0.0
+description: xKiro multi-model API gateway via OpenAI Chat Completions and Anthropic Messages
+author: Joni

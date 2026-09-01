@@ -6753,6 +6753,15 @@ def _cold_start_windows_gateway_after_update() -> bool:
         "✓ Gateway started via cold-start after update "
         f"(PID: {', '.join(map(str, ready_pids))})"
     )
+    # Persist the PIDs this ✓ vouched for so a death AFTER the updater exits
+    # (parent Job Object teardown, #91675) is reported by the next CLI
+    # invocation instead of staying silent. Best-effort.
+    try:
+        gateway_windows._write_start_attestation(
+            ready_pids, "cold-start after update"
+        )
+    except Exception:
+        pass
     return True
 
 

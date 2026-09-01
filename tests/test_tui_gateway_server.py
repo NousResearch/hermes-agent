@@ -14989,6 +14989,73 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
     assert resp["result"]["session_id"] == "ml-tip"
 
 
+def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
+    """Handoff validation must read the owning session's gateway config."""
+    import contextlib
+
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from hermes_cli.config import get_hermes_home
+    from tui_gateway import methods_session
+
+    methods_session.register(server)
+    profile_home = tmp_path / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    seen_homes = []
+
+    def load_config():
+        home = get_hermes_home()
+        seen_homes.append(home)
+        config = GatewayConfig()
+        if home == profile_home:
+            config.platforms[Platform.DISCORD] = PlatformConfig(
+                enabled=True,
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="discord-home",
+                    name="Hermes / #chat-coding",
+                ),
+            )
+        return config
+
+    class ProfileDB:
+        def get_session(self, _key):
+            return {"id": _key}
+
+        def request_handoff(self, _key, platform):
+            return platform == "discord"
+
+    @contextlib.contextmanager
+    def profile_db(_session):
+        yield ProfileDB()
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", profile_db)
+    server._sessions["handoff-profile"] = {
+        "running": False,
+        "session_key": "desktop-coder-session",
+        "profile_home": str(profile_home),
+    }
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "handoff.request",
+                "params": {
+                    "session_id": "handoff-profile",
+                    "platform": "discord",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("handoff-profile", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["queued"] is True
+    assert seen_homes == [profile_home]
+    assert get_hermes_home() != profile_home
+
+
 def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
     """Issue #62503: session.create info.profile_name must not always be launch."""
     profile_home = tmp_path / "profiles" / "mlperf"

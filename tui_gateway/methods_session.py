@@ -1709,7 +1709,8 @@ def _(rid, params: dict) -> dict:
     except (ValueError, KeyError):
         return _err(rid, 4024, f"unknown platform '{platform_name}'")
     try:
-        gw_config = load_gateway_config()
+        with _session_profile_runtime_scope(session):
+            gw_config = load_gateway_config()
     except Exception as e:
         return _err(rid, 5021, f"could not load gateway config: {e}")
     pcfg = gw_config.platforms.get(platform)

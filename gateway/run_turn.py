@@ -1,5 +1,5 @@
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
-MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
+background tasks, MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
 are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.
 """
 
@@ -22,9 +22,9 @@ from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
+from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
     reply_expected_metadata,
@@ -88,6 +88,12 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
+
+
+def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
+    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
+    text = " ".join(str(prompt or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -161,12 +167,11 @@ def hygiene_no_commit_reason(agent) -> str:
 
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-from gateway.run_background import GatewayBackgroundMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -184,17 +189,49 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         return None
 
     async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
-        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
-        from gateway.platforms.helpers import typing_metadata_for_turn
+        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
+        workspace, so preserve the routing metadata used by the response delivery path."""
         with suppress(Exception):
             _typing_adapter = self._delivery_adapter_for(source)
             _kind = type(_typing_adapter)
             if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
-                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
             elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
                 await _typing_adapter.stop_typing(source.chat_id)
+
+
+
+    def _turn_code_skew_guard(self) -> Optional[str]:
+        """Return a clear "restart required" notice when this process runs stale code.
+
+        Mirrors ``_model_switch_skew_guard`` (slash_commands_model) and the dashboard's
+        ``_dashboard_code_skew_guard`` for the plain-message turn path. A long-lived
+        gateway/serve process holds ``sys.modules`` from boot; if the checkout was
+        updated underneath it (e.g. ``hermes update`` pulled new code but the unit
+        was not restarted), the first lazy import on a new code path resolves a
+        freshly-pulled consumer module against a stale cached dependency and
+        crashes with a cryptic ``cannot import name ...`` — observed in production
+        as ``fill_empty_non_final_wire_payload`` from ``agent.agent_runtime_helpers``
+        on a serve process kept across an update. Refusing the turn with an
+        actionable notice lets the operator restart and resend, instead of the
+        platform seeing a crash.
+
+        Returns None when no drift is detectable (fresh process, or a non-git
+        install where the boot fingerprint could not be read — never a false
+        positive).
+        """
+        from gateway.code_skew import detect_code_skew
+
+        skew = detect_code_skew()
+        if not skew:
+            return None
+        boot_rev, disk_rev = skew
+        return (
+            f"This backend is running code from {boot_rev} but the checkout on "
+            f"disk is now {disk_rev}. Processing messages would risk a stale-module "
+            f"crash — restart the backend to load the new code, then resend your "
+            f"message."
+        )
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -207,6 +244,16 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             getattr(event, "reply_to_message_id", None),
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
+
+        # Stale-process guard: this gateway/serve may predate a code update.
+        # Refuse with a clear restart notice instead of crashing on the first
+        # lazy import of a freshly-pulled module against a stale cached
+        # dependency (`cannot import name ...`).
+        skew_error = self._turn_code_skew_guard()
+        if skew_error:
+            logger.warning("inbound message refused (stale code): %s", skew_error)
+            await self._deliver_platform_notice(source, skew_error)
+            return
 
         resolved = await self._hmwa_resolve_session(event, source)
         if resolved is None:
@@ -430,6 +477,17 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             lines.append(t("gateway.session.info_endpoint", url=base_url))
         return "\n".join(lines)
 
+    async def _run_background_task(
+        self, prompt: str, source: SessionSource, task_id: str,
+        event_message_id: Optional[str] = None, media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
+    ) -> None:
+        """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
+        with self._profile_scope_for_source(source):
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
+
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: SessionSource, platform_key: str,
     ) -> list:
@@ -455,6 +513,143 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
         return enabled, disabled
 
+    async def _run_background_task_inner(
+        self, prompt: str, source: SessionSource, task_id: str,
+        event_message_id: Optional[str] = None, media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
+    ) -> None:
+        """Execute a background agent task and deliver the result to the chat."""
+        from gateway.run import (
+            _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
+            _platform_config_key,
+        )
+        from run_agent import AIAgent
+        media_urls = media_urls or []
+        media_types = media_types or []
+        adapter = self._delivery_adapter_for(source)
+        if not adapter:
+            logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
+            return
+        _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+
+        try:
+            user_config = _load_gateway_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, user_config=user_config)
+            if not runtime_kwargs.get("api_key"):
+                await adapter.send(source.chat_id, t("gateway.background.no_credentials"), metadata=_thread_metadata)
+                return
+
+            platform_key = _platform_config_key(source.platform)
+            enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
+            pr = self._provider_routing
+            max_iterations = _current_max_iterations()
+            reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
+            self._reasoning_config = reasoning_config
+            self._service_tier = self._resolve_session_service_tier(source=source)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+            # Enrich the prompt with image descriptions (same as the main flow).
+            enriched_prompt = prompt
+            image_paths = [
+                path for i, path in enumerate(media_urls)
+                if (media_types[i] if i < len(media_types) else "").startswith("image/")
+            ]
+            if image_paths:
+                try:
+                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                except Exception as e:
+                    logger.warning("Background task vision enrichment failed: %s", e)
+
+            def run_sync():
+                agent = AIAgent(
+                    model=turn_route["model"],
+                    **turn_route["runtime"],
+                    **_checkpoint_agent_kwargs(user_config),
+                    max_iterations=max_iterations,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    reasoning_config=reasoning_config,
+                    service_tier=self._service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=pr.get("only"),
+                    providers_ignored=pr.get("ignore"),
+                    providers_order=pr.get("order"),
+                    provider_sort=pr.get("sort"),
+                    provider_require_parameters=pr.get("require_parameters", False),
+                    provider_data_collection=pr.get("data_collection"),
+                    session_id=task_id,
+                    platform=platform_key,
+                    **{k: getattr(source, k) for k in (
+                        "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
+                    )},
+                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    # Reload from disk — do not reuse the startup snapshot.
+                    # See #60955.
+                    fallback_model=self._refresh_fallback_model(),
+                )
+                try:
+                    return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
+                finally:
+                    self._cleanup_agent_resources(agent)
+
+            result = await self._run_in_executor_with_context(run_sync)
+
+            response = result.get("final_response", "") if result else ""
+            if not response and result and result.get("error"):
+                response = t("gateway.shared.error_prefix", error=result["error"])
+            # Fresh conversation, so history_offset=0: every message in the run belongs to this turn.
+            if response:
+                response = repair_explicit_computer_use_media_paths(response, result.get("messages", []))
+
+            preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+            header = t("gateway.background.complete_header", preview=preview)
+            images, media_files, text_content = [], [], ""
+            if response:
+                media_files, response = adapter.extract_media(response)
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                images, text_content = adapter.extract_images(response)
+            if text_content:
+                await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
+            elif not images and not media_files:
+                await adapter.send(
+                    chat_id=source.chat_id, content=header + t("gateway.background.no_response"), metadata=_thread_metadata,
+                )
+            for image_url, alt_text in (images or []):
+                with suppress(Exception):
+                    await adapter.send_image(
+                        chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
+                    )
+            # Route each media file by type (voice bubble / video / image / document), as the
+            # streaming + kanban paths do.
+            from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
+            from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+            for media_path, _is_voice in (media_files or []):
+                _ext = os.path.splitext(media_path)[1].lower()
+                with suppress(Exception):
+                    if _should_send_media_as_audio(source.platform, _ext, _is_voice):
+                        await adapter.send_voice(
+                            chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
+                            is_voice=_is_voice,
+                        )
+                    else:
+                        sender, key = (
+                            (adapter.send_video, "video_path") if _ext in _VIDEO_EXTS
+                            else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
+                            else (adapter.send_document, "file_path")
+                        )
+                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+
+        except Exception:
+            logger.exception("Background task %s failed", task_id)
+            # Automatic failure diagnostic (the task produced no requested result to deliver).
+            with suppress(Exception):
+                await adapter.emit_warning(
+                    source.chat_id,
+                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                    metadata=_thread_metadata, logical_platform=source.platform,
+                )
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
         """Refresh cached agents so existing sessions see new MCP tools on their next turn without
@@ -725,8 +920,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         _adapter = self._delivery_adapter_for(source)
         if _adapter and not scheduled_heartbeat:
             with suppress(Exception):
-                await _adapter.send_typing(source.chat_id, metadata=typing_metadata_for_turn(
-                    _adapter, source.chat_id, event_message_id, _thread_metadata))
+                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 
         full_response = ""
         _start = time.time()
@@ -1684,6 +1878,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
+        from gateway.platforms.base import merge_pending_message_event
         from gateway.run import _preserve_queued_followup_history_offset
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
@@ -1705,7 +1900,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 "Interrupt recursion depth %d reached for session %s — "
                 "queueing message instead of recursing.", _interrupt_depth, session_key,
             )
-            self._requeue_at_depth_cap(session_key, source, pending_event, pending)
+            adapter = self._delivery_adapter_for(source)
+            if adapter and pending_event:
+                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+            elif adapter and hasattr(adapter, 'queue_message'):
+                adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
@@ -1764,7 +1963,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             # of the turn they are recursively following.
             next_channel_prompt = turn_ctx.channel_prompt
 
-        # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed (#60671).
+        # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
+        # See #60671.
         _clear_adapter = self._delivery_adapter_for(source)
         _completed_turns = getattr(_clear_adapter, "_streaming_tts_completed_turns", None)
         _prior_key = getattr(_clear_adapter, "_streaming_tts_turn_key", None)
@@ -1776,9 +1976,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # Restart the typing indicator; the outer typing task may be stale.
         if _clear_adapter:
             with suppress(Exception):
-                await _clear_adapter.send_typing(source.chat_id, metadata=typing_metadata_for_turn(
-                    _clear_adapter, source.chat_id, next_message_id, _status_thread_metadata))
+                await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
+        # Re-baseline the cached agent's message_count before recursing, else the coherence guard
+        # rebuilds on OUR OWN flushed rows (the outer handler re-baselines only after the chain).
         # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued
         # (/queue) follow-up turn. The first turn has completed and flushed its own user + assistant rows to
         # the SessionDB, so the cross-process coherence guard (#45966) — which this recursive _run_agent

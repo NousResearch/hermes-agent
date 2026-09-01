@@ -3853,6 +3853,22 @@ def schedule_task(
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """
+        # Fence the snapshot used for worker termination.  If another writer
+        # changed the claim while the process was being stopped, do not clear
+        # that writer's newer ownership.
+        if has_active_claim:
+            sql += " AND status = ? AND current_run_id IS ? "
+            sql += " AND claim_lock IS ? AND worker_pid IS ?"
+            params.extend(
+                [
+                    row["status"],
+                    row["current_run_id"],
+                    row["claim_lock"],
+                    row["worker_pid"],
+                ]
+            )
+        else:
+            sql += " AND claim_lock IS NULL AND worker_pid IS NULL"
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params.append(int(expected_run_id))

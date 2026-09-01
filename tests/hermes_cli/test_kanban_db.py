@@ -225,6 +225,42 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+def test_schedule_running_task_terminates_worker_before_releasing_claim(
+    kanban_home, monkeypatch,
+):
+    """Scheduling a running task must not orphan its worker process."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="running task", assignee="ops")
+        host = kb._claimer_id().split(":", 1)[0]
+        lock = f"{host}:worker"
+        kb.claim_task(conn, task_id, claimer=lock)
+        kb._set_worker_pid(conn, task_id, 4242)
+
+        calls = []
+
+        def terminate(pid, claim_lock, *, task_id):
+            calls.append((pid, claim_lock, task_id))
+            return {
+                "prev_pid": pid,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", terminate)
+
+        assert kb.schedule_task(conn, task_id, reason="pause safely") is True
+        assert calls == [(4242, lock, task_id)]
+        assert kb.get_task(conn, task_id).status == "scheduled"
+        run = conn.execute(
+            "SELECT status, worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        assert run["status"] == "scheduled"
+        assert run["worker_pid"] is None
+
+
 
 
 

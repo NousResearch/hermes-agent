@@ -1180,8 +1180,12 @@ verification evidence. `BLOCKED` additionally requires an explicit
 before graph mutation and retained only as sanitized audit events.
 
 An approved result uses the native completion path. A concrete changes-requested
-result creates (or reuses) one deterministic builder correction child linked to
-the reviewed task. Three correction cycles are allowed; subsequent requests use
-the native blocked/escalation path without creating another child. All durable
-records contain the canonical payload digest rather than untrusted free-form
-reviewer data.
+result creates (or reuses) one deterministic builder correction child. The child
+is independently runnable rather than being gated on the still-open reviewed
+task; the reviewed-task audit event retains the correction ID and canonical
+payload digest as the non-gating provenance link. Three distinct correction
+cycles are allowed; repeated delivery of the same result reuses its child, and
+subsequent distinct requests use the native blocked/escalation path without
+creating another child. Durable reviewer-result records contain only the
+canonical payload digest and sanitized routing metadata, never the free-form
+canonical payload itself.

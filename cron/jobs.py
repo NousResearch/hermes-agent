@@ -2453,8 +2453,10 @@ def create_job(
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
-    # failure_deliver shares deliver's grammar and normalization exactly —
-    # same helper, no parallel validation path (NS-788).
+    # failure_deliver shares deliver's value grammar; the str/list
+    # flatten below mirrors the tool layer's _normalize_deliver_param for
+    # direct create_job callers (the tool pre-normalizes). Semantic
+    # validation happens at resolution time via the shared deliver path.
     normalized_failure_deliver = (
         str(failure_deliver).strip() if isinstance(failure_deliver, str) else None
     )

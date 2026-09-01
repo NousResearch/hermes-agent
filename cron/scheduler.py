@@ -2838,6 +2838,19 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return expanded
 
 
+def _delivery_lane_value(job: dict, *, for_failure: bool = False):
+    """Raw deliver-lane value for a run outcome: the failure lane when
+    ``for_failure`` and the job overrides it, else ``deliver``. Keeps
+    delivery bookkeeping (outcome classification, unresolved-origin,
+    incident 'alerted' marking) reading the SAME lane the notice was
+    actually routed through (NS-788 review finding B1)."""
+    if for_failure:
+        failure_deliver = job.get("failure_deliver")
+        if failure_deliver is not None and str(failure_deliver).strip():
+            return failure_deliver
+    return job.get("deliver", "local")
+
+
 def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
@@ -2856,11 +2869,7 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     Absent ``failure_deliver``, failure delivery follows ``deliver``
     exactly as before.
     """
-    deliver_raw = job.get("deliver", "local")
-    if for_failure:
-        failure_deliver = job.get("failure_deliver")
-        if failure_deliver is not None and str(failure_deliver).strip():
-            deliver_raw = failure_deliver
+    deliver_raw = _delivery_lane_value(job, for_failure=for_failure)
     deliver = _normalize_deliver_value(deliver_raw)
     if deliver == "local":
         return []
@@ -3172,10 +3181,9 @@ def _deliver_result(
     """
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
-        deliver_raw = job.get("deliver", "local")
-        if for_failure and str(job.get("failure_deliver") or "").strip():
-            deliver_raw = job.get("failure_deliver")
-        deliver_value = _normalize_deliver_value(deliver_raw)
+        deliver_value = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=for_failure)
+        )
         if deliver_value == "local":
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
@@ -7697,8 +7705,9 @@ def _run_one_job_body(
 
             if should_deliver:
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(_delivery_lane_value(job, for_failure=not success))
+                    == "origin"
+                    and not _resolve_delivery_targets(job, for_failure=not success)
                 )
                 try:
                     with _side_effect_fence() as owns_delivery:
@@ -7801,7 +7810,9 @@ def _run_one_job_body(
                 error="Fire claim ownership lost before terminal completion.",
             )
             return True
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        normalized_deliver = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=not success)
+        )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
@@ -7858,7 +7869,7 @@ def _run_one_job_body(
             and not _fire_claim_ownership_lost()
         ):
             normalized_deliver = _normalize_deliver_value(
-                job.get("deliver", "local")
+                _delivery_lane_value(job, for_failure=True)
             )
             unresolved_origin = False
             # Durable failure incident: same ack gate as the normal failure
@@ -7892,7 +7903,9 @@ def _run_one_job_body(
                         "Delivery failed for job %s: %s", job["id"], delivery_exc
                     )
                 if not delivery_error and normalized_deliver == "origin":
-                    unresolved_origin = not _resolve_delivery_targets(job)
+                    unresolved_origin = not _resolve_delivery_targets(
+                        job, for_failure=True
+                    )
                 if delivery_error:
                     delivery_outcome = "failed"
                 elif unresolved_origin:

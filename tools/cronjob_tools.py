@@ -1643,7 +1643,9 @@ def cronjob(
                     # dispatch below: models do not make model-config
                     # decisions (standing policy).
                     reasoning_effort=reasoning_effort,
-                    failure_deliver=_normalize_deliver_param(failure_deliver),
+                    failure_deliver=_resolve_cron_context_deliver(
+                        _normalize_deliver_param(failure_deliver)
+                    ),
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1848,12 +1850,16 @@ def cronjob(
                 )
             if failure_deliver is not None:
                 # '' clears the override (job falls back to deliver on
-                # failures); non-empty values share deliver's validation.
+                # failures); non-empty values share deliver's validation
+                # AND its cron-context origin resolution (a job created
+                # from inside a cron run must never store literal
+                # 'origin' — same rule as deliver).
                 _norm_fd = _normalize_deliver_param(failure_deliver)
                 if _norm_fd:
                     bot_chat_error = _validate_bot_chat_deliver(_norm_fd)
                     if bot_chat_error:
                         return tool_error(bot_chat_error, success=False)
+                    _norm_fd = _resolve_cron_context_deliver(_norm_fd)
                 updates["failure_deliver"] = _norm_fd
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)

@@ -341,3 +341,67 @@ class TestToolSurface:
         ))
         assert result["success"] is True
         assert not get_job(job["id"]).get("failure_deliver")
+
+
+class TestOutcomeBookkeeping:
+    """Review finding B1 (NS-788): delivery bookkeeping — outcome
+    classification, unresolved-origin, incident 'alerted' marking — must
+    read the SAME lane the notice was actually routed through, or the
+    execution history and incident store record lies (silenced failures
+    logged 'delivered'; delivered failures logged 'not_configured')."""
+
+    @staticmethod
+    def _outcome(state):
+        assert state["finished"], "finish_execution never called"
+        _a, kw = state["finished"][-1]
+        return kw.get("delivery_outcome")
+
+    def test_fd_local_failure_records_suppressed_not_delivered(
+        self, run_env, monkeypatch
+    ):
+        alerted = []
+        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+        s.run_one_job({
+            "id": "b1a", "name": "scout",
+            "deliver": "slack:D0MAIN", "failure_deliver": "local",
+        })
+
+        assert run_env["send"] == []
+        assert self._outcome(run_env) == "suppressed"
+        assert alerted == [], "silenced failure must NOT mark incident alerted"
+
+    def test_fd_explicit_target_failure_records_delivered(
+        self, run_env, monkeypatch
+    ):
+        """deliver=origin (unresolvable) + failure_deliver=explicit target:
+        the notice IS delivered — outcome must say so, not 'not_configured'."""
+        alerted = []
+        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(
+            s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, "inc-b1")
+        )
+        monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+        s.run_one_job({
+            "id": "b1b", "name": "scout",
+            "deliver": "origin", "failure_deliver": "slack:D0OPS",
+        })
+
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0OPS"]
+        assert self._outcome(run_env) == "delivered"
+        assert alerted == ["inc-b1"], "delivered failure ping must mark incident alerted"
+
+    def test_success_outcome_still_reads_deliver_lane(self, run_env, monkeypatch):
+        """Success bookkeeping is untouched: fd set, success delivers to
+        deliver and records 'delivered'."""
+        monkeypatch.setattr(s, "run_job", _succeeding_run_job())
+
+        s.run_one_job({
+            "id": "b1c", "name": "scout",
+            "deliver": "slack:D0MAIN", "failure_deliver": "local",
+        })
+
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
+        assert self._outcome(run_env) == "delivered"

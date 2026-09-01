@@ -2525,6 +2525,14 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
+def _media_deliverable_event_type() -> str:
+    """Lazily resolve the shared D1 event type constant (avoids importing
+    the gateway chain at module import time)."""
+    from gateway.media_events import MEDIA_EVENT_TYPE
+
+    return MEDIA_EVENT_TYPE
+
+
 def _emit(event: str, sid: str, payload: dict | None = None):
     write_json(_event_frame(event, sid, payload))
 
@@ -13316,6 +13324,35 @@ def _run_prompt_submit(
             else:
                 raw = str(result)
                 status = "complete"
+
+            # Media-deliverable events (D1): mirror any explicit MEDIA: tag
+            # in the final reply as a structured event frame on this
+            # session's transport, so the desktop renders media cards from
+            # events instead of scraping the markdown. Rides the same
+            # event transport (seq + replay) as every other session event;
+            # best-effort and silent when no client is listening. Emission
+            # uses the delivery pipeline's own extraction + safety gates, so
+            # the event set never exceeds what delivery would accept. Only
+            # completed turns emit — error/interrupted turns must not
+            # advertise deliverables.
+            if isinstance(raw, str) and raw and status == "complete":
+                try:
+                    from gateway.media_events import (
+                        ORIGIN_SERVE,
+                        build_media_deliverable_payloads,
+                        extract_media_from_reply,
+                    )
+
+                    for _payload in build_media_deliverable_payloads(
+                        extract_media_from_reply(raw), sid, origin=ORIGIN_SERVE
+                    ):
+                        # _emit → write_json: stamps the replay seq and
+                        # routes to this session's transport (session-id
+                        # precedence) — the same boundary every other
+                        # session event uses.
+                        _emit(_media_deliverable_event_type(), sid, _payload)
+                except Exception:
+                    logger.debug("media.deliverable serve emission failed", exc_info=True)
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:

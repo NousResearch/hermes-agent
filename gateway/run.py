@@ -7231,6 +7231,31 @@ class TurnRunner:
                         unique_tags.append(tag)
                 if has_voice_directive:
                     unique_tags.insert(0, "[[audio_as_voice]]")
+
+                # Media-deliverable events (D1): mirror the deliverables
+                # this turn is about to attach as structured event frames on
+                # the tui-gateway event transport, so desktop surfaces render
+                # media from events instead of scraping the reply text.
+                # Best-effort and silent when no desktop client listens;
+                # never touches the adapter delivery below.
+                if unique_tags:
+                    try:
+                        from gateway.media_events import (
+                            ORIGIN_GATEWAY,
+                            emit_media_deliverables,
+                        )
+
+                        emit_media_deliverables(
+                            effective_session_id,
+                            [tag[len("MEDIA:"):] for tag in unique_tags
+                             if tag.startswith("MEDIA:")],
+                            origin=ORIGIN_GATEWAY,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "media.deliverable turn emission failed", exc_info=True
+                        )
+
                 final_response = final_response + "\n" + "\n".join(unique_tags)
 
         # Auto-titling runs at TURN START (agent/turn_context.py) from the
@@ -22805,6 +22830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
+                            session_id=session_entry.session_id,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -24219,6 +24245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         adapter,
         thread_metadata: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -24250,6 +24277,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
+            # Media-deliverable events (D1): mirror exactly the files this
+            # rescan is about to deliver to the platform adapter as
+            # structured event frames (origin ``gateway``). Best-effort and
+            # silent when no desktop client listens on this session id.
+            if media_files:
+                try:
+                    from gateway.media_events import (
+                        ORIGIN_GATEWAY,
+                        emit_media_deliverables,
+                    )
+
+                    emit_media_deliverables(
+                        session_id or "",
+                        [media_path for media_path, _is_voice in media_files],
+                        origin=ORIGIN_GATEWAY,
+                    )
+                except Exception:
+                    logger.debug(
+                        "media.deliverable post-stream emission failed", exc_info=True
+                    )
+
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -24341,6 +24390,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text_already_delivered: bool = False,
         deliver_media: bool = True,
         stream_consumer=None,
+        session_id: Optional[str] = None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split."""
         if not text_already_delivered:
@@ -24403,6 +24453,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             synthetic_event,
             adapter,
             thread_metadata=metadata,
+            session_id=session_id,
         )
 
     async def _run_background_task(
@@ -31602,6 +31653,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 text_already_delivered=_already_streamed,
                                 deliver_media=not _delivery_result.get("failed"),
                                 stream_consumer=_sc,
+                                session_id=session_id,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)

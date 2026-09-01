@@ -272,6 +272,60 @@ def test_scan_applies_one_exact_branch_label_and_confirms_readback(
     assert github.current.labels == ("codex",)
 
 
+def test_scan_stops_label_attempts_after_a_github_label_read_failure(
+    tmp_path: Path,
+) -> None:
+    local_path, head_sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        agent_labels=True,
+    )
+    first = PullRequest(
+        17,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/first",
+        head_sha,
+        updated_at=datetime(2026, 8, 26, 8, 0, tzinfo=UTC),
+    )
+    second = PullRequest(
+        18,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/second",
+        "b" * 40,
+        updated_at=datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
+    )
+
+    class FailingLabelReadGitHub(FakeGitHub):
+        def get_pull_request(self, repository: str, number: int) -> PullRequest:
+            self.current_calls.append((repository, number))
+            if number == first.number:
+                raise RuntimeError("GitHub PR endpoint timed out")
+            return self.current_by_number[number]
+
+    github = FailingLabelReadGitHub(first, (), pull_requests=(first, second))
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(
+        policy,
+        ledger,
+        github,
+        RecordingKanban(),
+        RecordingLocalGit(),
+    ).scan()
+
+    assert result.degraded is False
+    assert result.skipped["agent_label_error"] == 1
+    assert github.current_calls == [("acme/widgets", first.number)]
+    assert github.label_calls == []
+
+
 def test_failed_ci_receipt_waits_for_current_base_before_dispatching_fixer(
     tmp_path: Path,
 ) -> None:

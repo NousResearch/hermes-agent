@@ -1434,6 +1434,7 @@ def test_doctor_fails_closed_for_an_incomplete_enabled_configuration(
         "assignee_rules",
         "routing_rules",
         "local_ci_audit",
+        "agent_labels",
         "merge_maintainer",
         "repair_steward",
         "release_maintenance",

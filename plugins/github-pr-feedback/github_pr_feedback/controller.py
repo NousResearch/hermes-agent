@@ -871,6 +871,7 @@ class ScanController:
                 )
             )
             label_updates = 0
+            label_attempts = 0
             label_policy = self._policy.agent_labels
             if label_policy is not None and label_policy.enabled:
                 for pull_request in pull_requests:
@@ -879,9 +880,10 @@ class ScanController:
                     )
                     if desired_label is None or desired_label in pull_request.labels:
                         continue
-                    if label_updates >= label_policy.max_updates_per_scan:
+                    if label_attempts >= label_policy.max_updates_per_scan:
                         skipped["agent_label_update_cap"] += 1
                         break
+                    label_attempts += 1
                     error = self._apply_agent_label(
                         repository,
                         target,
@@ -893,6 +895,8 @@ class ScanController:
                         label_updates += 1
                     else:
                         skipped[error] += 1
+                        if error == "agent_label_error":
+                            break
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)

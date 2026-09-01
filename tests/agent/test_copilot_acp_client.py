@@ -317,3 +317,106 @@ def test_probe_skipped_for_custom_args_without_acp():
     with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
+
+
+# --- session/set_model: honor the picker-selected model ----------------------
+#
+# `copilot --acp` validates but IGNORES the `--model` spawn flag; the ACP
+# session runs the CLI's own default unless the client issues the ACP-native
+# `session/set_model` call. Without it, picking gpt-5.6-terra in Hermes
+# visibly answers as the CLI's default model.
+
+
+class _ScriptedACP:
+    """Minimal scripted ACP wire: records requests, plays canned results."""
+
+    def __init__(self, session_result):
+        self.requests = []
+        self.session_result = session_result
+
+    def request(self, method, params, **_):
+        self.requests.append((method, params))
+        if method == "session/new":
+            return self.session_result
+        return {}
+
+
+def _run_prompt_with_scripted_wire(model, session_result):
+    """Drive _run_prompt's request sequence against a scripted wire."""
+    client = CopilotACPClient(acp_cwd="/tmp")
+    wire = _ScriptedACP(session_result)
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        # Reproduce the request choreography under test without a subprocess.
+        session = wire.request("session/new", {"cwd": "/tmp", "mcpServers": []}) or {}
+        session_id = str(session.get("sessionId") or "")
+        requested_model = str(model or "").strip()
+        if requested_model and requested_model != "copilot-acp":
+            available = {
+                str(m.get("modelId") or "").strip()
+                for m in ((session.get("models") or {}).get("availableModels") or [])
+                if isinstance(m, dict)
+            }
+            if not available or requested_model in available:
+                wire.request(
+                    "session/set_model",
+                    {"sessionId": session_id, "modelId": requested_model},
+                )
+        wire.request("session/prompt", {"sessionId": session_id, "prompt": []})
+        return "ok", ""
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        client._create_chat_completion(
+            model=model, messages=[{"role": "user", "content": "hi"}]
+        )
+    return wire.requests
+
+
+_SESSION_WITH_MODELS = {
+    "sessionId": "s1",
+    "models": {
+        "availableModels": [
+            {"modelId": "auto"},
+            {"modelId": "gpt-5.6-terra"},
+            {"modelId": "claude-sonnet-5"},
+        ]
+    },
+}
+
+
+def test_set_model_sent_for_advertised_model():
+    reqs = _run_prompt_with_scripted_wire("gpt-5.6-terra", _SESSION_WITH_MODELS)
+    methods = [m for m, _ in reqs]
+    assert "session/set_model" in methods, "picker model must be applied to the session"
+    idx_set = methods.index("session/set_model")
+    idx_prompt = methods.index("session/prompt")
+    assert idx_set < idx_prompt, "model must be set before the prompt runs"
+    assert reqs[idx_set][1] == {"sessionId": "s1", "modelId": "gpt-5.6-terra"}
+
+
+def test_set_model_skipped_for_unadvertised_model():
+    reqs = _run_prompt_with_scripted_wire("not-served-here", _SESSION_WITH_MODELS)
+    assert all(m != "session/set_model" for m, _ in reqs), \
+        "unknown model must degrade to the session default, not error"
+
+
+def test_set_model_skipped_for_provider_virtual_slug():
+    reqs = _run_prompt_with_scripted_wire("copilot-acp", _SESSION_WITH_MODELS)
+    assert all(m != "session/set_model" for m, _ in reqs)
+
+
+def test_run_prompt_receives_picker_model():
+    # _create_chat_completion must forward `model` into _run_prompt — the
+    # original wiring dropped it, reducing the selection to prompt text.
+    client = CopilotACPClient(acp_cwd="/tmp")
+    seen = {}
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        seen["model"] = model
+        return "ok", ""
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        client._create_chat_completion(
+            model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
+        )
+    assert seen["model"] == "gpt-5.6-terra"

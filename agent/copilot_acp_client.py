@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -31,6 +32,7 @@ from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 # Stderr fingerprint of the deprecated `gh copilot` CLI extension
@@ -365,6 +367,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            model=model,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -393,7 +396,13 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> tuple[str, str]:
         # Fast-fail when the CLI doesn't support the ACP args we'd pass.
         # Without this guard, a CLI like Claude Code v2.x exits with
         # ``error: unknown option '--acp'`` immediately, then the parent
@@ -415,6 +424,13 @@ class CopilotACPClient:
                 f"HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS "
                 f"to a working pair."
             )
+
+        # Note the model Hermes selected; it is applied after session/new via
+        # the ACP-native `session/set_model` call. The CLI's `--model` spawn
+        # flag is deliberately NOT used here: `copilot --acp` validates it
+        # (an unknown id aborts the spawn) but then ignores it for the actual
+        # session, so it adds a failure mode without selecting anything.
+        requested_model = str(model or "").strip()
 
         try:
             # Hide the console the CLI child would otherwise flash on Windows
@@ -559,6 +575,42 @@ class CopilotACPClient:
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            # Select the model Hermes asked for. The `--model` spawn flag is
+            # validated but IGNORED by `copilot --acp` (observed: session
+            # still runs the CLI's own default); the ACP-native
+            # `session/set_model` call is what actually switches it. Only
+            # send ids the server advertises in session/new so an unknown
+            # slug degrades to the default instead of erroring the prompt,
+            # and never fail the whole turn over model selection.
+            if requested_model and requested_model != "copilot-acp":
+                try:
+                    available = {
+                        str(m.get("modelId") or "").strip()
+                        for m in (
+                            (session.get("models") or {}).get("availableModels") or []
+                        )
+                        if isinstance(m, dict)
+                    }
+                    if not available or requested_model in available:
+                        _request(
+                            "session/set_model",
+                            {"sessionId": session_id, "modelId": requested_model},
+                        )
+                    else:
+                        logger.warning(
+                            "Copilot ACP does not offer model %r; using the "
+                            "session default. Available: %s",
+                            requested_model,
+                            ", ".join(sorted(available)) or "(none reported)",
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Copilot ACP session/set_model(%r) failed; continuing "
+                        "with the session default: %s",
+                        requested_model,
+                        exc,
+                    )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

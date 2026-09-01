@@ -514,12 +514,14 @@ def test_kanban_client_persists_explicit_worker_route() -> None:
         kanban_task(),
         model_override="qwen3.5:4b",
         provider_override="ollama-launch",
+        reasoning_effort="none",
     )
 
     parsed = root.parse_args(_kanban_create_argv(task)[1:])
 
     assert parsed.model_override == "qwen3.5:4b"
     assert parsed.provider_override == "ollama-launch"
+    assert parsed.reasoning_effort == "none"
 
 
 @pytest.mark.parametrize("stdout", ["{}", "[]", '{"id": ""}', '{"id": 17}', "not json"])

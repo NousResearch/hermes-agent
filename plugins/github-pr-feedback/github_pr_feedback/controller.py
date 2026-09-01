@@ -225,6 +225,7 @@ class KanbanTask:
     max_runtime_seconds: int | None = None
     model_override: str | None = None
     provider_override: str | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2565,6 +2566,7 @@ def _local_ci_task(
         max_runtime_seconds=8 * 60 * 60,
         model_override=LOCAL_CI_WORKER_MODEL,
         provider_override=LOCAL_CI_WORKER_PROVIDER,
+        reasoning_effort="none",
     )
 
 

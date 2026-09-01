@@ -73,26 +73,22 @@ def _flatten_choice(c) -> str:
     return str(c).strip()
 
 
-def mark_recommended(choices: List[str]) -> List[str]:
-    """Label the first choice as the agent's recommendation.
-
-    The schema tells the model to order ``choices`` best-first, so element 0 is
-    always the option it would pick itself. Tagging it here — the one
-    platform-agnostic entry point — means every surface (CLI panel, TUI,
-    desktop card, Telegram buttons) reads the same way without four copies of
-    the same string concatenation, and the label can never drift between them.
-
-    Idempotent: a model that writes its own "(recommended)" into the choice is
-    left alone rather than getting the suffix twice. A lone choice isn't a
-    recommendation — there's nothing to prefer it over — so single-choice lists
-    pass through untouched.
-    """
-    if len(choices) < 2:
+def mark_recommended(
+    choices: List[str], recommended_index: Optional[int] = None,
+) -> List[str]:
+    """Label only the explicitly recommended choice."""
+    if len(choices) < 2 or recommended_index is None:
         return choices
-    first = str(choices[0]).strip()
-    if first != strip_recommended(first):
+    if isinstance(recommended_index, bool) or not isinstance(recommended_index, int):
         return choices
-    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
+    if not 0 <= recommended_index < len(choices):
+        return choices
+    recommended = str(choices[recommended_index]).strip()
+    if recommended != strip_recommended(recommended):
+        return choices
+    marked = list(choices)
+    marked[recommended_index] = f"{recommended} {RECOMMENDED_LABEL}"
+    return marked
 
 
 def strip_recommended(text: str) -> str:
@@ -220,7 +216,9 @@ def _normalize_questions(questions) -> tuple:
             "qid": f"q{index}",
             "id": model_id,
             "question": text,
-            "choices": mark_recommended(list(choices)) if choices else None,
+            "choices": mark_recommended(
+                list(choices), item.get("recommended_index"),
+            ) if choices else None,
             "choices_offered": list(choices) if choices else None,
             "multi_select": bool(item.get("multi_select")) and bool(choices),
         })
@@ -331,6 +329,7 @@ def clarify_tool(
     choices: Optional[List[str]] = None,
     multi_select: bool = False,
     questions: Optional[List[dict]] = None,
+    recommended_index: Optional[int] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """
@@ -405,12 +404,10 @@ def clarify_tool(
     if callback is None:
         return tool_error("Clarify tool is not available in this execution context.")
 
-    # The first choice is the agent's pick (the schema says order best-first),
-    # so it reaches every surface carrying the "(Recommended)" label. The bare
-    # list is what goes back to the agent — the label is presentation only.
+    # The label is presentation-only; the bare choices go back to the agent.
     offered = choices
     if choices is not None:
-        choices = mark_recommended(choices)
+        choices = mark_recommended(choices, recommended_index)
 
     try:
         raw_response = _invoke_callback(callback, question, choices, multi_select)
@@ -447,8 +444,8 @@ CLARIFY_SCHEMA = {
         "one-entry array, and several INDEPENDENT questions belong in ONE "
         "call (one form beats a chain of clarify calls; if one answer would "
         "change another question, ask separately). Per question: "
-        f"single-select (up to {MAX_CHOICES} choices — put your recommended "
-        "option FIRST, the UI marks it '(Recommended)' and auto-appends an "
+        f"single-select (up to {MAX_CHOICES} choices — set recommended_index "
+        "to explicitly mark one option '(Recommended)'; the UI auto-appends an "
         "'Other' free-text row), multi-select (multi_select=true), or "
         "open-ended (omit choices). Options go ONLY in `choices`, never "
         "enumerated inside the question text (choices render as pickable "
@@ -481,6 +478,11 @@ CLARIFY_SCHEMA = {
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},
+                        "recommended_index": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": MAX_CHOICES - 1,
+                        },
                     },
                     "required": ["question"],
                 },
@@ -509,6 +511,7 @@ registry.register(
         choices=args.get("choices"),
         multi_select=args.get("multi_select", False),
         questions=args.get("questions"),
+        recommended_index=args.get("recommended_index"),
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",

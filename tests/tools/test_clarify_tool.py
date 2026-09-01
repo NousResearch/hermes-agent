@@ -62,7 +62,10 @@ class TestClarifyToolChoicesValidation:
             choices_received.extend(choices or [])
             return "answer"
 
-        clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
+        clarify_tool(
+            "Pick", choices=[1, 2, 3], recommended_index=0,
+            callback=mock_callback,
+        )  # type: ignore
         assert choices_received == ["1 (Recommended)", "2", "3"]
 
 
@@ -127,6 +130,7 @@ class TestClarifyDictChoices:
                 {"name": "modelid", "value": "abc"},  # dropped, not leaked
                 "A plain string choice",
             ],
+            recommended_index=0,
             callback=cb,
         ))  # type: ignore
         assert seen == [
@@ -266,7 +270,10 @@ class TestClarifyRecommendedLabel:
             seen.extend(choices or [])
             return choices[1]
 
-        clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb)
+        clarify_tool(
+            "Pick", choices=["Rebase", "Merge"],
+            recommended_index=0, callback=cb,
+        )
         assert seen == ["Rebase (Recommended)", "Merge"]
 
     def test_answer_strips_the_label(self):
@@ -454,8 +461,8 @@ class TestClarifyBatchValidation:
         clarify_tool(
             "",
             questions=[
-                {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"]},
-                {"question": "Pick layout", "choices": [
+                {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"], "recommended_index": 0},
+                {"question": "Pick layout", "recommended_index": 0, "choices": [
                     {"description": "Loose layout"}, "Tight",
                 ]},
             ],
@@ -593,7 +600,7 @@ class TestClarifyBatchDispatch:
         result = json.loads(clarify_tool(
             "",
             questions=[
-                {"question": "One?", "choices": ["a", "b"]},
+                {"question": "One?", "choices": ["a", "b"], "recommended_index": 0},
                 {"question": "Two?"},
             ],
             callback=legacy_cb,

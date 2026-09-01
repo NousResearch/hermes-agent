@@ -979,6 +979,88 @@ class TestPreflightCompression:
         assert result["final_response"] == "Recovered after overflow"
         assert mock_compress.call_count == 2
 
+    def test_provider_overflow_rechecks_complete_request_before_retry(self, agent):
+        """Provider-proven overflow bypasses post-compaction estimate deferral.
+
+        The first recovery pass drops message rows but rebuilds a larger
+        request. The compressor then awaits real usage, so the old path sent
+        that oversized request back to llama.cpp, which may silently truncate
+        instead of returning another overflow error. Recovery must run another
+        bounded preflight pass first.
+        """
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 65_536
+        agent.context_compressor.threshold_tokens = 34_078
+
+        overflow = Exception(
+            "request (70000 tokens) exceeds the available context size "
+            "(65536 tokens)"
+        )
+        overflow.status_code = 400
+        recovered = _mock_response(
+            content="Recovered after complete-request recheck",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [overflow, recovered]
+
+        history = [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+        ]
+        pressure_readings = iter((30_000, 70_000, 28_000, 28_000))
+
+        def _request_pressure(*_args, **_kwargs):
+            return next(pressure_readings, 28_000)
+
+        compress_calls = 0
+
+        def _compress(_messages, *_args, **_kwargs):
+            nonlocal compress_calls
+            compress_calls += 1
+            if compress_calls == 1:
+                # Fewer rows, but a larger rebuilt system/tool-inclusive
+                # request. This used to be sent directly back to llama.cpp.
+                return (
+                    [
+                        {"role": "user", "content": "large summary"},
+                        {"role": "user", "content": "continue"},
+                    ],
+                    "larger rebuilt prompt",
+                )
+            return (
+                [{"role": "user", "content": "small summary"}],
+                "smaller rebuilt prompt",
+            )
+
+        with (
+            patch(
+                "agent.turn_context.estimate_request_tokens_rough",
+                return_value=30_000,
+            ),
+            patch(
+                "agent.conversation_loop._midturn_request_pressure_tokens",
+                side_effect=_request_pressure,
+            ),
+            patch.object(
+                agent.context_compressor,
+                "should_defer_preflight_to_real_usage",
+                return_value=True,
+            ),
+            patch.object(agent, "_compress_context", side_effect=_compress) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "continue",
+                conversation_history=history,
+            )
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after complete-request recheck"
+        assert mock_compress.call_count == 2
+        assert agent.client.chat.completions.create.call_count == 2
+
 
     def test_interrupt_before_first_provider_call_restores_preflight_display_seed(self, agent):
         """Interrupted turns must not keep a speculative preflight display seed.

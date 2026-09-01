@@ -1624,6 +1624,41 @@ def _compression_deferred_result(
     }
 
 
+def _provider_overflow_exhausted_result(
+    agent,
+    messages: List[Dict],
+    conversation_history,
+    api_call_count: int,
+    request_pressure_tokens: int,
+    max_compression_attempts: int,
+) -> Dict[str, Any]:
+    """Fail closed when a rebuilt request is still too large after recovery."""
+    agent._flush_status_buffer()
+    logger.error(
+        "%sContext compression failed after %d attempts; rebuilt request "
+        "remains over threshold at ~%s tokens.",
+        agent.log_prefix,
+        max_compression_attempts,
+        f"{request_pressure_tokens:,}",
+    )
+    agent._persist_session(messages, conversation_history)
+    final_response = (
+        "Context length exceeded: compression could not reduce the rebuilt "
+        "request below the safe threshold."
+    )
+    return {
+        "final_response": final_response,
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": final_response,
+        "partial": True,
+        "failed": True,
+        "compression_exhausted": True,
+        "turn_exit_reason": "context_compression_exhausted",
+    }
+
+
 def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
     """Rewrite a cache-decorated system message in place, keeping its blocks.
 
@@ -2142,6 +2177,13 @@ def run_conversation(
     max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
+    # A provider overflow is stronger evidence than the rough-estimate
+    # calibration that normally defers preflight immediately after compaction.
+    # Keep recovery armed until the rebuilt, complete request is below the
+    # configured compression threshold. Without this handoff, a compaction
+    # that drops rows but grows the actual prompt can be sent straight back to
+    # the provider while awaiting_real_usage_after_compression is true.
+    _provider_overflow_recovery_pending = False
     # Armed when a compression host-timeout terminates the turn (#98722,
     # salvaged from #98741); finalize below reuses the gateway's existing
     # context-recovery contract (error/partial/compression_exhausted).
@@ -2866,6 +2908,21 @@ def run_conversation(
         _preflight_threshold = int(
             getattr(_compressor, "threshold_tokens", 0) or 0
         )
+        _provider_overflow_preflight = (
+            _provider_overflow_recovery_pending
+            and (
+                _preflight_threshold <= 0
+                or request_pressure_tokens >= _preflight_threshold
+            )
+        )
+        if (
+            _provider_overflow_recovery_pending
+            and not _provider_overflow_preflight
+        ):
+            # The outer-loop rebuild includes the active system prompt,
+            # request-only injections, and tool schemas. Once that complete
+            # request has real output runway again, the provider may be tried.
+            _provider_overflow_recovery_pending = False
         # A previous mid-turn preflight pass deliberately continued the loop so
         # API-only context and all sanitization could be rebuilt. Compare that
         # fully assembled request with the fully assembled request that caused
@@ -2905,8 +2962,14 @@ def run_conversation(
             and not _review_fork_first_request_pending(agent)
             and len(messages) > 1
             and compression_attempts < max_compression_attempts
-            and not _preflight_compression_blocked
-            and not _defer_preflight(request_pressure_tokens)
+            and (
+                not _preflight_compression_blocked
+                or _provider_overflow_preflight
+            )
+            and (
+                not _defer_preflight(request_pressure_tokens)
+                or _provider_overflow_preflight
+            )
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
         ):
@@ -3073,6 +3136,34 @@ def run_conversation(
                     _turn_exit_reason = "compaction_handoff_not_actionable"
                     break
                 continue
+        elif _provider_overflow_preflight and _compression_cooldown:
+            # The provider already proved this request cannot fit, while the
+            # compressor is temporarily unavailable. Do not send the known-
+            # oversized request again; let the next user turn retry after the
+            # cooldown instead of turning this into compression exhaustion.
+            agent._persist_session(messages, conversation_history)
+            return _compression_deferred_result(
+                agent,
+                messages,
+                api_call_count,
+                reason="transient_block",
+            )
+        elif (
+            _provider_overflow_preflight
+            and compression_attempts >= max_compression_attempts
+        ):
+            # Every bounded recovery pass has been consumed and the rebuilt
+            # request is still over threshold. Fail closed before another
+            # provider call; llama.cpp can silently truncate an oversized
+            # retry instead of returning a second actionable overflow error.
+            return _provider_overflow_exhausted_result(
+                agent,
+                messages,
+                conversation_history,
+                api_call_count,
+                request_pressure_tokens,
+                max_compression_attempts,
+            )
         elif (
             agent.compression_enabled
             and len(messages) > 1
@@ -3126,6 +3217,20 @@ def run_conversation(
                 )
                 if callable(_warn_fn):
                     _warn_fn(request_pressure_tokens, _ctx_len)
+
+        if _provider_overflow_preflight:
+            # Any other gate that prevented the forced preflight (for example,
+            # an uncompressible one-message request) must also fail closed.
+            # Falling through would send a request that the provider already
+            # proved cannot fit.
+            return _provider_overflow_exhausted_result(
+                agent,
+                messages,
+                conversation_history,
+                api_call_count,
+                request_pressure_tokens,
+                max_compression_attempts,
+            )
 
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
@@ -6407,6 +6512,11 @@ def run_conversation(
                         elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
                             agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
                         time.sleep(2)  # Brief pause between compression retries
+                        # Rebuild the complete request before the next provider
+                        # call and force normal preflight to honor it. Message
+                        # count alone is not proof that system/tool-inclusive
+                        # token pressure fell.
+                        _provider_overflow_recovery_pending = True
                         _retry.restart_with_compressed_messages = True
                         break
                     else:

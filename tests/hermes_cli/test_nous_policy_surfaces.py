@@ -284,3 +284,26 @@ class TestAuxFallbackRespectsPolicy:
             aux._get_aux_model_for_provider("nous", prefer_fast=True)
             == "vendor/anything"
         )
+
+
+def test_titling_seeds_the_shared_catalog_entry_like_the_pickers(monkeypatch):
+    """The aux catalog read shares the pickers' cache entry, so seeding it
+    without the Nous-only arguments costs the picker its sale chrome and leaves
+    the policy catalog with no expiry."""
+    import agent.auxiliary_client as aux
+
+    monkeypatch.setattr(
+        models_mod, "_resolve_nous_pricing_credentials",
+        lambda: ("tok", "https://inference.example.com"),
+    )
+    seen: dict = {}
+
+    def _fake_fetch(**kwargs):
+        seen.update(kwargs)
+        return {"vendor/haiku": {}}
+
+    monkeypatch.setattr(models_mod, "fetch_models_with_pricing", _fake_fetch)
+    aux._fast_model_from_catalog("nous")
+
+    assert seen.get("include_sale_original") is True
+    assert seen.get("cache_ttl_seconds") == models_mod._NOUS_CATALOG_TTL_SECONDS

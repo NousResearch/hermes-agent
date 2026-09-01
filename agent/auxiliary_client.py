@@ -865,6 +865,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     network path — the underlying fetch is memory+disk cached with a
     last-known-good fallback.
     """
+    is_nous = provider_id.strip().lower() == "nous"
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
         from hermes_cli.models import fetch_models_with_pricing
@@ -884,7 +885,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
             # fetch below still works for the catalogs that allow it.
             logger.debug("No credentials for %s catalog", provider_id, exc_info=True)
 
-        if not api_key and provider_id.strip().lower() == "nous":
+        if not api_key and is_nous:
             # Nous is OAuth, so the resolver above raises for it. An anonymous
             # read returns the full catalog, and a model picked from it is
             # refused at request time by the org's policy.
@@ -903,15 +904,26 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         # fetch_models_with_pricing appends its own /v1/models.
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
+        # Same entry the pickers use, so the Nous-only arguments must match
+        # theirs: seeding it here without them costs the picker its sale chrome
+        # and leaves the policy catalog with no expiry.
+        _nous_kwargs = {}
+        if is_nous:
+            from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+
+            _nous_kwargs = {
+                "include_sale_original": True,
+                "cache_ttl_seconds": _NOUS_CATALOG_TTL_SECONDS,
+            }
         catalog = fetch_models_with_pricing(
-            api_key=api_key or None, base_url=base_url, timeout=3.0
+            api_key=api_key or None, base_url=base_url, timeout=3.0, **_nous_kwargs
         ) or {}
     except Exception:
         logger.debug("Fast-model catalog lookup failed for %s", provider_id, exc_info=True)
         return ""
 
     ids = sorted((str(m) for m in catalog), key=_model_recency_key, reverse=True)
-    if provider_id.strip().lower() == "nous":
+    if is_nous:
         # The catalog's keys are a source of ids here, so the policy narrows
         # them as it does the pickers' lists.
         try:

@@ -68,11 +68,24 @@
     return str;
   }
 
+  function fallbackPluralCategory(locale, count) {
+    const language = String(locale || "en").toLowerCase().split(/[-_]/)[0];
+    if (language === "ru") {
+      const n = Math.abs(Number(count) || 0);
+      const mod10 = n % 10;
+      const mod100 = n % 100;
+      if (mod10 === 1 && mod100 !== 11) return "one";
+      if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "few";
+      return "many";
+    }
+    return count === 1 ? "one" : "other";
+  }
+
   function formatTaskCount(t, locale, count) {
-    let category = count === 1 ? "one" : "other";
+    let category = fallbackPluralCategory(locale, count);
     try {
       category = new Intl.PluralRules(locale || "en").select(count);
-    } catch (_e) { /* keep simple English fallback */ }
+    } catch (_e) { /* keep locale-aware fallback */ }
     return tx(t, "taskCount." + category,
       `${count} task${count === 1 ? "" : "s"}`, { n: count });
   }
@@ -106,7 +119,7 @@
       if (delta < 86400) return rtf.format(-Math.floor(delta / 3600), "hour");
       return rtf.format(-Math.floor(delta / 86400), "day");
     } catch (_e) {
-      return timeAgo ? timeAgo(numericTs) : "";
+      return typeof timeAgo === "function" ? timeAgo(numericTs) : "";
     }
   }
 

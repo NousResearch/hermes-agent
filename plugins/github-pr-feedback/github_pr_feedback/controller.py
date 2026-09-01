@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from .github_client import MAX_FEEDBACK_BODY_CHARS, CheckState, Feedback
+from .github_client import (
+    MAX_FEEDBACK_BODY_CHARS,
+    CheckState,
+    Feedback,
+    GitHubClientError,
+)
 from .ledger import ClaimLease, FeedbackLedger, LedgerStateError, WorktreeSlotLease
 from .intent_review import classify_feedback, pending_intent_comment_ids
 from .policy import (
@@ -1191,6 +1196,8 @@ class ScanController:
                 return "agent_label_head_changed"
             if desired_label not in readback.labels:
                 return "agent_label_readback_failed"
+        except GitHubClientError:  # canonical GitHub failures remain retryable evidence.
+            return "agent_label_github_error"
         except Exception:  # noqa: BLE001 - a label write must fail closed.
             return "agent_label_error"
         return None

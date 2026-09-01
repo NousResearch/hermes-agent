@@ -40,21 +40,13 @@ def kanban_home(tmp_path, monkeypatch) -> Iterator[Path]:
 
 
 @pytest.fixture
-def conn(kanban_home) -> Iterator[sqlite3.Connection]:
+def conn(kanban_home, monkeypatch) -> Iterator[sqlite3.Connection]:
     from hermes_cli import kanban_db as kb
-    # Decompose child materialisation requires spawnable owners; tests use a
-    # stubbed canonical runtime (same pattern as test_pipeline_execution_integrity).
-    monkeypatch_spawnable()
+    # Decompose child materialisation requires spawnable owners; stub via
+    # pytest monkeypatch so it is ALWAYS restored (C9 — no global leak).
+    monkeypatch.setattr(kb, "_is_profile_spawnable", lambda _name: True)
     with kb.connect() as c:
         yield c
-
-
-def monkeypatch_spawnable():
-    from hermes_cli import kanban_db as kb
-    if not getattr(kb, "_spawnable_stub_active", False):
-        kb._is_profile_spawnable_orig = kb._is_profile_spawnable
-        kb._is_profile_spawnable = lambda _name: True
-        kb._spawnable_stub_active = True
 
 
 # ---------------------------------------------------------------------------

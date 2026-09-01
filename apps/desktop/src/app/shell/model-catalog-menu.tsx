@@ -99,6 +99,9 @@ interface ModelCatalogMenuProps {
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
+  /** Registry source owning this catalog. Profile/session names are not unique
+   * across sources, so this participates in the React Query cache key. */
+  ownerConnectionId?: string
   profile?: string
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
@@ -124,6 +127,7 @@ export function ModelCatalogMenu({
   footer,
   gateway,
   includeMoa = false,
+  ownerConnectionId,
   profile = 'default',
   request,
   sessionId = null
@@ -141,7 +145,7 @@ export function ModelCatalogMenu({
   const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).

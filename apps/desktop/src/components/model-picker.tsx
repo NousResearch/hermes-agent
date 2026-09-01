@@ -27,7 +27,9 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
+  ownerConnectionId?: string
   profile?: string
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
    * rung of the overlay ladder when it opens over another fixed overlay (the
@@ -45,7 +47,9 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  ownerConnectionId,
   profile = 'default',
+  request,
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -58,8 +62,8 @@ export function ModelPickerDialog({
   const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
-    queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
     enabled: open
   })
 

@@ -59,6 +59,27 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_list_json_includes_worker_execution_settings(kanban_home):
+    """JSON output must expose the settings that govern worker safety."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="local worker",
+            assignee="ci-static-fixer",
+            max_runtime_seconds=3600,
+            model_override="qwen3.5:4b",
+            provider_override="ollama-launch",
+            reasoning_effort="none",
+        )
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    task = payload["task"]
+    assert task["max_runtime_seconds"] == 3600
+    assert task["model_override"] == "qwen3.5:4b"
+    assert task["provider_override"] == "ollama-launch"
+    assert task["reasoning_effort"] == "none"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

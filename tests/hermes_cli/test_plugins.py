@@ -1490,6 +1490,63 @@ class TestResolvePreToolBlock:
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
 
+    def test_denial_notifies_post_tool_approval_resolution_with_exact_context(
+        self, monkeypatch
+    ):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        observed = []
+
+        def hooks(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [
+                    {
+                        "action": "approve",
+                        "message": "exact broker summary",
+                        "rule_key": "lewmer-cfo:operation-1:call-1",
+                        "allow_session": False,
+                        "allow_permanent": False,
+                    }
+                ]
+            observed.append((hook_name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hooks)
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *_args, **_kwargs: {
+                "approved": False,
+                "outcome": "denied",
+                "message": "BLOCKED: denied",
+            },
+        )
+
+        assert (
+            resolve_pre_tool_block(
+                "gmail_create_draft",
+                {"subject": "Generated"},
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="turn-1",
+            )
+            == "BLOCKED: denied"
+        )
+        assert observed == [
+            (
+                "post_tool_approval_resolution",
+                {
+                    "tool_name": "gmail_create_draft",
+                    "args": {"subject": "Generated"},
+                    "session_id": "session-1",
+                    "tool_call_id": "call-1",
+                    "turn_id": "turn-1",
+                    "approved": False,
+                    "decision": "denied",
+                    "rule_key": "lewmer-cfo:operation-1:call-1",
+                },
+            )
+        ]
+
 
 class TestPreToolCallModify:
     """Tests for the modify action — transforming tool args before dispatch."""

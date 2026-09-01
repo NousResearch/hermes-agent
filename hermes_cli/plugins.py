@@ -6949,6 +6949,7 @@ def resolve_pre_tool_block(
     return _resolve_block_from_details(
         details,
         tool_name,
+        args=args,
         turn_id=turn_id,
         tool_call_id=tool_call_id,
         session_id=session_id,
@@ -6959,6 +6960,7 @@ def _resolve_block_from_details(
     details: "_PreToolCallDirective",
     tool_name: str,
     *,
+    args: Optional[Dict[str, Any]] = None,
     turn_id: str = "",
     tool_call_id: str = "",
     session_id: str = "",
@@ -7012,9 +7014,36 @@ def _resolve_block_from_details(
                     except Exception:
                         pass
         except Exception:
+            invoke_hook(
+                "post_tool_approval_resolution",
+                tool_name=tool_name,
+                args=args if isinstance(args, dict) else {},
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                approved=False,
+                decision="gate_error",
+                rule_key=details.rule_key or tool_name,
+            )
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.
             return f"BLOCKED: plugin approval gate failed for {tool_name}"
+        if result.get("status") != "approval_required":
+            invoke_hook(
+                "post_tool_approval_resolution",
+                tool_name=tool_name,
+                args=args if isinstance(args, dict) else {},
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                approved=bool(result.get("approved")),
+                decision=str(
+                    result.get("approval_choice")
+                    or result.get("outcome")
+                    or ("approved" if result.get("approved") else "blocked")
+                ),
+                rule_key=details.rule_key or tool_name,
+            )
         if not result.get("approved"):
             return str(
                 result.get("message")
@@ -7064,6 +7093,7 @@ def _dispatch_pre_tool_call_hooks(
     block_msg = _resolve_block_from_details(
         details,
         tool_name,
+        args=args,
         turn_id=turn_id,
         tool_call_id=tool_call_id,
         session_id=session_id,

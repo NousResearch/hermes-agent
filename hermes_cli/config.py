@@ -2526,6 +2526,32 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Move '{key}' under the appropriate section",
             ))
 
+    # ── web backends that no longer ship in-tree ─────────────────────────
+    # A stale selection (e.g. web.backend: tavily after the #99199 removal)
+    # otherwise fails only at the first web_search/web_extract call, with a
+    # generic "no registered provider" error. Warn at startup instead.
+    web_cfg = config.get("web")
+    if isinstance(web_cfg, dict):
+        try:
+            from tools.tool_backend_helpers import removed_backend_note
+        except Exception:
+            removed_backend_note = None
+        if removed_backend_note is not None:
+            seen: set = set()
+            for _key in ("backend", "search_backend", "extract_backend"):
+                _val = str(web_cfg.get(_key) or "").strip().lower()
+                if not _val or _val in seen:
+                    continue
+                seen.add(_val)
+                note = removed_backend_note("web", _val)
+                if note:
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"web.{_key} is set to '{_val}', but {note} — "
+                        "web_search/web_extract will fail until it is changed",
+                        "Run 'hermes tools' and pick a different Web Search & Extract provider",
+                    ))
+
     return issues
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from enum import Enum
@@ -115,3 +116,72 @@ def raise_known_mutation(
         f"surface={surface} before={before.safe_summary()} "
         f"failure={failure_point.value} after={after.safe_summary()}"
     )
+
+
+@dataclass(frozen=True)
+class _DumpableOAuthRecord:
+    payload: dict
+
+    def model_dump(self, **_kwargs) -> dict:
+        return dict(self.payload)
+
+
+class FakeOAuthMCPPeer:
+    def __init__(self, failure_point: OAuthFailurePoint | None):
+        self.failure_point = failure_point
+        self.completed_events: list[str] = []
+        self.connect_timeouts: list[float | None] = []
+        self._new_token = _DumpableOAuthRecord(
+            {
+                "access_token": "NEW_ACCESS_TOKEN_FOR_TEST_ONLY",
+                "refresh_token": "NEW_REFRESH_TOKEN_FOR_TEST_ONLY",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            }
+        )
+
+    def _complete(self, point: OAuthFailurePoint, storage: HermesTokenStorage) -> None:
+        if point is OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY:
+            storage.save_oauth_metadata(
+                _DumpableOAuthRecord(
+                    {
+                        "issuer": "https://partial-auth.invalid",
+                        "authorization_endpoint": "https://partial-auth.invalid/authorize",
+                        "token_endpoint": "https://partial-auth.invalid/token",
+                        "marker": "PARTIAL_METADATA_FOR_TEST_ONLY",
+                    }
+                )
+            )
+        elif point is OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION:
+            asyncio.run(
+                storage.set_client_info(
+                    _DumpableOAuthRecord(
+                        {
+                            "client_id": "PARTIAL_CLIENT_ID_FOR_TEST_ONLY",
+                            "client_secret": "PARTIAL_CLIENT_SECRET_FOR_TEST_ONLY",
+                            "redirect_uris": ["http://127.0.0.1:43112/callback"],
+                            "token_endpoint_auth_method": "client_secret_post",
+                        }
+                    )
+                )
+            )
+        elif point is OAuthFailurePoint.TOKEN_PERSISTENCE:
+            asyncio.run(storage.set_tokens(self._new_token))
+        self.completed_events.append(point.value)
+
+    def probe(
+        self,
+        server_name: str,
+        config: dict,
+        connect_timeout: float | None = None,
+        *,
+        details: dict | None = None,
+    ) -> list[tuple[str, str]]:
+        del config, details
+        self.connect_timeouts.append(connect_timeout)
+        storage = HermesTokenStorage(server_name)
+        for point in OAuthFailurePoint:
+            self._complete(point, storage)
+            if point is self.failure_point:
+                raise InjectedOAuthFailure(point, tuple(self.completed_events))
+        return [("fake_tool", "Deterministic fake MCP tool")]

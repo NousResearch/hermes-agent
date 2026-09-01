@@ -10,6 +10,7 @@ from tests.fakes.mcp_oauth_peer import (
     raise_known_mutation,
     seed_old_oauth_state,
 )
+from tests.fakes.mcp_oauth_peer import FakeOAuthMCPPeer, InjectedOAuthFailure
 
 
 def test_seed_and_capture_old_oauth_state_round_trip(tmp_path, monkeypatch):
@@ -90,3 +91,35 @@ def test_raise_known_mutation_types_the_exact_known_bug():
             surface="dashboard",
             failure_point=OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION,
         )
+
+
+@pytest.mark.parametrize("failure_point", list(OAuthFailurePoint))
+def test_fake_peer_fails_after_exact_requested_event(tmp_path, monkeypatch, failure_point):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    peer = FakeOAuthMCPPeer(failure_point)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"}, connect_timeout=315)
+    assert caught.value.point is failure_point
+    assert peer.completed_events[-1] == failure_point.value
+    assert peer.connect_timeouts == [315]
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "expected_labels"),
+    [
+        (OAuthFailurePoint.PROTECTED_RESOURCE_DISCOVERY, ("MISSING", "MISSING", "MISSING")),
+        (OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY, ("MISSING", "MISSING", "PARTIAL")),
+        (OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION, ("MISSING", "PARTIAL", "PARTIAL")),
+        (OAuthFailurePoint.AUTHORIZATION_URL_PUBLICATION, ("MISSING", "PARTIAL", "PARTIAL")),
+        (OAuthFailurePoint.CALLBACK_RECEIPT, ("MISSING", "PARTIAL", "PARTIAL")),
+        (OAuthFailurePoint.TOKEN_EXCHANGE, ("MISSING", "PARTIAL", "PARTIAL")),
+        (OAuthFailurePoint.TOKEN_PERSISTENCE, ("NEW", "PARTIAL", "PARTIAL")),
+        (OAuthFailurePoint.MCP_INITIALIZATION, ("NEW", "PARTIAL", "PARTIAL")),
+    ],
+)
+def test_fake_peer_persists_only_completed_stage_effects(tmp_path, monkeypatch, failure_point, expected_labels):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    peer = FakeOAuthMCPPeer(failure_point)
+    with pytest.raises(InjectedOAuthFailure):
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert capture_oauth_state(tmp_path, "reports").labels() == expected_labels

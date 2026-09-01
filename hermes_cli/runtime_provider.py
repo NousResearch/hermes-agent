@@ -849,6 +849,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
+                        "provider_key": str(ep_name).strip(),
                     }
                     provider_key = str(ep_name or "").strip()
                     if provider_key:
@@ -1379,6 +1380,18 @@ def _resolve_named_custom_runtime(
         _host_derived_api_key(base_url),
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+    provider_key = str(custom_provider.get("provider_key", "") or "").strip().lower()
+    runtime_provider = "custom"
+    if provider_key:
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(provider_key)
+            if profile is not None and not profile.base_url:
+                runtime_provider = profile.name
+        except Exception:
+            pass
+
 
     # A ``key_cmd`` credential is minted per request rather than resolved once:
     # gateways that issue short-lived bearers would otherwise go stale
@@ -1397,7 +1410,7 @@ def _resolve_named_custom_runtime(
             api_key = token_provider
 
     result = {
-        "provider": "custom",
+        "provider": runtime_provider,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

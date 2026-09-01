@@ -1,0 +1,4 @@
+name: cliproxyapi
+kind: model-provider
+version: 1.0.0
+description: CLIProxyAPI local OpenAI-compatible proxy provider profile

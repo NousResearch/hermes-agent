@@ -821,12 +821,42 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "ollama.com": "ollama-cloud",
 }
 
+def _is_ambiguous_local_provider_host(host: str) -> bool:
+    """Whether host-only provider inference would alias unrelated local proxies."""
+    normalized = (host or "").strip().lower().strip("[]")
+    if not normalized:
+        return True
+    if normalized in {
+        "localhost",
+        "host.docker.internal",
+        "gateway.docker.internal",
+        "docker.for.mac.localhost",
+        "docker.for.win.localhost",
+    }:
+        return True
+    try:
+        ip = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return bool(
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_unspecified
+        or ip in _TAILSCALE_CGNAT
+    )
+
+
 # Auto-extend with hostnames derived from provider profiles.
 # Any provider with a base_url not already in the map gets added automatically.
 try:
     for _pp in _list_providers():
         _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
+        if (
+            _host
+            and _host not in _URL_TO_PROVIDER
+            and not _is_ambiguous_local_provider_host(_host)
+        ):
             _URL_TO_PROVIDER[_host] = _pp.name
 except Exception:
     pass
@@ -844,6 +874,9 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
         return None
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
     host = parsed.netloc.lower() or parsed.path.lower()
+    host_only = (parsed.hostname or host.split(":", 1)[0]).lower()
+    if _is_ambiguous_local_provider_host(host_only):
+        return None
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part in host:
             return provider

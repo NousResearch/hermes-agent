@@ -658,6 +658,31 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["capabilities"] == {"openai_native_compaction": True}
     assert resolved["source"] == "custom_provider:Local"
 
+def test_named_cliproxyapi_provider_preserves_first_class_runtime(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "cliproxyapi": {
+                    "name": "CLIProxyAPI",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key": "local-proxy-key",
+                    "default_model": "gpt-5.5",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="cliproxyapi")
+
+    assert resolved["provider"] == "cliproxyapi"
+    assert resolved["base_url"] == "http://127.0.0.1:8317/v1"
+    assert resolved["model"] == "gpt-5.5"
+
+
 
 def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):
     monkeypatch.setattr(

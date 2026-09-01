@@ -111,7 +111,11 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
-import { getDashboardSidebarMode } from "@/lib/dashboard-shell";
+import {
+  getDashboardHomePath,
+  getDashboardSidebarMode,
+  shouldRenderMobileNavigationHeader,
+} from "@/lib/dashboard-shell";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -131,7 +135,7 @@ function RouteFallback({ label = "Loading…" }: { label?: string }) {
 }
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to={getDashboardHomePath(isDashboardEmbeddedChatEnabled())} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -413,6 +417,7 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const showMobileNavigationHeader = shouldRenderMobileNavigationHeader(pathname, isMobile);
   const sidebarMode = getDashboardSidebarMode(
     pathname,
     isMobile,
@@ -553,35 +558,37 @@ export default function App() {
         <PluginSlot name="backdrop" />
       </div>
 
-      <header
-        className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-          "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base",
-        )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
-      >
-        <Button
-          ghost
-          size="icon"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
-          aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+      {showMobileNavigationHeader && (
+        <header
+          className={cn(
+            "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+            "flex items-center gap-2 px-4 py-2",
+            "border-b border-current/20",
+            "bg-background-base",
+          )}
+          style={{
+            background: "var(--component-header-background)",
+            borderImage: "var(--component-header-border-image)",
+            clipPath: "var(--component-header-clip-path)",
+          }}
         >
-          <Menu />
-        </Button>
+          <Button
+            ghost
+            size="icon"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t.app.openNavigation}
+            aria-expanded={mobileOpen}
+            aria-controls="app-sidebar"
+            className="text-text-secondary hover:text-midground"
+          >
+            <Menu />
+          </Button>
 
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          {t.app.brand}
-        </Typography>
-      </header>
+          <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+            {t.app.brand}
+          </Typography>
+        </header>
+      )}
 
       {mobileOpen && (
         <Button
@@ -599,7 +606,9 @@ export default function App() {
           fixed lg:hidden header is h-14/z-40; previously each banner carried
           its own mt-14 AND the content kept pt-14, so two visible banners
           stacked three offsets (NS-656 review P3). One spacer, applied once. */}
-      <div aria-hidden className="h-14 shrink-0 lg:hidden" />
+      {showMobileNavigationHeader && (
+        <div aria-hidden className="h-14 shrink-0 lg:hidden" />
+      )}
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
@@ -844,7 +853,7 @@ export default function App() {
                         {useLegacyChat ? (
                           <LegacyChatPage isActive={isChatRoute} />
                         ) : (
-                          <NativeChatPage />
+                          <NativeChatPage onOpenNavigation={() => setMobileOpen(true)} />
                         )}
                       </Suspense>
                     </div>

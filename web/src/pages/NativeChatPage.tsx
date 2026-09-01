@@ -10,15 +10,18 @@ import {
 } from "react";
 import { GatewayClient, type ConnectionState, type GatewayEvent } from "@/lib/gatewayClient";
 import { useProfileScope } from "@/contexts/useProfileScope";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ChatSessionList, type SessionActivityStatus } from "@/components/ChatSessionList";
+import { SlashPopover, type SlashPopoverHandle } from "@/components/SlashPopover";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
+import { MessageActions } from "@/components/chat/MessageActions";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
+import { ArrowDown, Menu, MessageSquare, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import {
   nativeChatModelChoices,
@@ -104,6 +107,16 @@ type FailedPrompt = { id: string; text: string };
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
+// Native-chat-specific copy is kept local because the existing web i18n
+// contract does not have a chat namespace yet. Keep this list short until
+// those keys can be added for every locale together.
+const QUICK_PROMPTS = [
+  "Summarize this text",
+  "Explain a concept simply",
+  "Draft an email",
+  "Plan my next steps",
+] as const;
+
 function fileDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -137,8 +150,14 @@ function connectionLabel(state: ConnectionState): string {
   return state === "open" ? "Connected" : state[0].toUpperCase() + state.slice(1);
 }
 
-export default function NativeChatPage() {
+interface NativeChatPageProps {
+  /** Open the shell navigation drawer on compact/mobile layouts. */
+  onOpenNavigation?: () => void;
+}
+
+export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps) {
   const { profile } = useProfileScope();
+  const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const resumeParam = searchParams.get("resume");
   const routeModel = searchParams.get("model");
@@ -181,7 +200,11 @@ export default function NativeChatPage() {
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const slashPopoverRef = useRef<SlashPopoverHandle>(null);
   const followTranscriptRef = useRef(true);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [mobileSessionNavigatorOpen, setMobileSessionNavigatorOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const seenSeqRef = useRef(new Map<string, number>());
   const reconnectingRef = useRef(false);
@@ -200,7 +223,17 @@ export default function NativeChatPage() {
     const element = transcriptRef.current;
     if (!element) return;
     const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    followTranscriptRef.current = shouldFollowTranscript(distanceFromBottom);
+    const shouldFollow = shouldFollowTranscript(distanceFromBottom);
+    followTranscriptRef.current = shouldFollow;
+    setShowScrollToBottom(!shouldFollow);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const element = transcriptRef.current;
+    if (!element) return;
+    followTranscriptRef.current = true;
+    element.scrollTop = element.scrollHeight;
+    setShowScrollToBottom(false);
   }, []);
 
   const updateAttachments = useCallback((next: PendingAttachment[] | ((current: PendingAttachment[]) => PendingAttachment[])) => {
@@ -345,6 +378,8 @@ export default function NativeChatPage() {
 
       setTurnStartedAt(null);
       setStreaming(false);
+      followTranscriptRef.current = true;
+      setShowScrollToBottom(false);
       updateAttachments([]);
       seenSeqRef.current.clear();
       messageSequenceRef.current = 0;
@@ -471,12 +506,27 @@ export default function NativeChatPage() {
     }
   }, [connectionState, draft, failedPrompt?.id, gateway, sessionId, updateAttachments]);
 
-  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const applyMessageAsPrompt = useCallback((message: string) => {
+    setDraft(message);
+    const textarea = textareaRef.current;
+    if (textarea && !textarea.disabled) {
+      textarea.focus();
+      textarea.setSelectionRange(message.length, message.length);
+    }
+  }, []);
+
+  const applyQuickPrompt = useCallback((prompt: string) => {
+    setDraft(prompt);
+    textareaRef.current?.focus();
+  }, []);
+
+  const onComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashPopoverRef.current?.handleKey(event)) return;
     if (shouldSubmitComposerKey(event.key, event.shiftKey, composingRef.current || event.nativeEvent.isComposing)) {
       event.preventDefault();
       void submit();
     }
-  };
+  }, [submit]);
 
   const stop = useCallback(async () => {
     if (!sessionId || !streaming || connectionState !== "open" || stopInFlightRef.current) return;
@@ -559,9 +609,36 @@ export default function NativeChatPage() {
         data-slot="chat-header"
         className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-current/15 py-3"
       >
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold">Chat</h1>
-          <p className="text-sm text-text-secondary">Native gateway chat</p>
+        <div className="flex min-w-0 items-center gap-1">
+          {onOpenNavigation && (
+            <Button
+              ghost
+              size="icon"
+              type="button"
+              className="shrink-0 lg:hidden"
+              aria-label={t.app.openNavigation}
+              onClick={onOpenNavigation}
+            >
+              <Menu />
+            </Button>
+          )}
+          <Button
+            ghost
+            size="icon"
+            type="button"
+            className="shrink-0 lg:hidden"
+            aria-label={t.sessions.title}
+            aria-expanded={mobileSessionNavigatorOpen}
+            aria-controls="native-chat-session-navigator"
+            data-session-navigator-toggle
+            onClick={() => setMobileSessionNavigatorOpen((open) => !open)}
+          >
+            <MessageSquare />
+          </Button>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold">Chat</h1>
+            <p className="truncate text-sm text-text-secondary">Native gateway chat</p>
+          </div>
         </div>
         <div
           data-slot="chat-routing-controls"
@@ -643,17 +720,29 @@ export default function NativeChatPage() {
 
       <div
         data-slot="chat-body"
-        className="grid min-h-0 flex-1 grid-rows-[minmax(9rem,12rem)_minmax(0,1fr)] lg:grid-cols-[16rem_minmax(0,1fr)] lg:grid-rows-1"
+        className={cn(
+          "grid min-h-0 flex-1",
+          mobileSessionNavigatorOpen
+            ? "grid-rows-[minmax(9rem,12rem)_minmax(0,1fr)]"
+            : "grid-rows-[minmax(0,1fr)]",
+          "lg:grid-cols-[16rem_minmax(0,1fr)] lg:grid-rows-1",
+        )}
       >
         <aside
+          id="native-chat-session-navigator"
           data-slot="session-navigator"
+          data-mobile-open={mobileSessionNavigatorOpen ? "true" : "false"}
           role="complementary"
-          aria-label="Chat sessions"
-          className="min-h-0 min-w-0 overflow-hidden border-b border-current/15 pt-3 pb-3 lg:border-r lg:border-b-0 lg:pt-4 lg:pr-4 lg:pb-0"
+          aria-label={t.sessions.title}
+          className={cn(
+            "min-h-0 min-w-0 overflow-hidden border-b border-current/15 pt-3 pb-3 lg:border-r lg:border-b-0 lg:pt-4 lg:pr-4 lg:pb-0",
+            !mobileSessionNavigatorOpen && "hidden lg:block",
+          )}
         >
           <ChatSessionList
             activeSessionId={resumeParam}
             profile={profile ?? undefined}
+            onPicked={() => setMobileSessionNavigatorOpen(false)}
             onNewChat={startNewChat}
             sessionStatuses={sessionStatuses}
           />
@@ -663,7 +752,7 @@ export default function NativeChatPage() {
           data-slot="transcript-pane"
           role="region"
           aria-label="Conversation transcript"
-          className="flex min-h-0 min-w-0 flex-col lg:pl-4"
+          className="relative flex min-h-0 min-w-0 flex-col lg:pl-4"
         >
           <div
             ref={transcriptRef}
@@ -676,9 +765,25 @@ export default function NativeChatPage() {
             {approval && <ApprovalCard request={approval} onRespond={respondApproval} />}
             {clarify && <ClarificationCard request={clarify} onRespond={respondClarify} />}
             {transcript.length === 0 && !approval && !clarify && (
-              <p data-slot="chat-empty-state" className="text-sm text-text-secondary">
-                Start a conversation.
-              </p>
+              <div data-slot="chat-empty-state" className="max-w-2xl space-y-3 py-8 text-sm text-text-secondary">
+                <p>Start a conversation.</p>
+                <div className="space-y-2" role="group" aria-label="Quick prompts">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Try a prompt</p>
+                  <div className="flex flex-wrap gap-2">
+                    {QUICK_PROMPTS.map((prompt) => (
+                      <button
+                        key={prompt}
+                        data-testid="quick-prompt"
+                        type="button"
+                        className="rounded-md border border-border bg-card px-3 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                        onClick={() => applyQuickPrompt(prompt)}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
             {transcript.map((message) => (
               <Fragment key={message.id}>
@@ -711,6 +816,13 @@ export default function NativeChatPage() {
                   {message.role === "assistant"
                     ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} />
                     : message.text}
+                  {message.text && (
+                    <MessageActions
+                      message={message.text}
+                      messageRole={message.role}
+                      onUseAsPrompt={applyMessageAsPrompt}
+                    />
+                  )}
                 </article>
                 {message.id === lastAssistantId && tools.length > 0 && (
                   <div
@@ -736,6 +848,21 @@ export default function NativeChatPage() {
             )}
           </div>
 
+          {showScrollToBottom && (
+            <Button
+              ghost
+              size="sm"
+              type="button"
+              prefix={<ArrowDown />}
+              data-testid="scroll-to-bottom"
+              aria-label="Scroll to latest message"
+              className="absolute right-2 bottom-14 z-10 border border-border bg-card shadow-md"
+              onClick={scrollToBottom}
+            >
+              Jump to latest
+            </Button>
+          )}
+
           <div
             data-slot="chat-status"
             role="status"
@@ -753,7 +880,8 @@ export default function NativeChatPage() {
       <form
         data-slot="chat-composer"
         aria-label="Message composer"
-        className="flex shrink-0 flex-col gap-2 border-t border-current/15 pt-3"
+        aria-busy={submitting}
+        className="flex shrink-0 flex-col gap-2 border-t border-current/15 bg-background/30 pt-3"
         onSubmit={submit}
         onDragOver={(event) => { event.preventDefault(); }}
         onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}
@@ -761,8 +889,9 @@ export default function NativeChatPage() {
         {attachments.length > 0 && (
           <div
             data-slot="attachment-list"
-            className="flex flex-wrap gap-2"
+            className="flex flex-wrap gap-2 rounded-md border border-border bg-muted/20 p-2"
             aria-label="Pending attachments"
+            aria-live="polite"
           >
             {attachments.map((item) => (
               <div
@@ -800,7 +929,7 @@ export default function NativeChatPage() {
             ))}
           </div>
         )}
-        <div data-slot="composer-controls" className="flex min-w-0 items-end gap-2">
+        <div data-slot="composer-controls" className="flex min-w-0 flex-wrap items-end gap-2 rounded-md border border-border bg-card/50 p-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -808,53 +937,81 @@ export default function NativeChatPage() {
             className="hidden"
             onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }}
           />
-          <Button
-            ghost
-            size="icon"
-            type="button"
-            aria-label="Add attachment"
-            className="shrink-0"
-            disabled={connectionState !== "open" || !sessionId}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip />
-          </Button>
-          <textarea
-            aria-label="Message"
-            className="min-h-20 min-w-0 flex-1 resize-y border border-midground/15 bg-background/40 px-3 py-2 font-courier text-sm text-midground outline-none placeholder:text-text-secondary focus-visible:border-midground/30 focus-visible:ring-1 focus-visible:ring-midground/30"
-            value={draft}
-            disabled={connectionState !== "open" || !sessionId}
-            placeholder="Message Hermes… (drop or paste files)"
-            onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } }}
-            onChange={(event) => setDraft(event.target.value)}
-            onCompositionStart={() => { composingRef.current = true; }}
-            onCompositionEnd={() => { composingRef.current = false; }}
-            onKeyDown={onComposerKeyDown}
-          />
-          <Button
-            type="submit"
-            size="sm"
-            prefix={<Send />}
-            className="shrink-0"
-            disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId}
-          >
-            {submitting ? "Sending…" : "Send"}
-          </Button>
-          {streaming && (
+          <div className="flex min-w-0 basis-full items-end gap-2 sm:basis-0 sm:flex-1">
             <Button
-              destructive
-              outlined
+              ghost
+              size="icon"
               type="button"
-              size="sm"
-              prefix={<Square />}
-              aria-label="Stop"
+              aria-label="Add attachment"
               className="shrink-0"
-              disabled={stopping || connectionState !== "open"}
-              onClick={() => void stop()}
+              disabled={connectionState !== "open" || !sessionId}
+              onClick={() => fileInputRef.current?.click()}
             >
-              {stopping ? "Stopping…" : "Stop"}
+              <Paperclip />
             </Button>
-          )}
+            <div className="relative min-w-0 flex-1">
+              <SlashPopover
+                ref={slashPopoverRef}
+                input={draft}
+                gw={gateway}
+                onApply={setDraft}
+              />
+              <textarea
+                ref={textareaRef}
+                aria-label="Message"
+                aria-describedby="native-chat-composer-hint"
+                className="min-h-20 w-full resize-y border border-border bg-background/40 px-3 py-2 font-courier text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40"
+                value={draft}
+                disabled={connectionState !== "open" || !sessionId}
+                placeholder="Message Hermes… (drop or paste files)"
+                onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } }}
+                onChange={(event) => setDraft(event.target.value)}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; }}
+                onKeyDown={onComposerKeyDown}
+              />
+            </div>
+          </div>
+          <div data-slot="composer-actions" className="ml-auto flex shrink-0 items-center gap-2">
+            <Button
+              type="submit"
+              size="sm"
+              prefix={<Send />}
+              aria-label="Send message"
+              className="shrink-0"
+              disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId}
+            >
+              {submitting ? "Sending…" : "Send"}
+            </Button>
+            {streaming && (
+              <Button
+                destructive
+                outlined
+                type="button"
+                size="sm"
+                prefix={<Square />}
+                aria-label="Stop"
+                className="shrink-0"
+                disabled={stopping || connectionState !== "open"}
+                onClick={() => void stop()}
+              >
+                {stopping ? "Stopping…" : "Stop"}
+              </Button>
+            )}
+          </div>
+        </div>
+        <div data-slot="composer-meta" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
+          <span id="native-chat-composer-hint" data-slot="composer-attachment-hint" className="inline-flex items-center gap-1.5">
+            <Paperclip aria-hidden className="h-3.5 w-3.5" />
+            Drop files or paste to attach
+          </span>
+          <span data-slot="composer-status" role="status" aria-live="polite">
+            {submitting
+              ? "Sending…"
+              : connectionState !== "open"
+                ? "Waiting for connection…"
+                : status ?? (streaming ? "Working…" : "Ready")}
+          </span>
         </div>
       </form>
     </section>

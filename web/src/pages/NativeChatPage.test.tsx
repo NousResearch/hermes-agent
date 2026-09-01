@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const gateway = vi.hoisted(() => {
   class MockGateway {
     stateHandler: ((state: string) => void) | null = null;
@@ -27,6 +29,7 @@ const gateway = vi.hoisted(() => {
       if (method === "prompt.submit" && params.text === "failed prompt" && this.requests.filter(({ method: requestMethod, params: requestParams }) => requestMethod === "prompt.submit" && requestParams.text === "failed prompt").length === 1) throw new Error("submit failed");
       if (method === "session.interrupt" && this.interrupt) await this.interrupt;
       if (method === "session.activate" || method === "session.resume") return { session_id: "runtime-1", messages: [{ id: 7, role: "user", text: "previous prompt" }, { id: 8, role: "assistant", content: "previous answer" }], ...this.snapshot } as T;
+      if (method === "complete.slash") return { items: [{ display: "/help", text: "/help" }], replace_from: 0 } as T;
       if (method === "model.options") return { providers: [{ slug: "openai-codex", models: ["gpt-5.6-luna", "gpt-5.6-sol"] }, { slug: "openrouter", models: ["minimax/minimax-m3:free"] }] } as T;
       return (method === "session.create" ? { session_id: "session-1" } : { status: "streaming" }) as T;
     }
@@ -47,6 +50,14 @@ vi.mock("@/lib/gatewayClient", () => ({
   },
 }));
 vi.mock("@/contexts/useProfileScope", () => ({ useProfileScope: () => ({ profile: "thai-profile" }) }));
+vi.mock("@/i18n", () => ({
+  useI18n: () => ({
+    t: {
+      app: { openNavigation: "Open navigation" },
+      sessions: { title: "Sessions" },
+    },
+  }),
+}));
 vi.mock("@/components/ChatSessionList", () => ({
   ChatSessionList: ({ onNewChat }: { onNewChat?: () => void }) => createElement("aside", { "data-testid": "session-list" },
     createElement("button", { type: "button", onClick: () => window.history.pushState({}, "", "/chat?resume=durable-2") }, "Existing session"),
@@ -72,6 +83,30 @@ describe("NativeChatPage", () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+  });
+
+  it("keeps one native header and moves navigation controls into it", async () => {
+    const onOpenNavigation = vi.fn();
+    await act(async () => root.render(createElement(MemoryRouter, null,
+      createElement(NativeChatPage, { onOpenNavigation }),
+    )));
+
+    expect(host.querySelectorAll("[data-slot='chat-header']")).toHaveLength(1);
+    const openNavigation = host.querySelector<HTMLButtonElement>("button[aria-label='Open navigation']");
+    expect(openNavigation).toBeTruthy();
+    await act(async () => openNavigation?.click());
+    expect(onOpenNavigation).toHaveBeenCalledTimes(1);
+
+    const sessionsToggle = host.querySelector<HTMLButtonElement>("[data-session-navigator-toggle]");
+    const navigator = host.querySelector<HTMLElement>("#native-chat-session-navigator");
+    expect(sessionsToggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(navigator?.getAttribute("data-mobile-open")).toBe("false");
+    expect(navigator?.classList.contains("hidden")).toBe(true);
+
+    await act(async () => sessionsToggle?.click());
+    expect(sessionsToggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(navigator?.getAttribute("data-mobile-open")).toBe("true");
+    expect(navigator?.classList.contains("hidden")).toBe(false);
   });
 
   it("keeps Enter inside Thai IME composition and submits only after composition ends", () => {
@@ -112,6 +147,60 @@ describe("NativeChatPage", () => {
     });
     expect(gateway.instance?.requests.filter(({ method }) => method === "prompt.submit")).toHaveLength(1);
     expect(gateway.instance?.requests.find(({ method }) => method === "prompt.submit")?.params.text).toBe(thaiComposed);
+  });
+
+  it("routes slash navigation only while the completion popover is visible", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(textarea, "/");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const beforePopover = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowDown" });
+    textarea.dispatchEvent(beforePopover);
+    expect(beforePopover.defaultPrevented).toBe(false);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(host.querySelector("[role='listbox']")).toBeTruthy();
+
+    const whileVisible = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowDown" });
+    textarea.dispatchEvent(whileVisible);
+    expect(whileVisible.defaultPrevented).toBe(true);
+
+    const tab = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" });
+    await act(async () => textarea.dispatchEvent(tab));
+    expect(tab.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe("/help");
+
+    const shiftedEnter = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", shiftKey: true });
+    textarea.dispatchEvent(shiftedEnter);
+    expect(shiftedEnter.defaultPrevented).toBe(false);
+    expect(gateway.instance?.requests.filter(({ method }) => method === "prompt.submit")).toHaveLength(0);
+  });
+
+  it("fills the native draft from an empty-state quick prompt", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const quickPrompt = host.querySelector<HTMLButtonElement>("[data-testid='quick-prompt']");
+    expect(quickPrompt).toBeTruthy();
+    const prompt = quickPrompt?.textContent ?? "";
+    await act(async () => quickPrompt?.click());
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(prompt);
+  });
+
+  it("puts an assistant message into the native draft from Use as prompt", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => {
+      gateway.instance?.emit("message.start");
+      gateway.instance?.emit("message.delta", { text: "Use this answer" });
+      gateway.instance?.emit("message.complete");
+    });
+    const useAsPrompt = host.querySelector<HTMLButtonElement>("button[aria-label='Use assistant message as prompt']");
+    expect(useAsPrompt).toBeTruthy();
+    await act(async () => useAsPrompt?.click());
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Use this answer");
+    expect(host.querySelector("[data-testid='message-action-feedback']")?.textContent).toContain("Draft filled");
   });
 
   it("preserves exact pasted Thai Unicode in the submitted prompt", async () => {
@@ -366,6 +455,21 @@ describe("NativeChatPage", () => {
     expect(shouldFollowTranscript(0)).toBe(true);
     expect(shouldFollowTranscript(96)).toBe(true);
     expect(shouldFollowTranscript(97)).toBe(false);
+  });
+
+  it("shows a scroll-to-bottom affordance after the reader moves away from the latest message", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const transcript = host.querySelector<HTMLDivElement>("[data-testid='native-chat-transcript']")!;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 100 });
+    transcript.scrollTop = 0;
+    await act(async () => transcript.dispatchEvent(new Event("scroll", { bubbles: true })));
+    const scrollButton = host.querySelector<HTMLButtonElement>("button[aria-label='Scroll to latest message']");
+    expect(scrollButton).toBeTruthy();
+
+    await act(async () => scrollButton?.click());
+    expect(transcript.scrollTop).toBe(1000);
+    expect(host.querySelector("button[aria-label='Scroll to latest message']")).toBeNull();
   });
 
   it("resumes the durable URL session and displays its transcript snapshot", async () => {

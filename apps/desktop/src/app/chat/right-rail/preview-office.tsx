@@ -220,7 +220,11 @@ function renderDocumentBlocks(blocks: OfficeBlock[]) {
           style={{ listStyleType: kind === 'number' ? 'decimal' : 'disc' }}
         >
           {items.map((item, itemIndex) => (
-            <li key={itemIndex} style={{ marginBottom: 4, textAlign: item.align }}>
+            <li
+              dir={item.dir}
+              key={itemIndex}
+              style={{ direction: item.dir, marginBottom: 4, textAlign: item.align }}
+            >
               {item.runs.map((run, runIndex) => (
                 <OfficeRun key={runIndex} run={run} />
               ))}
@@ -266,7 +270,9 @@ function OfficeBlockView({ block }: { block: OfficeBlock }) {
 
   return (
     <Tag
+      dir={block.dir}
       style={{
+        direction: block.dir,
         fontFamily: block.heading ? OFFICE_HEADING_STACK : undefined,
         fontSize: headingSize,
         fontWeight: block.heading ? 700 : undefined,
@@ -288,13 +294,26 @@ function cssFont(name: string | undefined): string | undefined {
     return undefined
   }
 
-  const safe = name.replace(/[^\w\s-]/g, '').trim()
+  const families = name
+    .split(',')
+    .map(cssFontFamily)
+    .filter((family): family is string => Boolean(family))
 
-  if (!safe) {
+  if (!families.length) {
     return undefined
   }
 
-  return `"${safe}", ${OFFICE_CALIBRI_STACK}`
+  return `${families.join(', ')}, ${OFFICE_CALIBRI_STACK}`
+}
+
+function cssFontFamily(name: string): string | undefined {
+  const safe = name.replace(/["';{}\\]/g, '').replace(/\s+/g, ' ').trim()
+
+  if (!safe || /[:()]/.test(safe)) {
+    return undefined
+  }
+
+  return /[^A-Za-z0-9-]/.test(safe) ? `"${safe}"` : safe
 }
 
 function OfficeRun({ run }: { run: OfficeTextRun }) {

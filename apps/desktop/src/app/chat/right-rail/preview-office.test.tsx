@@ -242,6 +242,33 @@ describe('OfficePreviewView', () => {
     expect(screen.getByText('Item').closest('li')).toBeTruthy()
   })
 
+  it('keeps CJK font names and paints RTL paragraphs', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          blocks: [
+            {
+              align: 'right',
+              dir: 'rtl',
+              runs: [{ fontFamily: '微软雅黑, Arial, Calibri', text: 'مرحبا' }],
+              type: 'paragraph'
+            }
+          ],
+          kind: 'document'
+        }}
+        {...labels}
+      />
+    )
+
+    const run = screen.getByText('مرحبا')
+    const paragraph = run.closest('p')
+
+    expect(run.style.fontFamily).toMatch(/微软雅黑/)
+    expect(paragraph?.getAttribute('dir')).toBe('rtl')
+    expect(paragraph?.style.direction).toBe('rtl')
+    expect(paragraph?.style.textAlign).toBe('right')
+  })
+
   it('keeps injected markup as text nodes', () => {
     const { container } = render(
       <OfficePreviewView

@@ -35,6 +35,7 @@ export type OfficeTextRun = {
 
 export type OfficeParagraph = {
   align?: 'center' | 'justify' | 'left' | 'right'
+  dir?: 'ltr' | 'rtl'
   heading?: 1 | 2 | 3
   list?: 'bullet' | 'number'
   runs: OfficeTextRun[]
@@ -344,6 +345,7 @@ function parseDocx(zip: Map<string, Uint8Array>): DocumentPreview | null {
 
 function paragraphBlock(paragraph: Element): OfficeParagraph {
   const style = paragraphStyle(paragraph)
+  const dir = paragraphDir(paragraph)
 
   const heading: OfficeParagraph['heading'] =
     style === 'Heading1' || style === 'Title' ? 1 : style === 'Heading2' ? 2 : style === 'Heading3' ? 3 : undefined
@@ -351,7 +353,7 @@ function paragraphBlock(paragraph: Element): OfficeParagraph {
   const list: OfficeParagraph['list'] =
     style === 'ListBullet' || style === 'ListParagraph' ? 'bullet' : style === 'ListNumber' ? 'number' : undefined
 
-  const align = paragraphAlign(paragraph)
+  const align = paragraphAlign(paragraph, dir)
 
   const runs = Array.from(paragraph.children)
     .filter(child => child.localName === 'r' || child.localName === 'hyperlink')
@@ -360,6 +362,7 @@ function paragraphBlock(paragraph: Element): OfficeParagraph {
 
   return {
     ...(align ? { align } : {}),
+    ...(dir ? { dir } : {}),
     ...(heading ? { heading } : {}),
     ...(list ? { list } : {}),
     runs,
@@ -367,7 +370,19 @@ function paragraphBlock(paragraph: Element): OfficeParagraph {
   }
 }
 
-function paragraphAlign(paragraph: Element): OfficeParagraph['align'] | undefined {
+function paragraphDir(paragraph: Element): OfficeParagraph['dir'] | undefined {
+  const pPr = Array.from(paragraph.children).find(child => child.localName === 'pPr')
+
+  if (!pPr) {
+    return undefined
+  }
+
+  const mark = localElements(pPr, 'bidi')[0] || localElements(pPr, 'rtl')[0]
+
+  return isOn(mark) ? 'rtl' : undefined
+}
+
+function paragraphAlign(paragraph: Element, dir?: OfficeParagraph['dir']): OfficeParagraph['align'] | undefined {
   const pPr = Array.from(paragraph.children).find(child => child.localName === 'pPr')
   const jc = pPr ? localElements(pPr, 'jc')[0] : undefined
   const value = (wordVal(jc) || '').toLowerCase()
@@ -378,6 +393,14 @@ function paragraphAlign(paragraph: Element): OfficeParagraph['align'] | undefine
 
   if (value === 'both') {
     return 'justify'
+  }
+
+  if (value === 'start') {
+    return dir === 'rtl' ? 'right' : 'left'
+  }
+
+  if (value === 'end') {
+    return dir === 'rtl' ? 'left' : 'right'
   }
 
   return undefined
@@ -453,8 +476,14 @@ function textRun(run: Element): OfficeTextRun | null {
   }
 
   const fonts = localElements(rPr, 'rFonts')[0]
-  const family = fonts?.getAttribute('ascii') || fonts?.getAttribute('hAnsi') || fonts?.getAttribute('w:ascii') || fonts?.getAttribute('w:hAnsi')
-  const theme = fonts?.getAttribute('asciiTheme') || fonts?.getAttribute('hAnsiTheme') || fonts?.getAttribute('w:asciiTheme')
+  const family = wordFontFamily(fonts)
+
+  const theme =
+    fonts?.getAttribute('asciiTheme') ||
+    fonts?.getAttribute('hAnsiTheme') ||
+    fonts?.getAttribute('eastAsiaTheme') ||
+    fonts?.getAttribute('cstheme') ||
+    fonts?.getAttribute('w:asciiTheme')
 
   if (family) {
     next.fontFamily = family
@@ -960,14 +989,27 @@ function parseStyles(xml: string | null): CellStyle[] {
   })
 }
 
+function wordFontFamily(fonts: Element | undefined): string | undefined {
+  if (!fonts) {
+    return undefined
+  }
+
+  const names = ['eastAsia', 'cs', 'ascii', 'hAnsi']
+    .map(key => fonts.getAttribute(key) || fonts.getAttribute(`w:${key}`) || '')
+    .map(name => name.trim())
+    .filter(Boolean)
+
+  return names.length ? [...new Set(names)].join(', ') : undefined
+}
+
 function isOn(node: Element | undefined): boolean {
   if (!node) {
     return false
   }
 
-  const value = (node.getAttribute('val') || '1').toLowerCase()
+  const value = (node.getAttribute('val') || node.getAttribute('w:val') || '1').toLowerCase()
 
-  return value !== '0' && value !== 'false'
+  return value !== '0' && value !== 'false' && value !== 'off'
 }
 
 function rgbColor(node: Element | undefined): string | undefined {

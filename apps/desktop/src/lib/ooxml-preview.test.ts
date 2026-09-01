@@ -489,6 +489,48 @@ describe('parseOfficePreview docx', () => {
     ])
   })
 
+  it('keeps eastAsia/cs fonts and RTL paragraph direction', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'word/document.xml': `<?xml version="1.0"?>
+<w:document xmlns:w="${NS_W}">
+  <w:body>
+    <w:p>
+      <w:pPr><w:bidi/><w:jc w:val="start"/></w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="微软雅黑" w:cs="Arial"/>
+        </w:rPr>
+        <w:t>مرحبا</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:bidi w:val="0"/><w:jc w:val="end"/></w:pPr>
+      <w:r><w:t>Hello</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`
+      }),
+      '.docx'
+    )
+
+    expect(preview?.kind).toBe('document')
+
+    if (preview?.kind !== 'document') {
+      return
+    }
+
+    expect(preview.blocks).toEqual([
+      {
+        align: 'right',
+        dir: 'rtl',
+        runs: [{ fontFamily: '微软雅黑, Arial, Calibri', text: 'مرحبا' }],
+        type: 'paragraph'
+      },
+      { align: 'right', runs: [{ text: 'Hello' }], type: 'paragraph' }
+    ])
+  })
+
   it('escapes HTML injected into document text', async () => {
     const preview = await parseOfficePreview(
       zipFiles({

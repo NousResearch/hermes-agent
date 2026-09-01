@@ -3256,7 +3256,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
 
     const parsed = JSON.parse(String(out || '[]'))
 
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter((p) =>
+    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
       isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
     )
   } catch {
@@ -3273,7 +3273,6 @@ function killHermesOwnedVenvDaemons(updateRoot) {
     }
   }
 }
-
 
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that

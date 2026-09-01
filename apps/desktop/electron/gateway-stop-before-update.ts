@@ -59,18 +59,11 @@ export function stopGatewayBeforeUpdate(
  * must mirror that on its abort paths, or a failed update strands every
  * profile's gateway stopped. Best-effort, never throws.
  */
-export function startGatewaysAfterUpdateAbort(
-  hermesCliPath: string,
-  deps: StopGatewayBeforeUpdateDeps = {}
-): boolean {
+export function startGatewaysAfterUpdateAbort(hermesCliPath: string, deps: StopGatewayBeforeUpdateDeps = {}): boolean {
   return runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'start', '--all'], deps)
 }
 
-function runGatewayLifecycleCommand(
-  hermesCliPath: string,
-  args: string[],
-  deps: StopGatewayBeforeUpdateDeps
-): boolean {
+function runGatewayLifecycleCommand(hermesCliPath: string, args: string[], deps: StopGatewayBeforeUpdateDeps): boolean {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
 
   if (!isWindows) {

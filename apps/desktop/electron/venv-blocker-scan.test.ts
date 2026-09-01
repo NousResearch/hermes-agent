@@ -140,7 +140,7 @@ describe('parseVenvBlockerScanOutput', () => {
     }
 
     assert.deepEqual(
-      blocked.result.processes.map((p) => p.pid),
+      blocked.result.processes.map(p => p.pid),
       [79]
     )
   })

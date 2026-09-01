@@ -30,10 +30,7 @@ test('Windows path prefix match is ordinal case-insensitive', () => {
 
 test('excludes external venv holders that are not the hindsight daemon', () => {
   // a user terminal running the hermes CLI from the venv — must NOT be killed
-  assert.equal(
-    isHermesOwnedVenvDaemon('C:\\Hermes\\venv\\Scripts\\hermes.exe', 'hermes chat -q "hi"', SCRIPTS),
-    false
-  )
+  assert.equal(isHermesOwnedVenvDaemon('C:\\Hermes\\venv\\Scripts\\hermes.exe', 'hermes chat -q "hi"', SCRIPTS), false)
   // an unrelated python script using the venv interpreter
   assert.equal(
     isHermesOwnedVenvDaemon('C:\\Hermes\\venv\\Scripts\\python.exe', 'python C:\\tools\\import.py', SCRIPTS),
@@ -49,10 +46,7 @@ test('excludes exes outside the venv even when the cmdline mentions hindsight', 
 })
 
 test('prefix boundary: sibling dirs (ScriptsX) do not match', () => {
-  assert.equal(
-    hasWindowsPathPrefix('C:\\Hermes\\venv\\ScriptsX\\python.exe', SCRIPTS),
-    false
-  )
+  assert.equal(hasWindowsPathPrefix('C:\\Hermes\\venv\\ScriptsX\\python.exe', SCRIPTS), false)
   assert.equal(hasWindowsPathPrefix('C:\\Hermes\\venv\\Scripts\\python.exe', SCRIPTS), true)
 })
 

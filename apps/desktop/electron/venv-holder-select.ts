@@ -11,16 +11,10 @@
  */
 
 /** Ordinal case-insensitive prefix check for Windows paths. */
-export function hasWindowsPathPrefix(
-  exePath: string,
-  venvScriptsDir: string
-): boolean {
+export function hasWindowsPathPrefix(exePath: string, venvScriptsDir: string): boolean {
   const prefix = `${venvScriptsDir}\\`
 
-  return (
-    exePath.length >= prefix.length &&
-    exePath.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()
-  )
+  return exePath.length >= prefix.length && exePath.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()
 }
 
 /**

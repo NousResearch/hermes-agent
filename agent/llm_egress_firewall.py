@@ -938,9 +938,6 @@ def redact_remote_unsafe_text(text: str) -> str:
         return prefix + "<private-path>"
 
     redacted = _PRIVATE_ABSOLUTE_PATH.sub(replace_path, text)
-    if redacted.startswith(("product=hermes-agent", "client=hermes-client-")):
-        return redacted
-
     def replace_base64(match: re.Match[str]) -> str:
         candidate = match.group(1)
         if re.fullmatch(

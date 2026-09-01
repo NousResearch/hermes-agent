@@ -813,6 +813,38 @@ def test_generated_kanban_context_still_rejects_real_base64(tmp_path):
     assert "base64_payload" in exc_info.value.decision.reason_codes
 
 
+def test_generated_context_attribution_prefix_does_not_skip_redaction(tmp_path):
+    """Required attribution must not bypass sanitization of the rest of a prompt."""
+    encoded = base64.b64encode(b"generated context that must not leave the host").decode(
+        "ascii"
+    )
+    text = (
+        "product=hermes-agent client=hermes-client-worker\n"
+        f"encrypted replay: {encoded}\n"
+    )
+    redacted = redact_remote_unsafe_text(text)
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": GeneratedContextSegment(redacted),
+                }
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert encoded not in redacted
+    assert "<redacted-base64>" in redacted
+
+
 def test_bounded_kanban_show_structural_atoms_with_exact_receipt_ids_are_not_base64(
     tmp_path,
 ):

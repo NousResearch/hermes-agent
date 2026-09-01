@@ -185,8 +185,18 @@ def _release_singleton_lock(handle) -> None:
 _DISPATCHER_HEARTBEAT_FILENAME = ".dispatcher.heartbeat"
 # A heartbeat older than this claims the previous owner is dead or frozen.
 _DISPATCHER_HEARTBEAT_STALE_SECONDS = 300  # >5 min
-# Cadence at which a NON-owner re-probes the lock (~2 lock-retry periods).
-_DISPATCHER_LOCK_RETRY_SECONDS = 120
+# Bounded root-preference grace window. After the owner's heartbeat goes
+# stale, a NON-root claimant/owner yields to a LIVE root gateway (the one
+# deploys restart) only for this short window — long enough for the root to
+# win the initial claim race after a deploy or restart. Once the grace
+# elapses, a non-root seizes the stale owner even if the root *process* is
+# alive: process-alive / dispatcher-dead on the root is exactly the original
+# 4-hour outage, and the takeover must not re-create a freeze by deferring to
+# a live-root process whose dispatcher loop never claims.
+# (Repurposed from the deleted `_DISPATCHER_LOCK_RETRY_SECONDS`: the non-owner
+# re-probe cadence is the tick interval itself, so a separate lock-retry
+# constant was misleading dead code.)
+_DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS = 120
 
 
 def _dispatcher_heartbeat_path(lock_path) -> Path:
@@ -219,38 +229,63 @@ def _dispatcher_heartbeat_is_stale(heartbeat_path, *, now: Optional[float] = Non
     return ref - mtime > _DISPATCHER_HEARTBEAT_STALE_SECONDS
 
 
-def _root_gateway_is_alive(kanban_root: Path) -> bool:
-    """True when the ROOT (default-profile) gateway process is running.
+def _root_gateway_in_grace(kanban_root: Path) -> bool:
+    """True when the ROOT gateway is alive AND freshly (re)started.
 
-    The root gateway is the one deploys restart, so it should win contested
-    dispatcher ownership. Its PID file lives at ``<kanban root>/gateway.pid``
-    (the default profile's HERMES_HOME == the kanban root). Fail-safe: any
-    probe error returns False (do not defer), matching today's config-only
-    control.
+    Root preference is bounded to a short post-restart grace window: only a
+    root that (re)started within ``_DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS``
+    is deferred to, so the root keeps winning the initial claim race after the
+    deploy/restart that brings its dispatcher loop online. Once the root has
+    settled (up longer than the grace), a non-root no longer defers to it even
+    if the root *process* is alive — a root process whose dispatcher loop
+    never claims (the card's process-alive / dispatcher-dead failure, now on
+    the root) must not keep the board frozen for hours.
+
+    Anchored to the root process start time (recorded in gateway.pid), not the
+    dispatch heartbeat, so a healthy non-root OWNER that refreshes its own
+    heartbeat still honours the bounded root preference. Fail-safe: any probe
+    error returns False (do not defer).
     """
     try:
         from gateway import status as _st
     except Exception:
         return False
     try:
-        pid = _st.get_running_pid(kanban_root / "gateway.pid", cleanup_stale=False)
+        identity = _st.get_running_pid_identity_strict(
+            kanban_root / "gateway.pid"
+        )
     except Exception:
         return False
-    return pid is not None
+    if identity is None:
+        return False
+    _pid, start = identity
+    if start is None:
+        return False
+    try:
+        return (time.time() - float(start)) <= _DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS
+    except (TypeError, ValueError):
+        return False
 
 
 def _should_seize_dispatcher(
-    *, am_root: bool, owner_stale: bool, root_live: bool,
+    *, am_root: bool, owner_stale: bool, defer_to_root: bool,
 ) -> bool:
     """Pure takeover decision for a contender that just won the OS flock.
 
     A claimant that is NOT the marked owner takes over only when the previous
-    owner's heartbeat is stale (>5 min), and yields to a live ROOT gateway so
-    the root wins contested ties (it is the one deploys restart).
+    owner's heartbeat is stale (>5 min). Root preference is a *bounded* yield:
+    a non-root claimant defers only while ``defer_to_root`` is true — the root
+    gateway (the one deploys restart) is alive AND freshly (re)started, i.e.
+    still inside the post-deploy window where it can reasonably claim. Once the
+    root settles (up longer than the grace period) or is unprobeable, the
+    non-root seizes the stale owner even if the root *process* is alive —
+    process-alive / dispatcher-dead on the root is exactly the original 4-hour
+    freeze, and deferring to a live root whose loop never claims would
+    re-create it.
     """
     if not owner_stale:
         return False
-    if root_live and not am_root:
+    if defer_to_root and not am_root:
         return False
     return True
 
@@ -1900,15 +1935,17 @@ class GatewayKanbanWatchersMixin:
             self._kanban_dispatcher_lease_handle = _handle
             if self._owns_kanban_dispatcher_lock():
                 # We are the standing owner re-hosting an inter-tick lease.
-                # A non-root owner yields to a LIVE root gateway so root wins
-                # contested ties (it is the one deploys restart): root takes
-                # over on the next tick once our heartbeat goes stale. Touch
-                # the heartbeat only when we remain the owner so contenders
-                # know we are alive.
-                if not _am_root_gateway and _root_gateway_is_alive(_kanban_root):
+                # A non-root owner yields to a LIVE, freshly-restarted ROOT
+                # gateway (the one deploys restart) only during the bounded
+                # root-preference grace, so the root wins the post-deploy
+                # claim race. Once root settles (up > grace) the non-root
+                # keeps ownership: a root process whose own loop never claims
+                # must not starve the board forever. Touch the heartbeat only
+                # when we remain the owner so contenders know we are alive.
+                if not _am_root_gateway and _root_gateway_in_grace(_kanban_root):
                     logger.info(
-                        "kanban dispatcher: root gateway is live; non-root "
-                        "owner (%s) yields dispatcher to root at %s",
+                        "kanban dispatcher: root gateway freshly restarted; "
+                        "non-root owner (%s) yields dispatcher to root at %s",
                         self._active_profile_name(), _lock_path,
                     )
                     self._kanban_dispatcher_lock_handle = None
@@ -1917,14 +1954,14 @@ class GatewayKanbanWatchersMixin:
                 _touch_dispatcher_heartbeat(_heartbeat_path)
                 return True
             # Not the marked owner. Only take over a STALE owner, and yield to
-            # a live ROOT gateway so the root wins contested ties (it is the
-            # one deploys restart).
+            # a freshly-restarted live ROOT gateway so the root wins the
+            # post-deploy contested tie (it is the one deploys restart).
             _owner_stale = _dispatcher_heartbeat_is_stale(_heartbeat_path)
-            _root_live = _root_gateway_is_alive(_kanban_root)
+            _defer_to_root = _root_gateway_in_grace(_kanban_root)
             if _should_seize_dispatcher(
                 am_root=_am_root_gateway,
                 owner_stale=_owner_stale,
-                root_live=_root_live,
+                defer_to_root=_defer_to_root,
             ):
                 self._kanban_dispatcher_lock_handle = _handle
                 _touch_dispatcher_heartbeat(_heartbeat_path)
@@ -1935,8 +1972,8 @@ class GatewayKanbanWatchersMixin:
                 return True
             logger.debug(
                 "kanban dispatcher: yielding lease at %s (owner_stale=%s "
-                "root_gateway_live=%s am_root=%s)",
-                _lock_path, _owner_stale, _root_live, _am_root_gateway,
+                "defer_to_root=%s am_root=%s)",
+                _lock_path, _owner_stale, _defer_to_root, _am_root_gateway,
             )
             self._release_kanban_dispatcher_lease()
             return False

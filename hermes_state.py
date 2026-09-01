@@ -96,6 +96,10 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_MAX_CHARS,
     _PREVIEW_SCAFFOLD_WINDOW,
     _PREVIEW_SCAFFOLDED_SQL,
+    _acquire_db_flock,
+    _clear_lock_holder_record,
+    _describe_lock_holder,
+    _read_lock_holder_record,
 )
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
@@ -2279,7 +2283,11 @@ def _cross_process_repair_lock(db_path: Path):
 
     ``flock`` is the right primitive for this: the kernel drops the lock when
     the holding process dies, so a crashed repairer cannot leave a stale lock
-    that wedges every future repair (a pidfile would).  The acquire is still
+    that wedges every future repair (a pidfile would).  One exception exists
+    (issue #100108): a forked child that inherited the lock fd keeps the
+    flock alive after the acquirer dies, so the acquire path records the
+    holder's pid + start time and breaks the lock when that holder is
+    provably dead (see ``_acquire_db_flock``).  The acquire is still
     bounded because a *live* repairer can legitimately sit in ``VACUUM`` for
     minutes on a large DB, and an unbounded wait would hang the caller's open
     with no traceback (the failure shape of #36644).
@@ -2301,30 +2309,36 @@ def _cross_process_repair_lock(db_path: Path):
 
     acquired = False
     try:
-        deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                if _IS_WINDOWS:
+        if _IS_WINDOWS:
+            deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
                     import msvcrt
 
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
+                    acquired = True
                     break
-                time.sleep(_REPAIR_LOCK_POLL_SECONDS)
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_REPAIR_LOCK_POLL_SECONDS)
+        else:
+            acquired, handle = _acquire_db_flock(
+                str(lock_path),
+                handle,
+                _REPAIR_LOCK_TIMEOUT_SECONDS,
+                _REPAIR_LOCK_POLL_SECONDS,
+                "state.db repair lock",
+            )
         if not acquired:
+            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
             logger.warning(
                 "state.db repair lock %s held by another process for more "
                 "than %.0fs — skipping schema surgery in this process to "
-                "avoid racing the repairer.",
+                "avoid racing the repairer. Recorded holder: %s.",
                 lock_path, _REPAIR_LOCK_TIMEOUT_SECONDS,
+                _describe_lock_holder(record),
             )
         yield acquired
     finally:
@@ -2338,6 +2352,7 @@ def _cross_process_repair_lock(db_path: Path):
                 else:
                     import fcntl
 
+                    _clear_lock_holder_record(handle)
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:  # pragma: no cover - best effort release
             pass

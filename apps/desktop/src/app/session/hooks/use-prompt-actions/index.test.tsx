@@ -1045,7 +1045,7 @@ describe('usePromptActions /btw', () => {
   it('shows usage when no question is typed', async () => {
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async () => ({} as never))
+    const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
     await actRender(

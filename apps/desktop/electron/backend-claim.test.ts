@@ -71,10 +71,7 @@ test('a missing PID is classified as ESRCH so reapOrphans can drop the record', 
   // Windows Get-Process / macOS `ps -p` used to surface exit code 1, which
   // the identity matchers treated as "unknown" and kept forever. The native
   // gate throws ESRCH — the errno those catch blocks already map to gone.
-  await assert.rejects(
-    processStartMarker(2 ** 30 + 12345),
-    (error: NodeJS.ErrnoException) => error?.code === 'ESRCH'
-  )
+  await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
 })
 
 // --- PID-only marker helpers --------------------------------------------------

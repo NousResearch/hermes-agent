@@ -31,8 +31,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
@@ -528,6 +531,34 @@ def _run_capture(args: list[str], cwd: str) -> tuple[int, str]:
         return 127, f"gate command not found: {args[0]}"
 
 
+_BASE_REF_CANDIDATES = ("origin/main", "main", "master", "HEAD~1")
+
+
+def _resolve_base_ref(worktree_root: str) -> Optional[str]:
+    """Return the base ref for a worktree, or None when none resolves.
+
+    Walks the candidate refs preferring a real ref with a non-empty
+    merge-base against HEAD.  A remote-tracking ref (origin/main) can point
+    at fully-diverged history (merge-base empty), which would make the diff
+    and any baseline comparison report every file ever created as changed —
+    so a candidate is only accepted when it shares a real ancestor.
+    """
+    for candidate in _BASE_REF_CANDIDATES:
+        rc, _ = _run_capture(
+            ["git", "-C", worktree_root, "rev-parse", "--verify", "-q", candidate],
+            cwd=worktree_root,
+        )
+        if rc != 0:
+            continue
+        mrc, _ = _run_capture(
+            ["git", "-C", worktree_root, "merge-base", candidate, "HEAD"],
+            cwd=worktree_root,
+        )
+        if mrc == 0:
+            return candidate
+    return None
+
+
 def _changed_python_files(worktree_root: str) -> list[str]:
     """Return python files changed in the worktree vs its base branch.
 
@@ -535,24 +566,7 @@ def _changed_python_files(worktree_root: str) -> list[str]:
     --porcelain`` for uncommitted ones.  Falls back to looking only at the
     working tree when no base branch resolves.
     """
-    base = None
-    for candidate in ("origin/main", "main", "master", "HEAD~1"):
-        rc, _ = _run_capture(
-            ["git", "-C", worktree_root, "rev-parse", "--verify", "-q", candidate],
-            cwd=worktree_root,
-        )
-        if rc != 0:
-            continue
-        # Prefer a base only when a real merge-base exists.  A remote-tracking
-        # ref (origin/main) can point at a fully-diverged history (merge-base
-        # empty), which would report every file ever in the repo as "changed".
-        mrc, _ = _run_capture(
-            ["git", "-C", worktree_root, "merge-base", candidate, "HEAD"],
-            cwd=worktree_root,
-        )
-        if mrc == 0:
-            base = candidate
-            break
+    base = _resolve_base_ref(worktree_root)
     changed: set[str] = set()
     if base:
         rc, out = _run_capture(
@@ -652,6 +666,190 @@ def _gate_command(project_python: str, tests: list[str]) -> list[str]:
         except Exception:
             pass  # fall through to the sane default on any malformed override
     return [project_python, "-m", "pytest", *tests, "-q"]
+
+
+_PYTEST_FAILURE_LINE_RE = re.compile(r"^FAILED\s+([^\s]+)")
+
+
+def _parse_focused_test_failures(output: str) -> frozenset[str]:
+    """Extract the set of failed test IDs from a pytest ``-q`` run.
+
+    Pytest ``-q`` prints one ``FAILED tests/...::Test::test_x - reason``
+    line per failure in its short summary.  We key on the node id (the
+    leading path::class::method token) so a failure can be matched against
+    the baseline run and pre-existing failures excluded.  A run whose
+    output we cannot parse (non-pytest rc, crash, etc.) yields the sentinel
+    empty set — callers must not treat that as 'a failing test' unless the
+    run was otherwise green; see ``_focused_tests_new_failures``.
+    """
+    fails: set[str] = set()
+    for line in output.splitlines():
+        m = _PYTEST_FAILURE_LINE_RE.match(line)
+        if m:
+            fails.add(m.group(1).strip())
+    return frozenset(fails)
+
+
+def _focused_test_failures(
+    project_python: str, cwd: str, tests: list[str]
+) -> tuple[int, str, frozenset[str]]:
+    """Run the focused tests and return (rc, output, failing-test-ids).
+
+    The failing-test-id set drives the baseline comparison; it is only
+    meaningful when ``rc != 0`` AND the output parses as a pytest run (ie.
+    the short summary carries ``FAILED ...`` lines for the expected node
+    shape).  A crash/import error that never reaches the summary is
+    reported by ``rc != 0`` with an empty/idempotent set, so a
+    genuinely-broken runner is not masked by a 'no failures' baseline.
+    """
+    cmd = _gate_command(project_python, tests)
+    rc, out = _run_capture(cmd, cwd=cwd)
+    return rc, out, _parse_focused_test_failures(out)
+
+
+def _focused_tests_new_failures(
+    project_python: str,
+    cwd: str,
+    tests: list[str],
+    base_dir: Optional[str],
+    *,
+    worktree_rc: int,
+    worktree_out: str,
+    worktree_fails: frozenset[str],
+) -> tuple[Optional[frozenset[str]], Optional[str]]:
+    """Compare focused tests against a merge-base baseline.
+
+    The worktree selection has already been run by the caller (``worktree_rc``
+    / ``worktree_out`` / ``worktree_fails``); this only establishes the
+    baseline failure set and diffs. Returns ``(new_failures, error)`` where
+    ``new_failures`` are the failures present in the worktree run but NOT in
+    the merge-base baseline — the failures a card is responsible for.
+
+    ``error`` is set (and ``new_failures`` is ``None``) when no reliable
+    comparison is possible — callers fall back to the strict behaviour (any
+    focused failure blocks review): a worktree run that crashed before pytest
+    could emit a failure summary (no fault baseline can exonerate), or a
+    baseline run that crashed rather than exercising the tests. ``error`` is
+    ``None`` when both runs parsed cleanly.
+
+    Zero LLM tokens: every step is a pure subprocess (git archive + pytest).
+    """
+    if worktree_rc != 0 and not worktree_fails:
+        # Worktree run crashed before pytest could emit a failure summary
+        # (eg. import error at collection, no exec).  Can't attribute this to
+        # a pre-existing failure — bounce the card.
+        return None, worktree_out or f"focused tests rc={worktree_rc} (no parseable failures)"
+    if not base_dir:
+        # No baseline source: fall back to strict (any failure blocks).
+        return worktree_fails or frozenset(), None
+    base_python, base_tests, base_err = _baseline_archive_selection(
+        project_python, base_dir, tests
+    )
+    if base_err:
+        return None, base_err
+    if base_python is None or not base_tests:
+        # Baseline archive has no usable python / no matching tests: fall
+        # back to strict.
+        return worktree_fails or frozenset(), None
+    brc, bout, base_fails = _focused_test_failures(
+        base_python, str(base_dir), base_tests
+    )
+    if brc != 0 and not base_fails:
+        # Baseline run crashed rather than exercised tests — cannot compare.
+        # This is a soft failure: fall back to strict rather than false-pass.
+        return None, "baseline run crashed (no parseable failures)"
+    return worktree_fails - base_fails, None
+
+
+def _baseline_archive_selection(
+    project_python: str, base_dir: str, tests: list[str]
+) -> tuple[Optional[str], list[str], Optional[str]]:
+    """Resolve (python, focused-test-paths) against a base-commit archive.
+
+    The archive lives at ``base_dir`` (an extracted ``git archive`` of the
+    merge-base).  Its venv is absent, so the interpreter falls back to the
+    project's (``project_python``); pytest resolves there only when the
+    project venv itself carries pytest.  Tests mirror the same heuristic as
+    ``_focused_test_paths`` — the changed-route guess must land on an
+    existing path inside the archive, else baseline-vs-worktree compare
+    silently no-ops.
+    """
+    if not os.path.isdir(base_dir):
+        return None, [], "baseline archive missing"
+    # No venv in an archive; reuse the project interpreter.  The archive code
+    # importing pytest is enough — that is what _focused_test_failures probes.
+    base_python = project_python
+    # Map the focused tests into paths that exist under the base archive.
+    base_tests: list[str] = []
+    root = Path(base_dir).resolve()
+    for rel in tests:
+        p = Path(rel)
+        if (root / p).is_file():
+            base_tests.append(str(p))
+    return base_python, base_tests, None
+
+
+def _make_base_commit_archive(
+    worktree_root: str, base_ref: str
+) -> Optional[str]:
+    """Materialize the merge-base tree into a fresh temp dir and return its path.
+
+    Returns None when the archive cannot be produced (no git, empty tree, or
+    subprocess failure).  The returned directory is the caller's to clean up,
+    else it accumulates under the hosting temp dir.
+    """
+    rc, out = _run_capture(
+        ["git", "-C", worktree_root, "merge-base", base_ref, "HEAD"],
+        cwd=worktree_root,
+    )
+    if rc != 0:
+        return None
+    tokens = out.split()
+    mb = tokens[0] if tokens else None
+    if not mb:
+        return None
+    tmp = tempfile.mkdtemp(prefix="kanban_gate_base_")
+    # Emit the tar to a temp file (binary), then extract — _run_capture reads
+    # text and would corrupt the tar bytes.  Drop capture_output: it would
+    # raise ValueError alongside an explicit stdout= stream (subprocess.run
+    # forbids combining the two).
+    tar_path = os.path.join(tmp, "base.tar")
+    try:
+        with open(tar_path, "wb") as fh:
+            subprocess.run(
+                ["git", "-C", worktree_root, "archive", "--format=tar", mb],
+                cwd=worktree_root,
+                stdout=fh,
+                stderr=subprocess.PIPE,
+                timeout=_GATE_RUN_TIMEOUT,
+                check=True,
+            )
+        with tarfile.open(tar_path, "r") as tf:
+            tf.extractall(path=tmp)
+        os.unlink(tar_path)
+        return tmp
+    except Exception:
+        return None
+
+
+_BASE_ARCHIVE_CACHE: dict[str, Optional[str]] = {}
+
+
+def _base_archive_for(worktree_root: str) -> Optional[str]:
+    """Return a cached merge-base archive dir for a worktree, or None.
+
+    The archive is keyed by the worktree root and cached for the life of the
+    gate process so the per-card baseline run happens at most once.  A failed
+    archive is cached as ``None`` (so we don't re-attempt on every rung), and
+    callers fall back to strict gating when no baseline can be established.
+    """
+    key = str(Path(worktree_root).resolve())
+    if key in _BASE_ARCHIVE_CACHE:
+        return _BASE_ARCHIVE_CACHE[key]
+    base_ref = _resolve_base_ref(worktree_root)
+    archive = _make_base_commit_archive(worktree_root, base_ref) if base_ref else None
+    _BASE_ARCHIVE_CACHE[key] = archive
+    return archive
 
 
 def _build_sanity_command(
@@ -960,8 +1158,34 @@ def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
         else:
             test_cmd = _gate_command(pypath, tests)
             rc, out = _run_capture(test_cmd, cwd=str(ws))
-            if rc != 0:
-                return _fail("focused tests", test_cmd, rc, out)
+            if rc == 0:
+                # All green — nothing else to compare.
+                pass
+            else:
+                worktree_fails = _parse_focused_test_failures(out)
+                base_dir = _base_archive_for(ws)
+                new_fails, cmp_err = _focused_tests_new_failures(
+                    pypath,
+                    str(ws),
+                    tests,
+                    base_dir,
+                    worktree_rc=rc,
+                    worktree_out=out,
+                    worktree_fails=worktree_fails,
+                )
+                if cmp_err is not None:
+                    # No reliable baseline — fall back to strict (a failing
+                    # focused run blocks review, exactly as before).
+                    return _fail("focused tests", test_cmd, rc, out)
+                if new_fails:
+                    # A failure this card introduced — bounce with output.
+                    return _fail("focused tests", test_cmd, rc, out)
+                # Only pre-existing failures present in the merge-base
+                # baseline: the card is not responsible — let it through.
+                logger.info(
+                    "review gate: %d focused failure(s) present on merge-base baseline; card not responsible",
+                    len(worktree_fails),
+                )
 
     # Every rung green (or skipped) — gate passes.
     return None

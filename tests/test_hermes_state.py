@@ -820,18 +820,37 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
+        # The context-enrichment query runs on a read connection borrowed from
+        # the bounded WAL read pool (_read_ctx/_checkout_read_conn), which is a
+        # DIFFERENT object from db._conn and db._get_read_conn(). Tracing only
+        # the writer conn + one read conn misses exactly the query this test
+        # counts (2026-09-01: pre-existing failure). Trace the writer conn
+        # directly and wrap _checkout_read_conn so EVERY connection the context
+        # query actually uses gets traced too; pooled conns retain their
+        # callback on return, so subsequent searches are covered.
         traced_connections = [db._conn]
-        if read_conn is not db._conn:
+        read_conn = db._get_read_conn() or db._conn
+        if read_conn is not db._conn and read_conn not in traced_connections:
             traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        orig_checkout = SessionDB._checkout_read_conn
+        patched = [False]
 
-        def context_query_count():
-            normalized = (" ".join(sql.upper().split()) for sql in statements)
-            return sum("WITH TARGET AS (" in sql for sql in normalized)
+        def traced_checkout(self):
+            conn = orig_checkout(self)
+            if conn is not None:
+                conn.set_trace_callback(statements.append)
+                patched[0] = True
+            return conn
 
+        SessionDB._checkout_read_conn = traced_checkout
         try:
+            for conn in traced_connections:
+                conn.set_trace_callback(statements.append)
+
+            def context_query_count():
+                normalized = (" ".join(sql.upper().split()) for sql in statements)
+                return sum("WITH TARGET AS (" in sql for sql in normalized)
+
             projected = db.search_messages(
                 "projectionneedle", fields=("session_id", "snippet")
             )
@@ -849,9 +868,15 @@ class TestFTS5Search:
             assert len(default) == 1
             assert default[0]["context"]
             assert context_query_count() == 2
+            # Under WAL the context query really did run on a borrowed read
+            # connection (not just the writer conn) — otherwise the fix to this
+            # test is meaningless and the projection guarantee is untested.
+            if db._wal_active:
+                assert patched[0]
         finally:
             for conn in traced_connections:
                 conn.set_trace_callback(None)
+            SessionDB._checkout_read_conn = orig_checkout
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""

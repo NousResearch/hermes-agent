@@ -623,6 +623,72 @@ def test_ladder_standalone_binary_gates(
         assert kb.get_task(conn, tid).consecutive_failures == 0
 
 
+def test_gate_preexisting_failure_passes_baseline_aware(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing focused failure (present on merge-base main) must NOT
+    block review — the card is not responsible for it."""
+    # Commit a failing test on main.  A worktree change to the corresponding
+    # module pulls that (still-failing) test into the focused selection; the
+    # merge-base archive run reproduces the same failure, so the card passes.
+    subprocess.run(
+        ["git", "-C", str(repo), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True, capture_output=True,
+    )
+    (repo / "prefail.py").write_text("X = 1\n")
+    repo / "tests"
+    tdir = repo / "tests"
+    tdir.mkdir(exist_ok=True)
+    (tdir / "test_prefail.py").write_text("def test_prefail():\n    assert False\n")
+    subprocess.run(["git", "-C", str(repo), "add", "prefail.py", "tests/test_prefail.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "prefail"], check=True, capture_output=True)
+
+    ws = _add_worktree(repo, "preexisting")
+    # A card-legit change to the module that routes to the failing test.
+    _change_python_file(ws, "prefail.py", "X = 2\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    tools._BASE_ARCHIVE_CACHE.clear()
+    resp = json.loads(tools._handle_request_review({"summary": "only pre-existing failure"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def test_gate_new_failure_still_bounces_baseline_aware(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure the worktree INTRODUCES (absent from merge-base main) still
+    blocks review even with baseline awareness."""
+    # main has a passing test.
+    (repo / "tests").mkdir(exist_ok=True)
+    (repo / "tests" / "test_newfail.py").write_text("def test_old():\n    assert True\n")
+    subprocess.run(["git", "-C", str(repo), "add", "tests/test_newfail.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "passing"], check=True, capture_output=True)
+
+    ws = _add_worktree(repo, "newfail")
+    # The worktree adds a NEW failing test to the changed test file.
+    _change_python_file(
+        ws, "tests/test_newfail.py",
+        "def test_old():\n    assert True\n\ndef test_new():\n    assert False\n",
+    )
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    tools._BASE_ARCHIVE_CACHE.clear()
+    resp = json.loads(tools._handle_request_review({"summary": "introduced failure"}))
+    assert "error" in resp
+    assert "Pre-review gate failed" in resp["error"]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert "focused tests" in comments[0].body
+
+
 def _write_pytest_missing_python(repo: Path) -> None:
     """Replace the repo venv's python with one where ``import pytest`` fails.
 

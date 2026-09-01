@@ -1222,6 +1222,12 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
         assert env["HERMES_CONTROL_HOME"] == str(default_home)
+        # The target checkout can contain top-level modules such as
+        # ``utils.py``.  Python's normal cwd-first import path lets those
+        # modules shadow Hermes' own absolute imports inside a worker.
+        # Detached workers must use safe-path mode while retaining the target
+        # checkout as cwd for terminal/file operations.
+        assert env["PYTHONSAFEPATH"] == "1"
         for key in sc._VAR_MAP:
             if key == "HERMES_SESSION_SOURCE":
                 # Re-set by the dispatcher, so what matters is that it carries

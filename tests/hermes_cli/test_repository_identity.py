@@ -84,8 +84,7 @@ def test_symlink_and_linked_worktree_are_checked_by_identity(tmp_path):
     )
     assert Path(evidence["candidate"]) == root.resolve()
 
-    worktree = tmp_path / "worktree"
-    subprocess.run(["git", "-C", str(root), "worktree", "add", "-q", "-b", "fixture", str(worktree)], check=True)
+    worktree = _committed_linked_worktree(root, "fixture", tmp_path / "worktree")
     assert validate_repository_identity(
         worktree,
         expected_manifest_name="hermes-agent",

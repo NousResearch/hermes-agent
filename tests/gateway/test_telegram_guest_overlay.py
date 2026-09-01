@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.run import GatewayRunner
 from plugins.platforms.telegram import adapter as telegram_mod
 
 
@@ -20,6 +21,13 @@ def _adapter():
 def test_allowed_update_types_adds_guest_message(monkeypatch):
     monkeypatch.setattr(telegram_mod, "Update", SimpleNamespace(ALL_TYPES=["message"]))
     assert telegram_mod.TelegramAdapter._allowed_update_types() == ["message", "guest_message"]
+
+
+def test_gateway_guest_config_reads_top_level_telegram():
+    assert GatewayRunner._telegram_guest_config(
+        {"telegram": {"guest_mode_toolsets": ["web"]}}
+    ) == {"guest_mode_toolsets": ["web"]}
+    assert GatewayRunner._telegram_guest_config({"telegram": "invalid"}) == {}
 
 
 def test_guest_context_from_raw_update():

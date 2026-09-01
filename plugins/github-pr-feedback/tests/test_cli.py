@@ -503,6 +503,25 @@ def test_auto_dispatch_argv_is_accepted_by_the_real_kanban_parser() -> None:
     assert parsed.max_retries == 3
 
 
+def test_kanban_client_persists_explicit_worker_route() -> None:
+    from github_pr_feedback.cli import _kanban_create_argv
+    from hermes_cli.kanban import build_parser
+
+    root = argparse.ArgumentParser()
+    subcommands = root.add_subparsers(dest="command", required=True)
+    build_parser(subcommands)
+    task = replace(
+        kanban_task(),
+        model_override="qwen3.5:4b",
+        provider_override="ollama-launch",
+    )
+
+    parsed = root.parse_args(_kanban_create_argv(task)[1:])
+
+    assert parsed.model_override == "qwen3.5:4b"
+    assert parsed.provider_override == "ollama-launch"
+
+
 @pytest.mark.parametrize("stdout", ["{}", "[]", '{"id": ""}', '{"id": 17}', "not json"])
 def test_kanban_client_fails_closed_on_an_invalid_create_response(stdout: str) -> None:
     from github_pr_feedback.cli import KanbanSubprocessClient

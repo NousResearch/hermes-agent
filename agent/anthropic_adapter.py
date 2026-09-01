@@ -1013,27 +1013,28 @@ def build_anthropic_kwargs(
         # being fixed. Mirrors the "registered tool wins" precedence in
         # normalize_response so outbound and inbound agree on who owns a
         # contested name.
-        _claimed_wire_names = {
-            (_MCP_TOOL_PREFIX + tool["name"][len("mcp_"):]
-             if tool["name"].startswith("mcp_") and not tool["name"].startswith("mcp__")
-             else tool["name"] if tool["name"].startswith("mcp__")
-             else _MCP_TOOL_PREFIX + tool["name"])
-            for tool in (anthropic_tools or [])
-            if isinstance(tool.get("name"), str)
-            and tool["name"] not in _OAUTH_TOOL_NAME_ALIASES
-        }
-
-        def _to_oauth_wire_name(name: str, *, allow_alias: bool = True) -> str:
-            if allow_alias and name in _OAUTH_TOOL_NAME_ALIASES:
-                aliased = _OAUTH_TOOL_NAME_ALIASES[name]
-                if _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
-                    name = aliased
+        def _normalize_to_mcp_wire(name: str) -> str:
+            """OAuth wire form of a tool name (no aliasing): mcp__<...>."""
             if name.startswith("mcp__"):
                 return name  # already correct, don't double-prefix
             if name.startswith("mcp_"):
                 # single-underscore native MCP tool -> promote to double
                 return "mcp__" + name[len("mcp_"):]
             return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+        _claimed_wire_names = {
+            _normalize_to_mcp_wire(tool["name"])
+            for tool in (anthropic_tools or [])
+            if isinstance(tool.get("name"), str)
+            and tool["name"] not in _OAUTH_TOOL_NAME_ALIASES
+        }
+
+        def _to_oauth_wire_name(name: str) -> str:
+            if name in _OAUTH_TOOL_NAME_ALIASES:
+                aliased = _OAUTH_TOOL_NAME_ALIASES[name]
+                if _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
+                    name = aliased
+            return _normalize_to_mcp_wire(name)
 
         if anthropic_tools:
             for tool in anthropic_tools:

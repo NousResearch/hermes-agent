@@ -170,6 +170,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/profile-artifact-check.yml
 
+  case-collision-check:
+    name: Check no case-colliding filenames
+    needs: detect
+    uses: ./.github/workflows/case-collision-check.yml
+
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
@@ -232,6 +237,7 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - case-collision-check
       - lockfile-diff
       - docker-lint
       - profile-artifact-check

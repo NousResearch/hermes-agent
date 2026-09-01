@@ -1171,6 +1171,8 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    officialCatalog: string
+    officialPill: string
     hub: {
       searchPlaceholder: string
       search: string

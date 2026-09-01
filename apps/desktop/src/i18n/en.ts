@@ -1334,6 +1334,8 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    officialCatalog: 'Available to install',
+    officialPill: 'Official',
     hub: {
       searchPlaceholder: 'Search the skill hub',
       search: 'Search',

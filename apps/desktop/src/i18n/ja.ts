@@ -1226,7 +1226,9 @@ export const ja = defineLocale({
     edit: '編集',
     archive: 'アーカイブ',
     skillArchivedTitle: 'スキルをアーカイブしました',
-    skillArchivedMessage: 'hermes curator restore で復元できます。'
+    skillArchivedMessage: 'hermes curator restore で復元できます。',
+    officialCatalog: 'インストール可能',
+    officialPill: '公式'
   },
 
   starmap: {

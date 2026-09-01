@@ -1026,6 +1026,17 @@ export interface SkillInfo {
   provenance?: 'agent' | 'bundled' | 'hub'
 }
 
+/** One entry of the built-in optional-skills catalog (optional-skills/ in the
+ *  repo) — official skills that ship with Hermes but install on demand. */
+export interface OfficialSkillInfo {
+  category: string
+  description: string
+  identifier: string
+  installed: boolean
+  name: string
+  tags: string[]
+}
+
 export interface ToolsetInfo {
   configured: boolean
   description: string

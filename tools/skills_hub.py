@@ -3668,6 +3668,14 @@ class OptionalSkillSource(SkillSource):
             )
         return None
 
+    # -- catalog ----------------------------------------------------------
+
+    def list_local(self) -> List[SkillMeta]:
+        """Public catalog enumeration: every optional skill in the local
+        checkout, with frontmatter metadata. Backs the dashboard/desktop
+        "built-in optional skills" catalog surface."""
+        return self._scan_all()
+
     # -- internal helpers -------------------------------------------------
 
     def _get_github(self) -> "GitHubSource":

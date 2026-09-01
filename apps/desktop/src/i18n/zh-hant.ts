@@ -1182,7 +1182,9 @@ export const zhHant = defineLocale({
     edit: '編輯',
     archive: '封存',
     skillArchivedTitle: '技能已封存',
-    skillArchivedMessage: '可透過 hermes curator restore 還原。'
+    skillArchivedMessage: '可透過 hermes curator restore 還原。',
+    officialCatalog: '可安裝',
+    officialPill: '官方'
   },
 
   starmap: {

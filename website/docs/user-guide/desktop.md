@@ -183,7 +183,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).

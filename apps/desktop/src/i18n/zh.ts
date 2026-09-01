@@ -1523,6 +1523,8 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    officialCatalog: '可安装',
+    officialPill: '官方',
     hub: {
       searchPlaceholder: '搜索技能中心',
       search: '搜索',

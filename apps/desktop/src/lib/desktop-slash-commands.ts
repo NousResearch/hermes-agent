@@ -523,12 +523,17 @@ export function canonicalDesktopSlashCommand(command: string): string {
 export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
   const canonical = canonicalDesktopSlashCommand(command)
   const local = SPEC_BY_NAME.get(canonical)
+  const catalog = specFromCatalog(command)
 
-  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
-    return specFromCatalog(command) ?? local
+  if (local && catalog?.desktopSubcommands !== undefined) {
+    return { ...local, desktopSubcommands: catalog.desktopSubcommands }
   }
 
-  return local ?? specFromCatalog(command)
+  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
+    return catalog ?? local
+  }
+
+  return local ?? catalog
 }
 
 /** Subcommands the desktop may forward for *command*; null = unrestricted. */
@@ -577,12 +582,26 @@ export function filterDesktopSubcommandCompletions<T extends { text: string }>(
 ): T[] {
   const command = normalizeCommand(text)
   const allowed = desktopSubcommandAllowlist(command)
-  const rest = text.slice(command.length)
+  const trimmedText = text.trimStart()
+  const normalizedText = trimmedText.startsWith('/') ? trimmedText : `/${trimmedText}`
+  const rest = normalizedText.slice(command.length)
 
   // Only the argument stage (`/skills …`, including a bare trailing space)
   // carries subcommand items; command-token completions pass through.
   if (!allowed || !/^\s/.test(rest)) {
     return [...items]
+  }
+
+  const argumentText = rest.trimStart()
+  const secondTokenBoundary = argumentText.search(/\s/)
+
+  // Once an allowed first argument is complete, the backend owns completion
+  // of its value (for example `approval on` or `approve <id>`). Keep refusing
+  // value completions for a hub mutation that the execution gate would block.
+  if (secondTokenBoundary >= 0) {
+    const first = argumentText.slice(0, secondTokenBoundary).toLowerCase()
+
+    return allowed.some(entry => entry.toLowerCase() === first) ? [...items] : []
   }
 
   return items.filter(item => {

@@ -150,6 +150,16 @@ describe('desktop slash command curation', () => {
     expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
   })
 
+  it('preserves nested completions after an allowed skills review subcommand', () => {
+    const values = [{ text: 'on' }, { text: 'off' }]
+
+    expect(filterDesktopSubcommandCompletions('/skills approval ', values)).toEqual(values)
+    expect(filterDesktopSubcommandCompletions('/skills approve write-', [{ text: 'write-1' }])).toEqual([
+      { text: 'write-1' }
+    ])
+    expect(filterDesktopSubcommandCompletions('/skills install demo', [{ text: 'demo' }])).toEqual([])
+  })
+
   it('routes /compress through the session-compression action', () => {
     // /compress must be an action (session.compress RPC), not exec: the slash
     // worker route times out on large sessions (#44456).

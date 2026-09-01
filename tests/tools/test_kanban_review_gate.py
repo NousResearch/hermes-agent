@@ -130,7 +130,7 @@ def test_gate_failing_build_bounces_card(
 
     resp = json.loads(tools._handle_request_review({"summary": "broken"}))
     assert "error" in resp
-    assert "Pre-review build gate failed" in resp["error"]
+    assert "Pre-review gate failed" in resp["error"]
 
     with kb.connect() as conn:
         # Card never left the builder lane.
@@ -139,7 +139,9 @@ def test_gate_failing_build_bounces_card(
         assert kb.get_task(conn, tid).consecutive_failures == 0
         comments = kb.list_comments(conn, tid)
         assert len(comments) == 1
-        assert "Pre-review build gate FAILED" in comments[0].body
+        assert "Pre-review gate FAILED" in comments[0].body
+        # The bounce names WHICH rung failed.
+        assert "import/build sanity" in comments[0].body
 
 
 def test_gate_comment_carries_output_tail(
@@ -217,7 +219,7 @@ def test_gate_missing_import_bounces_card(
 
     resp = json.loads(tools._handle_request_review({"summary": "bad import"}))
     assert "error" in resp
-    assert "Pre-review build gate failed" in resp["error"]
+    assert "Pre-review gate failed" in resp["error"]
 
     with kb.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
@@ -388,6 +390,176 @@ def test_base_ref_guard_ignores_diverged_remote(
 
     tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
     resp = json.loads(tools._handle_request_review({"summary": "diff vs unfair base"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def _write_tool_script(tmp_path: Path, name: str, body: str) -> str:
+    """Write an executable script the gate can run as a lint/typecheck tool."""
+    path = tmp_path / name
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return str(path)
+
+
+def _set_rung_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    lint: list[str] | None = None,
+    typecheck: list[str] | None = None,
+) -> None:
+    """Pin lint_command / typecheck_command in the worker config."""
+    import hermes_cli.config as hcfg
+    from tools import kanban_tools as tools
+
+    cfg = {
+        "kanban": {
+            "review_gate": {
+                "enabled": True,
+                "command": None,
+                "lint_command": lint,
+                "typecheck_command": typecheck,
+            }
+        }
+    }
+    monkeypatch.setattr(tools, "load_config", lambda: cfg)
+    monkeypatch.setattr(hcfg, "load_config", lambda: cfg)
+    # Reset the per-project tool cache so a previous test's resolution can't
+    # bleed in (cache key is (python, key); fixture python differs per test,
+    # but be explicit).
+    tools._TOOL_CACHE.clear()
+
+
+def test_ladder_lint_fail_bounces_before_typecheck(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short-circuit: a lint failure bounces before typecheck ever runs.
+
+    Both lint and typecheck commands would fail here; because lint runs first
+    and short-circuits, the bounce must name lint, carry lint's output only,
+    and never execute typecheck.
+    """
+    ws = _add_worktree(repo, "ladder-lint-first")
+    _change_python_file(ws, "mymod.py", "OK = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_good():\n    assert 1 == 1\n")  # would pass
+
+    lint_script = _write_tool_script(tmp_path, "bad_lint.sh", "echo LINT PROBLEM\nexit 1")
+    tc_script = _write_tool_script(tmp_path, "bad_tc.sh", "echo TYPECHECK PROBLEM\nexit 1")
+    _set_rung_overrides(
+        monkeypatch,
+        lint=[lint_script, "{files}"],
+        typecheck=[tc_script, "{files}"],
+    )
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "lint fails"}))
+    assert "error" in resp
+    assert "'lint'" in resp["error"]  # names the rung
+    assert "LINT PROBLEM" in resp["error"]  # carries lint's tail
+    assert "TYPECHECK PROBLEM" not in resp["error"]  # typecheck never ran
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        body = comments[0].body
+        assert "FAILED on the 'lint' rung" in body
+        assert "LINT PROBLEM" in body
+        assert "TYPECHECK PROBLEM" not in body
+        # The ladder's own value is measurable: which rung bounced is recorded.
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "gate_bounced" in kinds
+        bounced = [e for e in kb.list_events(conn, tid) if e.kind == "gate_bounced"]
+        assert bounced[0].payload == {"rung": "lint"}
+
+
+def test_ladder_missing_linter_skipped_not_failed(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung whose tool is absent is SKIPPED (not a failure).
+
+    Here no linter is available (default resolution → nothing in the venv),
+    but a typecheck override is present and fails. The card must bounce on
+    typecheck — the skipped lint rung is not counted as a failure and the
+    bounce must name typecheck, not lint.
+    """
+    ws = _add_worktree(repo, "ladder-skip-lint")
+    _change_python_file(ws, "mymod.py", "OK = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_good():\n    assert 1 == 1\n")
+
+    tc_script = _write_tool_script(tmp_path, "bad_tc.sh", "echo TYPECHECK PROBLEM\nexit 1")
+    # lint_command left None → no linter in venv default chain → skipped.
+    _set_rung_overrides(monkeypatch, typecheck=[tc_script, "{files}"])
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "typecheck fails"}))
+    assert "error" in resp
+    assert "'typecheck'" in resp["error"]
+    assert "TYPECHECK PROBLEM" in resp["error"]
+
+    with kb.connect() as conn:
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert "FAILED on the 'typecheck' rung" in comments[0].body
+        bounced = [e for e in kb.list_events(conn, tid) if e.kind == "gate_bounced"]
+        assert bounced[0].payload == {"rung": "typecheck"}
+
+
+def test_ladder_all_green_proceeds_to_review(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every rung green (lint, typecheck, import/build, focused tests) → review,
+    exactly as before the ladder existed."""
+    ws = _add_worktree(repo, "ladder-all-green")
+    _change_python_file(ws, "mymod.py", "GOOD = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_good():\n    assert 1 == 1\n")
+
+    lint_ok = _write_tool_script(tmp_path, "ok_lint.sh", "exit 0")
+    tc_ok = _write_tool_script(tmp_path, "ok_tc.sh", "exit 0")
+    _set_rung_overrides(
+        monkeypatch,
+        lint=[lint_ok, "{files}"],
+        typecheck=[tc_ok, "{files}"],
+    )
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "all green"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def test_ladder_tool_detection_is_venv_scoped(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tool availability is scoped to the project venv, not the ambient PATH.
+
+    `ruff` is on many hosts' PATH but a project that does nothing special
+    should still skip the lint rung (default resolution). With an override the
+    rung runs regardless — proving the override is the project-scoped escape
+    hatch and the default probes the venv only.
+    """
+    ws = _add_worktree(repo, "ladder-venv-scope")
+    _change_python_file(ws, "mymod.py", "OK = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_good():\n    assert 1 == 1\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    # No override: venv has no ruff/flake8/pylint/mypy → rung skipped, not failed.
+    assert tools._resolve_tool(
+        str(repo / "venv" / "bin" / "python"), "lint", tools._LINT_TOOLS
+    ) is None
+    # The full gate still proceeds to review (skipped rungs are not failures).
+    resp = json.loads(tools._handle_request_review({"summary": "no tools, no override"}))
     assert resp.get("ok") is True, resp
     with kb.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"

@@ -398,7 +398,8 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   })
 
   // The captured descriptor owns routing even if the roster has changed.
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const rawSessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const sessionId = typeof rawSessionId === 'string' && rawSessionId.trim() ? rawSessionId : null
 
   if (onTurn && sessionId) {
     try {

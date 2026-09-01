@@ -653,7 +653,9 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  * The one place that answers "which backend serves profile P, and does its
  * REST path need a profile scope?". Six routes, in precedence order:
  *
- *  1. The primary profile owns the window backend outright.
+ *  1. The primary profile owns a local/window backend outright; on a global
+ *     remote its label is still carried per request because launch home can
+ *     differ from the selected profile.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
@@ -673,8 +675,18 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   const scopedProfile = connectionScopeKey(profile)
   const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
 
-  if (!scopedProfile || scopedProfile === primaryProfile) {
+  if (!scopedProfile) {
     return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (scopedProfile === primaryProfile) {
+    // A global remote is a multi-profile dashboard, not a backend process
+    // launched for this Desktop label. Even its "primary" label must travel on
+    // the wire: the dashboard's process HERMES_HOME can belong to a different
+    // launch profile, so a bare request silently reads that profile instead.
+    return opts.globalRemote
+      ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+      : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.profileRemoteOverride) {

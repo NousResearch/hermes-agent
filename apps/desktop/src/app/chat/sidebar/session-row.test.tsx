@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -208,7 +208,7 @@ describe('SidebarSessionRow running arc', () => {
   // The row owns its status subscription so a turn starting repaints that row
   // and nothing else — not its siblings, and not the list around them. Rows
   // render once per fiber, so counting `sessionTitle` counts repaints.
-  it('repaints only the session whose turn started', () => {
+  it('repaints only the session whose turn started', async () => {
     render(
       <>
         {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
@@ -233,7 +233,9 @@ describe('SidebarSessionRow running arc', () => {
       publishSessionState('s1', { ...createClientSessionState('s1'), busy: true })
     })
 
-    expect(sessionTitle).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      expect(sessionTitle).toHaveBeenCalledTimes(1)
+    })
     expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
   })
 })

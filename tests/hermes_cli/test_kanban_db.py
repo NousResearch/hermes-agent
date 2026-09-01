@@ -501,6 +501,7 @@ def test_provider_egress_crash_is_terminal_needs_attention(
 
         crashed = kb.detect_crashed_workers(conn)
         task = kb.get_task(conn, task_id)
+        assert kb.recompute_ready(conn) == 0
 
     assert task_id in crashed
     assert task is not None

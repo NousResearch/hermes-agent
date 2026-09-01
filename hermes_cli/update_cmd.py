@@ -1996,18 +1996,20 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     restored image cannot be silently overwritten by the corrupt database's WAL
     replay — see :func:`_clear_stale_sqlite_sidecars`.
 
-    Refuses (returns ``False``) while another process still holds the database
-    or its sidecars open: copying a snapshot over a live writer's inode makes
-    the writer's page cache and WAL index disagree with the file bytes, and
-    its next checkpoint writes pages at offsets that no longer mean what it
-    thinks — the #90950 page-1 clobber. ``None`` (scan unavailable) proceeds:
-    the updater has already drained gateways, and refusing on "unknown" would
-    disable auto-restore on every non-Linux host.
+    Refuses (returns ``False``) while another process — or a live connection
+    in THIS process — still holds the database or its sidecars open: copying a
+    snapshot over a live writer's inode makes the writer's page cache and WAL
+    index disagree with the file bytes, and its next checkpoint writes pages
+    at offsets that no longer mean what it thinks — the #90950 page-1 clobber.
+    ``None`` (scan unavailable) proceeds: the updater has already drained
+    gateways, and refusing on "unknown" would disable auto-restore on every
+    non-Linux host.
 
     Returns ``True`` when the restored file passes an integrity check. Raises
     ``OSError`` if the copy itself fails, which callers already report.
     """
     from hermes_cli.backup import _foreign_db_holder_pids, verify_sqlite_integrity
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 
     holders = _foreign_db_holder_pids(state_path)
     if holders:
@@ -2017,8 +2019,25 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
             "then restore manually with /snapshot restore."
         )
         return False
-    _clear_stale_sqlite_sidecars(state_path)
-    shutil.copy2(snap_state, state_path)
+    # The foreign-pid scan excludes THIS process on purpose, but an
+    # in-process SessionDB handle is exactly as much of a live holder:
+    # unlinking the -wal/-shm and copy2-ing over the main file under it
+    # leaves this process checkpointing through deleted-inode sidecars —
+    # the #90950 split brain produced first-party (proven live on main:
+    # `/proc/self/fd` shows `state.db-wal (deleted)` right after this ran
+    # under a tracked connection). ``offline_file_access`` fails CLOSED on
+    # any tracked live connection and holds the connection-lifecycle lock
+    # across the sidecar clear + copy so none can appear mid-swap.
+    try:
+        with offline_file_access(state_path, what="restore a snapshot over"):
+            _clear_stale_sqlite_sidecars(state_path)
+            shutil.copy2(snap_state, state_path)
+    except LiveConnectionError as exc:
+        print(
+            f"  ✗ Auto-restore refused: {exc} Close the in-process database "
+            "handles (or restart Hermes) and retry."
+        )
+        return False
     restored = verify_sqlite_integrity(
         state_path, check_header=True, run_pragma=True
     )

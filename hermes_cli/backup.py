@@ -749,6 +749,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
+        from hermes_cli.sqlite_safe_read import (
+            LiveConnectionError,
+            offline_file_access,
+        )
+
         try:
             holders = _foreign_db_holder_pids(dst)
             if holders:
@@ -764,23 +769,43 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                     dst, holders,
                 )
                 return False
-            tmp = dst.parent / f".{dst.name}.snap_restore"
-            shutil.copy2(src, tmp)
-            dst.unlink(missing_ok=True)
-            # Drop the destination's sidecars before installing the
-            # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
-            # image (see ``_safe_copy_db``) that owns no WAL, so any
-            # ``-wal``/``-shm`` still sitting here describes the database we
-            # just unlinked — an ungracefully killed gateway leaves them
-            # behind, which is exactly when a restore gets run. SQLite
-            # replays that foreign WAL over the restored file on the next
-            # open and the database comes up "malformed" (or silently
-            # resurrects post-snapshot rows). Same reasoning as
-            # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
-            for _sidecar_suffix in ("-wal", "-shm", "-journal"):
-                dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
-            shutil.move(str(tmp), str(dst))
+            # The foreign-pid scan above deliberately excludes THIS process,
+            # but an in-process SessionDB (the agent's own handle during
+            # /snapshot restore, a second SessionDB instance, a read pool)
+            # is exactly as much of a live holder: unlinking the DB and its
+            # sidecars under it leaves this process on deleted-inode fds —
+            # the same #90950 split brain, produced first-party (proven live
+            # on main: `/proc/self/fd` shows `state.db-wal (deleted)` right
+            # after this fallback ran under a tracked connection).
+            # ``offline_file_access`` fails CLOSED when any tracked
+            # connection to *dst* is live and holds the connection-lifecycle
+            # lock across the whole swap so no new connection can appear
+            # mid-replace.
+            with offline_file_access(dst, what="unlink+move restore of"):
+                tmp = dst.parent / f".{dst.name}.snap_restore"
+                shutil.copy2(src, tmp)
+                dst.unlink(missing_ok=True)
+                # Drop the destination's sidecars before installing the
+                # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
+                # image (see ``_safe_copy_db``) that owns no WAL, so any
+                # ``-wal``/``-shm`` still sitting here describes the database we
+                # just unlinked — an ungracefully killed gateway leaves them
+                # behind, which is exactly when a restore gets run. SQLite
+                # replays that foreign WAL over the restored file on the next
+                # open and the database comes up "malformed" (or silently
+                # resurrects post-snapshot rows). Same reasoning as
+                # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
+                for _sidecar_suffix in ("-wal", "-shm", "-journal"):
+                    dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
+                shutil.move(str(tmp), str(dst))
             return True
+        except LiveConnectionError as exc2:
+            logger.error(
+                "Refusing unlink+move restore of %s: %s Close the in-process "
+                "database handles (or restart Hermes) and retry.",
+                dst, exc2,
+            )
+            return False
         except Exception as exc2:
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False

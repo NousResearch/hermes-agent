@@ -447,15 +447,19 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
-                            force_document=False):
+                            force_document=False, title=None, priority=None):
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
-    else an error naming both; media uses the adapter's native media APIs under the same rules."""
+    else an error naming both; media uses the adapter's native media APIs under the same rules.
+    ``title``/``priority`` are notification hints for platforms that surface them (ntfy's X-Title /
+    X-Priority); platforms that don't ignore them."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner, adapter = _live_adapter(platform)
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
-                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {}),
+                        **({"title": title} if title else {}),
+                        **({"priority": priority} if priority is not None else {})} or None
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(  # noqa: E731
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
@@ -483,8 +487,13 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
     try:
+        # Only ntfy's standalone sender accepts title/priority; the others would reject the
+        # unexpected kwarg and fail the whole cron delivery.
+        notify_kw = ({**({"title": title} if title else {}),
+                      **({"priority": priority} if priority is not None else {})}
+                     if platform_name == "ntfy" else {})
         result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
-                              force_document=force_document)
+                              force_document=force_document, **notify_kw)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -555,8 +564,9 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
 
 
-def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
-    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
+def _via_adapter_route(p, pc, cid, chunk, media, tid, fd, title=None, priority=None):
+    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd,
+                             title=title, priority=priority)
 
 
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
@@ -587,10 +597,14 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None,
+                            title=None, priority=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
-    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text.
+    ``title`` is the optional notification title surfaced on platforms that support one (ntfy's
+    X-Title; cron passes the job's task name) and ``priority`` the ntfy X-Priority (1..5); other
+    platforms ignore both."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
@@ -637,7 +651,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
         send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
-            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
+            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document,
+            title=title, priority=priority)
     last_result = await _send_chunks(chunks, send_one)
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):

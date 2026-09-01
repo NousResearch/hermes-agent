@@ -412,6 +412,50 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_delivery_passes_task_name_as_title(self):
+        """Standalone cron delivery passes the job name as the notification
+        title so platforms like ntfy can surface it (X-Title)."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform("ntfy"): pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "test-job",
+                "name": "Falco weekly support report",
+                "deliver": "ntfy",
+                "origin": None,
+            }
+            _deliver_result(job, "Summary.")
+
+        assert send_mock.call_args.kwargs.get("title") == "Falco weekly support report"
+
+    def test_delivery_passes_priority_through_to_standalone(self):
+        """Cron delivery forwards an explicit priority to the standalone
+        sender (ntfy X-Priority), e.g. urgent for failures."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform("ntfy"): pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "test-job",
+                "name": "Falco weekly support report",
+                "deliver": "ntfy",
+                "origin": None,
+            }
+            _deliver_result(job, "Summary.", priority=5)
+
+        assert send_mock.call_args.kwargs.get("priority") == 5
+
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""

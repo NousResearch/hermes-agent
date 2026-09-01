@@ -1183,6 +1183,9 @@ class _TargetDelivery:
     inchannel_continuable: bool
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
+    # Notification hints for platforms that surface them (ntfy X-Title / X-Priority).
+    title: Optional[str] = None
+    priority: object = None
 
     @property
     def is_relay(self) -> bool:
@@ -1323,6 +1326,14 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     if t.origin_target and t.origin.get("scope_id"):
         route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
         media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
+
+    # The job's task name becomes the notification title on platforms that surface one (ntfy's
+    # X-Title); priority rides alongside it (ntfy X-Priority). Platforms that don't ignore both.
+    if t.title:
+        route_metadata["title"] = t.title
+        media_metadata["title"] = t.title
+    if t.priority is not None:
+        route_metadata["priority"] = t.priority
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -1546,7 +1557,7 @@ def _standalone_send(
     def _send():
         return _send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files, title=t.title, priority=t.priority)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1627,7 +1638,7 @@ def _deliver_standalone(
 
 def _prepare_target_delivery(
     job: dict, target: dict, *, adapters, loop, config, notify_delivery: bool, mirror_enabled: bool,
-    mirror_text: str, delivery_errors: list,
+    mirror_text: str, delivery_errors: list, title: Optional[str] = None, priority: object = None,
 ) -> Optional[_TargetDelivery]:
     """Per-target prologue of ``_deliver_result``: origin/mirror/in_channel gates, transport
     resolution, continuable-thread open. None (error noted in ``delivery_errors``) if unservable."""
@@ -1728,7 +1739,8 @@ def _prepare_target_delivery(
         origin=origin, origin_target=origin_target, origin_user_id=origin_user_id,
         is_dm_target=is_dm_target, mirror_text=mirror_text, mirror_this_target=mirror_this_target,
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
-        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
+        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
+        title=title, priority=priority)
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
@@ -1755,13 +1767,18 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False,
+    priority: object = None,
 ) -> Optional[str]:
     """Deliver job output to the configured target(s). With ``adapters``/``loop`` (gateway
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
-    ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
+    ``failure_deliver`` override when present (NS-788). ``priority`` (ntfy X-Priority, 1..5) is
+    threaded into delivery metadata; failures default to 5 (urgent) so they surface prominently.
+    Platforms that don't expose priority ignore it. Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
+    if priority is None and for_failure:
+        priority = 5
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1798,8 +1815,10 @@ def _deliver_result(
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
+    # The task name doubles as the notification title on platforms that surface one (ntfy's
+    # X-Title), so compute it whether or not wrapping is enabled.
+    task_name = job.get("name", job.get("id", "cron task"))
     if wrap_response:
-        task_name = job.get("name", job["id"])
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job.get('id', '')})\n"
@@ -1862,7 +1881,8 @@ def _deliver_result(
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,
             notify_delivery=notify_delivery,
-            mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
+            mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors,
+            title=task_name, priority=priority)
         if t is None:
             continue
         target_errors: list = []

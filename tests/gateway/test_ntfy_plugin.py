@@ -257,6 +257,101 @@ class TestSend:
         posted_url = mock_client.post.call_args[0][0]
         assert posted_url.endswith("/override-out")
 
+    def test_send_uses_metadata_title_header(self):
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send(
+            "hermes-in", "Body", metadata={"title": "Falco weekly support report"}
+        ))
+        assert result.success is True
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Title") == "Falco weekly support report"
+
+    def test_send_omits_title_header_without_metadata_title(self):
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Body"))
+        headers = mock_client.post.call_args[1]["headers"]
+        assert "X-Title" not in headers
+
+    def test_send_uses_metadata_priority_header(self):
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Body", metadata={"priority": 5}))
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Priority") == "5"
+
+    def test_send_accepts_priority_label(self):
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Body", metadata={"priority": "urgent"}))
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Priority") == "5"
+
+    def test_send_omits_priority_header_without_metadata_priority(self):
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Body"))
+        headers = mock_client.post.call_args[1]["headers"]
+        assert "X-Priority" not in headers
+
+    def test_send_ignores_invalid_priority(self):
+        """An out-of-range priority must be dropped, not forwarded, so it
+        can never degrade every notification or break the POST."""
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Body", metadata={"priority": 9}))
+        headers = mock_client.post.call_args[1]["headers"]
+        assert "X-Priority" not in headers
+
 
     def test_send_handles_timeout(self):
         adapter = self._make_adapter(topic="hermes-in")
@@ -429,6 +524,121 @@ class TestStandaloneSend:
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers.get("X-Tags") == _ntfy._ECHO_TAG
+
+    def test_emits_title_header_when_title_passed(self, monkeypatch):
+        """Cron out-of-process delivery surfaces the job's task name as the
+        ntfy notification title (X-Title header)."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-99"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(
+                pconfig, "hermes-in", "summary",
+                title="Falco weekly support report",
+            ))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Title") == "Falco weekly support report"
+
+    def test_omits_title_header_when_no_title(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-99"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(pconfig, "hermes-in", "summary"))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert "X-Title" not in headers
+
+    def test_emits_priority_header_when_priority_passed(self, monkeypatch):
+        """Cron out-of-process failure delivery surfaces urgent priority as
+        the ntfy X-Priority header."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-99"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(
+                pconfig, "hermes-in", "summary", priority=5,
+            ))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Priority") == "5"
+
+    def test_omits_priority_header_when_no_priority(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-99"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(pconfig, "hermes-in", "summary"))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert "X-Priority" not in headers
+
+
+class TestPriorityHeader:
+    """``_priority_header`` validates against ntfy's 1-5 range so a bad
+    value never silently degrades notifications to default."""
+
+    def test_none_returns_empty(self):
+        assert _ntfy._priority_header(None) == {}
+
+    def test_in_range_int(self):
+        assert _ntfy._priority_header(1) == {"X-Priority": "1"}
+        assert _ntfy._priority_header(5) == {"X-Priority": "5"}
+
+    def test_label_aliases(self):
+        assert _ntfy._priority_header("urgent") == {"X-Priority": "5"}
+        assert _ntfy._priority_header("min") == {"X-Priority": "1"}
+        assert _ntfy._priority_header("default") == {"X-Priority": "3"}
+
+    def test_out_of_range_dropped(self):
+        assert _ntfy._priority_header(0) == {}
+        assert _ntfy._priority_header(6) == {}
+        assert _ntfy._priority_header("bogus") == {}
+
+    def test_bool_rejected(self):
+        """bool is an int subclass; a bare True must not map to priority 1."""
+        assert _ntfy._priority_header(True) == {}
 
 
 # ---------------------------------------------------------------------------

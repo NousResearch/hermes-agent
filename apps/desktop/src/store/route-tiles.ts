@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { readJson, writeJson } from '@/lib/storage'
 
 import type { SplitDir } from './session-states'
@@ -43,6 +44,8 @@ export function openRouteTile(path: string, dir: SplitDir = 'right') {
   if (!tiles.some(t => t.path === path)) {
     saveTiles([...tiles, { dir, path }])
   }
+
+  revealTreePane(`route-tile:${path}`)
 }
 
 export function closeRouteTile(path: string) {

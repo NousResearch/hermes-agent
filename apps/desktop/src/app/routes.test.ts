@@ -1,9 +1,39 @@
 import { describe, expect, it } from 'vitest'
 
-import { NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { registry } from '@/contrib/registry'
+
+import {
+  isContributedRoute,
+  NEW_CHAT_ROUTE,
+  primaryRouteSelectedSessionId,
+  ROUTES_AREA,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from './routes'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
+
+describe('isContributedRoute', () => {
+  it('recognizes a live plugin route, ignores its query, and forgets it on unload', () => {
+    const dispose = registry.register({
+      area: ROUTES_AREA,
+      data: { path: '/kanban' },
+      id: 'kanban-page-test',
+      render: () => null,
+      source: 'plugin:kanban-test'
+    })
+
+    try {
+      expect(isContributedRoute('/kanban')).toBe(true)
+      expect(isContributedRoute('/kanban?view=board#today')).toBe(true)
+    } finally {
+      dispose()
+    }
+
+    expect(isContributedRoute('/kanban')).toBe(false)
+  })
+})
 
 describe('primaryRouteSelectedSessionId', () => {
   it('prefers the routed session id over a stale/different store selection (#59305)', () => {

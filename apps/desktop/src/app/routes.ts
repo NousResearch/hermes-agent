@@ -119,6 +119,11 @@ function isContributedPath(pathname: string): boolean {
   return contributedRoutes().some(route => route.path === pathname)
 }
 
+/** Whether `to` identifies a currently registered plugin route page. */
+export function isContributedRoute(to: string): boolean {
+  return isContributedPath(routePathname(to))
+}
+
 // ── Contributed sidebar nav — the `sidebar.nav` registry area ────────────────
 // A DATA contribution adds a row to the sidebar's top nav (below Artifacts).
 // Pair with a ROUTES_AREA page: the row navigates to `path` and lights up

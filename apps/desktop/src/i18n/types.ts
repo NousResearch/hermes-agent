@@ -1106,6 +1106,16 @@ export interface Translations {
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        prompt: {
+          title: string
+          body: string
+          bulletSnapshot: string
+          bulletLiveProfile: string
+          bulletLocal: string
+          dontShowAgain: string
+          notNow: string
+          enable: string
+        }
       }
     }
   }

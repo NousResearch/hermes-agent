@@ -1263,7 +1263,17 @@ export const en: Translations = {
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
-        failedSave: 'Could not save the real-profile setting'
+        failedSave: 'Could not save the real-profile setting',
+        prompt: {
+          title: 'Stay signed in to your sites',
+          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
+          bulletLiveProfile: 'Your live browser profile is never opened directly.',
+          bulletLocal: 'Nothing leaves this computer.',
+          dontShowAgain: "Don't show again",
+          notNow: 'Not now',
+          enable: 'Use my profile'
+        }
       }
     }
   },

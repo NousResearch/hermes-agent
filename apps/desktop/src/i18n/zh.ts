@@ -1453,7 +1453,17 @@ export const zh: Translations = {
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
         disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
-        failedSave: '无法保存真实配置文件设置'
+        failedSave: '无法保存真实配置文件设置',
+        prompt: {
+          title: '让网站保持登录状态',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
+          bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
+          bulletLocal: '所有数据都不会离开这台电脑。',
+          dontShowAgain: '不再显示',
+          notNow: '暂不',
+          enable: '使用我的配置文件'
+        }
       }
     }
   },

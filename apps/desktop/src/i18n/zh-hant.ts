@@ -1114,7 +1114,17 @@ export const zhHant = defineLocale({
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
         disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
-        failedSave: '無法儲存真實設定檔設定'
+        failedSave: '無法儲存真實設定檔設定',
+        prompt: {
+          title: '讓網站保持登入狀態',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
+          bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
+          bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
+          bulletLocal: '所有資料都不會離開這台電腦。',
+          dontShowAgain: '不再顯示',
+          notNow: '暫不',
+          enable: '使用我的設定檔'
+        }
       }
     }
   },

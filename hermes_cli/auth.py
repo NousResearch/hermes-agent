@@ -7866,7 +7866,26 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
                 return True, f"env: {env_var}"
     except Exception as exc:
         logger.debug("copilot-acp env token evidence check failed: %s", exc)
-    # 2. Known on-disk GitHub Copilot credential stores (the same locations
+    # 2. The Copilot CLI's own plaintext token store (~/.copilot/config.json,
+    #    written by `copilot login` when no OS keychain is available). The file
+    #    is JSONC — strip //-comment lines before parsing.
+    try:
+        cli_config = os.path.expanduser("~/.copilot/config.json")
+        if os.path.isfile(cli_config):
+            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+                raw = "\n".join(
+                    line for line in fh.read().splitlines()
+                    if not line.lstrip().startswith("//")
+                )
+            data = json.loads(raw) if raw.strip() else {}
+            tokens = data.get("copilotTokens")
+            if isinstance(tokens, dict) and any(
+                isinstance(v, str) and v.strip() for v in tokens.values()
+            ):
+                return True, "~/.copilot/config.json"
+    except Exception as exc:
+        logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
+    # 3. Known on-disk GitHub Copilot credential stores (the same locations
     #    models.py already fingerprints as external credential files).
     for cred_path in (
         "~/.config/github-copilot/hosts.json",

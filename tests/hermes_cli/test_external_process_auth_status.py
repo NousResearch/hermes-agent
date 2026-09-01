@@ -120,6 +120,86 @@ def test_empty_credential_store_is_not_evidence(tmp_path, monkeypatch, _clean_co
     assert status["auth_verified"] is False
 
 
+def test_auth_verified_from_copilot_cli_plaintext_store(tmp_path, monkeypatch, _clean_copilot_env):
+    # `copilot login` without an OS keychain writes the token into
+    # ~/.copilot/config.json (JSONC, with //-comment header lines).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".copilot"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        "// User settings belong in settings.json.\n"
+        "// This file is managed automatically.\n"
+        "{\n"
+        '  "copilotTokens": {"https://github.com:someuser": "gho_test"},\n'
+        '  "lastLoggedInUser": {"host": "https://github.com", "login": "someuser"}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    status = get_external_process_provider_status("copilot-acp")
+
+    assert status["auth_verified"] is True
+    assert status["auth_source"] == "~/.copilot/config.json"
+
+
+def test_copilot_cli_store_without_tokens_is_not_evidence(tmp_path, monkeypatch, _clean_copilot_env):
+    # A config.json exists after first launch even before any login —
+    # its presence alone must not read as signed-in.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".copilot"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        '// managed\n{"firstLaunchAt": "2026-01-01T00:00:00Z", "copilotTokens": {}}\n',
+        encoding="utf-8",
+    )
+
+    status = get_external_process_provider_status("copilot-acp")
+
+    assert status["auth_verified"] is False
+
+
+# --- desktop picker explicit-only filter ------------------------------------
+
+
+def test_explicit_filter_keeps_signed_in_external_process_row(tmp_path, monkeypatch, _clean_copilot_env):
+    # A verified CLI login leaves no trace in active_provider/config/env —
+    # the explicit-only desktop filter must treat it like the Anthropic OAuth
+    # carve-out and keep the row.
+    from hermes_cli.inventory import _filter_explicit_provider_rows
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".copilot"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        '{"copilotTokens": {"https://github.com:u": "gho_test"}}', encoding="utf-8"
+    )
+
+    class _Ctx:
+        current_provider = "nous"
+
+    rows = [{"slug": "copilot-acp", "models": ["gpt-5.4"]}]
+    kept = _filter_explicit_provider_rows(rows, _Ctx())
+
+    assert any(r["slug"] == "copilot-acp" for r in kept), \
+        "signed-in copilot-acp must survive the explicit-only picker filter"
+
+
+def test_explicit_filter_drops_unverified_external_process_row(tmp_path, monkeypatch, _clean_copilot_env):
+    # Merely having the executable on PATH is ambient discovery, not an
+    # explicit configuration — the desktop filter keeps its narrower contract.
+    from hermes_cli.inventory import _filter_explicit_provider_rows
+
+    monkeypatch.setenv("HOME", str(tmp_path))  # no credential stores
+
+    class _Ctx:
+        current_provider = "nous"
+
+    rows = [{"slug": "copilot-acp", "models": ["gpt-5.4"]}]
+    kept = _filter_explicit_provider_rows(rows, _Ctx())
+
+    assert all(r["slug"] != "copilot-acp" for r in kept)
+
+
 # --- Accounts-tab cli_command ------------------------------------------------
 
 

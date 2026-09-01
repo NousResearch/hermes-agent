@@ -166,3 +166,91 @@ async def test_telegram_long_flood_result_keeps_retry_after():
     assert result.retry_after == 30.0
 
 
+
+
+@pytest.mark.asyncio
+async def test_empty_fallback_resend_preserves_reply_anchor():
+    """The fresh-commit resend must carry the turn's reply anchor (#71047).
+
+    With reply_to_mode='first' the streamed preview is delivered as a reply
+    to the user's message. When a failed finalize edit forces the fresh
+    resend, the replacement message must use the same anchor so the visible
+    behavior matches the preview (and the non-streaming path).
+    """
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", initial_reply_to_id="111",
+    )
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    kwargs = adapter.send.await_args.kwargs
+    assert kwargs.get("reply_to") == "111"
+    # Preview replaced: deleted after the fresh final succeeded.
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_empty_fallback_preview_delete_retries_once(monkeypatch):
+    """A False (flood-rejected) preview delete gets one bounded retry."""
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+    adapter.delete_message = AsyncMock(side_effect=[False, True])
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    assert adapter.delete_message.await_count == 2
+    sleep.assert_awaited_once_with(1.0)
+    assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
+async def test_flood_capped_resend_keeps_single_bubble_reply_first(monkeypatch):
+    """#71047 Problem B end-to-end shape: preview as reply, finalize edit and
+    fresh resend both flood-capped — the gateway suppression decision must
+    keep the complete ACKed preview as the single visible bubble instead of
+    letting the normal final send create a second one.
+    """
+    adapter = _adapter()
+    # Fresh-commit resend flood-capped past the inline retry budget.
+    adapter.send.return_value = SendResult(
+        success=False,
+        error="flood_control:41.0",
+        retry_after=41.0,
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", initial_reply_to_id="111",
+    )
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    # Preview must NOT be deleted — it is the only copy of the answer.
+    adapter.delete_message.assert_not_awaited()
+    # Mirror the gateway/run.py suppression decision: content delivered and
+    # the recorded payload reconciles, so the normal final send is skipped.
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True

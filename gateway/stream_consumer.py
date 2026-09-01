@@ -2415,6 +2415,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=final_text,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(final=True),
                 )
             except Exception as exc:
@@ -2450,7 +2451,17 @@ class GatewayStreamConsumer:
                 if not stale_id or stale_id == new_message_id:
                     continue
                 try:
-                    await delete_fn(self.chat_id, stale_id)
+                    deleted = await delete_fn(self.chat_id, stale_id)
+                    if deleted is False:
+                        # Telegram's delete_message reports failure by
+                        # returning False, not raising. The same flood
+                        # window that broke the finalize edit can reject
+                        # this delete too, leaving the preview bubble next
+                        # to the fresh final (#71047 Problem B). One short
+                        # bounded retry clears the common transient case;
+                        # a second failure stays best-effort.
+                        await asyncio.sleep(1.0)
+                        await delete_fn(self.chat_id, stale_id)
                 except Exception as exc:
                     logger.debug(
                         "Empty fallback preview cleanup failed (%s): %s",

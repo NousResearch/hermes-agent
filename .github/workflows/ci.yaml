@@ -18,6 +18,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Operational recovery path: GitHub can occasionally terminate a push run
+  # before any job is created. A maintainer must be able to re-run the exact
+  # post-merge orchestration without manufacturing a source-only no-op commit.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -411,12 +411,10 @@ def selection_exists(section: str) -> bool:
 # happened and what to do. Declared data, one policy — add future removals
 # here, never as one-off string checks at call sites.
 REMOVED_BACKENDS: Dict[str, Dict[str, str]] = {
-    "web": {
-        "tavily": (
-            "the Tavily backend was removed in v0.21.0 "
-            "(keyless alternatives: exa, parallel, firecrawl, keenable)"
-        ),
-    },
+    # Currently empty: the Tavily removal (#99199) that introduced this
+    # registry was reverted by the #99731 restore. Future backend removals
+    # add an entry here, e.g.
+    #   "web": {"<name>": "the <Name> backend was removed in vX.Y.Z (...)"},
 }
 
 

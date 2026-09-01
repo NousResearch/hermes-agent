@@ -907,12 +907,16 @@ export function usePromptActions({
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
+        // Same rollback as restoreToMessage below: applyReloadOptimistic
+        // already hid/truncated the transcript, and leaving that in place
+        // after a rejected submit is what blanked the chat (#95745).
         updateSessionState(sessionId, state => ({
           ...state,
           busy: false,
           awaitingResponse: false,
           turnLive: false,
-          turnStartedAt: null
+          turnStartedAt: null,
+          messages
         }))
         notifyError(err, copy.regenerateFailed)
       }

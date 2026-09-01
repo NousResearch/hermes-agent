@@ -101,19 +101,7 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
   // after the running dot clears.
   await expect
     .poll(
-      async () => {
-        const labels = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('[role="status"],[aria-label]')).map(
-            el => `${el.tagName}:${el.getAttribute('aria-label')}`,
-          ),
-        )
-        console.log('DOT-DEBUG labels:', JSON.stringify(labels))
-        const sidebarText = await page.evaluate(
-          () => document.querySelector('[data-slot="sidebar"]')?.textContent?.slice(0, 300) ?? 'NO-SIDEBAR',
-        )
-        console.log('DOT-DEBUG sidebar:', JSON.stringify(sidebarText))
-        return page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
-      },
+      () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
       { timeout: 30_000, message: 'background dot should be visible after turn completes' },
     )
     .toBeGreaterThan(0)

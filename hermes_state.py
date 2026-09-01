@@ -9188,6 +9188,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reasoning_tokens: int = 0,
         estimated_cost_usd: Optional[float] = None,
         api_call_count: int = 1,
+        provider_name: Optional[str] = None,
+        native_tokens_prompt: int = 0,
+        native_tokens_cached: int = 0,
+        cache_discount: float = 0.0,
+        total_cost: float = 0.0,
     ) -> None:
         """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
 
@@ -9235,6 +9240,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 api_call_count=(
                     1 if api_call_count is None else int(api_call_count)
                 ),
+                provider_name=provider_name,
+                native_tokens_prompt=native_tokens_prompt,
+                native_tokens_cached=native_tokens_cached,
+                cache_discount=cache_discount,
+                total_cost=total_cost,
                 task=task,
             )
         self._execute_write(_do)

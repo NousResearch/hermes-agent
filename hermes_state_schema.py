@@ -893,6 +893,11 @@ class SessionSchemaMixin:
     actual_cost_usd REAL NOT NULL DEFAULT 0,
     cost_status TEXT,
     cost_source TEXT,
+    provider_name TEXT NOT NULL DEFAULT '',
+    native_tokens_prompt INTEGER NOT NULL DEFAULT 0,
+    native_tokens_cached INTEGER NOT NULL DEFAULT 0,
+    cache_discount REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
     first_seen REAL,
     last_seen REAL,
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
@@ -1195,6 +1200,11 @@ class SessionSchemaMixin:
                                    actual_cost_usd REAL NOT NULL DEFAULT 0,
                                    cost_status TEXT,
                                    cost_source TEXT,
+                                   provider_name TEXT NOT NULL DEFAULT '',
+                                   native_tokens_prompt INTEGER NOT NULL DEFAULT 0,
+                                   native_tokens_cached INTEGER NOT NULL DEFAULT 0,
+                                   cache_discount REAL NOT NULL DEFAULT 0,
+                                   total_cost REAL NOT NULL DEFAULT 0,
                                    first_seen REAL,
                                    last_seen REAL,
                                    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)

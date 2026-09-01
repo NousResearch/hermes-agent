@@ -4468,6 +4468,11 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
+                                provider_name=str(getattr(response, "provider_name", "") or ""),
+                                native_tokens_prompt=int(getattr(response.usage, "native_tokens_prompt", 0) or 0),
+                                native_tokens_cached=int(getattr(response.usage, "native_tokens_cached", 0) or 0),
+                                cache_discount=float(getattr(response.usage, "cache_discount", 0.0) or 0.0),
+                                total_cost=float(getattr(response.usage, "total_cost", 0.0) or 0.0),
                             )
                         except Exception as e:
                             # Log token persistence failures so they're

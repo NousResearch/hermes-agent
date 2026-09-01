@@ -40,6 +40,32 @@ def _usage_rows(db, session_id):
 
 
 class TestRecordAuxiliaryUsage:
+    def test_persists_native_billing_fields_for_main_and_aux_usage(self, db):
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=20,
+            model="main-model", billing_provider="openrouter", api_call_count=1,
+            provider_name="DeepInfra", native_tokens_prompt=110,
+            native_tokens_cached=40, cache_discount=0.9, total_cost=0.123,
+        )
+        db.record_auxiliary_usage(
+            "s1", "vision", model="vision-model",
+            billing_provider="openrouter", input_tokens=10, output_tokens=2,
+            provider_name="Together", native_tokens_prompt=12,
+            native_tokens_cached=3, cache_discount=0.5, total_cost=0.045,
+        )
+        rows = {row["task"]: row for row in _usage_rows(db, "s1")}
+        assert rows[""]["provider_name"] == "DeepInfra"
+        assert rows[""]["native_tokens_prompt"] == 110
+        assert rows[""]["native_tokens_cached"] == 40
+        assert rows[""]["cache_discount"] == 0.9
+        assert rows[""]["total_cost"] == 0.123
+        assert rows["vision"]["provider_name"] == "Together"
+        assert rows["vision"]["native_tokens_prompt"] == 12
+        assert rows["vision"]["native_tokens_cached"] == 3
+        assert rows["vision"]["cache_discount"] == 0.5
+        assert rows["vision"]["total_cost"] == 0.045
+
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")
         db.record_auxiliary_usage(

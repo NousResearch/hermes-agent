@@ -133,6 +133,11 @@ def record_aux_usage(
             cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
             estimated_cost_usd=estimated_cost,
+            provider_name=str(getattr(response, "provider_name", "") or ""),
+            native_tokens_prompt=int(getattr(raw_usage, "native_tokens_prompt", 0) or 0),
+            native_tokens_cached=int(getattr(raw_usage, "native_tokens_cached", 0) or 0),
+            cache_discount=float(getattr(raw_usage, "cache_discount", 0.0) or 0.0),
+            total_cost=float(getattr(raw_usage, "total_cost", 0.0) or 0.0),
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

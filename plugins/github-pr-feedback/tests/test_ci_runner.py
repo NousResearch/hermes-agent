@@ -361,6 +361,24 @@ def test_grouped_coordinator_preserves_typed_failed_receipt(
     ledger.close()
 
 
+def test_grouped_coordinator_preserves_runner_failure_reason(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    job = CIAuditJob(identity=identity, worktree=worktree, failure_lanes=("unit",))
+
+    class FailingRunner:
+        def run(self, _identity: CIAuditIdentity, _worktree: Path) -> CIAuditReceipt:
+            raise CIValidationError("Python interpreter mismatch", command_evidence=())
+
+    outcome = GroupedCICoordinator(lambda: FailingRunner(), max_parallel=1).run((job,))[0]
+
+    assert outcome.receipt is None
+    assert outcome.error == "audit_failed: CIValidationError: Python interpreter mismatch"
+
+
 def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     prepare_repository(worktree)

@@ -971,13 +971,21 @@ def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
     assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE
 
 
-def test_kanban_guidance_uses_github_cli_for_remote_list_intake():
-    """Workers must not build raw API scripts that cannot cross the egress boundary."""
+def test_kanban_guidance_uses_governed_pr_inspection_for_remote_intake():
+    """Workers must use the shared paginated, rate-gated PR inspection path."""
 
     from agent.prompt_builder import KANBAN_GUIDANCE
 
-    assert "`gh issue/pr list/view --json`" in KANBAN_GUIDANCE
-    assert "do not use raw `curl`" in KANBAN_GUIDANCE
+    assert "github-pr-feedback inspect-pr" in KANBAN_GUIDANCE
+    assert "do not use raw `gh pr view`" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_uses_shared_rate_gated_pr_inspection():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "github-pr-feedback inspect-pr" in KANBAN_GUIDANCE
+    assert "paginate issue comments, review comments, and reviews" in KANBAN_GUIDANCE
+    assert "do not use raw `gh pr view`" in KANBAN_GUIDANCE
 
 
 def test_kanban_guidance_resolves_board_context_before_needs_input_block():

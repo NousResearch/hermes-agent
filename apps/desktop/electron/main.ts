@@ -282,7 +282,6 @@ import { canAdmitLocalBackend, isUnlimitedPoolCapacity, PoolCapacityError, selec
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
-import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -291,6 +290,7 @@ import {
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { createProductionPermitController } from './production-permit'
+import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,

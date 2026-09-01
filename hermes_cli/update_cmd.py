@@ -4126,6 +4126,7 @@ def _repair_node_deps_on_current_checkout(
     gateway_mode: bool = False,
     pre_update_snapshot_id: str | None = None,
     completion_message: str = "✓ Already up to date!",
+    had_desktop_app_before_update: bool = False,
 ) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -4156,6 +4157,23 @@ def _repair_node_deps_on_current_checkout(
         gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
     )
+    # A current checkout can still owe a Desktop rebuild (#97343): the
+    # packaged app is built from source the pull already landed — or, on the
+    # Windows hand-off, by a child that never reaches the commits-pulled
+    # rebuild. Skipping it leaves a stale desktop app behind a
+    # successful-looking update. Self-gates on the build stamp, so this is a
+    # no-op when nothing changed.
+    if not _rebuild_desktop_after_update(
+        _m().PROJECT_ROOT / "apps" / "desktop",
+        had_desktop_app_before_update=had_desktop_app_before_update,
+    ):
+        # _rebuild_desktop_after_update already printed the retry hint; withhold
+        # success rather than claiming the update finished (#88251).
+        print_completion(
+            "⚠ Update partially complete — the desktop app was not rebuilt "
+            "and is still on the previous build."
+        )
+        return False
     return bool(print_completion(completion_message))
 
 
@@ -8647,9 +8665,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         gateway_mode=gateway_mode,
                         pre_update_snapshot_id=pre_update_snapshot_id,
                     )
-                    current_checkout_complete = _print_verified_update_completion(
-                        "✓ Update complete!"
-                    )
+                    # The Windows hand-off child lands here after doing the
+                    # sync its parent could not, and the commits-pulled
+                    # rebuild below is never reached — rebuild the Desktop
+                    # app here or it silently stays on the old build
+                    # (#97343).
+                    if _rebuild_desktop_after_update(
+                        desktop_dir,
+                        had_desktop_app_before_update=had_desktop_app_before_update,
+                    ):
+                        current_checkout_complete = _print_verified_update_completion(
+                            "✓ Update complete!"
+                        )
+                    else:
+                        current_checkout_complete = False
+                        _print_update_completion(
+                            "⚠ Update partially complete — the desktop app was "
+                            "not rebuilt and is still on the previous build."
+                        )
                 else:
                     current_checkout_complete = False
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
@@ -8665,6 +8698,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         if upstream_checked
                         else "✓ Up to date with your fork (official repo not checked)."
                     ),
+                    had_desktop_app_before_update=had_desktop_app_before_update,
                 )
             if runtime_repaired is not None and not _m()._is_windows():
                 print()

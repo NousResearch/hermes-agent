@@ -84,7 +84,9 @@ class _SharedExecuteEnv(BaseEnvironment):
         self.shell_commands.append(command)
         return command
 
-    def _wait_for_process(self, proc, *, timeout=None, bounded_capture=False):
+    def _wait_for_process(
+        self, proc, *, timeout=None, bounded_capture=False, watch_interrupt_tid=None
+    ):
         command = proc
 
         if "nohup env " in command:

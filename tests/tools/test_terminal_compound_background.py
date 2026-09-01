@@ -89,7 +89,9 @@ class _DockerWrapperProbe(env_docker.DockerEnvironment):
     def _run_bash(self, command, *, login=False, timeout=None, stdin_data=None):
         return None
 
-    def _wait_for_process(self, proc, *, timeout=None, bounded_capture=False):
+    def _wait_for_process(
+        self, proc, *, timeout=None, bounded_capture=False, watch_interrupt_tid=None
+    ):
         return {"output": "", "returncode": 0}
 
     def _update_cwd(self, result):
@@ -131,7 +133,9 @@ class _ProbeEnv(env_base.BaseEnvironment):
     def _run_bash(self, command, *, login=False, timeout=None, stdin_data=None):
         return None
 
-    def _wait_for_process(self, proc, *, timeout=None, bounded_capture=False):
+    def _wait_for_process(
+        self, proc, *, timeout=None, bounded_capture=False, watch_interrupt_tid=None
+    ):
         return {"output": "", "returncode": 0}
 
     def _update_cwd(self, result):

@@ -1096,7 +1096,7 @@ class TestNousDeviceAuthTimeoutMessage:
         assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
 
 
-def test_poll_for_token_timeout_raises_actionable_message():
+def test_poll_for_token_timeout_raises_actionable_message(monkeypatch):
     """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
     so both the CLI login and the dashboard poller (web_server._nous_poller,
     which surfaces str(e) to the UI) inherit it."""
@@ -1104,6 +1104,10 @@ def test_poll_for_token_timeout_raises_actionable_message():
     import pytest
 
     import hermes_cli.auth as auth_mod
+
+    # The RFC 8628 floor makes each pending sleep >= 5s — skip the real
+    # wait; the deadline check runs between polls regardless.
+    monkeypatch.setattr(auth_mod.time, "sleep", lambda _s: None)
 
     class _PendingClient:
         def post(self, url, data=None):
@@ -1130,6 +1134,119 @@ def test_poll_for_token_timeout_raises_actionable_message():
     assert "CAPTCHA" in msg
     assert "hermes portal" in msg
     assert "https://portal.nousresearch.com/login" in msg
+
+
+def _record_sleeps(monkeypatch, auth_mod):
+    sleeps: list[float] = []
+    monkeypatch.setattr(auth_mod.time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_poll_for_token_429_backs_off_and_recovers(monkeypatch):
+    """#87432: a 429 from the token endpoint mid-approval must be retried
+    with backoff (RFC 8628 §3.5 slow_down semantics), not abort the flow —
+    an abort orphaned the server-side approval and wedged the next device
+    code with a misleading 'device code was not recognized'."""
+    import httpx
+    from typing import cast
+
+    import hermes_cli.auth as auth_mod
+
+    sleeps = _record_sleeps(monkeypatch, auth_mod)
+
+    class _RateLimitedThenApproved:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            self.calls += 1
+            if self.calls == 1:
+                return httpx.Response(429, json={"error": "rate_limited"}, request=request)
+            return httpx.Response(200, json={"access_token": "tok"}, request=request)
+
+    payload = auth_mod._poll_for_token(
+        client=cast(httpx.Client, _RateLimitedThenApproved()),
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        device_code="device",
+        expires_in=300,
+        poll_interval=5,
+    )
+
+    assert payload == {"access_token": "tok"}
+    # 5s floor interval + 5s 429 backoff — one backing-off sleep, then the
+    # retry succeeded immediately.
+    assert sleeps == [10]
+
+
+def test_poll_for_token_honors_server_interval_slower_than_floor(monkeypatch):
+    """RFC 8628 §3.3: when the server directs a slower interval than the
+    5s floor, the client must slow down to it, not clamp it faster."""
+    import httpx
+    from typing import cast
+
+    import hermes_cli.auth as auth_mod
+
+    sleeps = _record_sleeps(monkeypatch, auth_mod)
+
+    class _PendingTwiceThenApproved:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            self.calls += 1
+            if self.calls <= 2:
+                return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
+            return httpx.Response(200, json={"access_token": "tok"}, request=request)
+
+    payload = auth_mod._poll_for_token(
+        client=cast(httpx.Client, _PendingTwiceThenApproved()),
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        device_code="device",
+        expires_in=300,
+        poll_interval=12,
+    )
+
+    assert payload == {"access_token": "tok"}
+    assert sleeps == [12, 12]
+
+
+def test_poll_for_token_floors_fast_server_interval(monkeypatch):
+    """#87432: the old code clamped the server interval to 1s, which the
+    portal rate limiter answered with 429s. A server interval below the
+    floor must be raised to it."""
+    import httpx
+    from typing import cast
+
+    import hermes_cli.auth as auth_mod
+
+    sleeps = _record_sleeps(monkeypatch, auth_mod)
+
+    class _PendingOnceThenApproved:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            self.calls += 1
+            if self.calls == 1:
+                return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
+            return httpx.Response(200, json={"access_token": "tok"}, request=request)
+
+    payload = auth_mod._poll_for_token(
+        client=cast(httpx.Client, _PendingOnceThenApproved()),
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        device_code="device",
+        expires_in=300,
+        poll_interval=1,
+    )
+
+    assert payload == {"access_token": "tok"}
+    assert sleeps == [auth_mod.DEVICE_AUTH_POLL_MIN_INTERVAL_SECONDS]
 
 
 def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
@@ -1178,3 +1295,52 @@ def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
     assert "CAPTCHA" in msg
     assert "hermes portal" in msg
     assert "https://portal.nousresearch.com/login" in msg
+
+
+def test_effective_device_poll_interval_non_numeric_falls_back():
+    """The server-directed interval is only presence-checked, never
+    type-checked — a non-numeric payload must fall back to the RFC 8628
+    default cadence instead of raising ValueError mid-login."""
+    import hermes_cli.auth as auth_mod
+
+    assert auth_mod._effective_device_poll_interval("junk") == 5
+    assert auth_mod._effective_device_poll_interval("5.5") == 5
+    assert auth_mod._effective_device_poll_interval(None) == 5
+    # Numeric values keep the existing floor/cap behavior.
+    assert auth_mod._effective_device_poll_interval(12) == 12
+    assert auth_mod._effective_device_poll_interval(1) == 5
+    assert auth_mod._effective_device_poll_interval(120) == 30
+
+
+def test_poll_for_token_survives_junk_interval_payload(monkeypatch):
+    """End-to-end guard: a junk `interval` in the device-authorization
+    response must not crash the poller — it polls at the 5s default."""
+    import httpx
+    from typing import cast
+
+    import hermes_cli.auth as auth_mod
+
+    sleeps = _record_sleeps(monkeypatch, auth_mod)
+
+    class _PendingThenApproved:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            self.calls += 1
+            if self.calls == 1:
+                return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
+            return httpx.Response(200, json={"access_token": "tok"}, request=request)
+
+    payload = auth_mod._poll_for_token(
+        client=cast(httpx.Client, _PendingThenApproved()),
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        device_code="device",
+        expires_in=300,
+        poll_interval="not-a-number",
+    )
+
+    assert payload == {"access_token": "tok"}
+    assert sleeps == [5]

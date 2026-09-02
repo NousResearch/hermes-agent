@@ -314,3 +314,88 @@ class TestAdvanceCompressionSession:
         assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
+class TestResetBoundaryNotice:
+    """A reset finalized through the #68539 fence must still notify (#89314).
+
+    The expiry watcher ends the session in state.db; if the sessions.json
+    entry is missing or stale by the time the next message arrives, recovery
+    returns None (the boundary fences it) and the fresh-session path used to
+    create a new session with was_auto_reset=False — silently dropping the
+    "session automatically reset" notice the live-entry path delivers."""
+
+    def test_fenced_reset_boundary_flags_auto_reset_on_fresh_session(
+        self, tmp_path,
+    ):
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        db = _db_returning({})
+        # Recovery finds nothing (the boundary fences it)...
+        db.find_latest_gateway_session_for_peer.return_value = None
+        # ...but the peer's latest durable row is a session_reset boundary.
+        db.find_latest_reset_boundary_for_peer.return_value = {
+            "id": "sid_reset",
+            "end_reason": "session_reset",
+            "ended_at": datetime.now().timestamp() - 60,
+            "last_activity": datetime.now().timestamp() - 3600,
+            "message_count": 41,
+        }
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+        # No in-memory entry: the routing index lost the mapping.
+
+        result = store.get_or_create_session(source)
+
+        assert result.was_auto_reset is True
+        assert result.auto_reset_reason == "idle"
+        assert result.reset_had_activity is True
+        assert result.prev_session_id == "sid_reset"
+
+    def test_explicit_new_command_boundary_never_flags_auto_reset(
+        self, tmp_path,
+    ):
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = None
+        # /new and other explicit boundaries are not automatic resets.
+        db.find_latest_reset_boundary_for_peer.return_value = {
+            "id": "sid_new",
+            "end_reason": "new_command",
+            "ended_at": datetime.now().timestamp() - 60,
+            "last_activity": datetime.now().timestamp() - 3600,
+            "message_count": 5,
+        }
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        result = store.get_or_create_session(source)
+
+        assert result.was_auto_reset is False
+        assert result.auto_reset_reason is None
+
+    def test_mode_none_never_flags_auto_reset(self, tmp_path):
+        source = _source()
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = None
+        db.find_latest_reset_boundary_for_peer.return_value = {
+            "id": "sid_reset",
+            "end_reason": "session_reset",
+            "ended_at": datetime.now().timestamp() - 60,
+            "last_activity": datetime.now().timestamp() - 3600,
+            "message_count": 3,
+        }
+        store = _make_store_with_db(tmp_path, db)  # mode="none"
+
+        result = store.get_or_create_session(source)
+
+        assert result.was_auto_reset is False
+
+

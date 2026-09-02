@@ -3466,9 +3466,11 @@ def get_model_context_length(
             if base_url and codex_source == "live":
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
-    if effective_provider == "gmi" and base_url:
-        # GMI exposes authoritative context_length via /models, but it is not
-        # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+    if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
+        # GMI and CommandCode (api.commandcode.ai) expose authoritative
+        # context_length via /models (e.g. muse-spark 1M) but are not in
+        # models.dev, and as known providers they skip step 2's
+        # custom-endpoint probe — without this they fell to the 256K fallback.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

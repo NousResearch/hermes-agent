@@ -291,27 +291,18 @@ _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
-# Whole-walk work limits (#78398). The per-file byte cap and recursion depth
-# above bound one read, not the walk: a command can reference arbitrarily many
-# files, and the pure-Python shlex lexer is expensive on thousands of short
-# lines (one lexer per line) and quadratic on one enormous token. In
-# production that unbounded breadth held the GIL for minutes on every gateway
-# terminal call. The budget is shared across one complete walk and charged
-# BEFORE any text reaches shlex.
-#
-# Exhaustion is fail-closed, matching the existing contract for one oversized
-# file: an unscanned referenced script could hide a lifecycle command. The
-# limits are sized well above any real wrapper graph (4x the per-file cap,
-# 16k lines, 1024 distinct scripts, 64 remote reads) so legitimate commands
-# never reach them — an exhausted walk is logged at WARNING so an operator
-# can tell it apart from a genuine lifecycle-command block.
-#
-# Local file reads are microseconds and every reference already costs a line
-# of budget, so the path cap is generous; a remote read is a backend
-# roundtrip, so it gets its own much tighter cap.
+# Whole-walk work limits (#78398). The per-file cap and depth bound above
+# limit one read, not the walk: a command can reference arbitrarily many
+# scripts, and the pure-Python shlex pass (one lexer per line, quadratic on a
+# giant token) once held the GIL for minutes on a broad command. These caps
+# bound one whole walk and are charged BEFORE any text reaches shlex.
+# Exhaustion fails closed (an unscanned script could hide a lifecycle command)
+# and is logged at WARNING so an operator can tell it from a real block. Sizes
+# sit well above any legitimate wrapper graph; remote reads are a backend
+# roundtrip each, so they get a far tighter cap than local paths.
 _MAX_LIFECYCLE_SCAN_BYTES = 4 * _MAX_REFERENCED_SCRIPT_BYTES
 _MAX_LIFECYCLE_SCAN_LINES = 16384
-_MAX_LIFECYCLE_SCAN_LINE_BYTES = 256 * 1024
+_MAX_LIFECYCLE_SCAN_LINE_BYTES = 64 * 1024
 _MAX_LIFECYCLE_SCAN_PATHS = 1024
 _MAX_LIFECYCLE_SCAN_REMOTE_READS = 64
 _CONTROL_CHARS = frozenset(";&|()")
@@ -348,8 +339,8 @@ class _LifecycleScanBudget:
         if lines > self.lines_remaining:
             return False
         # One huge token is the quadratic shlex case; bound the longest
-        # physical line (bytes >= chars, so a char check is sufficient to
-        # reject and the encode is only needed on the boundary).
+        # physical line. Measured in characters (a lower bound on bytes) —
+        # tight enough for a DoS bound without a per-line encode.
         longest = max((len(line) for line in text.split("\n")), default=0)
         if longest > _MAX_LIFECYCLE_SCAN_LINE_BYTES:
             return False
@@ -370,6 +361,17 @@ class _LifecycleScanBudget:
             return False
         self.remote_reads_remaining -= 1
         return True
+
+
+def _capped_read_limit(max_bytes: Optional[int]) -> int:
+    """Per-read byte cap: never above the per-file cap, never negative.
+
+    One definition so local and remote reads cannot diverge again (#76762,
+    #77703 were exactly that class of bug).
+    """
+    if max_bytes is None:
+        return _MAX_REFERENCED_SCRIPT_BYTES
+    return min(_MAX_REFERENCED_SCRIPT_BYTES, max(0, int(max_bytes)))
 
 
 def lifecycle_scan_root_within_budget(text: str) -> bool:
@@ -1017,9 +1019,7 @@ def _read_referenced_script(
     (#88052). The lexical check covers direct cloud paths; the resolved
     check covers local launchers that are symlinks into a cloud subtree.
     """
-    byte_limit = _MAX_REFERENCED_SCRIPT_BYTES
-    if max_bytes is not None:
-        byte_limit = min(byte_limit, max(0, int(max_bytes)))
+    byte_limit = _capped_read_limit(max_bytes)
     if _is_cloud_placeholder_path(path):
         return None, True
     try:
@@ -1123,9 +1123,7 @@ def _sanitize_remote_script_text(
         return None, False
     if "\x00" in text:
         return None, False
-    byte_limit = _MAX_REFERENCED_SCRIPT_BYTES
-    if max_bytes is not None:
-        byte_limit = min(byte_limit, max(0, int(max_bytes)))
+    byte_limit = _capped_read_limit(max_bytes)
     if len(text) > byte_limit:
         return None, True  # chars <= bytes: over the cap without encoding
     if len(text.encode("utf-8", errors="replace")) > byte_limit:

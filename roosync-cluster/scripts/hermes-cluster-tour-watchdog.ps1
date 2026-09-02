@@ -165,10 +165,14 @@ function Get-LastClusterHealthTimestamp {
         $lastTs = $null
         foreach ($m in $blocks) {
             $blockBody = $m.Groups[2].Value
-            # Match the tour's section TITLE only ("## [CLUSTER-HEALTH] T#N"), NOT a
-            # bare mention of the string — the [WARN] body itself says "no append
-            # [CLUSTER-HEALTH]" and would otherwise self-validate as a posted tour.
-            if ($blockBody -match "(?m)^## \[CLUSTER-HEALTH\]") {
+            # Match the tour's section TITLE only, NOT a bare mention — the [WARN]
+            # body itself says "no append [CLUSTER-HEALTH]" and would otherwise
+            # self-validate as a posted tour. Two title formats exist:
+            #   old (<=T#71): "## [CLUSTER-HEALTH] T#71 — 2026-09-01T12:20Z"
+            #   new (>=T#72): "[CLUSTER-HEALTH] T#72 — Hermes (po-2026), 02/09 00:20Z"
+            # Line-anchored + mandatory "T#<digits>" right after the tag: the WARN
+            # body only mentions [CLUSTER-HEALTH] mid-line, never as "T#N" at start.
+            if ($blockBody -match "(?m)^#{0,2}\s*\[CLUSTER-HEALTH\]\s+T#\d+") {
                 $t = ConvertTo-UtcDateTime $m.Groups[1].Value
                 if ($null -ne $t) { $lastTs = $t }
             }
@@ -250,7 +254,11 @@ if ($isNewFire -and $fireAgeMin -ge $PostMarginMinutes) {
     $detail = "no new fire since last check ($prevChecked)"
 }
 
-Write-Log "verdict=$verdict | $detail | last_run_at=$($lastRunAt.ToString('o',$Invariant)) | last_health=$($lastHealth.ToString('o',$Invariant)) | ok=$($state.OkCount) missing=$($state.MissingCount)"
+# $lastHealth can legitimately be $null (no tour block in global.md yet, or the
+# file was unreadable) — guard the interpolation, an unguarded .ToString() here
+# crashed the script with exit 1 BEFORE any log line (2026-09-01T23:37Z incident).
+$lastHealthStr = if ($null -ne $lastHealth) { $lastHealth.ToString('o', $Invariant) } else { "none" }
+Write-Log "verdict=$verdict | $detail | last_run_at=$($lastRunAt.ToString('o',$Invariant)) | last_health=$lastHealthStr | ok=$($state.OkCount) missing=$($state.MissingCount)"
 
 $okCount    = $state.OkCount
 $missingCount = $state.MissingCount

@@ -561,12 +561,39 @@ def _completed_reasoning_text(item: Any) -> str:
     return text.strip() if isinstance(text, str) else ""
 
 
+def _reasoning_tail_ignoring_whitespace(completed: str, streamed: str) -> str | None:
+    """Match ``streamed`` against ``completed`` ignoring whitespace differences.
+
+    The delta path only inserts a blank line between summary parts when the wire
+    carries ``summary_index``; a backend that streams unindexed reasoning
+    concatenates its parts with no separator while the completed item joins them
+    with ``\n\n``. The visible characters are identical, so compare those and
+    slice the tail out of the ORIGINAL ``completed`` to keep its separators.
+
+    Returns ``None`` when the streamed text is not a whitespace-insensitive
+    prefix, leaving the byte-exact caller to decide.
+    """
+    position = 0
+    for char in streamed:
+        if char.isspace():
+            continue
+        while position < len(completed) and completed[position].isspace():
+            position += 1
+        if position >= len(completed) or completed[position] != char:
+            return None
+        position += 1
+    return completed[position:]
+
+
 def _missing_reasoning_tail(completed: str, streamed: str) -> str:
-    """Return completed reasoning not already delivered as deltas."""
+    """Return completed reasoning not already delivered, tolerating separator drift."""
     if not streamed:
         return completed
     if completed.startswith(streamed):
         return completed[len(streamed):]
+    tail = _reasoning_tail_ignoring_whitespace(completed, streamed)
+    if tail is not None:
+        return tail
     if completed not in streamed:
         return completed
     return ""

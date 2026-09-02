@@ -80,7 +80,7 @@ describe('model-status-label', () => {
 
   it('does not deduplicate when provider is only a substring of model prefix', () => {
     // 'openai-custom/gpt-6' does NOT have prefix 'openai/', so 'openai' should not be stripped
-    expect(formatModelStatusLabel('openai-custom/gpt-6', { provider: 'openai' })).toBe('Gpt-6 · openai · Med')
+    expect(formatModelStatusLabel('openai-custom/gpt-6', { provider: 'openai' })).toBe('GPT-6 · openai · Med')
   })
 
   it('handles provider names with custom colons or slashes', () => {

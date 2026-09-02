@@ -250,6 +250,48 @@ class _ThreadContextCache:
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
+_AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
+
+
+def _sdk_supports_agent_sessions() -> bool:
+    """Whether the installed slack-sdk ships the Agent Sessions API.
+
+    Slack is deprecating the Assistant messaging experience in February 2027:
+    ``assistant.threads.setStatus`` / ``assistant.threads.setTitle`` are
+    replaced by ``agents.sessions.setStatus`` / ``agents.sessions.rename``
+    (typed methods landed in slack-sdk 3.44.0). Checked on the SDK class —
+    never on a client instance, where mock auto-attributes would lie.
+    """
+    global _AGENT_SESSIONS_SUPPORTED
+    if _AGENT_SESSIONS_SUPPORTED is None:
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient
+            _AGENT_SESSIONS_SUPPORTED = callable(
+                getattr(AsyncWebClient, "agents_sessions_setStatus", None)
+            )
+        except Exception:
+            _AGENT_SESSIONS_SUPPORTED = False
+    return _AGENT_SESSIONS_SUPPORTED
+
+
+def _session_status_method(client: Any):
+    """Return the status setter: Agent Sessions API when available, else legacy."""
+    if _sdk_supports_agent_sessions():
+        method = getattr(client, "agents_sessions_setStatus", None)
+        if method is not None:
+            return method
+    return client.assistant_threads_setStatus
+
+
+def _session_title_method(client: Any):
+    """Return the title setter: ``agents.sessions.rename`` when available, else legacy."""
+    if _sdk_supports_agent_sessions():
+        method = getattr(client, "agents_sessions_rename", None)
+        if method is not None:
+            return method
+    return client.assistant_threads_setTitle
+
+
 def slack_deps_present() -> bool:
     """PASSIVE probe: are slack-bolt/slack-sdk importable right now?
     Registry ``check_fn`` (status displays, config loading) — must never install. The active
@@ -2451,8 +2493,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
         """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
         try:
-            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
-                channel_id=chat_id, thread_ts=thread_ts, status=status)
+            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 
@@ -3430,10 +3472,10 @@ class SlackAdapter(BasePlatformAdapter):
             return
         title = title[:77].rstrip() + "..." if len(title) > 80 else title
         try:
-            await self._get_client(channel_id, team_id=team_id).assistant_threads_setTitle(
-                channel_id=channel_id, thread_ts=thread_ts, title=title)
+            _set_title = _session_title_method(self._get_client(channel_id, team_id=team_id))
+            await _set_title(channel_id=channel_id, thread_ts=thread_ts, title=title)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setTitle failed: %s", e)
+            logger.debug("[Slack] session title set failed: %s", e)
             return
         self._titled_assistant_threads.add(key)
         # Evict oldest thread_ts first so recently titled threads keep their guard.

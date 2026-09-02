@@ -445,8 +445,13 @@ def _serialize_payload(
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
+    # Resolved at fire time from the bound home so a multiplexed gateway's
+    # receivers can tell which profile emitted the event (#92674).
+    from hermes_cli.profiles import get_active_profile_name
+
     payload = {
         "hook_event_name": event,
+        "profile": get_active_profile_name(),
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",

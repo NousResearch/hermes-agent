@@ -301,6 +301,23 @@ class TestPayload:
         assert payload["delivery_id"] == "did_1234"
         assert payload["timestamp"].endswith("Z")
 
+    def test_profile_field_reflects_bound_profile_home(self, tmp_path, monkeypatch):
+        """Receivers behind a multiplexed gateway need to know which profile
+        fired (#92674): ``profile`` follows the bound home at fire time."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "b"
+        profile_home.mkdir(parents=True)
+        token = set_hermes_home_override(profile_home)
+        try:
+            body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_1")
+        finally:
+            reset_hermes_home_override(token)
+        assert json.loads(body)["profile"] == "b"
+        body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_2")
+        assert json.loads(body)["profile"] == "default"
+
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
             "on_session_end", {"weird": object()}, "did_1"

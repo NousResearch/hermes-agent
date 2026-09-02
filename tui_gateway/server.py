@@ -3462,7 +3462,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 home_token = set_hermes_home_override(profile_home)
                 try:
                     from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                    from hermes_cli.env_loader import hydrate_profile_secret_sources
 
+                    hydrate_profile_secret_sources(Path(profile_home))
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass

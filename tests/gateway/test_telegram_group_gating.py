@@ -860,6 +860,66 @@ def test_collectible_username_not_suppressed_by_other_bot_mention():
     assert adapter._should_process_message(message) is True
 
 
+def test_human_handles_still_do_not_act_as_routing_hints():
+    """Widening self-matching must not make human @handles suppress this bot."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+    text = "@alice can you check this"
+    message = _group_message(text, entities=_mention_entities(text, ["@alice"]))
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is False
+
+
+def test_messages_addressed_to_a_different_bot_are_still_suppressed():
+    """The multi-bot exclusivity contract is preserved."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+    text = "@other_helper_bot do it"
+    message = _group_message(text, entities=_mention_entities(text, ["@other_helper_bot"]))
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is True
+    assert adapter._should_process_message(message) is False
+
+
+def test_clean_bot_trigger_text_strips_the_current_handle():
+    """Prefix stripping must follow a rename, not the stale cached handle."""
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+    adapter._note_bot_username("new_helper_bot")
+
+    assert adapter._clean_bot_trigger_text("@new_helper_bot ship it") == "ship it"
+
+
+def test_clean_bot_trigger_text_preserves_targeted_command_argument_boundary():
+    """Removing /cmd@bot must not concatenate the command and its arguments."""
+    adapter = _make_adapter(require_mention=True, bot_username="KodyaDutyBot")
+
+    cleaned = adapter._clean_bot_trigger_text(
+        "/collab@KodyaDutyBot Проверь правила остановки"
+    )
+
+    assert cleaned == "/collab Проверь правила остановки"
+
+
+def test_text_path_promotes_slash_event_before_group_observe_attribution():
+    """Entity-less slash commands must not receive shared-history attribution."""
+    adapter = _make_adapter(
+        require_mention=True,
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        bot_username="KodyaDutyBot",
+    )
+    msg = _group_message("/collab@KodyaDutyBot check loop rules")
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=1005)
+    event.text = adapter._clean_bot_trigger_text(event.text) or ""
+
+    event = adapter._promote_text_command_event(event)
+    event = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert event.message_type == MessageType.COMMAND
+    assert event.get_command() == "collab"
+    assert event.text == "/collab check loop rules"
+    assert event.source.user_id == "111"
+
+
 def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
     """A never-checked identity is stale even when monotonic() is near zero.
 

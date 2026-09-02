@@ -613,6 +613,7 @@ export interface DesktopWallpaperPalette {
 export interface DesktopWallpaperSelectResult {
   asset: DesktopWallpaperAsset | null
   canceled: boolean
+  palette?: DesktopWallpaperPalette | null
 }
 
 export interface DesktopMarketplaceSearchItem {

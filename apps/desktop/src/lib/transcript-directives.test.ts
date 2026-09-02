@@ -44,8 +44,18 @@ describe('parseTranscriptDirective', () => {
     expect(parseTranscriptDirective('::Vector')).toBeNull()
   })
 
-  it('rejects unquoted attribute values', () => {
-    expect(parseTranscriptDirective('::preview{file=demo.html}')?.attrs).toEqual({})
+  it('rejects an attribute body that yields no attributes', () => {
+    // `{file=demo.html}` used to parse into an empty-props directive, so the
+    // panel mounted blank instead of reporting a drop.
+    expect(parseTranscriptDirective('::preview{file=demo.html}')).toBeNull()
+  })
+
+  it('still accepts a directive with no attribute body at all', () => {
+    // Rejecting a NON-EMPTY body that yields nothing must not break the
+    // legitimately attribute-less forms.
+    expect(parseTranscriptDirective('::sep')?.attrs).toEqual({})
+    expect(parseTranscriptDirective('::sep{}')?.attrs).toEqual({})
+    expect(parseTranscriptDirective('::sep{   }')?.attrs).toEqual({})
   })
 
   it('bounds pathological input instead of scanning it', () => {

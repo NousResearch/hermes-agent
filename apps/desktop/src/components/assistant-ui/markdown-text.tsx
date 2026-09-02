@@ -10,6 +10,7 @@ import {
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { DirectiveDropBadge } from '@/components/assistant-ui/directive-drop-badge'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -536,10 +537,16 @@ function MarkdownParagraph({
   // A paragraph that addresses a directive but will not become a widget —
   // malformed, or claimed by nobody. It renders as its own raw source, which
   // reads like model junk rather than a dropped panel; say so in the log.
-  useDirectiveDropWarning(plain, claimed, streaming ?? false)
+  const dropReason = useDirectiveDropWarning(plain, claimed, streaming ?? false)
 
   if (claimed && plain !== null) {
     return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  }
+
+  // Dropped directive: show the marker instead of the raw `::name{...}`, which
+  // otherwise reads as model junk rather than a panel this app failed to mount.
+  if (dropReason !== null && plain !== null) {
+    return <DirectiveDropBadge reason={dropReason} source={plain} />
   }
 
   return (

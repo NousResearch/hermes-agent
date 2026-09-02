@@ -79,10 +79,16 @@ describe('MarkdownTextContent transcript directives', () => {
     }
   })
 
-  it('leaves an unclaimed directive as text', () => {
+  it('marks an unclaimed directive instead of leaking its source as prose', () => {
     const { container } = render(<MarkdownTextContent isRunning={false} text='::nobodyclaims{p1="x"}' />)
 
-    expect(container.textContent).toContain('::nobodyclaims')
+    const badge = container.querySelector('[data-testid="directive-drop-badge"]')
+
+    // The raw `::name{...}` reads as model junk, so it must not be the visible
+    // text; it stays reachable in `title` so a bug report can quote it.
+    expect(badge).not.toBeNull()
+    expect(container.textContent).not.toContain('::nobodyclaims')
+    expect(badge?.getAttribute('title')).toContain('::nobodyclaims')
   })
 })
 
@@ -220,5 +226,66 @@ describe('MarkdownTextContent preview directive', () => {
     } finally {
       dispose()
     }
+  })
+})
+
+/**
+ * The badge is the user-facing half of the diagnostics. It must appear for a
+ * dropped panel and must NOT appear for ordinary prose, a working directive,
+ * or a directive still arriving.
+ */
+describe('MarkdownTextContent directive drop badge', () => {
+  const disposers: Array<() => void> = []
+
+  function withFollowup() {
+    disposers.push(registerFollowup())
+  }
+
+  afterEach(() => {
+    cleanup()
+    disposers.splice(0).forEach(dispose => dispose())
+    resetDirectiveDiagnostics()
+  })
+
+  it('names the reason for a malformed directive', () => {
+    const { container } = render(<MarkdownTextContent isRunning={false} text='::followup{p1=unquoted}' />)
+
+    const badge = container.querySelector('[data-testid="directive-drop-badge"]')
+
+    expect(badge?.textContent).toContain('Malformed')
+  })
+
+  it('names the missing panel when other plugins are registered', () => {
+    withFollowup()
+
+    const { container } = render(<MarkdownTextContent isRunning={false} text='::chart{id="1"}' />)
+
+    expect(container.querySelector('[data-testid="directive-drop-badge"]')?.textContent).toContain('chart')
+  })
+
+  it('stays away from a directive that renders', () => {
+    withFollowup()
+
+    const { container } = render(<MarkdownTextContent isRunning={false} text='::followup{p1="go"}' />)
+
+    expect(container.querySelector('[data-testid="directive-drop-badge"]')).toBeNull()
+    expect(screen.getByTestId('followup-panel')).toBeTruthy()
+  })
+
+  it('stays away while the directive is still streaming', () => {
+    // Every prefix of an arriving directive is malformed; badging them would
+    // flicker a warning through the whole emission.
+    const { container } = render(<MarkdownTextContent isRunning text='::followup{p1="Bắn m' />)
+
+    expect(container.querySelector('[data-testid="directive-drop-badge"]')).toBeNull()
+  })
+
+  it('leaves ordinary prose that merely mentions a directive alone', () => {
+    const { container } = render(
+      <MarkdownTextContent isRunning={false} text='Use ::followup{p1="x"} to add prompts, he said.' />
+    )
+
+    expect(container.querySelector('[data-testid="directive-drop-badge"]')).toBeNull()
+    expect(container.textContent).toContain('::followup')
   })
 })

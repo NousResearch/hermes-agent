@@ -86,10 +86,19 @@ export function parseTranscriptDirective(text: string): ParsedTranscriptDirectiv
   }
 
   const attrs: Record<string, string> = {}
+  const body = match[2] ?? ''
 
-  if (match[2]) {
-    for (const pair of match[2].matchAll(ATTR_RE)) {
+  if (body) {
+    for (const pair of body.matchAll(ATTR_RE)) {
       attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
+    }
+
+    // A brace body that yields no attributes is a malformed directive, not an
+    // attribute-less one: `::followup{p1=unquoted}` would otherwise parse
+    // "successfully" into an empty-props panel that renders blank. Reject it
+    // so the caller reports a drop instead of mounting an empty widget.
+    if (Object.keys(attrs).length === 0 && body.trim() !== '') {
+      return null
     }
   }
 
@@ -142,6 +151,10 @@ export function describeDirectiveParseFailure(text: string): string | null {
 
   if (!/^::[a-z][a-z0-9-]{0,63}/.test(trimmed)) {
     return 'directive name must be lowercase [a-z][a-z0-9-]*'
+  }
+
+  if (open >= 0 && close > open && !/=\s*["']/.test(trimmed.slice(open + 1, close))) {
+    return 'attribute values must be quoted, e.g. key="value"'
   }
 
   return 'directive did not match ::name{key="value"}'

@@ -171,6 +171,48 @@ async def test_executor_refuses_new_work_before_session_db_close():
         gw_mod.GatewayRunner._get_executor(gw)
 
 
+@pytest.mark.asyncio
+async def test_stuck_worker_skips_the_session_db_close():
+    """A worker that outlives the quiesce budget must not be raced by close().
+
+    Reporting the live worker with a "may reopen state.db" warning is not
+    enough: the close()/checkpoint itself is the operation that raced the
+    late write and produced the wrong-page-number corruption in #101093,
+    so the close path has to be skipped whenever a worker survives the
+    budget, not merely logged around.
+    """
+    events = []
+    gw = _FakeGateway(events)
+    release = threading.Event()
+    started = threading.Event()
+
+    def _stuck():
+        started.set()
+        release.wait(5.0)
+        events.append("worker_write")
+
+    future = gw._executor.submit(_stuck)
+    assert started.wait(2.0), "worker never started"
+
+    # Force the quiesce budget to 0 so the worker is deterministically still
+    # alive when `_shutdown_executor` returns, without sleeping through the
+    # real 2s ceiling.
+    original_timeout = gw_mod._EXECUTOR_QUIESCE_TIMEOUT
+    gw_mod._EXECUTOR_QUIESCE_TIMEOUT = 0.0
+    try:
+        await gw_mod.GatewayRunner.stop(gw)
+    finally:
+        gw_mod._EXECUTOR_QUIESCE_TIMEOUT = original_timeout
+
+    assert "close:session_db" not in events, (
+        f"SessionDB was closed/checkpointed while a worker was still alive: {events}"
+    )
+
+    release.set()
+    future.result(timeout=5)
+    assert "worker_write" in events, "worker never finished"
+
+
 def test_shutdown_executor_defaults_to_no_wait():
     """The no-argument call keeps the historical fire-and-forget contract."""
     gw = _FakeGateway([])

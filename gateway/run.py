@@ -16849,9 +16849,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self, drain_timeout=_exec_quiesce_budget
             )
             if _exec_live:
+                # A live worker can still be mid-write against a SessionDB
+                # handle. Checkpointing/closing it now is exactly the
+                # sequence that produced the wrong-page-number corruption in
+                # #101093, so the close path below is skipped entirely
+                # rather than raced — the handle is left open for SQLite to
+                # recover from its own WAL on the next open, which is a
+                # transient "database is locked" on an immediate --replace
+                # at worst, not a corrupt file.
                 logger.warning(
                     "Shutdown phase: %d executor worker(s) still running after "
-                    "a %.2fs quiesce — a late write may reopen state.db",
+                    "a %.2fs quiesce — skipping the SessionDB close/checkpoint "
+                    "to avoid racing a live write (#101093); handles are left "
+                    "open for SQLite to recover on next open",
                     _exec_live,
                     _exec_quiesce_budget,
                 )
@@ -16861,57 +16871,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _phase_elapsed(),
                 )
 
-            # Close SQLite session DBs so the WAL write lock is released.
-            # Without this, --replace and similar restart flows leave the
-            # old gateway's connection holding the WAL lock until Python
-            # actually exits — causing 'database is locked' errors when
-            # the new gateway tries to open the same file.
-            # ``self`` holds the DB at ``_session_db`` (an AsyncSessionDB facade);
-            # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
-            _self_db = getattr(self, "_session_db", None)
-            _self_db = getattr(_self_db, "_db", _self_db)
-            for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
-                if _db is None or not hasattr(_db, "close"):
-                    continue
+                # Close SQLite session DBs so the WAL write lock is released.
+                # Without this, --replace and similar restart flows leave the
+                # old gateway's connection holding the WAL lock until Python
+                # actually exits — causing 'database is locked' errors when
+                # the new gateway tries to open the same file.
+                # ``self`` holds the DB at ``_session_db`` (an AsyncSessionDB facade);
+                # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
+                _self_db = getattr(self, "_session_db", None)
+                _self_db = getattr(_self_db, "_db", _self_db)
+                for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
+                    if _db is None or not hasattr(_db, "close"):
+                        continue
+                    try:
+                        _db.close()
+                    except Exception as _e:
+                        logger.debug("SessionDB close error: %s", _e)
+                # A multiplexed session_store caches one SessionDB per profile
+                # path (#88532); reading ``_db`` above only resolved the handle
+                # for the shutdown task's own (root) scope. Sweep the rest so
+                # secondary profiles' WAL locks are released before --replace
+                # brings a new gateway up on the same files.
+                _sweep = getattr(
+                    getattr(self, "session_store", None), "close_all_db_handles", None
+                )
+                if _sweep is not None:
+                    try:
+                        _sweep()
+                    except Exception as _e:
+                        logger.debug("SessionDB handle sweep error: %s", _e)
+                # Same sweep for the runner's own per-profile session_search
+                # handles (slash commands resolve them under profile scopes).
                 try:
-                    _db.close()
+                    GatewayRunner.close_all_session_db_handles(self)
                 except Exception as _e:
-                    logger.debug("SessionDB close error: %s", _e)
-            # A multiplexed session_store caches one SessionDB per profile
-            # path (#88532); reading ``_db`` above only resolved the handle
-            # for the shutdown task's own (root) scope. Sweep the rest so
-            # secondary profiles' WAL locks are released before --replace
-            # brings a new gateway up on the same files.
-            _sweep = getattr(
-                getattr(self, "session_store", None), "close_all_db_handles", None
-            )
-            if _sweep is not None:
+                    logger.debug("Runner SessionDB handle sweep error: %s", _e)
+                # Final sweep: close any shared SessionDB instances still held by
+                # the process-wide registry (in-process tools, cron, mirror, etc.
+                # that opened via get_shared_session_db but weren't released by
+                # the sweeps above).  This is the safety net that guarantees no
+                # WAL write lock survives past gateway shutdown (#90837).
                 try:
-                    _sweep()
+                    from hermes_state import close_shared_session_dbs
+                    closed = close_shared_session_dbs()
+                    if closed:
+                        logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
                 except Exception as _e:
-                    logger.debug("SessionDB handle sweep error: %s", _e)
-            # Same sweep for the runner's own per-profile session_search
-            # handles (slash commands resolve them under profile scopes).
-            try:
-                GatewayRunner.close_all_session_db_handles(self)
-            except Exception as _e:
-                logger.debug("Runner SessionDB handle sweep error: %s", _e)
-            # Final sweep: close any shared SessionDB instances still held by
-            # the process-wide registry (in-process tools, cron, mirror, etc.
-            # that opened via get_shared_session_db but weren't released by
-            # the sweeps above).  This is the safety net that guarantees no
-            # WAL write lock survives past gateway shutdown (#90837).
-            try:
-                from hermes_state import close_shared_session_dbs
-                closed = close_shared_session_dbs()
-                if closed:
-                    logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
-            except Exception as _e:
-                logger.debug("Shared SessionDB close error: %s", _e)
-            logger.info(
-                "Shutdown phase: SessionDB close done at +%.2fs",
-                _phase_elapsed(),
-            )
+                    logger.debug("Shared SessionDB close error: %s", _e)
+                logger.info(
+                    "Shutdown phase: SessionDB close done at +%.2fs",
+                    _phase_elapsed(),
+                )
 
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()

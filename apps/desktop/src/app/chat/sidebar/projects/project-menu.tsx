@@ -26,6 +26,7 @@ import {
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectManageFolders,
   openProjectRename,
   revealPath,
   setActiveProject,
@@ -85,6 +86,12 @@ function useProjectActions({
           key: 'add-folder',
           label: p.menuAddFolder,
           onSelect: () => openProjectAddFolder(target)
+        },
+        {
+          icon: 'folder',
+          key: 'manage-folders',
+          label: p.menuManageFolders,
+          onSelect: () => openProjectManageFolders(target)
         },
         {
           disabled: isActive,

@@ -1999,6 +1999,7 @@ export interface Translations {
       createDesc: string
       renameTitle: string
       addFolderTitle: string
+      manageFoldersTitle: string
       namePlaceholder: string
       foldersLabel: string
       ideaLabel: string
@@ -2007,15 +2008,18 @@ export interface Translations {
       ideaGenerating: string
       ideaShuffle: string
       noFolders: string
+      manageFoldersEmpty: string
       addFolder: string
       primaryBadge: string
       removeFolder: string
+      minFolderRequired: string
       create: string
       menu: string
       menuRename: string
       menuAppearance: string
       noColor: string
       menuAddFolder: string
+      menuManageFolders: string
       menuSetActive: string
       menuDelete: string
       moveToProject: string

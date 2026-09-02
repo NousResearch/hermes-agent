@@ -38,23 +38,26 @@ vi.mock('@/i18n', () => ({
 // store (backend calls, project list, etc.) which is irrelevant to the Tip fix.
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
-const { $projectDialog } = vi.hoisted(() => {
+const { $projectDialog, $projects } = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
 
   return {
-    $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
+    $projectDialog: atom<{ mode: 'add-folder' | 'create' | 'manage-folders' | 'rename'; name?: string; projectId?: string } | null>({
       mode: 'create'
-    })
+    }),
+    $projects: atom<unknown[]>([])
   }
 })
 
 vi.mock('@/store/projects', () => ({
   $projectDialog,
+  $projects,
   addProjectFolder: vi.fn(),
   closeProjectDialog: vi.fn(),
   createProject: vi.fn(),
   generateProjectIdea: vi.fn(),
   pickProjectFolder: vi.fn(async () => '/Users/test/my-folder'),
+  removeProjectFolder: vi.fn(),
   renameProject: vi.fn()
 }))
 

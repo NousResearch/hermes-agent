@@ -47,6 +47,8 @@ class TestComposeUserApiContent:
         out = compose_user_api_content("hello", "likes tea", "PLUGIN-CTX")
         fenced = build_memory_context_block("likes tea")
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
+        assert "untrusted historical data" in out
+        assert "authoritative reference data" not in out
 
 
 

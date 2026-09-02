@@ -1341,6 +1341,25 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_sync_loop_reauthenticates_when_matrix_invalidates_password_session(self):
+        """Password-backed bots must recover instead of retrying a dead token forever."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._password = "configured-secret"
+        adapter._client = MagicMock()
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._client.sync = AsyncMock(
+            side_effect=RuntimeError("Token is not active")
+        )
+        recover = MagicMock()
+
+        with patch.object(adapter, "_schedule_password_relogin", recover):
+            await adapter._sync_loop()
+
+        recover.assert_called_once_with("Token is not active")
+
+    @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""
         from plugins.platforms.matrix.adapter import MatrixAdapter

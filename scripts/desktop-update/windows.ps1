@@ -25,6 +25,7 @@
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+#     [-ForceWinForms]      test-only: skip the browser shim and show the fallback card
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
@@ -49,6 +50,7 @@ param(
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
+    [switch]$ForceWinForms,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker
 )
@@ -336,7 +338,7 @@ function Show-ProgressWindow {
     # claims attention once by appearing, then competes with nothing.
     $htmlPath = Get-UiHtmlPath
     $browser = Get-DefaultBrowserExe
-    if ($htmlPath -and $browser) {
+    if (-not $ForceWinForms -and $htmlPath -and $browser) {
         $server = Start-UiServer $htmlPath
         if ($server) {
             try {
@@ -408,6 +410,18 @@ function Show-ProgressWindow {
         $form.Controls.Add($bar)
         $form.Controls.Add($title)
         $form.Controls.Add($sub)
+        $timer = New-Object System.Windows.Forms.Timer
+        $timer.Interval = 1000
+        $timer.Add_Tick({
+            if ($script:Ui -and $script:Ui.Sub) {
+                $script:Ui.Sub.Text = Get-UiProgressLine
+            }
+        })
+        # Store cleanup state before Show(): if activation or the first
+        # message-pump pass fails, the catch below can close this form instead
+        # of leaving an unpumped orphan on screen.
+        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $timer }
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         # `cmd start /min` minimizes the whole PowerShell process; conhost
         # on some systems ignores the STARTUPINFO show state and stays
         # full-size on screen. Tuck the console away FIRST — MainWindowHandle
@@ -429,6 +443,9 @@ function Show-ProgressWindow {
         }
         try {
             $form.Show()
+            # WinForms can inherit the minimized process state. Reset both the
+            # managed state and native HWND after Show() creates the handle.
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
             # `cmd start /min` spawned us backgrounded, so the card comes up
             # behind everything without one explicit activation. Claim it ONCE
             # (so the user knows the update started), then never again — the
@@ -453,18 +470,25 @@ function Show-ProgressWindow {
             throw
         }
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $null }
-        $timer = New-Object System.Windows.Forms.Timer
-        $timer.Interval = 1000
-        $timer.Add_Tick({
-            if ($script:Ui -and $script:Ui.Sub) {
-                $script:Ui.Sub.Text = Get-UiProgressLine
-            }
-        })
-        $script:Ui.Timer = $timer
         $timer.Start()
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
+        # `$script:Ui` is assigned before Show(), so setup failures after a
+        # visible form exists cannot strand a blank, unpumped card.
+        try {
+            if ($script:Ui -and $script:Ui.Timer) {
+                $script:Ui.Timer.Stop()
+                $script:Ui.Timer.Dispose()
+            }
+            if ($script:Ui -and $script:Ui.Form) {
+                $script:Ui.Form.Close()
+                $script:Ui.Form.Dispose()
+            }
+        } catch {}
+        if ($script:ConsoleHwnd -ne [System.IntPtr]::Zero) {
+            try { [HermesHandoff.Win32]::ShowWindow($script:ConsoleHwnd, 9) | Out-Null } catch { Write-Debug "console restore failed: $($_.Exception.Message)" }
+        }
+        Write-HandoffLog "WinForms progress window unavailable; continuing without UI"
         $script:Ui = $null
     }
 }
@@ -1198,7 +1222,7 @@ $script:TreeSafeToFinalize = $true
 if ($SelfTestUi) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Show-ProgressWindow
-    if (-not $script:UiServer) {
+    if (-not $ForceWinForms -and -not $script:UiServer) {
         $htmlPath = Get-UiHtmlPath
         if ($htmlPath) {
             $script:UiServer = Start-UiServer $htmlPath
@@ -1208,10 +1232,27 @@ if ($SelfTestUi) {
         Write-Host "SELF-TEST: shim at http://127.0.0.1:$($script:UiServer.Port)/"
     }
     Write-HandoffLog "SELF-TEST: shim simulation (no update will run)"
+    # The live Windows test launches through the production `cmd start /min`
+    # wrapper. Publish PID + the kernel process-creation token so cleanup can
+    # prove identity even if this short-lived PID is reused before OpenProcess.
+    if ($env:HERMES_SELFTEST_IDENTITY_PATH) {
+        try {
+            $self = [System.Diagnostics.Process]::GetCurrentProcess()
+            $identity = [ordered]@{
+                pid = $PID
+                creation_filetime = $self.StartTime.ToFileTimeUtc()
+            } | ConvertTo-Json -Compress
+            [System.IO.File]::WriteAllText($env:HERMES_SELFTEST_IDENTITY_PATH, $identity, [System.Text.Encoding]::ASCII)
+        } catch {}
+    }
     $hold = 6
     if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
     Publish-UiProgress "Testing quiet update"
-    Start-Sleep -Seconds $hold
+    $holdDeadline = (Get-Date).AddSeconds($hold)
+    while ((Get-Date) -lt $holdDeadline) {
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+        Start-Sleep -Milliseconds 50
+    }
     if ($env:HERMES_SELFTEST_FAIL) {
         Show-ErrorFinale "self-test error state"
     } else {

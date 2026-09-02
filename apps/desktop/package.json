@@ -121,6 +121,7 @@
     "react-arborist": "^3.5.0",
     "react-dnd-html5-backend": "^14.0.3",
     "react-dom": "19.2.7",
+    "react-router": "^7.17.0",
     "react-router-dom": "^7.17.0",
     "react-shiki": "^0.9.3",
     "remark-math": "^6.0.0",

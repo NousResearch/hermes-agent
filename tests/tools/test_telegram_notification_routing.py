@@ -64,6 +64,29 @@ def test_scheduler_fails_closed_before_live_telegram_adapter(monkeypatch):
     live_adapter.send.assert_not_called()
 
 
+def test_scheduler_rejects_noncanonical_target_before_live_adapter(monkeypatch):
+    from cron.scheduler import _deliver_result
+
+    monkeypatch.setenv("SOLO_HERMES_BOT_TOKEN", "notification-token")
+    config = SimpleNamespace(
+        platforms={Platform.TELEGRAM: SimpleNamespace(enabled=True, token="conversation-token", extra={})}
+    )
+    live_adapter = MagicMock()
+    with patch("cron.scheduler._resolve_delivery_targets", return_value=[
+        {"platform": "telegram", "chat_id": "halo-chat", "thread_id": "99"}
+    ]), patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), patch(
+        "gateway.config.load_gateway_config", return_value=config
+    ) as load_gateway:
+        result = _deliver_result(
+            {"id": "job-target-closed", "deliver": "telegram:halo-chat"},
+            "cron result",
+            adapters={Platform.TELEGRAM: live_adapter},
+        )
+
+    assert "canonical" in result
+    live_adapter.send.assert_not_called()
+
+
 async def _send_telegram_for_test(monkeypatch):
     from tools.send_message_tool import _send_telegram
 

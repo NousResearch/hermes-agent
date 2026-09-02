@@ -11904,7 +11904,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata = self._thread_metadata_for_target(
                         platform, chat_id, thread_id, adapter=adapter
                     )
-                    result = await adapter.send_notification(
+                    result = await adapter.send(
                         chat_id, msg, metadata=metadata
                     )
                     if result is not None and getattr(result, "success", True) is False:
@@ -12019,7 +12019,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
 
-                result = await adapter.send_notification(
+                result = await adapter.send(
                     chat_id, msg, metadata=metadata
                 )
                 if result is not None and getattr(result, "success", True) is False:
@@ -12102,11 +12102,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send_notification(
+                    result = await adapter.send(
                         str(home.chat_id), msg, metadata=metadata
                     )
                 else:
-                    result = await adapter.send_notification(str(home.chat_id), msg)
+                    result = await adapter.send(str(home.chat_id), msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -27285,7 +27285,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send_notification(
+                await adapter.send(
                     chat_id,
                     msg,
                     metadata=_non_conversational_metadata(metadata, platform=platform),
@@ -27355,7 +27355,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["user_id"] = str(data["user_id"])
                 if data.get("scope_id"):
                     metadata["scope_id"] = str(data["scope_id"])
-            result = await transport.send_notification(
+            result = await transport.send(
                 platform,
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
@@ -27436,14 +27436,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata["scope_id"] = home.scope_id
                 send_metadata = _non_conversational_metadata(metadata, platform=platform)
                 if send_metadata is not None or transport.is_relay:
-                    result = await transport.send_notification(
+                    result = await transport.send(
                         platform,
                         str(home.chat_id),
                         message,
                         metadata=send_metadata,
                     )
                 else:
-                    result = await transport.adapter.send_notification(
+                    result = await transport.adapter.send(
                         str(home.chat_id), message
                     )
                 if result is not None and getattr(result, "success", True) is False:

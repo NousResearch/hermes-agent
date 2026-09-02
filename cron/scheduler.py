@@ -3418,6 +3418,15 @@ def _deliver_result(
             delivery_errors.append(msg)
             continue
 
+        # Telegram cron delivery has exactly one permitted destination. Reject
+        # other targets before resolving a live transport, so a non-canonical
+        # target cannot escape through the connected conversation adapter.
+        if platform == Platform.TELEGRAM and str(chat_id) != "8148316720":
+            msg = "operational Telegram target is not canonical (8148316720)"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
+
         from gateway.delivery import resolve_delivery_transport
 
         target_adapters = adapters

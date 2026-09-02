@@ -510,3 +510,41 @@ class TestCronRunBackgroundDispatch:
         assert rc == 0
         assert "Running in background (delegation del-xyz)." in out
         assert "failed" not in out.lower()
+
+
+class TestSlashCronListLastStatus:
+    """The in-chat ``/cron list`` (cli_commands_mixin) renders every
+    ``last_status`` literal explicitly — ``delivery_failed`` names the delivery
+    reason (last_error is None for those runs) instead of printing the bare
+    literal next to a run that looks otherwise fine."""
+
+    def _run_list(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        _Host()._handle_cron_command("/cron list --all")
+        return capsys.readouterr().out
+
+    def test_delivery_failed_names_the_delivery_error(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="telegram:1")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram: 502 Bad Gateway"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+
+    def test_ok_stays_plain(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "ok"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "(ok)" in out

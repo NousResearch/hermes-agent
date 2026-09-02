@@ -1986,7 +1986,13 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    status = job.get("last_status") or "?"
+                    # delivery_failed: the agent ran fine but the output never
+                    # reached the target — name the delivery reason, which
+                    # lives in last_delivery_error (last_error is None).
+                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                        status = f"delivery_failed: {job['last_delivery_error']}"
+                    print(f"  Last run: {job['last_run_at']} ({status})")
                 print()
             return
 

@@ -65,9 +65,24 @@ _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
+# ``errmsg`` values that disambiguate a stale session from a genuine frequency
+# limit when iLink answers ret=-2. Both share the same ret, so the message is
+# the only signal.
+#
+# ``unknown error``  -- expired session (#17228).
+# ``prepare failed`` -- the stored ``context_token`` for the peer has gone
+#   stale. Hit by cron / proactive pushes specifically: the token is only
+#   refreshed by an *inbound* message, so an interactive reply always carries
+#   a fresh one while an unprompted push after a quiet period does not.
+#   Misfiling this as a rate limit skips the tokenless retry below -- which
+#   exists precisely to keep cron pushes working -- and instead burns the
+#   send on a 30s backoff loop until the chunk retries are exhausted.
+_STALE_SESSION_ERRMSGS = frozenset({"unknown error", "prepare failed"})
+
+
 def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
-    """ret/errcode=-2 with 'unknown error' is a stale-session signal (like -14), not a real rate limit."""
-    return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() == "unknown error"
+    """ret/errcode=-2 with a stale-session ``errmsg`` is a stale-session signal (like -14), not a real rate limit."""
+    return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() in _STALE_SESSION_ERRMSGS
 
 
 def _is_session_expired(resp: Dict[str, Any], ret: Any, errcode: Any) -> bool:

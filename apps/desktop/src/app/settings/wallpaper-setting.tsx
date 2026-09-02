@@ -17,21 +17,20 @@ import {
   type WallpaperMode,
   type WallpaperPaletteMode
 } from '@/lib/wallpaper'
+import { $wallpaper, setWallpaperPreferences } from '@/store/wallpaper'
 import {
-  $wallpaper,
   ensureWallpaperLoaded,
   removeWallpaper,
   resetWallpaperPreferences,
   selectWallpaper,
   setWallpaperAdaptiveTheme,
-  setWallpaperPaletteMode,
-  setWallpaperPreferences
-} from '@/store/wallpaper'
+  setWallpaperPaletteMode
+} from '@/store/wallpaper-actions'
 import { previewWallpaperThemePalette, restoreWallpaperThemePreview } from '@/themes/context'
 
 import { ListRow } from './primitives'
 
-function WallpaperSlider({
+export function WallpaperSlider({
   disabled,
   label,
   max,
@@ -50,6 +49,48 @@ function WallpaperSlider({
   value: number
   valueLabel: string
 }) {
+  const changeRef = useRef(onChange)
+  const pendingValueRef = useRef(value)
+  const frameRef = useRef<number | null>(null)
+
+  changeRef.current = onChange
+
+  if (frameRef.current === null) {
+    pendingValueRef.current = value
+  }
+
+  const flushPendingValue = () => {
+    if (frameRef.current === null) {
+      return
+    }
+
+    window.cancelAnimationFrame(frameRef.current)
+    frameRef.current = null
+    changeRef.current(pendingValueRef.current)
+  }
+
+  const scheduleValue = (nextValue: number) => {
+    pendingValueRef.current = nextValue
+
+    if (frameRef.current !== null) {
+      return
+    }
+
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null
+      changeRef.current(pendingValueRef.current)
+    })
+  }
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+      }
+    },
+    []
+  )
+
   return (
     <label className={disabled ? 'opacity-50' : undefined}>
       <span className="mb-1.5 flex items-center justify-between gap-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
@@ -62,7 +103,10 @@ function WallpaperSlider({
         disabled={disabled}
         max={max}
         min={min}
-        onChange={event => onChange(Number(event.target.value))}
+        onBlur={flushPendingValue}
+        onChange={event => scheduleValue(Number(event.target.value))}
+        onKeyUp={flushPendingValue}
+        onPointerUp={flushPendingValue}
         step={step}
         style={{ accentColor: 'var(--dt-primary)' }}
         type="range"

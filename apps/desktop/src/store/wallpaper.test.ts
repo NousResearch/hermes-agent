@@ -67,7 +67,10 @@ async function loadWallpaperStore(enabled: boolean, preferences: Partial<typeof 
     }
   })
 
-  return import('./wallpaper')
+  const store = await import('./wallpaper')
+  const actions = await import('./wallpaper-actions')
+
+  return { ...actions, ...store }
 }
 
 beforeEach(() => {
@@ -269,6 +272,15 @@ describe('wallpaper startup loading', () => {
     expect(store.$wallpaperThemePalette.get()).toBeNull()
   })
 
+  it('preserves visual state identity when only non-rendering status changes', async () => {
+    const store = await loadWallpaperStore(false)
+    const visualState = store.$wallpaperVisual.get()
+
+    store.$wallpaper.set({ ...store.$wallpaper.get(), paletteStatus: 'loading', status: 'loading' })
+
+    expect(store.$wallpaperVisual.get()).toBe(visualState)
+  })
+
   it('switches between cached automatic colors and editable manual colors without resampling', async () => {
     const automatic = { accent: '#e63658', dominant: '#84888e' }
     const manual = { accent: '#2468ac', dominant: '#465768' }
@@ -330,6 +342,30 @@ describe('wallpaper startup loading', () => {
       error: false,
       paletteStatus: 'error',
       preferences: { adaptiveTheme: true, enabled: true },
+      status: 'ready'
+    })
+  })
+
+  it('reuses the palette returned by import instead of decoding the saved image again', async () => {
+    const palette = { accent: '#e63658', dominant: '#84888e' }
+
+    selectWallpaper.mockResolvedValue({ asset: wallpaperAsset, canceled: false, palette })
+
+    const store = await loadWallpaperStore(false, { adaptiveTheme: true })
+    const selecting = store.selectWallpaper()
+
+    await Promise.resolve()
+    resolveDecode()
+    await selecting
+
+    expect(extractPalette).not.toHaveBeenCalled()
+    expect(store.$wallpaper.get()).toMatchObject({
+      asset: wallpaperAsset,
+      paletteStatus: 'ready',
+      preferences: {
+        palette,
+        paletteSource: wallpaperAsset.version
+      },
       status: 'ready'
     })
   })

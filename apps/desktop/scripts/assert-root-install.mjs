@@ -31,13 +31,25 @@ import { isMain } from "./utils.mjs"
 // others, which is how an incomplete install reached `vite build` and died on
 // an unresolved `katex/dist/katex.min.css` with no hint that the install — not
 // the source — was at fault (#86443).
+//
+// These four are the documented floor — always checked, even when the app's
+// package.json cannot be read. The full class is wider: EVERY non-optional
+// package the workspace manifest declares is something the build may import
+// (`vite.config.ts` pulls `@rolldown/plugin-babel`, `@vitejs/plugin-react`,
+// `@tailwindcss/vite`; `bundle-electron-main.mjs` pulls `esbuild`; the renderer
+// imports the rest). A hand-maintained list drifts the moment a new import
+// lands, so `checkRootInstall` unions the floor with the manifest's declared
+// `dependencies` + `devDependencies` — a partial install is refused whichever
+// package it happened to drop. `optionalDependencies` are excluded by design:
+// npm legitimately skips them (platform-gated natives like `get-windows`).
 const BUILD_CRITICAL_PACKAGES = ["vite", "katex", "electron", "electron-builder"]
 export { BUILD_CRITICAL_PACKAGES }
 
 // Resolve the way Node's own lookup does — walk `node_modules` upward — rather
 // than through `require.resolve`. A package whose `exports` map does not expose
 // `./package.json` is not resolvable by path even when correctly installed, and
-// that must not read as "missing".
+// that must not read as "missing". Scoped names (`@scope/name`) are a nested
+// directory under `node_modules`, which `join` handles.
 function packageIsInstalled(name, fromDir) {
   let dir = fromDir
   for (;;) {
@@ -48,10 +60,27 @@ function packageIsInstalled(name, fromDir) {
   }
 }
 
+// Every package the workspace manifest at `appDir` declares as required
+// (`dependencies` + `devDependencies`; never `optionalDependencies`). An
+// unreadable or malformed manifest yields [] — the floor still applies, and
+// the build's own manifest read fails loudly on its own.
+export function requiredPackages(appDir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(appDir, "package.json"), "utf8"))
+    return [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+    ]
+  } catch {
+    return []
+  }
+}
+
 // Pure check — returns { ok: true } or { ok: false, error: "..." }.
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkRootInstall(appDir, rootDir) {
-  const missing = BUILD_CRITICAL_PACKAGES.filter(pkg => !packageIsInstalled(pkg, appDir))
+  const wanted = [...new Set([...BUILD_CRITICAL_PACKAGES, ...requiredPackages(appDir)])]
+  const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir))
   if (missing.length > 0) {
     return {
       ok: false,

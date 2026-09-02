@@ -7,8 +7,15 @@ import pytest
 import hermes_state
 
 
+@pytest.mark.requires_wal
 def test_wal_restoration_reuses_exclusive_repair_connection(tmp_path, monkeypatch):
-    """WAL must be restored before the repair guard releases the live DB."""
+    """WAL must be restored before the repair guard releases the live DB.
+
+    Gated on ``requires_wal``: where the linked SQLite carries the WAL-reset
+    bug (or the filesystem cannot host WAL) ``apply_wal_with_fallback`` keeps
+    the store in DELETE by design, so the final ``== "wal"`` assertion would
+    fail for a reason unrelated to the connection-reuse contract.
+    """
     db_path = tmp_path / "state.db"
     conn = sqlite3.connect(db_path, isolation_level=None)
     conn.execute("CREATE TABLE marker (value TEXT)")

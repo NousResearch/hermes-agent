@@ -4963,9 +4963,11 @@ class TurnRunner:
         # LLM thinking animation: when a subsequent LLM API call starts
         # (after tools have already run), show a "Thinking" timer in the
         # native-stream bubble so the user knows the agent is still working.
+        # Purely a timer-animation feature — gate on ``supports_tool_timer``
+        # (opt-in), NOT ``accepts_tool_progress`` (which every native user has).
         if event_type == "llm.request_started":
             _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
-            if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
+            if _sc is not None and getattr(_sc, "supports_tool_timer", False):
                 _sc.on_llm_thinking(preview or None)
             return
 
@@ -4984,10 +4986,12 @@ class TurnRunner:
         if not ctx.tool_progress_enabled:
             return
 
-        # Handle tool.completed for native stream timer history
+        # Handle tool.completed for native stream timer history.  Gated on
+        # ``supports_tool_timer`` (the animation opt-in): with the timer off
+        # no start was recorded, so there is nothing to close out.
         if event_type == "tool.completed":
             _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
-            if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
+            if _sc is not None and getattr(_sc, "supports_tool_timer", False):
                 _duration = kwargs.get("duration", 0.0)
                 _tool_call_id = kwargs.get("tool_call_id")
                 _sc.on_tool_completed(tool_name or "unknown", _duration, tool_call_id=_tool_call_id)

@@ -93,6 +93,13 @@ class ToolTimerMixin:
         from gateway.stream_consumer import _TOOL_PROGRESS
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
+            # The base in-bubble progress overlay above is available to every
+            # native-streaming user.  The animated spinner/elapsed *timer* is a
+            # separate opt-in (``supports_tool_timer``): only start it when the
+            # user enabled it, so default-config native users get the static
+            # progress line without the ticking animation.
+            if not getattr(self, "supports_tool_timer", False):
+                return
             # Start/join the timer for this tool, preserving the original
             # progress line as the display label for animated ticks.
             tool_name = _parse_tool_name(line)
@@ -112,6 +119,11 @@ class ToolTimerMixin:
         ``tool_call_id``, when provided, is used as the dict key for looking
         up the matching timer entry.  Falls back to *tool_name* when absent.
         """
+        # Completion history is part of the timer animation; when the timer is
+        # not enabled no start was recorded, so there is nothing to close out
+        # and no overlay to update.
+        if not getattr(self, "supports_tool_timer", False):
+            return
         key = tool_call_id if tool_call_id is not None else tool_name
         with self._timer_lock:
             label = self._tool_timer_labels.pop(key, tool_name)
@@ -136,6 +148,11 @@ class ToolTimerMixin:
         if not self._use_native_streaming:
             return
         if not self._native_stream_opened:
+            return
+        # Pure timer-animation feature — skip entirely unless the timer is
+        # opted in.  (run.py also gates its call site on ``supports_tool_timer``;
+        # this is defense-in-depth for any other caller.)
+        if not getattr(self, "supports_tool_timer", False):
             return
         # LLM thinking means all tools are done — move remaining tool entries
         # to completed history, then start the thinking timer.

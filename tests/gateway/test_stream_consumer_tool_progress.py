@@ -19,7 +19,7 @@ from gateway.stream_consumer import (
 )
 
 
-def _make_native_streaming_adapter(*, supports_native: bool = True):
+def _make_native_streaming_adapter(*, supports_native: bool = True, supports_tool_timer: bool = True):
     """Build a BasePlatformAdapter subclass that supports native streaming."""
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -30,6 +30,10 @@ def _make_native_streaming_adapter(*, supports_native: bool = True):
             "MAX_MESSAGE_LENGTH": 4096,
             "SUPPORTS_MESSAGE_EDITING": False,
             "SUPPORTS_NATIVE_STREAMING": True,
+            # Tool-timer animation is opt-in; default it on for these tests so
+            # the timer-machinery cases exercise the animated path. The base
+            # in-bubble progress overlay does NOT depend on this flag.
+            "SUPPORTS_TOOL_TIMER": supports_tool_timer,
         },
     )
     NativeStreamingAdapter.__abstractmethods__ = frozenset()
@@ -62,9 +66,12 @@ def _make_native_streaming_adapter(*, supports_native: bool = True):
     return adapter
 
 
-def _make_consumer(*, native_streaming: bool = True) -> GatewayStreamConsumer:
+def _make_consumer(*, native_streaming: bool = True, supports_tool_timer: bool = True) -> GatewayStreamConsumer:
     """Create a GatewayStreamConsumer configured for native streaming."""
-    adapter = _make_native_streaming_adapter(supports_native=native_streaming)
+    adapter = _make_native_streaming_adapter(
+        supports_native=native_streaming,
+        supports_tool_timer=supports_tool_timer,
+    )
     cfg = StreamConsumerConfig(chat_type="dm", cursor="▌")
     consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
     # Force native streaming resolution
@@ -103,6 +110,30 @@ class TestOnToolProgress:
         consumer = _make_consumer()
         consumer.on_tool_progress("")
         assert consumer._queue.empty()
+
+    def test_timer_disabled_injects_line_but_no_timer(self):
+        """Native on, SUPPORTS_TOOL_TIMER off: progress line still injected,
+        but the animated timer must NOT arm (Issue A)."""
+        consumer = _make_consumer(native_streaming=True, supports_tool_timer=False)
+        # supports_tool_timer must be False even though native streaming is on.
+        assert consumer.supports_tool_timer is False
+        # accepts_tool_progress stays True — base overlay is preserved.
+        assert consumer.accepts_tool_progress is True
+
+        loop = asyncio.new_event_loop()
+        consumer._tool_timer_loop = loop
+        try:
+            consumer.on_tool_progress("🔧 Running terminal...")
+            # Base feature: the progress line is enqueued.
+            item = consumer._queue.get_nowait()
+            assert item[0] is _TOOL_PROGRESS
+            assert item[1] == "🔧 Running terminal..."
+            # Animation feature: timer did NOT arm, no start time recorded.
+            assert consumer._tool_timer_handle is None
+            assert consumer._tool_start_times == {}
+            assert consumer._tool_timer_labels == {}
+        finally:
+            loop.close()
 
 
 class TestComposeFrameContent:

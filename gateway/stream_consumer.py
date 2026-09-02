@@ -472,20 +472,25 @@ class GatewayStreamConsumer(ToolTimerMixin):
         True whenever native streaming is resolved and active. This preserves
         the pre-existing in-bubble tool-progress behavior for every native
         streaming user. The tool-timer *animation* (spinner + elapsed ticks)
-        is a separate opt-in feature gated by ``_supports_tool_timer`` — do
+        is a separate opt-in feature gated by ``supports_tool_timer`` — do
         NOT fold the timer capability into this property, or default-config
         users upgrading would lose their existing progress lines.
         """
         return self._use_native_streaming
 
     @property
-    def _supports_tool_timer(self) -> bool:
+    def supports_tool_timer(self) -> bool:
         """Whether the tool-timer animation (spinner ticks) is enabled.
 
         Opt-in: requires native streaming AND the adapter advertising
         ``SUPPORTS_TOOL_TIMER`` (config ``extra.tool_timer_enabled: true``).
         Gates only the animated tick machinery, not the base in-bubble
         progress overlay (see ``accepts_tool_progress``).
+
+        Public so ``run.py`` can gate the timer-only callbacks
+        (``on_llm_thinking``, tool lifecycle) on it directly, and so the
+        ``ToolTimerMixin`` can guard timer start/stop without reaching into
+        a private name.
         """
         if not self._use_native_streaming:
             return False

@@ -3319,7 +3319,17 @@ def _deliver_result(
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
-            logger.warning(
+            # Only the origin conversation itself losing its thread lane is a
+            # routing fault. A target pointing at some OTHER chat (deliver=all
+            # fan-out, explicit platform:chat_id, home-channel fallback) never
+            # had the origin's thread to lose — that is a deliberate, valid
+            # configuration, so keep it at debug (#89650).
+            same_chat = (
+                str(origin.get("platform", "")).lower() == str(platform_name).lower()
+                and str(origin.get("chat_id", "")) == str(chat_id)
+            )
+            log_fn = logger.warning if same_chat else logger.debug
+            log_fn(
                 "Job '%s': origin has thread_id=%s but delivery target lost it "
                 "(deliver=%s, target=%s)",
                 job["id"], origin_thread, job.get("deliver", "local"), target,

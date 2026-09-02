@@ -416,6 +416,27 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_accepts_per_task_reasoning_effort(worker_env):
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from tools import kanban_tools as kt
+
+    prop = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]["reasoning_effort"]
+    assert prop["enum"] == ["none", *VALID_REASONING_EFFORTS]
+
+    out = kt._handle_create({
+        "title": "critical review",
+        "assignee": "reviewer",
+        "reasoning_effort": "xhigh",
+    })
+    task_id = json.loads(out)["task_id"]
+
+    from hermes_cli import kanban_db as kb
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.reasoning_effort == "xhigh"
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

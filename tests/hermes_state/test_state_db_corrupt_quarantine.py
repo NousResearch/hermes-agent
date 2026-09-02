@@ -141,6 +141,29 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             db.get_session("s1")
         reopen.assert_not_called()
 
+    def test_get_read_conn_refuses_fresh_open_when_quarantined(self, tmp_path, monkeypatch):
+        """The WAL read-pool's miss path (_get_read_conn) opens a brand-new
+        sqlite3 connection to the same file — the same "reopen a damaged
+        image" _reopen_after_close_locked already refuses on the write
+        side. It must refuse too, even while the handle is still live (not
+        yet close()d), instead of happily opening a fresh connection to a
+        file already known to be structurally damaged."""
+        from unittest.mock import MagicMock
+
+        db, real_conn = _quarantined_db(tmp_path)
+        try:
+            # This sandbox's SQLite build falls back to journal_mode=DELETE,
+            # so _wal_active is never really True here — force it to
+            # exercise the WAL-only miss path directly, per this file's own
+            # established technique for testing quarantine interactions.
+            db._wal_active = True
+            reopen = MagicMock()
+            monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+            assert db._get_read_conn() is None
+            reopen.assert_not_called()
+        finally:
+            db.close()
+
 
 class TestQuarantineScope:
     def test_fts_scoped_corruption_does_not_trip_flag(self, tmp_path):

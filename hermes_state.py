@@ -5733,6 +5733,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not self._wal_active or self.read_only:
             return None
+        if self._db_corrupt:
+            # Quarantined: opening a fresh connection to this file is the
+            # same "reopen a damaged image" the write path already refuses
+            # in _reopen_after_close_locked. Fall back to the locked path
+            # instead, which reuses the already-open handle when there is
+            # one (no new open) or hits that same quarantine check when
+            # there isn't (self._conn is None) — never opens a new
+            # connection to a file already known to be structurally damaged.
+            return None
         with self._read_conns_lock:
             if self._read_conns_closed:
                 return None

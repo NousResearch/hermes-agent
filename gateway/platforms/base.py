@@ -3669,25 +3669,39 @@ class BasePlatformAdapter(ABC):
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
 
-    def _mark_connected(self, *, degraded: bool = False) -> None:
+    #: Published when an adapter is installed and running but its receive
+    #: path is not yet confirmed (e.g. Telegram polling has not proven a
+    #: getUpdates round-trip). Same ``retrying`` platform_state the runner
+    #: uses for queued reconnects, so readers see "not delivering" (#101391).
+    DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
+
+    @property
+    def send_path_degraded(self) -> bool:
+        """True while connect() succeeded but delivery is not confirmed.
+
+        Adapters with a separately-proven receive path override this; the
+        default adapter is either connected or not.
+        """
+        return False
+
+    def _mark_connected(self) -> None:
         self._running = True
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        if degraded:
-            # connect() succeeded but the adapter knows its send/receive path
-            # is not actually confirmed active yet (e.g. Telegram polling
-            # never proved a first getUpdates round-trip). Publishing
-            # "connected" here would be indistinguishable from a healthy
-            # adapter to anything reading gateway_state.json (#101391).
-            self._write_runtime_status_safe(
-                "connected_degraded",
-                platform_state="retrying",
-                error_code=None,
-                error_message="connected but not yet confirmed active; recovering in background",
-            )
+        if self.send_path_degraded:
+            self._mark_degraded()
         else:
             self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+
+    def _mark_degraded(self) -> None:
+        """Publish ``retrying`` for a running adapter whose delivery path is unproven."""
+        self._write_runtime_status_safe(
+            "connected_degraded",
+            platform_state="retrying",
+            error_code=None,
+            error_message=self.DEGRADED_STATUS_MESSAGE,
+        )
 
     def _mark_disconnected(self) -> None:
         self._running = False

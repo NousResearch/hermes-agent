@@ -122,3 +122,64 @@ def test_record_polling_progress_republishes_connected_after_degraded_connect():
     _, kwargs = write_status.call_args
     assert kwargs["platform_state"] == "connected"
     assert adapter._send_path_degraded is False
+
+
+def test_mid_session_polling_death_publishes_retrying_while_running():
+    """#101391's measured incident: a HEALTHY connect published "connected",
+    then getUpdates silently died mid-session and nothing republished for 11h.
+    The recovery ladder's entry point must flip the file to "retrying"."""
+    adapter = _make_adapter()
+    adapter._running = True
+    adapter._send_path_degraded = False
+    adapter._polling_error_task = None
+
+    class _Loop:
+        def create_task(self, coro):
+            coro.close()
+            return MagicMock(done=lambda: False)
+
+    with patch.object(adapter, "_write_runtime_status_safe") as write_status, \
+            patch("asyncio.get_running_loop", return_value=_Loop()):
+        adapter._schedule_polling_recovery(RuntimeError("boom"), reason="heartbeat probe")
+
+    assert adapter._send_path_degraded is True
+    write_status.assert_called_once()
+    _, kwargs = write_status.call_args
+    assert kwargs["platform_state"] == "retrying"
+    assert kwargs["error_message"] == TelegramAdapter.DEGRADED_STATUS_MESSAGE
+
+
+def test_polling_death_before_connect_does_not_publish():
+    """Not yet running (cold connect still in progress): connect()'s own
+    _mark_connected publishes; the recovery path must not write early."""
+    adapter = _make_adapter()
+    adapter._running = False
+    adapter._polling_error_task = None
+
+    class _Loop:
+        def create_task(self, coro):
+            coro.close()
+            return MagicMock(done=lambda: False)
+
+    with patch.object(adapter, "_write_runtime_status_safe") as write_status, \
+            patch("asyncio.get_running_loop", return_value=_Loop()):
+        adapter._schedule_polling_recovery(RuntimeError("boom"), reason="polling bootstrap")
+
+    write_status.assert_not_called()
+
+
+@pytest.mark.parametrize("running, fatal", [(False, False), (True, True)])
+def test_record_polling_progress_does_not_flip_when_not_running_or_fatal(running, fatal):
+    """Cold connect: progress arrives while _running is still False -- the
+    connect path publishes, not the flip. Fatal: never overwrite "fatal"."""
+    adapter = _make_adapter()
+    generation, _event = adapter._begin_polling_generation()
+    adapter._running = running
+    if fatal:
+        adapter._fatal_error_message = "dead"
+
+    with patch.object(adapter, "_write_runtime_status_safe") as write_status:
+        adapter._record_polling_progress(generation)
+
+    write_status.assert_not_called()
+    assert adapter._send_path_degraded is False

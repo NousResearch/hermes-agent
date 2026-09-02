@@ -14439,10 +14439,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # transcription is forwarded without requiring /voice join.
                 self._bind_voice_input_callback(adapter)
                 connected_count += 1
+                _degraded = adapter.send_path_degraded
                 self._update_platform_runtime_status(
-                    platform.value, platform_state="connected", error_code=None, error_message=None,
+                    platform.value,
+                    platform_state="retrying" if _degraded else "connected",
+                    error_code=None,
+                    error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
                 )
-                logger.info("\u2713 %s connected", platform.value)
+                logger.info("\u2713 %s connected%s", platform.value, " (degraded)" if _degraded else "")
             else:  # outcome == "failed"
                 logger.warning("\u2717 %s failed to connect", platform.value)
                 # Defensive cleanup: a failed connect() may have allocated resources
@@ -16204,30 +16208,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         # connect() returning True does not mean the adapter's
-                        # send/receive path is actually confirmed active --
-                        # Telegram's degraded-polling reconnect intentionally
-                        # returns True so the gateway stays up while its own
-                        # background ladder retries. Stamping "connected"
-                        # unconditionally here would silently undo the
-                        # adapter's own accurate status write (#101391).
-                        _degraded = getattr(adapter, "_send_path_degraded", False)
+                        # receive path is confirmed -- Telegram's degraded
+                        # reconnect returns True so the gateway stays up while
+                        # its own ladder retries. Stamping "connected" here
+                        # would undo the adapter's accurate status (#101391).
+                        _degraded = adapter.send_path_degraded
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying" if _degraded else "connected",
                             error_code=None,
-                            error_message=(
-                                "connected but not yet confirmed active; recovering in background"
-                                if _degraded else None
-                            ),
+                            error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
                             needs_attention=False,
                             retrying_since=None,
                         )
-                        logger.info(
-                            "%s %s reconnected%s",
-                            "⚠" if _degraded else "✓",
-                            platform.value,
-                            " in degraded mode (send/receive path not yet confirmed)" if _degraded else " successfully",
-                        )
+                        if _degraded:
+                            logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
+                        else:
+                            logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Final responses rejected while this adapter was down
                         # are still owned by this live process, so startup

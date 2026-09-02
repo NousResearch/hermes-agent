@@ -283,6 +283,11 @@ def _is_supervised_gateway_process() -> bool:
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,
+    *,
+    unit_name: Optional[str] = None,
+    description: Optional[str] = None,
+    memory_max_bytes: Optional[int] = None,
+    memory_swap_max_bytes: Optional[int] = None,
 ) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
 
@@ -290,6 +295,13 @@ def _build_systemd_scope_argv(
     worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
     the transient scope self-clean after exit; ``--unit`` gives it a
     recognisable name for ``systemctl --user status`` / journalctl.
+
+    Callers whose transient unit is NOT a terminal-worker sibling (e.g.
+    the kanban dispatcher's per-task workers, ``hermes-kanban-<task>.scope``)
+    can override the unit name, add a human-readable ``--description``, and
+    set their own memory bounds.  Omitted kwargs keep the legacy
+    terminal-worker behaviour byte-for-byte, so existing call sites are
+    unaffected.
     """
     import shutil
 
@@ -298,25 +310,37 @@ def _build_systemd_scope_argv(
         # Caller should have checked _systemd_run_user_scope_available();
         # guard anyway so we never pass None into Popen.
         return shell_argv
-    unit_name = f"hermes-worker-{unit_suffix}"
-    memory_max = _worker_memory_max_bytes()
-    return [
+    unit = unit_name if unit_name else f"hermes-worker-{unit_suffix}"
+    memory_max = (
+        memory_max_bytes if memory_max_bytes is not None
+        else _worker_memory_max_bytes()
+    )
+    argv = [
         binary,
         "--user",
         "--scope",
         "--quiet",
         "--unit",
-        unit_name,
+        unit,
         "--collect",
+    ]
+    if description:
+        argv += ["--description", description]
+    argv += [
         "--property",
         "MemoryAccounting=yes",
         "--property",
         f"MemoryMax={memory_max}",
+    ]
+    if memory_swap_max_bytes is not None:
+        argv += ["--property", f"MemorySwapMax={memory_swap_max_bytes}"]
+    argv += [
         "--property",
         "OOMPolicy=kill",
         "--",
         *shell_argv,
     ]
+    return argv
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:

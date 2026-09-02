@@ -5534,7 +5534,7 @@ def test_superseded_runtime_finalized_without_reclaimed_broadcast(monkeypatch):
         # mark it finalized-for-lookup via a different stored key is wrong —
         # instead simulate the mint race by removing it from lookup).
         old["_finalized"] = False
-        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k: None)
+        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k, *_a: None)
 
         result = server._claim_or_reuse_live("new-sid", "stored-super", fresh, None)
 

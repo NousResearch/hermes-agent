@@ -574,6 +574,31 @@ class TestProfileScopedStorage:
         assert store._dir == tmp_path
         assert store._approved_path("weixin") == tmp_path / "weixin-approved.json"
 
+    def test_default_store_is_not_frozen_at_first_use(self, tmp_path, monkeypatch):
+        """Regression test for #93449.
+
+        PairingStore() (no profile) must not freeze its directory to
+        whatever HERMES_HOME resolved to the first time this module's
+        default path was computed. A long-lived process (the gateway,
+        started once at container/process boot) can construct a
+        PairingStore before HERMES_HOME/profile context is fully
+        established; a later store in the same process must still pick up
+        the real, current value instead of being stuck with a stale one.
+        Deliberately does not patch PAIRING_DIR directly, unlike the sibling
+        test above -- this exercises the real (unpatched) lazy-resolution
+        path itself.
+        """
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: first_home)
+        first_store = PairingStore()
+        assert first_store._dir == first_home / "platforms" / "pairing"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: second_home)
+        second_store = PairingStore()
+        assert second_store._dir == second_home / "platforms" / "pairing"
+
     def test_profile_store_uses_profiles_subdir(self, tmp_path, monkeypatch):
         """Explicit profile stores use that profile's normal Hermes layout."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

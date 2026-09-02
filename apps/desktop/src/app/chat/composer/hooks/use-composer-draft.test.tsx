@@ -2,6 +2,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 import { $connection } from '@/store/session'
 
@@ -292,5 +293,61 @@ describe('useComposerDraft — a closing composer hands the focus-bus key back',
     unmount()
 
     expect(getActiveComposer()).toBe('tile:other')
+  })
+})
+
+describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its composer', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    markActiveComposer('main')
+  })
+
+  function renderScopedHidden(target: ComposerTarget, hidden: boolean) {
+    const scope: ComposerScope = { ...MAIN_COMPOSER_SCOPE, target }
+
+    return render(
+      <PaneVisibleContext.Provider value={!hidden}>
+        <ComposerScopeProvider value={scope}>
+          <ProbeHarness
+            activeQueueSessionKey="session-tile"
+            onLayoutSnapshot={() => undefined}
+            sessionId="session-tile"
+          />
+        </ComposerScopeProvider>
+      </PaneVisibleContext.Provider>
+    )
+  }
+
+  it('does not claim the focus bus when the composer mounts inside a hidden pane', () => {
+    renderScopedHidden('tile:bg', true)
+
+    expect(getActiveComposer()).toBe('main')
+  })
+
+  it('still claims the bus when the same composer becomes visible', () => {
+    const { rerender } = renderScopedHidden('tile:fg', true)
+
+    expect(getActiveComposer()).toBe('main')
+
+    rerender(
+      <PaneVisibleContext.Provider value={true}>
+        <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: 'tile:fg' }}>
+          <ProbeHarness
+            activeQueueSessionKey="session-tile"
+            onLayoutSnapshot={() => undefined}
+            sessionId="session-tile"
+          />
+        </ComposerScopeProvider>
+      </PaneVisibleContext.Provider>
+    )
+
+    expect(getActiveComposer()).toBe('tile:fg')
+  })
+
+  it('claims the bus on mount when visible', () => {
+    renderScopedHidden('tile:vis', false)
+
+    expect(getActiveComposer()).toBe('tile:vis')
   })
 })

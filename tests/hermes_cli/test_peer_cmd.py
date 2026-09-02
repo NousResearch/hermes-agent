@@ -92,6 +92,8 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
 class _FakePeer(BaseHTTPRequestHandler):
     sessions: list = []
     chats: list = []
+    runs: list = []
+    run_idempotency_keys: list = []
     auth_seen: list = []
 
     def _json(self, payload, status=200):
@@ -104,6 +106,26 @@ class _FakePeer(BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path == "/v1/capabilities":
+            return self._json(
+                {
+                    "features": {
+                        "runs_idempotency": {
+                            "supported": True,
+                            "durable": True,
+                            "retention_seconds": 86400,
+                        }
+                    }
+                }
+            )
+        if self.path == "/v1/runs/run_1":
+            return self._json({
+                "object": "hermes.run",
+                "run_id": "run_1",
+                "status": "completed",
+                "session_id": "bc_existing",
+                "output": "async reply from the other machine",
+            })
         if self.path.startswith("/api/sessions"):
             data = [{"id": s, "title": "Bot Chat"} for s in type(self).sessions]
             return self._json({"object": "list", "data": data})
@@ -122,13 +144,27 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))
-            return self._json(
-                {
-                    "object": "hermes.session.chat.completion",
-                    "session_id": "bc_1",
-                    "message": {"role": "assistant", "content": "reply from the other machine"},
-                }
+            return self._json({
+                "object": "hermes.session.chat.completion",
+                "session_id": "bc_1",
+                "message": {
+                    "role": "assistant",
+                    "content": "reply from the other machine",
+                },
+            })
+
+        if self.path == "/v1/runs":
+            type(self).runs.append(body)
+            type(self).run_idempotency_keys.append(
+                self.headers.get("Idempotency-Key", "")
             )
+            return self._json(
+                {"run_id": "run_1", "status": "started", "replayed": False},
+                202,
+            )
+
+        if self.path == "/v1/runs/run_1/stop":
+            return self._json({"run_id": "run_1", "status": "stopping"})
 
         return self._json({"error": {"message": "not found"}}, 404)
 
@@ -140,6 +176,8 @@ class _FakePeer(BaseHTTPRequestHandler):
 def fake_peer_server():
     _FakePeer.sessions = []
     _FakePeer.chats = []
+    _FakePeer.runs = []
+    _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -186,3 +224,283 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+# ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────
+
+
+class _HiddenBotChatPeer(_FakePeer):
+    """A NEW-style peer: its Bot Chat exists but is HIDDEN (Bot Mode hides
+    canonical chats), so it only appears in the listing when the client
+    sends the exact-title + include_hidden lookup."""
+
+    hidden_sessions: list = []
+    get_queries: list = []
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/api/sessions"):
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(self.path).query)
+            type(self).get_queries.append(query)
+            data = [{"id": s, "title": "Bot Chat", "hidden": False} for s in type(self).sessions]
+            if query.get("title", [""])[0] == "Bot Chat" and query.get("include_hidden", ["0"])[0] in ("1", "true"):
+                data += [{"id": s, "title": "Bot Chat", "hidden": True} for s in type(self).hidden_sessions]
+            return self._json({"object": "list", "data": data})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+
+class _OldHiddenBotChatPeer(_FakePeer):
+    """An OLD peer: ignores title/include_hidden, its hidden Bot Chat is
+    invisible in every listing, and the duplicate create trips the DB's
+    UNIQUE(title) guard with the real api_server 400 shape."""
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/api/sessions"):
+            return self._json({"object": "list", "data": []})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+    def do_POST(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path == "/api/sessions":
+            return self._json(
+                {"error": {"message": "Title already in use by session hidden_bc_1", "code": "invalid_title"}},
+                400,
+            )
+        return self._json({"error": {"message": "not found"}}, 404)
+
+
+@pytest.fixture()
+def hidden_peer_server():
+    _HiddenBotChatPeer.sessions = []
+    _HiddenBotChatPeer.hidden_sessions = ["bc_hidden"]
+    _HiddenBotChatPeer.chats = []
+    _HiddenBotChatPeer.auth_seen = []
+    _HiddenBotChatPeer.get_queries = []
+    server = HTTPServer(("127.0.0.1", 0), _HiddenBotChatPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+@pytest.fixture()
+def old_hidden_peer_server():
+    _OldHiddenBotChatPeer.sessions = []
+    _OldHiddenBotChatPeer.chats = []
+    _OldHiddenBotChatPeer.auth_seen = []
+    server = HTTPServer(("127.0.0.1", 0), _OldHiddenBotChatPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_find_bot_chat_sends_hidden_aware_lookup(hidden_peer_server):
+    """The lookup carries title + include_hidden so a hidden canonical row resolves."""
+    found = peer_cmd._find_bot_chat(hidden_peer_server, "secret-key-123456")
+    assert found == "bc_hidden"
+    query = _HiddenBotChatPeer.get_queries[-1]
+    assert query.get("title") == ["Bot Chat"]
+    assert query.get("include_hidden") == ["1"]
+
+
+def test_dm_resolves_hidden_bot_chat_without_duplicate_create(monkeypatch, capsys, hidden_peer_server):
+    """Regression for issue #91583: hidden canonical Bot Chat must be reused,
+    never re-created (the peer's UNIQUE(title) guard rejects the duplicate)."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": hidden_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == "reply from the other machine"
+    # No create was attempted: the hidden canonical chat resolved directly.
+    assert _HiddenBotChatPeer.sessions == []
+    assert _HiddenBotChatPeer.chats == ["ping"]
+
+
+def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, old_hidden_peer_server):
+    """Against an older peer that can't expose hidden sessions, the UNIQUE(title)
+    rejection must surface a diagnosable error naming the hidden canonical chat."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": old_hidden_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False))
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "hidden" in err
+    assert "Bot Chat" in err
+    assert "Title already in use" in err
+
+
+def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
+    """Backward compat: an older peer ignores the new query params and returns
+    the plain visible listing — a visible Bot Chat must still resolve."""
+    _FakePeer.sessions = ["bc_visible"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
+    assert _FakePeer.sessions == ["bc_visible"]
+
+
+def test_run_starts_async_turn_with_canonical_session_and_idempotency(
+    monkeypatch, capsys, fake_peer_server
+):
+    _FakePeer.sessions = ["bc_existing"]
+    monkeypatch.setattr(
+        peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}}
+    )
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(
+            peer_action="run",
+            target="spark",
+            message="long task",
+            idempotency_key="ticket-123",
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "peer": "spark",
+        "profile": None,
+        "session_id": "bc_existing",
+        "run_id": "run_1",
+        "status": "started",
+        "idempotency_key": "ticket-123",
+        "replayed": False,
+    }
+    assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing"}]
+    assert _FakePeer.run_idempotency_keys == ["ticket-123"]
+
+
+def test_status_reads_async_run_output(monkeypatch, capsys, fake_peer_server):
+    monkeypatch.setattr(
+        peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}}
+    )
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(
+            peer_action="status",
+            target="spark",
+            run_id="run_1",
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    assert payload["output"] == "async reply from the other machine"
+
+
+def test_stop_requests_exact_async_run(monkeypatch, capsys, fake_peer_server):
+    monkeypatch.setattr(
+        peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}}
+    )
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(
+            peer_action="stop",
+            target="spark",
+            run_id="run_1",
+            json=True,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run_id"] == "run_1"
+    assert payload["status"] == "stopping"
+
+
+# ── cross-origin redirect must not carry the peer's Bearer key ──────────────
+
+
+class _AttackerOrigin(BaseHTTPRequestHandler):
+    """A second real HTTP server standing in for an attacker-controlled host
+    a compromised/MITM'd peer could redirect a ``hermes peer dm`` request to."""
+
+    auth_seen: list = []
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization"))
+        body = json.dumps({"object": "list", "data": []}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):  # noqa: D102 — silence test server logging
+        pass
+
+
+class _RedirectingPeer(BaseHTTPRequestHandler):
+    """A "peer" that 302-redirects every request to a different origin —
+    the shape of a compromised peer or a LAN MITM answering ``hermes peer
+    add``'s registered URL."""
+
+    redirect_target: str = ""
+
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header("Location", type(self).redirect_target + self.path)
+        self.end_headers()
+
+    def log_message(self, *args):  # noqa: D102 — silence test server logging
+        pass
+
+
+def test_request_strips_bearer_key_across_redirect_origin():
+    """``_request`` must not forward the peer's Authorization: Bearer key to
+    a different origin a redirect points at (compromised peer / LAN MITM) —
+    the exact class of leak ``open_credentialed_url`` exists to close."""
+    _AttackerOrigin.auth_seen = []
+    attacker = HTTPServer(("127.0.0.1", 0), _AttackerOrigin)
+    attacker_thread = threading.Thread(target=attacker.serve_forever, daemon=True)
+    attacker_thread.start()
+
+    _RedirectingPeer.redirect_target = f"http://127.0.0.1:{attacker.server_port}"
+    peer = HTTPServer(("127.0.0.1", 0), _RedirectingPeer)
+    peer_thread = threading.Thread(target=peer.serve_forever, daemon=True)
+    peer_thread.start()
+
+    try:
+        # The attacker origin answers with a well-formed (empty) listing, so
+        # the redirect completes successfully — the request itself is not
+        # the point of this test, only whether the Bearer key rode along.
+        result = peer_cmd._request(f"http://127.0.0.1:{peer.server_port}/api/sessions", "top-secret-peer-key")
+        assert result == {"object": "list", "data": []}
+    finally:
+        peer.shutdown()
+        peer_thread.join(timeout=5)
+        attacker.shutdown()
+        attacker_thread.join(timeout=5)
+
+    assert _AttackerOrigin.auth_seen, "redirect target was never reached"
+    assert all(header is None for header in _AttackerOrigin.auth_seen), (
+        f"peer's Bearer key leaked to the redirect target: {_AttackerOrigin.auth_seen}"
+    )

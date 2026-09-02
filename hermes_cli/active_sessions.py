@@ -9,16 +9,22 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+class ActiveSessionRegistryError(RuntimeError):
+    """The liveness registry could not prove a safe ownership decision."""
 
 
 def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessions") -> Optional[int]:
@@ -114,16 +120,107 @@ def active_session_limit_message(
     )
 
 
-def _state_dir() -> Path:
-    return Path(get_hermes_home()) / "runtime"
+def _registry_home(registry_home: str | Path | None = None) -> Path:
+    return Path(registry_home) if registry_home is not None else Path(get_hermes_home())
 
 
-def _state_path() -> Path:
-    return _state_dir() / "active_sessions.json"
+# WHY A REFUSAL IS REFUSED, in a form a caller can branch on.
+#
+# The two refusals mean opposite things to an automated client. Capacity is
+# "the machine is busy, come back later". Ownership is "this specific session
+# has a live owner, and writing to it would interleave with theirs".
+#
+# Callers used to have only the human-readable message, so anything that needed
+# to DECIDE had to match prose -- which silently changes meaning whenever the
+# wording is improved. The reason is the contract; the message is for people.
+SESSION_NOT_OWNED = "SESSION_NOT_OWNED"
+MAX_CONCURRENT_SESSIONS = "MAX_CONCURRENT_SESSIONS"
+# Ownership could not be PROVEN either way: the registry was unreadable or
+# corrupt. Distinct from SESSION_NOT_OWNED on purpose -- "someone else owns
+# this" and "I cannot tell who owns this" call for different operator action,
+# and collapsing the second into a silent go-ahead is exactly the fail-open
+# hole that let two writers share one session (#94595 review, blocker 2).
+SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
+
+# Advertised through the gateway so a client can tell a build that enforces
+# per-session exclusivity from one that does not.
+#
+# A module constant rather than a config flag, deliberately: it is true because
+# try_acquire_active_session below performs the check atomically, so it cannot
+# be turned on by an operator who has not got the enforcement, and cannot drift
+# out of step with it without this file changing.
+PER_SESSION_EXCLUSIVE_SUBMIT = True
 
 
-def _lock_path() -> Path:
-    return _state_dir() / "active_sessions.lock"
+class ActiveSessionRefusal(str):
+    """A refusal message that also carries a machine-readable ``reason``.
+
+    A ``str`` subclass so every existing caller keeps working untouched -- they
+    format it, hand it back as a JSON-RPC message, or just test it for None --
+    while a caller that must act on WHICH refusal happened reads ``.reason``
+    instead of matching the wording.
+    """
+
+    reason: str
+
+    def __new__(cls, message: str, reason: str) -> "ActiveSessionRefusal":
+        obj = super().__new__(cls, message)
+        obj.reason = reason
+        return obj
+
+
+def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> bool:
+    """True when an existing lease belongs to the very caller now re-acquiring it.
+
+    Both halves are required. A pid alone would let two live sessions in one
+    process steal each other's lease -- which is a real hazard, since each holds
+    its own snapshot of the transcript. A live session id alone would let another
+    process with a coincidentally equal id do the same.
+    """
+    try:
+        if int(entry.get("pid") or -1) != os.getpid():
+            return False
+    except (TypeError, ValueError):
+        return False
+    existing_live = str((entry.get("metadata") or {}).get("live_session_id") or "")
+    incoming_live = str((metadata or {}).get("live_session_id") or "")
+    if not existing_live or not incoming_live:
+        return False
+    return existing_live == incoming_live
+
+
+def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
+    surface = str(entry.get("surface") or "another surface")
+    pid = entry.get("pid")
+    started = _optional_float(entry.get("started_at"))
+    age = f", running {format_age(time.time() - started)}" if started else ""
+    return (
+        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
+        "Only one surface at a time may run a session, because a second one would "
+        "reason from a transcript that does not include the first one's work."
+    )
+
+
+def _state_dir(registry_home: str | Path | None = None) -> Path:
+    return _registry_home(registry_home) / "runtime"
+
+
+def _state_path(registry_home: str | Path | None = None) -> Path:
+    return _state_dir(registry_home) / "active_sessions.json"
+
+
+def _lock_path(registry_home: str | Path | None = None) -> Path:
+    return _state_dir(registry_home) / "active_sessions.lock"
+
+
+def _lease_paths(
+    lease: Optional["ActiveSessionLease"] = None,
+    registry_home: str | Path | None = None,
+) -> tuple[Path, Path]:
+    if lease is not None and lease.state_path is not None and lease.lock_path is not None:
+        return lease.state_path, lease.lock_path
+    home = _registry_home(registry_home)
+    return _state_path(home), _lock_path(home)
 
 
 class _FileLock:
@@ -179,27 +276,100 @@ class _FileLock:
             self._fh = None
 
 
-def _read_entries(path: Path) -> list[dict[str, Any]]:
+def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return []
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise ActiveSessionRegistryError(
+                f"active session registry unreadable: {path}"
+            ) from exc
         logger.warning("Ignoring corrupt active session registry at %s", path)
         return []
     entries = data.get("entries") if isinstance(data, dict) else data
     if not isinstance(entries, list):
+        if strict:
+            raise ActiveSessionRegistryError(
+                f"active session registry has invalid shape: {path}"
+            )
         return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+    valid = [entry for entry in entries if isinstance(entry, dict)]
+    if not strict:
+        return valid
+    if len(valid) != len(entries):
+        raise ActiveSessionRegistryError(
+            f"active session registry contains invalid entries: {path}"
+        )
+    seen_leases: set[str] = set()
+    for entry in valid:
+        lease_id = entry.get("lease_id")
+        session_id = entry.get("session_id")
+        pid = entry.get("pid")
+        if not isinstance(lease_id, str) or not lease_id.strip():
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid lease id: {path}"
+            )
+        if lease_id in seen_leases:
+            raise ActiveSessionRegistryError(
+                f"active session registry contains a duplicate lease id: {path}"
+            )
+        seen_leases.add(lease_id)
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid session id: {path}"
+            )
+        if isinstance(pid, bool) or not isinstance(pid, (int, str)):
+            pid_int = 0
+        else:
+            try:
+                pid_int = int(pid)
+            except (TypeError, ValueError):
+                pid_int = 0
+        if pid_int <= 0:
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid pid: {path}"
+            )
+        surface = entry.get("surface")
+        if surface is not None and not isinstance(surface, str):
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid surface: {path}"
+            )
+        tracked = entry.get("track_liveness")
+        if tracked is not None and not isinstance(tracked, bool):
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid liveness marker: {path}"
+            )
+        metadata = entry.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ActiveSessionRegistryError(
+                f"active session registry contains invalid metadata: {path}"
+            )
+        process_start = entry.get("process_start_time")
+        parsed_process_start = _optional_float(process_start)
+        if process_start not in (None, "") and (
+            parsed_process_start is None or not math.isfinite(parsed_process_start)
+        ):
+            raise ActiveSessionRegistryError(
+                f"active session registry contains an invalid process start time: {path}"
+            )
+    return valid
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"entries": entries}, fh, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"entries": entries}, fh, sort_keys=True)
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _process_start_time(pid: int) -> Optional[float]:
@@ -220,6 +390,31 @@ def _optional_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _pid_liveness(pid: Any, process_start_time: Any = None) -> Optional[bool]:
+    """Return True/False for live/dead, or None when liveness is unknowable."""
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid_int <= 0:
+        return None
+    try:
+        from gateway.status import _pid_exists
+
+        exists = bool(_pid_exists(pid_int))
+    except Exception:
+        return None
+    if not exists:
+        return False
+    expected_start = _optional_float(process_start_time)
+    if expected_start is None:
+        return True
+    current_start = _process_start_time(pid_int)
+    if current_start is None:
+        return None
+    return abs(current_start - expected_start) < 0.001
 
 
 def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
@@ -246,12 +441,24 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     return abs(current_start - expected_start) < 0.001
 
 
-def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        entry
-        for entry in entries
-        if _pid_alive(entry.get("pid"), entry.get("process_start_time"))
-    ]
+def _prune_dead(
+    entries: list[dict[str, Any]], *, strict: bool = False
+) -> list[dict[str, Any]]:
+    live: list[dict[str, Any]] = []
+    for entry in entries:
+        tracked = bool(entry.get("track_liveness"))
+        if strict or tracked:
+            state = _pid_liveness(entry.get("pid"), entry.get("process_start_time"))
+            if state is None:
+                raise ActiveSessionRegistryError(
+                    "active session owner liveness is unknown"
+                )
+            if state:
+                live.append(entry)
+            continue
+        if _pid_alive(entry.get("pid"), entry.get("process_start_time")):
+            live.append(entry)
+    return live
 
 
 @dataclass
@@ -269,6 +476,7 @@ class ActiveSessionLease:
     # phantom leases (#85431).
     state_path: Optional[Path] = None
     lock_path: Optional[Path] = None
+    track_liveness: bool = False
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -276,30 +484,16 @@ class ActiveSessionLease:
         release_active_session(self)
 
 
-def try_acquire_active_session(
+def _lease_entry(
     *,
+    lease_id: str,
     session_id: str,
     surface: str,
-    config: Any,
     metadata: Optional[dict[str, Any]] = None,
-) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
-    """Acquire an active-session slot.
-
-    Returns ``(lease, None)`` on success.  When the cap is disabled, the lease is
-    a no-op object so callers can unconditionally call ``release()``.
-    """
-    max_sessions = resolve_max_concurrent_sessions(config)
-    lease_id = uuid.uuid4().hex
-    if max_sessions is None:
-        return ActiveSessionLease(
-            lease_id=lease_id,
-            session_id=session_id,
-            surface=surface,
-            enabled=False,
-        ), None
-
+    track_liveness: bool = False,
+) -> dict[str, Any]:
     now = time.time()
-    entry = {
+    entry: dict[str, Any] = {
         "lease_id": lease_id,
         "session_id": str(session_id),
         "surface": str(surface),
@@ -308,58 +502,196 @@ def try_acquire_active_session(
         "started_at": now,
         "updated_at": now,
     }
+    if track_liveness:
+        entry["track_liveness"] = True
     if metadata:
         entry["metadata"] = {
             str(k): v for k, v in metadata.items() if isinstance(k, str)
         }
+    return entry
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
-        raw_entries = _read_entries(state_path)
-        entries = _prune_dead(raw_entries)
+
+def try_acquire_active_session(
+    *,
+    session_id: str,
+    surface: str,
+    config: Any,
+    metadata: Optional[dict[str, Any]] = None,
+    registry_home: str | Path | None = None,
+    track_liveness: bool = False,
+) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
+    """Acquire an active-session slot.
+
+    Per-session exclusivity is CORRECTNESS and is enforced unconditionally:
+    at most one live owner may run a given stored session, whether or not an
+    operator configured ``max_concurrent_sessions`` (#94595). The concurrency
+    cap remains a resource POLICY and applies only when configured. Liveness
+    tracking keeps richer desktop lifecycle semantics; ``registry_home`` lets
+    profile-scoped backends share the owning profile's registry even when
+    launched from another home.
+
+    Returns ``(lease, None)`` on success and ``(None, refusal)`` otherwise,
+    where ``refusal`` is an :class:`ActiveSessionRefusal` carrying a
+    machine-readable ``reason``. Ownership uncertainty fails CLOSED: when the
+    registry cannot be read, the caller gets ``SESSION_COORDINATION_UNAVAILABLE``
+    rather than a silent go-ahead that could reopen the double-writer state.
+    """
+    max_sessions = resolve_max_concurrent_sessions(config)
+    lease_id = uuid.uuid4().hex
+    key = str(session_id or "")
+
+    # A session with no stored id yet cannot collide with another writer, and
+    # the strict registry schema (rightly) refuses entries with empty session
+    # ids. Nothing to fence, nothing to record: hand back a no-op lease.
+    if not key and not track_liveness:
+        return ActiveSessionLease(
+            lease_id=lease_id,
+            session_id=key,
+            surface=str(surface),
+            enabled=False,
+        ), None
+
+    entry = _lease_entry(
+        lease_id=lease_id,
+        session_id=key,
+        surface=str(surface),
+        metadata=metadata,
+        track_liveness=track_liveness,
+    )
+
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    with _FileLock(lock_path):
+        try:
+            raw_entries = _read_entries(state_path, strict=True)
+            entries = _prune_dead(raw_entries, strict=track_liveness)
+        except ActiveSessionRegistryError:
+            if track_liveness:
+                raise
+            # A capacity cap could afford to degrade open -- worst case, more
+            # sessions than the operator wanted. Exclusivity cannot: "could not
+            # prove ownership" must never be collapsed into "no owner exists",
+            # because that silently reopens the exact double-writer state this
+            # fence guarantees against. Refuse, and say which file to fix.
+            logger.warning(
+                "Active-session registry is unavailable; refusing the session "
+                "rather than risking a concurrent writer"
+            )
+            return None, ActiveSessionRefusal(
+                (
+                    "Hermes could not read the active-session registry at "
+                    f"{state_path}, so it cannot prove this session has no other "
+                    "live owner. Fix or remove that file and try again."
+                ),
+                SESSION_COORDINATION_UNAVAILABLE,
+            )
         pruned = len(raw_entries) - len(entries)
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
-        active_count = len(entries)
-        if active_count >= max_sessions:
-            _write_entries(state_path, entries)
-            logger.info(
-                "Active session limit reached: active=%d max=%d surface=%s",
-                active_count,
-                max_sessions,
-                surface,
-            )
-            return None, active_session_limit_message(
-                active_count, max_sessions, entries
-            )
+
+        # Correctness first, and under the same lock that just pruned the dead
+        # owners -- so an owner that died is never mistaken for one that is
+        # running, and a live one is never overlooked.
+        #
+        # An empty key is exempt: a session with no stored id yet cannot collide
+        # with another, and treating "" as an identity would make every unsaved
+        # draft exclude every other one.
+        if key:
+            for index, existing in enumerate(entries):
+                if str(existing.get("session_id") or "") != key:
+                    continue
+
+                # THE SAME WRITER IS NOT A SECOND WRITER.
+                #
+                # A live session that lost its lease reference -- its record was
+                # rebuilt in place, so the object holding the lease is unreachable
+                # while the session itself is still the one being driven -- would
+                # otherwise be fenced out of its own session by its own leak, and
+                # permanently: pruning only removes entries whose PROCESS is dead,
+                # and this process is very much alive.
+                #
+                # Identity here is (pid, live session id). Two processes never
+                # match, because their pids differ. Two live sessions inside one
+                # process never match, because their live ids differ. Only the
+                # exact same writer re-acquiring its own session matches, and that
+                # is re-entrancy rather than a concurrent writer.
+                if _is_same_writer(existing, metadata):
+                    entries[index] = entry
+                    _write_entries(state_path, entries)
+                    return ActiveSessionLease(
+                        lease_id=lease_id,
+                        session_id=key,
+                        surface=str(surface),
+                        state_path=state_path,
+                        lock_path=lock_path,
+                        track_liveness=track_liveness,
+                    ), None
+
+                _write_entries(state_path, entries)
+                logger.info(
+                    "Refused active session %s: already held by pid=%s surface=%s",
+                    key,
+                    existing.get("pid"),
+                    existing.get("surface"),
+                )
+                return None, ActiveSessionRefusal(
+                    session_already_owned_message(key, existing),
+                    SESSION_NOT_OWNED,
+                )
+
+        # Capacity second, and only when an operator asked for one.
+        if max_sessions is not None:
+            active_count = len(entries)
+            if active_count >= max_sessions:
+                _write_entries(state_path, entries)
+                logger.info(
+                    "Active session limit reached: active=%d max=%d surface=%s",
+                    active_count,
+                    max_sessions,
+                    surface,
+                )
+                return None, ActiveSessionRefusal(
+                    active_session_limit_message(active_count, max_sessions, entries),
+                    MAX_CONCURRENT_SESSIONS,
+                )
         entries.append(entry)
         _write_entries(state_path, entries)
 
     return ActiveSessionLease(
         lease_id=lease_id,
-        session_id=str(session_id),
+        session_id=key,
         surface=str(surface),
         state_path=state_path,
-        lock_path=_lock_path(),
+        lock_path=lock_path,
+        track_liveness=track_liveness,
     ), None
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
     # Prefer the registry the lease was acquired against: the caller may be
     # running under a profile HERMES_HOME override (#85431).
-    state_path = lease.state_path or _state_path()
-    lock_path = lease.lock_path or _lock_path()
-    try:
-        with _FileLock(lock_path):
-            entries = _prune_dead(_read_entries(state_path))
-            kept = [
-                entry
-                for entry in entries
-                if str(entry.get("lease_id") or "") != lease.lease_id
-            ]
-            if len(kept) != len(entries):
-                _write_entries(state_path, kept)
-    finally:
+    state_path, lock_path = _lease_paths(lease)
+    with _FileLock(lock_path):
+        if lease.released:
+            return
+        try:
+            raw_entries = _read_entries(state_path, strict=True)
+            entries = _prune_dead(raw_entries, strict=lease.track_liveness)
+        except ActiveSessionRegistryError:
+            if lease.track_liveness:
+                raise
+            logger.warning(
+                "Active-session registry is unavailable; preserving it while "
+                "releasing an untracked lease"
+            )
+            lease.released = True
+            return
+        kept = [
+            entry
+            for entry in entries
+            if str(entry.get("lease_id") or "") != lease.lease_id
+        ]
+        if len(kept) != len(entries):
+            _write_entries(state_path, kept)
         lease.released = True
 
 
@@ -379,10 +711,23 @@ def transfer_active_session(
         lease.session_id = new_session_id
         return True
 
-    state_path = lease.state_path or _state_path()
-    lock_path = lease.lock_path or _lock_path()
+    state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path))
+        # release() may have won after the optimistic precheck but before this
+        # thread acquired the file lock. Never resurrect a durably removed lease.
+        if lease.released:
+            return False
+        try:
+            raw_entries = _read_entries(state_path, strict=True)
+            entries = _prune_dead(raw_entries, strict=lease.track_liveness)
+        except ActiveSessionRegistryError:
+            if lease.track_liveness:
+                raise
+            logger.warning(
+                "Active-session registry is unavailable; refusing to overwrite "
+                "it during lease transfer"
+            )
+            return False
         updated = False
         for entry in entries:
             if str(entry.get("lease_id") or "") != lease.lease_id:
@@ -395,6 +740,17 @@ def transfer_active_session(
                 }
             updated = True
             break
+        if not updated and lease.track_liveness:
+            entries.append(
+                _lease_entry(
+                    lease_id=lease.lease_id,
+                    session_id=new_session_id,
+                    surface=lease.surface,
+                    metadata=metadata,
+                    track_liveness=True,
+                )
+            )
+            updated = True
         if updated:
             _write_entries(state_path, entries)
             lease.session_id = new_session_id
@@ -413,12 +769,19 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     """
     pid = os.getpid()
     state_path = _state_path()
-    # With the cap disabled the registry is never written, so don't take a lock
-    # (or create its file) on the idle-reaper tick for the majority of installs.
+    # No registry file yet means no leases have ever been written under this
+    # home — don't take a lock (or create its file) on the idle-reaper tick.
     if not state_path.exists():
         return 0
     with _FileLock(_lock_path()):
-        entries = _prune_dead(_read_entries(state_path))
+        try:
+            raw_entries = _read_entries(state_path, strict=True)
+            entries = _prune_dead(raw_entries)
+        except ActiveSessionRegistryError:
+            logger.warning(
+                "Active-session registry is unavailable; skipping orphaned-lease sweep"
+            )
+            return 0
         kept = [
             entry
             for entry in entries
@@ -431,10 +794,78 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     return dropped
 
 
-def active_session_registry_snapshot() -> list[dict[str, Any]]:
+def active_session_registry_snapshot(
+    registry_home: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """Return the pruned active-session registry for diagnostics/tests."""
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
-        entries = _prune_dead(_read_entries(state_path))
-        _write_entries(state_path, entries)
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    with _FileLock(lock_path):
+        raw_entries = _read_entries(state_path, strict=True)
+        entries = _prune_dead(raw_entries)
+        if entries != raw_entries:
+            _write_entries(state_path, entries)
         return entries
+
+
+@contextmanager
+def active_session_liveness_guard(
+    session_id: str,
+    *,
+    registry_home: str | Path | None = None,
+) -> Iterator[bool]:
+    """Hold the registry lock while reporting whether ``session_id`` is leased.
+
+    Keeping the lock across the caller's lifecycle mutation prevents a new
+    backend from acquiring a lease and reopening the row between the liveness
+    check and the corresponding ``end_session`` write.
+    """
+    target = str(session_id or "")
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    with _FileLock(lock_path):
+        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        _write_entries(state_path, entries)
+        yield bool(target) and any(
+            str(entry.get("session_id") or "") == target for entry in entries
+        )
+
+
+@contextmanager
+def release_active_session_liveness_guard(
+    lease: ActiveSessionLease,
+    session_id: str,
+) -> Iterator[bool]:
+    """Remove ``lease`` and hold its registry lock through a lifecycle write.
+
+    This makes automatic cleanup one atomic ownership decision: the local
+    runtime disappears, sibling liveness is checked, and the caller may end the
+    durable row before any new backend can acquire/reopen it.
+    """
+    if not lease.enabled or lease.released:
+        with active_session_liveness_guard(
+            session_id, registry_home=_registry_home_for_lease(lease)
+        ) as active:
+            yield active
+        return
+
+    target = str(session_id or "")
+    state_path, lock_path = _lease_paths(lease)
+    with _FileLock(lock_path):
+        raw_entries = _read_entries(state_path, strict=True)
+        entries = _prune_dead(raw_entries, strict=True)
+        kept = [
+            entry
+            for entry in entries
+            if str(entry.get("lease_id") or "") != lease.lease_id
+        ]
+        if len(kept) != len(entries):
+            _write_entries(state_path, kept)
+        lease.released = True
+        yield bool(target) and any(
+            str(entry.get("session_id") or "") == target for entry in kept
+        )
+
+
+def _registry_home_for_lease(lease: ActiveSessionLease) -> Path | None:
+    if lease.state_path is None:
+        return None
+    return lease.state_path.parent.parent

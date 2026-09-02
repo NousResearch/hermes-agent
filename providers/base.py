@@ -194,6 +194,35 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
+    def supported_reasoning_efforts(
+        self, model: str | None
+    ) -> tuple[str, ...] | None:
+        """Declared reasoning-effort vocabulary for *model* on this provider.
+
+        Overrideable hook for providers whose gateway validates
+        ``reasoning.effort`` per model instead of ignoring or clamping
+        unknown levels server-side (Ramp Router derives this from its live
+        ``/v1/models`` catalog). The Responses transport consults it before
+        falling back to its built-in per-backend vocabularies; it is the
+        profile-declared analog of the OpenRouter catalog clamp on the
+        chat-completions path (``openrouter_model_reasoning_capabilities``).
+
+        Tri-state contract:
+          - ``None`` — unknown/undeclared: the transport keeps its default
+            vocabulary for the wire (this base implementation).
+          - ``()`` — the model accepts NO reasoning parameters at all; the
+            transport must omit reasoning fields entirely (some gateways
+            return HTTP 400 rather than ignoring them).
+          - non-empty tuple — clamp the requested effort onto these levels
+            (``agent.reasoning_effort.clamp_effort`` semantics: nearest
+            weaker supported level, never escalate).
+
+        Implementations are called on the per-request hot path and must not
+        block on network I/O — answer from a cache and return None while
+        cold.
+        """
+        return None
+
     def fetch_models(
         self,
         *,

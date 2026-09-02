@@ -9,8 +9,10 @@ import {
   ExternalLink,
   fetchLinkTitle,
   hostPathLabel,
+  hudForcesNativeLinks,
   isTitleFetchable,
   LinkifiedText,
+  MarkdownLinkText,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -131,6 +133,54 @@ describe('external link helpers', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
 
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('treats only the HUD renderer as a native-link surface', () => {
+    expect(hudForcesNativeLinks('')).toBe(false)
+    expect(hudForcesNativeLinks('?win=secondary')).toBe(false)
+    expect(hudForcesNativeLinks('?win=browser&tab=1')).toBe(false)
+    expect(hudForcesNativeLinks('?win=hud')).toBe(true)
+    expect(hudForcesNativeLinks('?profile=work&win=hud')).toBe(true)
+  })
+
+  // The HUD has no in-app browser. A click that opened a preview tile would
+  // try to paint a webview into the transparent overlay (OAuth, consoles).
+  it('sends every HUD web link to the OS browser', () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+      render(<ExternalLink href="https://accounts.google.com/o/oauth2/auth">Sign in</ExternalLink>)
+
+      fireEvent.click(screen.getByRole('link', { name: 'Sign in' }))
+
+      expect(openExternal).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth')
+      expect($previewTabs.get()).toHaveLength(0)
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+  })
+
+  // A setup step sends you to a console you are signed into in your own
+  // browser, to fill in a form and copy a secret back. The in-app pane has
+  // none of that session and is the wrong destination even for web URLs.
+  it('sends a setup-step link straight to the OS browser', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<MarkdownLinkText text="Enable the [Docs API](https://console.cloud.google.com/apis/library) first." />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs API' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library')
     expect($previewTabs.get()).toHaveLength(0)
   })
 

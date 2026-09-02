@@ -14,7 +14,7 @@ Providers live in ``<repo>/plugins/web/<name>/`` (built-in, auto-loaded as
 
 This ABC is the SINGLE plugin-facing surface for web providers — every
 provider in the tree (brave-free, ddgs, searxng, exa, parallel, tavily,
-firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
+keenable, firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
 ABCs were deleted in PR #25182 along with the per-vendor inline helpers
 in ``tools/web_tools.py``; the response-shape contract documented below
 is preserved bit-for-bit so the tool wrapper does not have to translate.
@@ -125,6 +125,22 @@ class WebSearchProvider(abc.ABC):
     def supports_search(self) -> bool:
         """Return True if this provider implements :meth:`search`."""
         return True
+
+    def is_keyless_available(self) -> bool:
+        """Return True when this provider can serve calls WITHOUT credentials.
+
+        A separate, weaker tier than :meth:`is_available`: providers with a
+        public anonymous free tier (Exa / Parallel MCP endpoints) return
+        True here so the registry can fall back to them when NO provider is
+        configured or keyed — and only then. Keyless availability must never
+        make :meth:`is_available` return True, or the legacy preference walk
+        would route users with real credentials for a lower-priority backend
+        onto the free tier of a higher-priority one.
+
+        Like :meth:`is_available`, this must be cheap and must NOT make
+        network calls. Default: False.
+        """
+        return False
 
     def supports_extract(self) -> bool:
         """Return True if this provider implements :meth:`extract`.

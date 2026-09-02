@@ -27,12 +27,16 @@ the same Converse API integration in TypeScript via ``@aws-sdk/client-bedrock``.
 Requires: ``boto3`` (optional dependency — only needed when using the Bedrock provider).
 """
 
+import base64
 import json
 import logging
 import os
 import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,25 @@ except Exception:
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+
+# Bedrock-hosted OpenAI GPT-5.5 is not exposed through the native Converse
+# runtime. AWS serves it from the Bedrock Mantle OpenAI-compatible Responses
+# endpoint instead (https://bedrock-mantle.<region>.api.aws/openai/v1).
+# Keep the allowlist intentionally narrow so OpenAI GPT-OSS models that are
+# Converse-capable continue to use the native Bedrock path.
+BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
+    "openai.gpt-5.5",
+    # GPT-5.6 family (GA on Bedrock 2026-07-13): Sol (frontier), Terra
+    # (balanced), Luna (fast/affordable). All are Mantle-only — the model
+    # cards list bedrock-runtime/Converse as unsupported.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna",
+)
+_BEDROCK_OPENAI_HOST_RE = re.compile(
+    r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE
+)
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
@@ -131,6 +154,143 @@ def invalidate_runtime_client(region: str) -> bool:
     existed = region in _bedrock_runtime_client_cache
     _bedrock_runtime_client_cache.pop(region, None)
     return existed
+
+
+# ---------------------------------------------------------------------------
+# Bedrock Mantle / OpenAI Responses support
+# ---------------------------------------------------------------------------
+
+
+def is_openai_bedrock_model(model_id: str) -> bool:
+    """Return True for Bedrock-hosted OpenAI models that require Mantle.
+
+    Bedrock's GPT-OSS models are Converse-capable and intentionally do not
+    match this helper. The allowlist tracks models served by the OpenAI
+    Responses-compatible ``bedrock-mantle`` route.
+    """
+    normalized = str(model_id or "").strip().lower()
+    return normalized in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+
+
+def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
+    """Append Bedrock OpenAI Responses models to a discovered Bedrock list.
+
+    The Bedrock control plane's ListFoundationModels/ListInferenceProfiles
+    discovery covers Converse models but does not enumerate Mantle-only
+    OpenAI Responses models. The picker needs both surfaces under AWS Bedrock.
+    """
+    merged = list(model_ids or [])
+    seen = {str(m).lower() for m in merged}
+    for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+        if model_id.lower() not in seen:
+            merged.append(model_id)
+            seen.add(model_id.lower())
+    return merged
+
+
+def bedrock_openai_base_url(region: str) -> str:
+    """Return Bedrock Mantle's OpenAI-compatible base URL for *region*."""
+    resolved = (region or "").strip() or resolve_bedrock_runtime_region()
+    return f"https://bedrock-mantle.{resolved}.api.aws/openai/v1"
+
+
+def bedrock_openai_region_from_base_url(base_url: str) -> Optional[str]:
+    """Extract the AWS region from a Bedrock Mantle OpenAI base URL."""
+    host = urlparse(str(base_url or "")).hostname or ""
+    match = _BEDROCK_OPENAI_HOST_RE.match(host)
+    return match.group(1) if match else None
+
+
+def is_bedrock_openai_base_url(base_url: str) -> bool:
+    """Return True for Bedrock Mantle OpenAI-compatible endpoints."""
+    parsed = urlparse(str(base_url or ""))
+    host = parsed.hostname or ""
+    if not _BEDROCK_OPENAI_HOST_RE.match(host):
+        return False
+    # The OpenAI GPT-5.5 Bedrock route lives under /openai/v1. Accept a bare
+    # host too so callers can normalize before appending the path.
+    path = (parsed.path or "").rstrip("/").lower()
+    return path in {"", "/openai", "/openai/v1"}
+
+
+def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
+    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
+    env = env if env is not None else os.environ
+    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+
+
+class BedrockOpenAISigV4Auth(httpx.Auth):
+    """httpx auth hook that SigV4-signs Bedrock Mantle OpenAI requests."""
+
+    requires_request_body = True
+
+    def __init__(self, region: str, service: str = "bedrock"):
+        self.region = (region or "").strip() or resolve_bedrock_runtime_region()
+        self.service = service
+
+    def auth_flow(self, request):  # pragma: no cover - exercised by live call
+        import botocore.session
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        credentials = botocore.session.get_session().get_credentials()
+        if credentials is None:
+            raise RuntimeError(
+                "No AWS credentials available for Bedrock OpenAI Responses. "
+                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, "
+                "SSO, or an instance/task role."
+            )
+        frozen = credentials.get_frozen_credentials()
+        # Drop the OpenAI SDK's placeholder bearer header before signing; SigV4
+        # must own Authorization. Keep all other SDK headers so AWS receives
+        # content-type, accept, request IDs, etc.
+        headers = {
+            str(k): str(v)
+            for k, v in request.headers.items()
+            if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}
+        }
+        aws_request = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content or b"",
+            headers=headers,
+        )
+        SigV4Auth(frozen, self.service, self.region).add_auth(aws_request)
+        request.headers.update(dict(aws_request.headers.items()))
+        yield request
+
+
+def build_bedrock_openai_http_client(region: str, *, timeout: Optional[float] = None):
+    """Build an httpx client that SigV4-signs Bedrock OpenAI requests."""
+    import httpx
+
+    kwargs: Dict[str, Any] = {"auth": BedrockOpenAISigV4Auth(region)}
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        kwargs["timeout"] = timeout
+    return httpx.Client(**kwargs)
+
+
+def configure_bedrock_openai_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Install SigV4 auth on OpenAI SDK kwargs for Bedrock Mantle.
+
+    ``AWS_BEARER_TOKEN_BEDROCK``/explicit Bedrock API keys continue to use the
+    SDK's normal bearer auth. The special ``aws-sdk`` placeholder means IAM
+    credential-chain auth, so we attach a per-request SigV4 httpx client.
+    """
+    base_url = str(client_kwargs.get("base_url") or "")
+    if not is_bedrock_openai_base_url(base_url):
+        return client_kwargs
+    api_key = client_kwargs.get("api_key")
+    if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
+        return client_kwargs
+    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_runtime_region()
+    client_kwargs["api_key"] = "aws-sdk"
+    client_kwargs["http_client"] = build_bedrock_openai_http_client(region, timeout=timeout)
+    return client_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +544,36 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     return "us-east-1"
 
 
+def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the Bedrock region with the same priority as the main runtime.
+
+    Priority (matches the runtime provider resolver in
+    ``hermes_cli/runtime_provider.py``):
+      1. ``bedrock.region`` in config.yaml
+      2. ``resolve_bedrock_region()`` (AWS_REGION / AWS_DEFAULT_REGION /
+         botocore profile / us-east-1)
+
+    Callers that already hold a loaded config dict should pass it to avoid a
+    disk read; when *config* is None the config is loaded read-only. Every
+    non-runtime call site that constructs a Bedrock endpoint (auxiliary
+    client resolution, model discovery for the picker) must use this helper —
+    using bare ``resolve_bedrock_region()`` there lets auxiliary calls leave
+    the primary runtime's configured region when ``bedrock.region`` and the
+    ambient AWS env/profile disagree.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            config = {}
+    bedrock_cfg = (config or {}).get("bedrock") or {}
+    cfg_region = str(bedrock_cfg.get("region") or "").strip()
+    if cfg_region:
+        return cfg_region
+    return resolve_bedrock_region()
+
+
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
     """Live-discover Bedrock model IDs for the active region.
 
@@ -396,9 +586,9 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
     ``list_authenticated_providers`` section 2, and section 3.
     """
     try:
-        discovered = discover_bedrock_models(resolve_bedrock_region())
+        discovered = discover_bedrock_models(resolve_bedrock_runtime_region())
         if discovered:
-            return [m["id"] for m in discovered]
+            return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
     except Exception:
         pass
     return None
@@ -454,6 +644,162 @@ def _model_supports_prompt_cache(model_id: str) -> bool:
     """Return True if the model accepts a Converse API cachePoint block."""
     model_lower = model_id.lower()
     return any(pattern in model_lower for pattern in _CACHE_POINT_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Server-verdict cachePoint suppression
+# ---------------------------------------------------------------------------
+# The allowlist above is a static guess about *placement*, and Bedrock's real
+# rule is per-model-family AND per-field: Amazon Nova accepts cachePoint in
+# ``system``/``messages`` but rejects it inside ``toolConfig.tools`` with a
+# hard ValidationException that fails the whole request (#97281). Any static
+# table drifts the moment AWS ships a family whose placement rules differ, and
+# the failure mode is 100% of turns with no recovery and no user workaround.
+#
+# So the table is not the only authority: when Bedrock names a placement as
+# unpermitted, that verdict is recorded and the marker is dropped from that
+# placement for the rest of the process, and the rejected request is retried
+# once without it. Mirrors the existing self-heal idiom in this module
+# (is_streaming_access_denied_error → non-streaming converse()).
+
+CACHE_POINT_PLACEMENTS = ("tools", "system", "messages")
+
+# model_id (lowercased) → placements Bedrock has rejected this process.
+_CACHE_POINT_REJECTIONS: Dict[str, set] = {}
+
+# "#/toolConfig/tools/18: extraneous key [cachePoint] is not permitted"
+_CACHE_POINT_PATH_PATTERN = re.compile(
+    r"#/(?P<path>[A-Za-z0-9_./\[\]-]*)", re.IGNORECASE
+)
+
+
+def cache_point_rejection_placement(exc: BaseException) -> Optional[str]:
+    """Return the Converse section whose cachePoint block Bedrock refused.
+
+    Returns one of ``CACHE_POINT_PLACEMENTS``, or None when the error is not a
+    cachePoint rejection. Bedrock reports it as a ValidationException naming
+    the offending JSON pointer, e.g.::
+
+        Malformed input request: #/toolConfig/tools/18: extraneous key
+        [cachePoint] is not permitted, please reformat your input and try again.
+
+    Detection is message-based on purpose: the pointer is the only part of the
+    response that says *which* section was rejected, and the same wording
+    reaches us both as a raw botocore ``ClientError`` and wrapped by SDKs.
+    """
+    msg = str(exc)
+    lowered = msg.lower()
+    if "cachepoint" not in lowered:
+        return None
+    if "not permitted" not in lowered and "extraneous" not in lowered:
+        return None
+    match = _CACHE_POINT_PATH_PATTERN.search(msg)
+    path = (match.group("path") if match else "").lower()
+    if "toolconfig" in path or "tools" in path:
+        return "tools"
+    if "system" in path:
+        return "system"
+    if "messages" in path:
+        return "messages"
+    # A rejection we cannot localise: suppress the tool marker first, since
+    # toolConfig.tools is the only placement any supported family is known to
+    # refuse while still accepting the others.
+    return "tools"
+
+
+def note_cache_point_rejection(model_id: str, placement: str) -> None:
+    """Record that ``model_id`` refuses cachePoint blocks in ``placement``."""
+    if placement not in CACHE_POINT_PLACEMENTS:
+        return
+    _CACHE_POINT_REJECTIONS.setdefault(model_id.lower(), set()).add(placement)
+
+
+def cache_point_allowed(model_id: str, placement: str) -> bool:
+    """Return False once Bedrock has refused this placement for this model."""
+    return placement not in _CACHE_POINT_REJECTIONS.get(model_id.lower(), ())
+
+
+def reset_cache_point_rejections() -> None:
+    """Clear recorded cachePoint rejections. Used in tests."""
+    _CACHE_POINT_REJECTIONS.clear()
+
+
+def _is_cache_point_block(block: Any) -> bool:
+    return isinstance(block, dict) and set(block.keys()) == {"cachePoint"}
+
+
+def strip_cache_points(kwargs: Dict[str, Any], placement: str) -> Dict[str, Any]:
+    """Return a copy of Converse kwargs with ``placement``'s cachePoint removed.
+
+    Returns the input unchanged (same object) when there was nothing to strip,
+    which is what callers use to decide a retry cannot help.
+    """
+    if placement == "system":
+        system = kwargs.get("system")
+        if not isinstance(system, list):
+            return kwargs
+        cleaned = [b for b in system if not _is_cache_point_block(b)]
+        if len(cleaned) == len(system):
+            return kwargs
+        return {**kwargs, "system": cleaned}
+
+    if placement == "tools":
+        tool_config = kwargs.get("toolConfig")
+        tools = (tool_config or {}).get("tools")
+        if not isinstance(tools, list):
+            return kwargs
+        cleaned = [t for t in tools if not _is_cache_point_block(t)]
+        if len(cleaned) == len(tools):
+            return kwargs
+        return {**kwargs, "toolConfig": {**tool_config, "tools": cleaned}}
+
+    if placement == "messages":
+        messages = kwargs.get("messages")
+        if not isinstance(messages, list):
+            return kwargs
+        changed = False
+        cleaned_messages = []
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list) and any(_is_cache_point_block(b) for b in content):
+                changed = True
+                cleaned_messages.append({
+                    **msg,
+                    "content": [b for b in content if not _is_cache_point_block(b)],
+                })
+            else:
+                cleaned_messages.append(msg)
+        if not changed:
+            return kwargs
+        return {**kwargs, "messages": cleaned_messages}
+
+    return kwargs
+
+
+def recover_from_cache_point_rejection(
+    exc: BaseException, kwargs: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Record Bedrock's cachePoint verdict and return retry kwargs, or None.
+
+    None means the error was not a cachePoint rejection, or the marker was
+    already absent — in which case retrying cannot change the outcome and the
+    caller must re-raise.
+    """
+    placement = cache_point_rejection_placement(exc)
+    if placement is None:
+        return None
+    retry_kwargs = strip_cache_points(kwargs, placement)
+    if retry_kwargs is kwargs:
+        return None
+    model_id = str(kwargs.get("modelId", ""))
+    note_cache_point_rejection(model_id, placement)
+    logger.warning(
+        "bedrock: %s rejected a cachePoint block in %s — dropping that cache "
+        "marker for this model and retrying. Prompt caching stays active for "
+        "the remaining sections.",
+        model_id or "model", placement,
+    )
+    return retry_kwargs
 
 
 def is_anthropic_bedrock_model(model_id: str) -> bool:
@@ -662,28 +1008,84 @@ def convert_messages_to_converse(
 
         if role == "assistant":
             content_blocks = []
-            # Convert text content
-            if isinstance(content, str) and content.strip():
-                content_blocks.append({"text": content})
-            elif isinstance(content, list):
-                content_blocks.extend(_convert_content_to_converse(content))
+            ordered_blocks = msg.get("bedrock_content_blocks")
+            if isinstance(ordered_blocks, list) and ordered_blocks:
+                # Rebuild the exact Bedrock block sequence captured at
+                # normalization time. Redacted bytes are stored as base64 so
+                # the sidecar remains JSON-safe in assistant history.
+                for block in ordered_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if "text" in block and isinstance(block["text"], str):
+                        content_blocks.append({"text": block["text"]})
+                    elif "reasoningContent" in block:
+                        reasoning = block["reasoningContent"]
+                        if not isinstance(reasoning, dict):
+                            continue
+                        replay = {}
+                        if isinstance(reasoning.get("text"), str):
+                            replay["text"] = reasoning["text"]
+                        encoded = reasoning.get("redactedContentBase64")
+                        if isinstance(encoded, str) and encoded:
+                            try:
+                                replay["redactedContent"] = base64.b64decode(encoded, validate=True)
+                            except (ValueError, TypeError):
+                                continue
+                        if replay:
+                            content_blocks.append({"reasoningContent": replay})
+                    elif "toolUse" in block and isinstance(block["toolUse"], dict):
+                        tu = block["toolUse"]
+                        content_blocks.append({"toolUse": {
+                            "toolUseId": tu.get("toolUseId", ""),
+                            "name": tu.get("name", ""),
+                            "input": tu.get("input", {}),
+                        }})
 
-            # Convert tool calls
-            tool_calls = msg.get("tool_calls", [])
-            for tc in (tool_calls or []):
-                fn = tc.get("function", {})
-                args_str = fn.get("arguments", "{}")
-                try:
-                    args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
-                except (json.JSONDecodeError, TypeError):
-                    args_dict = {}
-                content_blocks.append({
-                    "toolUse": {
-                        "toolUseId": tc.get("id", ""),
-                        "name": fn.get("name", ""),
-                        "input": args_dict,
-                    }
-                })
+                if not content_blocks:
+                    ordered_blocks = None
+
+            if content_blocks:
+                # Ordered replay is authoritative; do not append parallel
+                # reasoning/text/tool lists a second time.
+                pass
+            else:
+                # Bedrock may return opaque encrypted reasoning instead of text.
+                # Preserve the payload in the provider-neutral reasoning_details
+                # envelope so the next tool turn can replay it byte-for-byte.
+                for detail in (msg.get("reasoning_details") or []):
+                    if not isinstance(detail, dict) or detail.get("type") != "redacted_thinking":
+                        continue
+                    encoded = detail.get("data") or detail.get("redactedContentBase64")
+                    if not isinstance(encoded, str) or not encoded:
+                        continue
+                    try:
+                        redacted = base64.b64decode(encoded, validate=True)
+                    except (ValueError, TypeError):
+                        continue
+                    content_blocks.append({"reasoningContent": {"redactedContent": redacted}})
+
+                # Convert text content
+                if isinstance(content, str) and content.strip():
+                    content_blocks.append({"text": content})
+                elif isinstance(content, list):
+                    content_blocks.extend(_convert_content_to_converse(content))
+
+                # Convert tool calls
+                tool_calls = msg.get("tool_calls", [])
+                for tc in (tool_calls or []):
+                    fn = tc.get("function", {})
+                    args_str = fn.get("arguments", "{}")
+                    try:
+                        args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    except (json.JSONDecodeError, TypeError):
+                        args_dict = {}
+                    content_blocks.append({
+                        "toolUse": {
+                            "toolUseId": tc.get("id", ""),
+                            "name": fn.get("name", ""),
+                            "input": args_dict,
+                        }
+                    })
 
             if not content_blocks:
                 content_blocks = [{"text": _EMPTY_TEXT_PLACEHOLDER}]
@@ -757,19 +1159,48 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
 
     text_parts = []
     reasoning_parts = []
+    reasoning_details = []
+    ordered_blocks = []
     tool_calls = []
 
     for block in content_blocks:
         if "text" in block:
             text_parts.append(block["text"])
+            ordered_blocks.append({"text": block["text"]})
         elif "reasoningContent" in block:
             reasoning = block["reasoningContent"]
             if isinstance(reasoning, dict):
                 thinking_text = reasoning.get("text", "")
+                encoded = None
                 if thinking_text:
                     reasoning_parts.append(str(thinking_text))
+                redacted = reasoning.get("redactedContent")
+                if redacted is not None:
+                    if isinstance(redacted, (bytes, bytearray)):
+                        encoded = base64.b64encode(bytes(redacted)).decode("ascii")
+                    elif isinstance(redacted, str):
+                        encoded = redacted
+                    else:
+                        encoded = None
+                    if encoded:
+                        reasoning_details.append({
+                            "type": "redacted_thinking",
+                            "data": encoded,
+                        })
+                if thinking_text or encoded:
+                    ordered_reasoning = {}
+                    if thinking_text:
+                        ordered_reasoning["text"] = str(thinking_text)
+                    if encoded:
+                        ordered_reasoning["redactedContentBase64"] = encoded
+                    ordered_blocks.append({"reasoningContent": ordered_reasoning})
         elif "toolUse" in block:
             tu = block["toolUse"]
+            ordered_blocks.append({"toolUse": {
+                "toolUseId": tu.get("toolUseId", ""),
+                "name": tu.get("name", ""),
+                "input": tu.get("input", {}),
+            }})
             tool_calls.append(SimpleNamespace(
                 id=tu.get("toolUseId", ""),
                 type="function",
@@ -785,6 +1216,8 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
         reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_details=reasoning_details or None,
+        bedrock_content_blocks=ordered_blocks or None,
     )
 
     # Build usage stats. Converse's inputTokens excludes cache read/write
@@ -881,7 +1314,10 @@ def stream_converse_with_callbacks(
     """
     text_parts: List[str] = []
     reasoning_parts: List[str] = []
+    reasoning_details: List[Dict[str, Any]] = []
     tool_calls: List[SimpleNamespace] = []
+    stream_blocks: Dict[int, Dict[str, Any]] = {}
+    current_block_index: Optional[int] = None
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
     has_tool_use = False
@@ -903,7 +1339,9 @@ def stream_converse_with_callbacks(
             break
 
         if "contentBlockStart" in event:
-            start = event["contentBlockStart"].get("start", {})
+            start_event = event["contentBlockStart"]
+            current_block_index = start_event.get("contentBlockIndex", len(stream_blocks))
+            start = start_event.get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
                 # Flush any accumulated text
@@ -915,6 +1353,11 @@ def stream_converse_with_callbacks(
                     "name": start["toolUse"].get("name", ""),
                     "input_json": "",
                 }
+                stream_blocks[current_block_index] = {"toolUse": {
+                    "toolUseId": current_tool["toolUseId"],
+                    "name": current_tool["name"],
+                    "input": {},
+                }}
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
 
@@ -922,6 +1365,8 @@ def stream_converse_with_callbacks(
             delta = event["contentBlockDelta"].get("delta", {})
             if "text" in delta:
                 text = delta["text"]
+                block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"text": ""})
+                block["text"] = block.get("text", "") + text
                 current_text_buffer.append(text)
                 # Fire text delta callback only when no tool calls are present
                 # (same semantics as Anthropic/chat_completions streaming)
@@ -939,6 +1384,23 @@ def stream_converse_with_callbacks(
                         reasoning_parts.append(str(thinking_text))
                         if on_reasoning_delta:
                             on_reasoning_delta(thinking_text)
+                        block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"reasoningContent": {}})
+                        block.setdefault("reasoningContent", {})["text"] = block["reasoningContent"].get("text", "") + str(thinking_text)
+                    redacted = reasoning.get("redactedContent")
+                    if redacted is not None:
+                        if isinstance(redacted, (bytes, bytearray)):
+                            encoded = base64.b64encode(bytes(redacted)).decode("ascii")
+                        elif isinstance(redacted, str):
+                            encoded = redacted
+                        else:
+                            encoded = None
+                        if encoded:
+                            reasoning_details.append({
+                                "type": "redacted_thinking",
+                                "data": encoded,
+                            })
+                            block = stream_blocks.setdefault(current_block_index if current_block_index is not None else len(stream_blocks), {"reasoningContent": {}})
+                            block.setdefault("reasoningContent", {})["redactedContentBase64"] = encoded
 
         elif "contentBlockStop" in event:
             if current_tool is not None:
@@ -954,6 +1416,8 @@ def stream_converse_with_callbacks(
                         arguments=json.dumps(input_dict),
                     ),
                 ))
+                if current_block_index is not None and current_block_index in stream_blocks:
+                    stream_blocks[current_block_index]["toolUse"]["input"] = input_dict
                 current_tool = None
             elif current_text_buffer:
                 text_parts.append("".join(current_text_buffer))
@@ -980,6 +1444,8 @@ def stream_converse_with_callbacks(
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
         reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_details=reasoning_details or None,
+        bedrock_content_blocks=[stream_blocks[i] for i in sorted(stream_blocks)] or None,
     )
 
     input_tokens = usage_data.get("inputTokens", 0)
@@ -1049,7 +1515,7 @@ def build_converse_kwargs(
     }
 
     if system_prompt:
-        if cache_enabled:
+        if cache_enabled and cache_point_allowed(model, "system"):
             system_prompt = system_prompt + [{"cachePoint": {"type": "default"}}]
         kwargs["system"] = system_prompt
 
@@ -1074,7 +1540,7 @@ def build_converse_kwargs(
             # Strip tools for known non-tool-calling models and warn the user.
             # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
             if _model_supports_tool_use(model):
-                if cache_enabled:
+                if cache_enabled and cache_point_allowed(model, "tools"):
                     converse_tools = converse_tools + [{"cachePoint": {"type": "default"}}]
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
@@ -1083,7 +1549,11 @@ def build_converse_kwargs(
                     "The agent will operate in text-only mode.", model
                 )
 
-    if cache_enabled and len(converse_messages) >= 2:
+    if (
+        cache_enabled
+        and cache_point_allowed(model, "messages")
+        and len(converse_messages) >= 2
+    ):
         # Checkpoint everything up to (not including) the newest turn, so the
         # marker survives unchanged across requests as only the tail grows —
         # mirroring the Anthropic system_and_3 strategy in prompt_caching.py.
@@ -1131,6 +1601,9 @@ def call_converse(
     try:
         response = client.converse(**kwargs)
     except Exception as exc:
+        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+        if retry_kwargs is not None:
+            return normalize_converse_response(client.converse(**retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
@@ -1173,6 +1646,11 @@ def call_converse_stream(
     try:
         response = client.converse_stream(**kwargs)
     except Exception as exc:
+        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+        if retry_kwargs is not None:
+            return normalize_converse_stream_events(
+                client.converse_stream(**retry_kwargs)
+            )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not
             # InvokeModelWithResponseStream — permanent for this session.
@@ -1450,6 +1928,12 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "mistral.mistral-large":         128_000,
     # DeepSeek
     "deepseek.v3":                   128_000,
+    # OpenAI on Bedrock (Mantle/Responses route)
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.5":                272_000,
+    "openai.gpt-5.6-sol":            272_000,
+    "openai.gpt-5.6-terra":          272_000,
+    "openai.gpt-5.6-luna":           272_000,
 }
 
 # Default for unknown Bedrock models

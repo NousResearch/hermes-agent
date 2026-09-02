@@ -111,6 +111,29 @@ test('forceCleanupAll runs registered pending resource cleanup', async () => {
   await promise
 })
 
+test('shutdown cancels active bootstraps and permanently rejects respawn attempts', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const gate = deferred()
+
+  const active = coordinator.start('primary', 'old', async lease => {
+    await gate.promise
+    lease.assertCurrent()
+  })
+
+  coordinator.shutdown()
+  gate.resolve()
+
+  await assert.rejects(active, (error: any) => error.kind === 'superseded')
+  let started = 0
+  await assert.rejects(
+    coordinator.start('primary', 'new', async () => {
+      started += 1
+    }),
+    (error: any) => error.kind === 'superseded'
+  )
+  assert.equal(started, 0)
+})
+
 test('cancelAll invalidates every pending scope and exposes promises for quit', async () => {
   const coordinator = createBootstrapCoordinator()
   const gates = [deferred(), deferred()]

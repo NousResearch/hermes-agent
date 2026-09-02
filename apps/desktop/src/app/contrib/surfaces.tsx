@@ -117,6 +117,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   actions: WiringActions
   maxVoiceRecordingSeconds?: number
 }) {
+  const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gateway = useStore($gateway)
   const gatewayState = useStore($gatewayState)
@@ -129,11 +130,12 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
         <ModelMenuPanel
           gateway={gateway || undefined}
           onSelectModel={actions.selectModel}
+          ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}
           requestGateway={actions.requestGateway}
         />
       ) : null,
-    [actions, activeGatewayProfile, gateway, gatewayState]
+    [actions, activeConnectionId, activeGatewayProfile, gateway, gatewayState]
   )
 
   const chatActions = useMemo(() => latestChatActions(actions), [actions])
@@ -143,15 +145,20 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       gateway={gateway}
       maxVoiceRecordingSeconds={maxVoiceRecordingSeconds}
       modelMenuContent={modelMenuContent}
+      modelOptionsOwnerConnectionId={activeConnectionId || undefined}
+      modelOptionsProfile={activeGatewayProfile}
+      requestModelOptionsForOwner={actions.requestGateway}
       {...chatActions}
     />
   )
 
-  // FULL-PAGE views (not chat) mark the zone body `data-zone-no-header`: a
-  // page is not a tab-able surface, so the zone's double-click header toggle
-  // stands down while one is showing (see onZoneDoubleClick).
+  // FULL-PAGE views (not chat): a page is not a tab-able surface, so the zone's
+  // tab strip stands down while one is showing. That is `paneChrome.headerVeto`
+  // on the contribution, not a DOM marker — the `data-zone-no-header` attribute
+  // that used to ride this wrapper gated a body double-click toggle that no
+  // longer exists, and nothing has read it since.
   const page = (view: ReactNode) => (
-    <div className="contents" data-zone-no-header>
+    <div className="contents">
       <Suspense fallback={null}>{view}</Suspense>
     </div>
   )

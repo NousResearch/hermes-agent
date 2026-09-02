@@ -43,17 +43,12 @@ def read_window_below_tool(callback: Optional[Callable] = None) -> str:
 READ_WINDOW_BELOW_SCHEMA = {
     "name": "read_window_below",
     "description": (
-        "Identify the application window directly underneath (behind) the "
-        "Hermes desktop window — what the user is working in behind this app. "
-        "Returns JSON: {window: {app, title, bounds{x,y,width,height}, id}, "
-        "frontmost: {app, title}, platform}. `title` may be empty when the OS "
-        "withholds window titles (e.g. macOS without the Screen Recording "
-        "permission — never prompted for, noted in `note`). Other Hermes "
-        "windows are skipped: the nearest non-Hermes window is reported. "
-        "Returns {error, platform} instead where the OS cannot enumerate "
-        "windows at all (e.g. a Wayland session); `error` says what would fix "
-        "it, so relay it rather than retrying. "
-        "Metadata only; this never captures pixels or content of other windows."
+        "Identify the app window directly behind the Hermes desktop window "
+        "(what the user is working in). JSON: {window: {app, title, bounds, "
+        "id}, frontmost, platform}. title may be empty when the OS withholds "
+        "it (noted in `note`); where windows cannot be enumerated at all, "
+        "{error, platform} says what would fix it — relay that instead of "
+        "retrying. Metadata only; never captures pixels."
     ),
     "parameters": {
         "type": "object",

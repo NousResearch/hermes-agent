@@ -235,7 +235,7 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 
 ### Session (`session.ts`)
 `/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
-`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/bg`, `/btw`, `/image`, `/personality`,
 `/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
 `/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 

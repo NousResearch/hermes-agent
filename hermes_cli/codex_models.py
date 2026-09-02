@@ -89,6 +89,38 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
+def _add_context_variants(model_ids: List[str]) -> List[str]:
+    """Insert ``-900k`` large-context picker variants after eligible base slugs.
+
+    The ChatGPT Codex backend advertises 272K for the gpt-5.4 / gpt-5.6
+    families but accepts ~911K (live-verified Aug 2026). The base slugs keep
+    the cheaper advertised 272K limit by default; each verified slug gets an
+    explicit ``<slug>-900k`` picker entry that opts into the large window.
+    The suffix is Hermes-side only — it is stripped before the model id hits
+    the wire (agent/transports/codex.py, agent/auxiliary_client.py).
+    """
+    from agent.model_metadata import (
+        CODEX_CONTEXT_VARIANT_SUFFIX,
+        has_codex_context_variant,
+    )
+
+    out: List[str] = []
+    present = set(model_ids)
+    for model_id in model_ids:
+        out.append(model_id)
+        variant = model_id + CODEX_CONTEXT_VARIANT_SUFFIX
+        if variant in present or variant in out:
+            continue
+        if has_codex_context_variant(model_id):
+            out.append(variant)
+    return out
+
+
+def _finalize_codex_models(model_ids: List[str]) -> List[str]:
+    """Forward-compat synthesis + large-context variant synthesis."""
+    return _add_context_variants(_add_forward_compat_models(model_ids))
+
+
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
     """Best-effort extraction of ``chatgpt_account_id`` from the OAuth JWT.
 
@@ -160,7 +192,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return _finalize_codex_models([slug for _, slug in sortable])
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -232,7 +264,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            return _finalize_codex_models(api_models)
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
@@ -247,4 +279,4 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _add_forward_compat_models(ordered)
+    return _finalize_codex_models(ordered)

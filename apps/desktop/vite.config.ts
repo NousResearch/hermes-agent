@@ -1,5 +1,17 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+
+/** React Compiler preset scoped to modules that can actually contain
+ *  components/hooks (JSX syntax or a react-ish import). The preset's default
+ *  code filter matches any PascalCase/use* declaration — effectively every TS
+ *  module — which made the babel pass parse all ~1.5k source files when only
+ *  ~750 are React-bearing. */
+function compilerPreset() {
+  const preset = reactCompilerPreset()
+  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+  return preset
+}
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
@@ -91,7 +103,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -127,7 +139,20 @@ export default defineConfig(({ command }) => ({
             // the heavy chunk, and the entry then statically imports 19 MB of
             // shiki just to reach react/hast utils — putting the heavy chunk
             // right back on the boot path.
-            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/ },
+            //
+            // @tanstack/react-query is here for the same reason react-router
+            // is: it carries MODULE-LEVEL context (QueryClientContext) that
+            // the entry's QueryClientProvider and every lazy chunk's useQuery
+            // must share. Left to rolldown's merge heuristics, an unmatched
+            // shared module can be inlined into a lazy chunk — the packaged
+            // app then runs TWO react-query runtimes, the provider's context
+            // is invisible to the other copy, and useQuery throws "No
+            // QueryClient set, use QueryClientProvider to set one" on the
+            // launch path (#95560). Grouping it forces one shared instance.
+            {
+              name: 'vendor-react',
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/
+            },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/
@@ -197,7 +222,7 @@ export default defineConfig(({ command }) => ({
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
       'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom', 'react-router']
+    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
   },
   server: {
     host: '127.0.0.1',

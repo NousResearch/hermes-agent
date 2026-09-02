@@ -84,6 +84,13 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
+# Discord caps a single select menu at 25 options; a View holds at most 5 rows.
+_DISCORD_SELECT_MAX_OPTIONS = 25
+_DISCORD_SELECT_MAX_ROWS = 5
+# Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
+_DISCORD_MODEL_SELECT_CAPACITY = (
+    _DISCORD_SELECT_MAX_ROWS - 2
+) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
@@ -134,6 +141,47 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+
+
+def _is_discord_transport_error(exc: BaseException) -> bool:
+    """Return True for connection-shaped send failures (dead/dropping WS).
+
+    These are the failures where the message demonstrably did NOT reach
+    Discord because the transport itself was down — the delivery-obligation
+    ledger can safely replay them after reconnect (#95382). HTTP-level
+    rejections (permissions, formatting, 4xx) are NOT transport errors and
+    must keep their original error string. Timeouts are excluded: a timed-out
+    send may have reached Discord, so replaying it risks a duplicate.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return False
+    if isinstance(exc, (ConnectionError, OSError)):
+        return True
+    if DISCORD_AVAILABLE and discord is not None:
+        _transport_types = tuple(
+            t
+            for t in (
+                getattr(discord, "ConnectionClosed", None),
+                getattr(discord, "GatewayNotFound", None),
+                getattr(discord, "DiscordServerError", None),
+            )
+            if isinstance(t, type)
+        )
+        if _transport_types and isinstance(exc, _transport_types):
+            return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "websocket closed",
+            "connection reset",
+            "connection closed",
+            "session is closed",
+            "cannot write to closing transport",
+            "not connected",
+        )
+    )
+
 
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
@@ -1469,6 +1517,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             self._running = True
             self._start_liveness_probe()
+            # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
+            self._wire_plugin_handlers(self._client)
             return True
 
         except asyncio.TimeoutError:
@@ -3442,7 +3492,15 @@ class DiscordAdapter(BasePlatformAdapter):
         created automatically.
         """
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            # Dead transport (client gone / gateway reconnecting): classify as
+            # send_path_degraded so the delivery-obligation ledger's reconnect
+            # sweep (_redeliver_failed_obligations_for_platform) can replay
+            # this final response once the adapter is live again — a generic
+            # "Not connected" error is not runtime-retryable and left the
+            # turn's output stranded until a full process restart (#95382).
+            return SendResult(
+                success=False, error="send_path_degraded", retryable=True
+            )
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
@@ -3573,7 +3631,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            result = SendResult(success=False, error=str(e))
+            if _is_discord_transport_error(e):
+                # Connection-shaped failure (WS drop / closed session): use
+                # the ledger's runtime-retryable marker so the reconnect
+                # sweep can replay this final response instead of stranding
+                # it until a process restart (#95382 silent partial loss).
+                result = SendResult(
+                    success=False, error="send_path_degraded", retryable=True
+                )
+            else:
+                result = SendResult(success=False, error=str(e))
             await asyncio.to_thread(
                 self._record_discord_response,
                 reply_to=reply_to,
@@ -5139,7 +5206,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # historically ran with NO authorization check — bypassing every gate
     # ``on_message`` enforces (DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES,
     # DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS). Any guild member
-    # could invoke ``/background``, ``/restart``, ``/sethome``, etc. as the
+    # could invoke ``/bg``, ``/restart``, ``/sethome``, etc. as the
     # operator. ``_check_slash_authorization`` mirrors the on_message gates
     # one-for-one so the slash surface honors the same trust boundary.
     #
@@ -5906,6 +5973,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_steer(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
 
+        @tree.command(name="plan", description="Write a markdown implementation plan (no execution)")
+        @discord.app_commands.describe(task="What to plan. Leave empty to infer from the conversation.")
+        async def slash_plan(interaction: discord.Interaction, task: str = ""):
+            await self._run_simple_slash(interaction, f"/plan {task}".strip())
+
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compress")
@@ -5998,10 +6070,15 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_queue(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
-        @tree.command(name="background", description="Run a prompt in the background")
+        @tree.command(name="bg", description="Run a prompt in a separate background session")
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+            await self._run_simple_slash(interaction, f"/bg {prompt}", "Background task started~")
+
+        @tree.command(name="btw", description="Ask a side question about the current conversation")
+        @discord.app_commands.describe(question="The side question to answer without interrupting")
+        async def slash_btw(interaction: discord.Interaction, question: str):
+            await self._run_simple_slash(interaction, f"/btw {question}", "Side question dispatched~")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
@@ -6379,6 +6456,14 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
+    def _interaction_guild_id(self, interaction: discord.Interaction) -> Optional[str]:
+        """Resolve the guild id of a slash interaction (mirrors the message path)."""
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            guild = getattr(getattr(interaction, "channel", None), "guild", None)
+            guild_id = getattr(guild, "id", None)
+        return str(guild_id) if guild_id else None
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -6403,6 +6488,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        # guild_id/parent_chat_id feed profile_routes matching in build_source,
+        # exactly as on_message passes them — without them a guild- or
+        # channel-routed profile never matches a native slash command (#69178).
+        parent_id = (
+            self._get_parent_channel_id(interaction.channel) if is_thread else None
+        ) or ""
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -6411,11 +6502,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=parent_id or None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -6497,6 +6589,8 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -6505,10 +6599,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -6681,6 +6775,27 @@ class DiscordAdapter(BasePlatformAdapter):
             int(str(entry).strip()) for entry in self._gate_csv_set(raw)
             if str(entry).strip().isdigit()
         }
+
+    def resolved_allowlist_user_ids(self) -> set:
+        """Numeric user IDs from the connect-time username resolution.
+
+        ``_resolve_allowed_usernames`` turns username-shaped
+        ``DISCORD_ALLOWED_USERS`` entries into numeric IDs and keeps the
+        authoritative result in ``self._allowed_user_ids``. The env-var
+        mirror of that result does NOT survive the gateway's per-turn .env
+        hot-reload (``load_hermes_dotenv(override=True)`` restores the raw
+        usernames from the file), so the gateway authz layer
+        (``GatewayAuthorizationMixin._is_user_authorized``) calls this to
+        union the resolved IDs back into the allowlist it builds from env.
+
+        Returns only numeric entries: usernames are not comparable to
+        ``source.user_id`` and the ``"*"`` wildcard is env-file-persistent
+        already (resolution preserves it in the file's value), so passing it
+        through here would only widen access on the gateway layer beyond
+        what the operator's current .env says.
+        """
+        allowed = getattr(self, "_allowed_user_ids", None) or set()
+        return {str(uid) for uid in allowed if str(uid).isdigit()}
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
@@ -9211,7 +9326,7 @@ def _define_discord_view_classes() -> None:
 
             select = discord.ui.Select(
                 placeholder="Choose a provider...",
-                options=options[:25],
+                options=options[:_DISCORD_SELECT_MAX_OPTIONS],
                 custom_id="model_provider_select",
             )
             select.callback = self._on_provider_selected
@@ -9224,7 +9339,16 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
+            """Build the model dropdown(s) for a specific provider.
+
+            Discord caps each ``discord.ui.Select`` at 25 options and a View at
+            5 action rows. We keep 2 rows for Back/Cancel, so partition the
+            model list across up to 3 select menus (75 slots) instead of
+            truncating at 25. This matters for providers like Nous whose
+            curated + Portal free-recommendation list exceeds 25 entries — the
+            tail (typically the ``:free`` Portal picks) was previously dropped
+            on Discord, so free-tier models never surfaced there.
+            """
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -9233,31 +9357,48 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
-            options = []
-            for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
-                options.append(
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(
-                            short,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                        value=_truncate_discord_component_text(
-                            model_id,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                    )
-                )
-            if not options:
+            if not models:
                 return
 
-            select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
-                options=options,
-                custom_id="model_model_select",
-            )
-            select.callback = self._on_model_selected
-            self.add_item(select)
+            # Slice the model list into <= 25-option chunks across (up to) 3
+            # select rows: 3 selects + Back/Cancel = 5 rows, Discord's View cap.
+            # Providers past that would still clip, but none currently do.
+            chunks = [
+                models[
+                    i : i + _DISCORD_SELECT_MAX_OPTIONS
+                ]
+                for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
+            ][
+                : _DISCORD_SELECT_MAX_ROWS - 2
+            ]  # keep 2 rows for Back/Cancel
+
+            placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
+            for idx, chunk in enumerate(chunks):
+                options = []
+                for model_id in chunk:
+                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    options.append(
+                        discord.SelectOption(
+                            label=_truncate_discord_component_text(
+                                short,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                            value=_truncate_discord_component_text(
+                                model_id,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                        )
+                    )
+                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                select = discord.ui.Select(
+                    placeholder=f"{placeholder_base}{suffix}...",
+                    options=options,
+                    custom_id=f"model_model_select_{idx}",
+                )
+                # All model selects resolve through the same handler — the
+                # selected value is the model id, identical across rows.
+                select.callback = self._on_model_selected
+                self.add_item(select)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -9322,8 +9463,15 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
+            # `shown` counts models actually rendered across the partitioned
+            # select menus (up to 3×25 = 75); the old code hard-capped at 25
+            # and silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
+            shown = (
+                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
+                if provider
+                else 0
+            )
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
@@ -9497,7 +9645,7 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=120)
-            self.choices = list(choices)[:25]  # Discord select cap
+            self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()

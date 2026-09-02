@@ -75,7 +75,7 @@ Top-to-bottom, in order:
 6. **Tiered `uv pip install`** — tries `.[all]` first, falls back to progressively smaller sets (`[messaging,dashboard,ext]` → `[messaging]` → `.`) if a `git+https` dep flakes on rate-limited GitHub. Prevents "single flake drops you to a bare install" failure mode.
 7. **Auto-installs messaging SDKs** keyed off `.env` — if `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `WHATSAPP_ENABLED` are present, runs `python -m ensurepip --upgrade` and targeted `pip install` calls so each platform's SDK is actually importable.
 8. **Sets `HERMES_GIT_BASH_PATH`** to the resolved `bash.exe` so Hermes finds it deterministically in fresh shells.
-9. **Adds `%LOCALAPPDATA%\hermes\hermes-agent\bin` to User PATH and sets `HERMES_HOME=%LOCALAPPDATA%\hermes`** — exposes the `hermes` command (and points it at your data dir) after you open a new terminal. Only the `hermes.exe` / `hermes-acp.exe` launchers are copied into this `bin` directory; the full `venv\Scripts` is deliberately **not** placed on PATH so Hermes never shadows your own `python` command.
+9. **Adds `%LOCALAPPDATA%\hermes\bin` to User PATH and sets `HERMES_HOME=%LOCALAPPDATA%\hermes`** — exposes the `hermes` command (and points it at your data dir) after you open a new terminal. Only the `hermes.exe` / `hermes-acp.exe` launchers are copied into this `bin` directory; the full `venv\Scripts` is deliberately **not** placed on PATH so Hermes never shadows your own `python` command.
 10. **Runs `hermes setup`** — the normal first-run wizard (model, provider, toolsets). Skip with `-SkipSetup`.
 
 :::tip Skip provider hunting on Windows
@@ -202,10 +202,10 @@ Services require admin rights to install and tie the gateway's lifecycle to mach
 
 | Path | Contents |
 |---|---|
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. The `bin\hermes.exe` launcher (copied from `venv\Scripts\hermes.exe`) is the command added to User PATH. Safe to `Remove-Item -Recurse` and reinstall. |
+| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. Safe to `Remove-Item -Recurse` and reinstall. |
 | `%LOCALAPPDATA%\hermes\git\` | PortableGit (only if the installer provisioned it). |
 | `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (only if the installer provisioned it). |
-| `%LOCALAPPDATA%\hermes\bin\` | Hermes's managed `uv.exe` (the Python manager it uses for updates). |
+| `%LOCALAPPDATA%\hermes\bin\` | The `hermes` / `hermes-acp` launchers and Hermes's managed `uv.exe` (the Python manager it uses for updates). |
 | `%LOCALAPPDATA%\hermes\` (root) | Your config, auth, skills, sessions, logs (`config.yaml`, `.env`, `skills\`, `sessions\`, `logs\`, …). **Survives reinstalls.** |
 
 On native Windows the installer sets `HERMES_HOME=%LOCALAPPDATA%\hermes`, so your data and the disposable install live under the **same** `%LOCALAPPDATA%\hermes` root: the install/runtime is the `hermes-agent\`, `git\`, `node\`, and `bin\` subdirectories, while your data files sit directly in `%LOCALAPPDATA%\hermes`. Reinstalling only replaces the `hermes-agent\` checkout, so your data survives — but because the two share a root, **don't** `Remove-Item -Recurse %LOCALAPPDATA%\hermes` if you want to keep your data; delete the `hermes-agent\` subdirectory instead. Your data directory is identical in shape to a Linux `~/.hermes`, so you can mirror it between machines.
@@ -224,12 +224,12 @@ The browser tool uses `agent-browser` (a Node helper) to drive Chromium. On Wind
 
 ### PATH after install
 
-The installer adds `%LOCALAPPDATA%\hermes\hermes-agent\bin` to your **User PATH** via `[Environment]::SetEnvironmentVariable`. Existing terminals don't pick this up — open a new PowerShell window (or Windows Terminal tab) after installation. Close-and-reopen, don't `$env:PATH += …` by hand unless you know what you're doing.
+The installer adds `%LOCALAPPDATA%\hermes\bin` to your **User PATH** via `[Environment]::SetEnvironmentVariable`. Existing terminals don't pick this up — open a new PowerShell window (or Windows Terminal tab) after installation. Close-and-reopen, don't `$env:PATH += …` by hand unless you know what you're doing.
 
 Verify:
 
 ```powershell
-Get-Command hermes        # should print C:\Users\<you>\AppData\Local\hermes\hermes-agent\bin\hermes.exe
+Get-Command hermes        # should print C:\Users\<you>\AppData\Local\hermes\bin\hermes.exe
 hermes --version
 ```
 
@@ -288,7 +288,7 @@ Consequence: any codepath that said "check if this PID is alive" via `os.kill(pi
 ## Common pitfalls
 
 **`hermes: command not found` right after install.**
-Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\hermes-agent\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA\hermes\hermes-agent\bin\hermes.exe"`.
+Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA\hermes\bin\hermes.exe"`.
 
 **`WinError 193: %1 is not a valid Win32 application` when running a tool.**
 You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolves commands through `shutil.which(cmd, path=local_bin)` so PATHEXT picks up `.CMD` — if you're invoking the tool via a hardcoded path instead, switch to the `.cmd` variant (e.g., `npx.cmd`, not `npx`).

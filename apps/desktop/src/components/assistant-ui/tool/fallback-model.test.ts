@@ -92,6 +92,44 @@ describe('buildToolView terminal exit-code status', () => {
   })
 })
 
+describe('buildToolView browser_exec step label', () => {
+  const bexec = (code: string) =>
+    buildToolView(part({ args: { code }, result: undefined, toolName: 'browser_exec' }), '')
+
+  it('uses the leading # comment as the title', () => {
+    expect(bexec('# Searching Amazon for paper towels\nnew_tab("https://amazon.com")').title).toBe(
+      'Searching Amazon for paper towels'
+    )
+  })
+
+  it('falls back to the generic title when code has no leading comment', () => {
+    const view = bexec('new_tab("https://amazon.com")')
+
+    expect(view.title).not.toBe('')
+    expect(view.title).not.toContain('new_tab')
+  })
+
+  it('truncates long labels and keeps the ellipsis', () => {
+    const long = `# ${'x'.repeat(120)}`
+
+    expect(bexec(long).title.length).toBeLessThanOrEqual(80)
+    expect(bexec(long).title.endsWith('…')).toBe(true)
+  })
+
+  it('keeps the label after the result arrives', () => {
+    const view = buildToolView(
+      part({
+        args: { code: '# Checking workspace persistence\nprint(1)' },
+        result: { output: 'ok', success: true },
+        toolName: 'browser_exec'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Checking workspace persistence')
+  })
+})
+
 describe('buildToolView web-search query', () => {
   it('keeps the query separate from structured search results', () => {
     const view = buildToolView(

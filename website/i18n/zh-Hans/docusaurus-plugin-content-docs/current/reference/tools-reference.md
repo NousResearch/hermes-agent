@@ -204,7 +204,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `web_search` | 在网络上搜索信息。默认返回最多 5 条结果，包含标题、URL 和描述。接受可选的 `limit`（1-100，默认 5）。查询直接传递给配置的后端，因此当后端支持时，`site:domain`、`filetype:pdf`、`intitle:word`、`-term`、`"exact phrase"` 等运算符可能有效。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
-| `web_extract` | 从网页 URL 提取内容。以 Markdown 格式返回页面内容。也支持 PDF URL——直接传入 PDF 链接即可转换为 Markdown 文本。5000 字符以下的页面返回完整 Markdown；更大的页面由 LLM 摘要处理。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
+| `web_extract` | 从网页 URL 提取内容。以 Markdown 格式返回页面内容。也支持 PDF URL——直接传入 PDF 链接即可转换为 Markdown 文本。预算内（默认 15000 字符）的页面完整返回；更大的页面截断为头+尾窗口，完整文本存储在磁盘上供 `read_file` 分页读取（无 LLM 摘要）。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
 
 ## `x_search` 工具集
 

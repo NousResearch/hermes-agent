@@ -19,8 +19,10 @@ from hermes_cli.commands import (
     _clamp_command_names,
     _clamp_telegram_names,
     _sanitize_telegram_name,
+    command_desktop_meta,
     discord_skill_commands,
     gateway_help_lines,
+    infer_argument_mode,
     resolve_command,
     slack_app_manifest,
     slack_native_slashes,
@@ -72,8 +74,29 @@ class TestCommandRegistry:
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
+    def test_desktop_meta_lives_on_the_command_def(self):
+        review = resolve_command("review")
+        assert review is not None
+        assert review.argument_mode is None
+        assert infer_argument_mode(review) == "text"
+        assert command_desktop_meta(review) == {"argument_mode": "text", "desktop": None}
 
+        clear = resolve_command("clear")
+        assert clear is not None
+        assert clear.desktop == "terminal"
 
+        model = resolve_command("model")
+        assert model is not None
+        assert model.desktop == "hidden"
+
+        goal = resolve_command("goal")
+        assert goal is not None
+        assert goal.argument_mode == "mixed"
+
+    def test_argument_mode_infers_text_from_any_args_hint(self):
+        assert infer_argument_mode(CommandDef("demo", "Demo", "Session", args_hint="<prompt>")) == "text"
+        assert infer_argument_mode(CommandDef("ask", "Ask", "Session", args_hint="<query>")) == "text"
+        assert infer_argument_mode(CommandDef("note", "Note", "Session", args_hint="[message]")) == "text"
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +176,14 @@ class TestGatewayHelpLines:
                 assert not re.search(pattern, joined), \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
-    def test_includes_alias_note_for_bg(self):
+    def test_bg_and_btw_are_separate_commands(self):
         lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/bg" in joined
+        assert "`/btw" in joined
+        # The retired /background canonical name must be gone.
         bg_line = [l for l in lines if "/background" in l]
-        assert len(bg_line) == 1
-        assert "/bg" in bg_line[0]
+        assert not bg_line
 
 
 class TestTelegramBotCommands:
@@ -175,11 +201,12 @@ class TestTelegramBotCommands:
 
 
     def test_includes_builtin_commands_with_required_args(self):
-        """Built-in arg-taking commands (e.g. /queue, /steer, /background)
+        """Built-in arg-taking commands (e.g. /queue, /steer, /bg, /btw)
         are now included because their handlers return usage text when
         invoked without arguments — issue #24312."""
         names = {name for name, _ in telegram_bot_commands()}
-        assert "background" in names
+        assert "bg" in names
+        assert "btw" in names
         assert "queue" in names
         assert "steer" in names
 
@@ -779,6 +806,203 @@ class TestTelegramMenuCommands:
         assert "valid_skill" in menu_names
         # No empty string in menu names
         assert "" not in menu_names
+
+    def test_configured_priority_promotes_skill_into_last_menu_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """A prioritized dynamic skill must not be trimmed behind alphabetical peers."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        fake_cmds = {
+            "/aaa-skill": {
+                "name": "aaa-skill",
+                "description": "Alphabetically first",
+                "skill_md_path": f"{local_dir}/aaa-skill/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-skill",
+            },
+            "/gym": {
+                "name": "gym",
+                "description": "GymPilot",
+                "skill_md_path": f"{local_dir}/gym/SKILL.md",
+                "skill_dir": f"{local_dir}/gym",
+            },
+        }
+        fake_plugins = {
+            "plugin-one": {"description": "Plugin one"},
+            "plugin-two": {"description": "Plugin two"},
+        }
+        fake_core = [
+            ("core_one", "Core one"),
+            ("core_two", "Core two"),
+        ]
+        menu_cfg = {"max_commands": 2, "priority_mode": "prepend", "priority": ["gym"]}
+
+        with (
+            patch("hermes_cli.commands.telegram_bot_commands", return_value=fake_core),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=len(fake_core))
+
+        menu_names = [name for name, _description in menu]
+        assert len(menu_names) == len(fake_core)
+        assert menu_names[0] == "gym"
+        assert "aaa_skill" not in menu_names
+        assert hidden == 4
+
+    def test_default_core_priority_does_not_promote_same_named_skill(
+        self, tmp_path, monkeypatch
+    ):
+        """Built-in defaults must not elevate a dynamic command across tiers."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        fake_cmds = {
+            "/aaa-skill": {
+                "name": "aaa-skill",
+                "description": "Alphabetically first skill",
+                "skill_md_path": f"{local_dir}/aaa-skill/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-skill",
+            },
+            "/platforms": {
+                "name": "platforms",
+                "description": "Dynamic platforms skill",
+                "skill_md_path": f"{local_dir}/platforms/SKILL.md",
+                "skill_dir": f"{local_dir}/platforms",
+            },
+        }
+        fake_core = [("core_one", "Core one")]
+        menu_cfg = {"max_commands": 2, "priority_mode": "prepend", "priority": []}
+
+        with (
+            patch("hermes_cli.commands.telegram_bot_commands", return_value=fake_core),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=2)
+
+        assert menu == fake_core + [("aaa_skill", "Alphabetically first skill")]
+        assert hidden == 1
+
+    def test_long_configured_skill_priority_survives_telegram_clamping(
+        self, tmp_path, monkeypatch
+    ):
+        """Priority matches the original skill key after its menu name is clamped."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        long_name = "x" * 40
+        fake_cmds = {
+            f"/{long_name}": {
+                "name": long_name,
+                "description": "Long prioritized skill",
+                "skill_md_path": f"{local_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{local_dir}/{long_name}",
+            },
+        }
+        fake_core = [("core_one", "Core one")]
+        menu_cfg = {
+            "max_commands": 1,
+            "priority_mode": "replace",
+            "priority": [long_name],
+        }
+
+        with (
+            patch("hermes_cli.commands.telegram_bot_commands", return_value=fake_core),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("x" * 32, "Long prioritized skill")]
+        assert hidden == 1
+
+    def test_long_configured_plugin_priority_survives_telegram_clamping(
+        self, tmp_path, monkeypatch
+    ):
+        """Plugin priority also matches the original name after clamping."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        long_name = "p" * 40
+        fake_plugins = {long_name: {"description": "Long prioritized plugin"}}
+        menu_cfg = {
+            "max_commands": 1,
+            "priority_mode": "replace",
+            "priority": [long_name],
+        }
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("p" * 32, "Long prioritized plugin")]
+        assert hidden > 0
+
+    def test_argument_requiring_plugin_is_excluded_from_telegram_menu(
+        self, tmp_path, monkeypatch
+    ):
+        """Telegram omits plugins that cannot be invoked without a payload."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        fake_plugins = {
+            "no-arg": {"description": "No argument"},
+            "needs-arg": {"description": "Needs argument", "args_hint": "<value>"},
+        }
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+        ):
+            menu, _hidden = telegram_menu_commands(max_commands=100)
+
+        menu_names = {name for name, _description in menu}
+        assert "no_arg" in menu_names
+        assert "needs_arg" not in menu_names
+
+    def test_scalar_configured_priority_is_accepted_as_one_command(self):
+        """The config CLI's scalar value form must work for a single priority."""
+        from unittest.mock import patch
+        from hermes_cli.commands import _telegram_effective_priority
+
+        raw_config = {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "command_menu": {
+                            "priority": "gym",
+                            "priority_mode": "prepend",
+                        }
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.read_raw_config", return_value=raw_config):
+            priority = _telegram_effective_priority()
+
+        assert priority[0] == "gym"
 
 
 # ---------------------------------------------------------------------------

@@ -15,9 +15,10 @@ crashes due to a bad timezone string.
 
 import logging
 import os
+import threading
 from datetime import datetime
 from hermes_constants import get_config_path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,27 @@ except ImportError:
     # Python 3.8 fallback (shouldn't be needed — Hermes requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
-# Cached state — resolved once, reused on every call.
-# Call reset_cache() to force re-resolution (e.g. after config changes).
-_cached_tz: Optional[ZoneInfo] = None
-_cached_tz_name: Optional[str] = None
-_cache_resolved: bool = False
+# Cached state, keyed to the active timezone source. This process can multiplex
+# profiles by switching HERMES_HOME (context override or env), so a single
+# unkeyed process-global value would leak the first profile's timezone into
+# later profile-scoped work (e.g. the desktop multiplex cron ticker persisting
+# another profile's ``next_run_at`` under the backend's own timezone).
+#
+# Entries are published atomically under ``_cache_lock`` as one
+# ``identity -> (name, ZoneInfo | None)`` mapping, so two profile-scoped
+# threads racing through resolution can never publish a mixed
+# identity/value pair. Each profile's resolved zone stays hot across
+# multiplex switches. Call reset_cache() after in-place config changes.
+_cache_lock = threading.Lock()
+_tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
+
+
+def _timezone_cache_identity() -> Tuple[str, str]:
+    """Return the active source identity for the timezone cache."""
+    tz_env = os.getenv("HERMES_TIMEZONE", "").strip()
+    if tz_env:
+        return ("environment", tz_env)
+    return ("config", str(get_config_path()))
 
 
 def _resolve_timezone_name() -> str:
@@ -94,16 +111,27 @@ def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
 
 
 def get_timezone() -> Optional[ZoneInfo]:
-    """Return the user's configured ZoneInfo, or None (meaning server-local).
+    """Return the active profile's configured ZoneInfo, or None (server-local).
 
-    Resolved once and cached. Call ``reset_cache()`` after config changes.
+    The cache is isolated by the active timezone source — the explicit
+    ``HERMES_TIMEZONE`` override or the active profile's config path — so a
+    process that multiplexes profiles (desktop cron ticker, multiplex
+    gateway) never reuses another profile's timezone. Call ``reset_cache()``
+    after editing the active config in place.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
-    if not _cache_resolved:
-        _cached_tz_name = _resolve_timezone_name()
-        _cached_tz = _get_zoneinfo(_cached_tz_name)
-        _cache_resolved = True
-    return _cached_tz
+    cache_identity = _timezone_cache_identity()
+    with _cache_lock:
+        entry = _tz_cache.get(cache_identity)
+        if entry is not None:
+            return entry[1]
+    # Resolve outside the lock (config file I/O); publish atomically below.
+    name = _resolve_timezone_name()
+    tz = _get_zoneinfo(name)
+    with _cache_lock:
+        # First writer wins so concurrent resolvers of the SAME identity
+        # converge on one ZoneInfo object; a different identity's write can
+        # never be mixed into this one — the (name, tz) pair is one value.
+        return _tz_cache.setdefault(cache_identity, (name, tz))[1]
 
 
 def reset_cache() -> None:
@@ -113,10 +141,8 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
-    _cached_tz = None
-    _cached_tz_name = None
-    _cache_resolved = False
+    with _cache_lock:
+        _tz_cache.clear()
 
 
 def now() -> datetime:
@@ -131,5 +157,3 @@ def now() -> datetime:
         return datetime.now(tz)
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
-
-

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
 import {
   attachmentDisplayText,
   attachmentId,
+  coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -249,5 +252,58 @@ describe('toRuntimeMessage timeline metadata', () => {
     })
 
     expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
+  })
+})
+
+describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
+  // Regression contract for #87857: two individually-clean assistant rows can
+  // share a toolCallId (structural carry-over re-attaching a cached row's tool
+  // calls while the same turn also exists as a committed row). Folding them
+  // used to manufacture ONE message carrying the id twice — the exact shape
+  // that makes assistant-ui's useResources throw and crash-loop the pane.
+  const tool = (toolCallId: string): ChatMessagePart =>
+    ({ type: 'tool-call', toolCallId, toolName: 'terminal', args: {} as never, argsText: '' }) as ChatMessagePart
+
+  const assistant = (id: string, parts: ChatMessagePart[]): ChatMessage =>
+    ({ id, role: 'assistant', parts }) as unknown as ChatMessage
+
+  it('drops the copy the predecessor already carries, keeps the new call', () => {
+    const merged = coalesceToolOnlyAssistants(
+      [
+        assistant('committed-49-assistant', [
+          { type: 'text', text: 'working' } as ChatMessagePart,
+          tool('call-a'),
+          tool('call-b')
+        ]),
+        assistant('assistant-stream-49', [tool('call-b'), tool('call-c')])
+      ],
+      createToolMergeCache()
+    )
+
+    expect(merged).toHaveLength(1)
+
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
+
+    expect(ids).toEqual(['call-a', 'call-b', 'call-c'])
+  })
+
+  it('folds a clean follow-up unchanged', () => {
+    const merged = coalesceToolOnlyAssistants(
+      [
+        assistant('a1', [{ type: 'text', text: 'ok' } as ChatMessagePart, tool('call-a')]),
+        assistant('a2', [tool('call-b')])
+      ],
+      createToolMergeCache()
+    )
+
+    expect(merged).toHaveLength(1)
+
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
+
+    expect(ids).toEqual(['call-a', 'call-b'])
   })
 })

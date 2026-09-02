@@ -18,6 +18,28 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
+def _write_groq_provider_config(
+    tmp_path, *, provider_key="groq", name="Groq", base_url=None
+) -> None:
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    provider_key: {
+                        "name": name,
+                        "base_url": base_url or "https://api.groq.com/openai/v1",
+                        "key_env": "GROQ_API_KEY",
+                        "discover_models": True,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _jwt_with_email(email: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(
@@ -92,6 +114,254 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["auth_type"] == "api_key"
     assert entry["source"] == "manual"
     assert entry["access_token"] == "sk-or-manual"
+
+
+def test_auth_add_configured_provider_uses_canonical_pool_key(tmp_path, monkeypatch):
+    """A keyed providers row must keep its runtime slug in the auth pool."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(tmp_path)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "groq"
+        auth_type = "api-key"
+        api_key = "gsk-test"
+        label = "primary"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "groq" in payload["credential_pool"]
+    assert "custom:groq" not in payload["credential_pool"]
+
+
+def test_auth_add_migrates_legacy_prefixed_key_for_configured_provider(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "custom:groq": [
+                    {
+                        "id": "legacy-key",
+                        "label": "legacy",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "gsk-legacy",
+                    }
+                ]
+            },
+        },
+    )
+    _write_groq_provider_config(tmp_path)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "groq"
+        auth_type = "api-key"
+        api_key = "gsk-new"
+        label = "new"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "custom:groq" not in payload["credential_pool"]
+    assert {
+        entry["access_token"] for entry in payload["credential_pool"]["groq"]
+    } == {"gsk-legacy", "gsk-new"}
+
+
+def test_auth_add_migrates_display_name_derived_legacy_pool_key(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "custom:groq": [
+                    {
+                        "id": "legacy-key",
+                        "label": "legacy",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "gsk-legacy",
+                    }
+                ]
+            },
+        },
+    )
+    _write_groq_provider_config(tmp_path, provider_key="groq-cloud", name="Groq")
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "groq-cloud"
+        auth_type = "api-key"
+        api_key = "gsk-new"
+        label = "new"
+
+    with patch("hermes_cli.models.clear_provider_models_cache") as clear_cache:
+        auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "custom:groq" not in payload["credential_pool"]
+    assert {
+        entry["access_token"]
+        for entry in payload["credential_pool"]["groq-cloud"]
+    } == {"gsk-legacy", "gsk-new"}
+    clear_cache.assert_called_once_with("custom:groq")
+
+
+def test_auth_add_non_registry_configured_provider_preserves_endpoint(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(
+        tmp_path,
+        provider_key="private-groq",
+        base_url="https://private.example/v1",
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(
+        type(
+            "Args",
+            (),
+            {
+                "provider": "private-groq",
+                "auth_type": "api-key",
+                "api_key": "private-key",
+                "label": "private",
+            },
+        )()
+    )
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["private-groq"][0]
+    assert entry["base_url"] == "https://private.example/v1"
+
+
+def test_auth_list_includes_non_registry_configured_provider(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_groq_provider_config(tmp_path, provider_key="private-groq")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "private-groq": [
+                    {
+                        "id": "private-key",
+                        "label": "private",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "secret",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": None})())
+
+    assert "private-groq (1 credentials):" in capsys.readouterr().out
+
+
+def test_interactive_auth_add_accepts_non_registry_configured_provider(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(tmp_path, provider_key="private-groq")
+
+    from hermes_cli import auth_commands
+
+    monkeypatch.setattr(auth_commands, "_pick_provider", lambda _prompt: "private-groq")
+    monkeypatch.setattr(auth_commands, "line_input", lambda _prompt: "private")
+    monkeypatch.setattr(auth_commands, "masked_secret_prompt", lambda _prompt: "private-key")
+
+    auth_commands._interactive_add()
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["credential_pool"]["private-groq"][0]["access_token"] == "private-key"
+
+
+def test_interactive_auth_add_normalizes_display_name_to_provider_key(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(
+        tmp_path, provider_key="groq-cloud", name="Groq Enterprise"
+    )
+
+    from hermes_cli import auth_commands
+
+    answers = iter(["Groq Enterprise", "primary"])
+    monkeypatch.setattr(auth_commands, "line_input", lambda _prompt: next(answers))
+    monkeypatch.setattr(auth_commands, "masked_secret_prompt", lambda _prompt: "gsk-test")
+
+    auth_commands._interactive_add()
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "custom:groq-enterprise" not in payload["credential_pool"]
+    assert payload["credential_pool"]["groq-cloud"][0]["access_token"] == "gsk-test"
+
+
+def test_auth_add_explicit_custom_provider_keeps_prefixed_pool_key(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(
+        tmp_path,
+        name="Groq Proxy",
+        base_url="https://proxy.example/v1",
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "custom:groq"
+        auth_type = "api-key"
+        api_key = "proxy-key"
+        label = "proxy"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "custom:groq" in payload["credential_pool"]
+    assert "groq" not in payload["credential_pool"]
 
 
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):

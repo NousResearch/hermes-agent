@@ -411,9 +411,6 @@ CURATOR_DRY_RUN_BANNER = (
     "\n"
     "  • DO NOT call skill_manage with action=patch, create, delete, "
     "write_file, or remove_file.\n"
-    "  • DO NOT call terminal to mv skill directories into .archive/.\n"
-    "  • DO NOT call terminal to mv, cp, rm, or rewrite any file under "
-    "~/.hermes/skills/.\n"
     "  • skills_list and skill_view are FINE — read as much as you need.\n"
     "\n"
     "Your output IS the deliverable. Produce the exact same "
@@ -508,9 +505,14 @@ CURATOR_REVIEW_PROMPT = (
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n\n"
+    "      Then archive the old sibling. Re-home the content through the "
+    "LEDGERED tool surface: `skill_manage action=write_file` on the umbrella "
+    "to place the file (subdirectories are created for you), then "
+    "`skill_manage action=remove_file` on the source to drop the original, "
+    "then `skill_manage action=delete` on the source. Never a terminal move "
+    "— a shell mv/cp writes the same bytes with no ledger entry, so the "
+    "archive that follows snapshots an already-stripped package and "
+    "`hermes curator rollback` restores a hollow skill (issue #96962).\n\n"
     "Package integrity — not optional:\n"
     "Before demoting or archiving a skill, inspect it as a COMPLETE "
     "directory package, not just SKILL.md. A skill root may include "
@@ -539,6 +541,13 @@ CURATOR_REVIEW_PROMPT = (
     "merges.\n\n"
     "Your toolset:\n"
     "  - skills_list, skill_view        — read the current landscape\n"
+    "    READ BEFORE WRITE — enforced, not advisory. Before skill_manage "
+    "action=patch, action=edit, action=write_file on a file that already "
+    "exists, or action=remove_file, call skill_view on that SAME target in "
+    "this review turn — skill_view(name) for SKILL.md, "
+    "skill_view(name, file_path=...) for a supporting file — and build the "
+    "write from the content it just returned. A write without that read is "
+    "REFUSED and nothing is saved.\n"
     "  - skill_manage action=patch      — add sections to the umbrella\n"
     "  - skill_manage action=create     — create a new umbrella SKILL.md\n"
     "  - skill_manage action=write_file — add a references/, templates/, "
@@ -549,9 +558,10 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — move LOCAL candidate content into "
-    "a support subfile when package integrity requires it; never mv, cp, rm, "
-    "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
+    "  You have NO terminal access in this pass — every filesystem mutation "
+    "goes through skill_manage above so it is ledgered and rollback-able "
+    "(issue #96962). Reading files works through skill_view (including "
+    "skill_view(name, file_path=...) for support files).\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -1536,7 +1546,9 @@ def run_curator_review(
 
     If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
     and the LLM review pass is instructed to produce a report only — no
-    skill_manage mutations, no terminal archive moves. The REPORT.md still
+    skill_manage mutations. (The fork has no terminal access at all — see the
+    ``enabled_toolsets=["skills"]`` kwarg in ``_run_llm_review``.) The
+    REPORT.md still
     gets written and ``state.last_report_path`` still records it so users
     can read what the curator WOULD have done. A dry-run also honors
     *consolidate*: when consolidation is off, the preview only reports the
@@ -1938,7 +1950,18 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             credential_pool=_credential_pool,
             request_overrides=_request_overrides,
             **_agent_kwargs,
-            enabled_toolsets=["skills", "terminal"],
+            enabled_toolsets=["skills"],
+            # ``terminal`` was deliberately removed from this fork (issue
+            # #96962): a terminal ``mv``/``cp``/``rm`` under the skills tree
+            # writes the same bytes with NO ledger entry, so the archive that
+            # followed snapshotted an already-stripped package and ``hermes
+            # curator rollback`` restored a hollow skill. Every mutation this
+            # fork needs has a ledgered skill_manage action (write_file /
+            # remove_file / delete), and reading works through skill_view.
+            # Removing the toolset closes the hole by construction — no
+            # command-parsing heuristic to evade, no process stdin to feed,
+            # no remote-backend divergence — which no terminal-write guard
+            # over a Turing-complete input space can guarantee.
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

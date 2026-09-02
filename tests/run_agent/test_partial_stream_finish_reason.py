@@ -91,6 +91,95 @@ class TestPartialStreamStubFinishReason:
         assert response.choices[0].message.tool_calls is None
 
 
+class TestTerminalChunkFenceException:
+    """A superseded writer must still accept the provider's terminal
+    finish_reason chunk. Fending that chunk leaves finish_reason None
+    after real text was delivered, which the drop-guard mislabels as a
+    mid-stream drop even though the provider completed the stream.
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_superseded_writer_accepts_finish_reason_chunk(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent_box = {}
+
+        class SupersedeBeforeFinish:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="Long prose that is complete.")
+                agent_box["agent"]._claim_stream_writer()
+                # Marker-only terminal chunk (empty delta), as vLLM emits.
+                yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SupersedeBeforeFinish()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent_box["agent"] = agent
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Long prose that is complete."
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_superseded_writer_still_fences_further_content(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent_box = {}
+
+        class SupersedeBeforeMoreText:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="kept ")
+                agent_box["agent"]._claim_stream_writer()
+                # A False accept_chunk ends consumption; this text must
+                # never reach the accumulator, and the later finish chunk
+                # is never seen (the fence still stops *further* content).
+                yield _make_stream_chunk(content="must-not-append")
+                yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SupersedeBeforeMoreText()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent_box["agent"] = agent
+        response = agent._interruptible_streaming_api_call({})
+
+        content = response.choices[0].message.content or ""
+        assert "must-not-append" not in content
+        assert "kept" in content
+        assert response.id == PARTIAL_STREAM_STUB_ID
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_genuine_truncation_without_finish_still_drops(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        def _truncated():
+            yield _make_stream_chunk(content="cut off with no terminal chunk")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _truncated()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
 
@@ -899,3 +988,163 @@ class TestSendTimePadMultimodalSafety:
         assert out[2]["content"] == ""
         # input list untouched (repair is copy-on-write)
         assert api_messages[1]["content"] == ""
+
+
+class TestPortalLastOneWithoutDone:
+    """#90848: complete Portal streams can end with lastOne=true and no
+    finish_reason / [DONE]. That is a clean terminal, not a drop."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_last_one_usage_frame_is_a_clean_stop(self, _mock_close, mock_create):
+        def _portal_stream():
+            yield _make_stream_chunk(content="LONGCAT_OK")
+            yield SimpleNamespace(
+                choices=[],
+                model="meituan/longcat-2.0:free",
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+                lastOne=True,
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _portal_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        response = agent._interruptible_streaming_api_call({})
+
+        assert getattr(response, "id", None) != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "LONGCAT_OK"
+
+
+# ── Trailing usage chunk with no finish_reason (#91373) ───────────────────
+
+class TestStreamIncludeUsageFinalChunk:
+    """OpenAI / vLLM streaming with stream_options={'include_usage': True} emits
+    a final usage-only chunk with empty choices (choices=[]) and no finish_reason.
+    Hermes must recognize that the presence of usage proves the stream completed
+    cleanly and must NOT misclassify it as a mid-stream network drop (#91373).
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_text_stream_with_final_usage_chunk_completes_as_stop(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """When text is streamed and the final chunk is a usage-only chunk
+        without finish_reason, the completion must complete with finish_reason='stop'
+        instead of returning PARTIAL_STREAM_STUB_ID."""
+        def _vllm_stream():
+            # Chunks 1 and 2: text deltas with finish_reason=None
+            yield _make_stream_chunk(content="The final answer is 42.")
+            # Chunk 3: trailing usage-only chunk (choices=[], usage present)
+            usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110)
+            yield SimpleNamespace(choices=[], model="vllm/test-model", usage=usage)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _vllm_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "The final answer is 42."
+        assert response.usage is not None
+        assert response.usage.prompt_tokens == 100
+        assert response.usage.completion_tokens == 10
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_text_stream_abrupt_drop_without_usage_still_returns_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """When text is streamed but the connection is severed before any usage
+        chunk arrives (usage is None and finish_reason is None), it remains
+        correctly classified as a partial stream stub."""
+        def _dropped_stream():
+            yield _make_stream_chunk(content="Partial text before drop")
+            # Stream ends abruptly without finish_reason and without usage
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _dropped_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._current_streamed_assistant_text = "Partial text before drop"
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.content == "Partial text before drop"
+
+
+# ── Merged-finish content chunk swallowed by the SSE-echo guard (#94614) ──
+
+class TestMergedFinishChunkSurvivesSSEGuard:
+    """vLLM >= 0.1.dev20051 merges finish_reason into the final CONTENT
+    chunk instead of a separate marker-only chunk. When the SSE-echo guard
+    is engaged at that moment (GLM-family tokenizers emit standalone ':'
+    tokens mid-prose), the guard's content-shape continue paths swallow the
+    terminal chunk and finish_reason is never captured — a complete stream
+    is misclassified as a mid-stream drop. Terminal fields must be
+    extracted before any content-shape continue."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_merged_finish_chunk_after_sse_lookalike_prefix_completes(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _vllm_merged_finish_stream():
+            # ':' then ' uniform' engage the SSE-echo guard (may_be_sse True)
+            yield _make_stream_chunk(content=":")
+            yield _make_stream_chunk(content=" uniform")
+            # Merged-finish terminal content chunk, as the new vLLM emits
+            yield _make_stream_chunk(content=".", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _vllm_merged_finish_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == ": uniform."
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_merged_finish_chunk_without_sse_trigger_still_completes(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Control: the same merged-finish shape without an SSE-lookalike
+        prefix must keep completing (guard never engages)."""
+
+        def _plain_merged_finish_stream():
+            yield _make_stream_chunk(content="Hello")
+            yield _make_stream_chunk(content=".", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _plain_merged_finish_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Hello."

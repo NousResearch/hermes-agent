@@ -75,6 +75,14 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  it.each(['patch', 'write_file'])('renders inline approval controls for protected %s writes', toolName => {
+    setRequest('Update protected agent instructions')
+    render(<PendingToolApproval part={part(toolName)} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()

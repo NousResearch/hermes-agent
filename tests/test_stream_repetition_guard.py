@@ -8,8 +8,6 @@ from agent.stream_repetition_guard import (
     find_repeated_line_from_env,
     truncate_at_repetition,
 )
-from agent.conversation_loop import _drop_length_continuation_scaffolding
-
 INCIDENT_LINE = (
     "- **Texture** : `TEXTURE_LOCAL.md` (trace creative, emergence). "
     "Pas dans un Hermes stock.\n"
@@ -173,30 +171,6 @@ def test_windowed_guard_max_distinct_separates_loop_from_diverse_repeat():
         diverse.feed(f"contexte unique et different pour le tour numero {i} ici\n")
         diverse.feed("cette ligne se repete mais espacee par du contenu neuf\n")
     # No raise: the window always holds many distinct lines.
-
-
-def test_drop_length_continuation_scaffolding_removes_internal_messages():
-    messages = [
-        {"role": "user", "content": "real user"},
-        {
-            "role": "assistant",
-            "content": "partial",
-            "_length_continuation_partial": True,
-        },
-        {
-            "role": "user",
-            "content": "[System: continue]",
-            "_length_continuation_synthetic": True,
-        },
-        {"role": "assistant", "content": "final"},
-    ]
-
-    _drop_length_continuation_scaffolding(messages)
-
-    assert messages == [
-        {"role": "user", "content": "real user"},
-        {"role": "assistant", "content": "final"},
-    ]
 
 
 def test_guard_flush_counts_trailing_unterminated_line():

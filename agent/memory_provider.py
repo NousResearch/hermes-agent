@@ -70,6 +70,18 @@ MAX_MEMORY_OBSERVATION_FIELD_CHARS = 128
 # MAX_MEMORY_OBSERVATION_BYTES while still terminating pathological trees
 # during recursion rather than after full expansion.
 MAX_MEMORY_OBSERVATION_NODES = 4096
+# Operation-wide cap on freeze traversal across every observation candidate a
+# prefetch inspects — including malformed ones. Per-candidate the payload
+# budget still fires, but a provider returning many malformed payloads that
+# each exhaust a fresh 4096-node budget would otherwise force repeated deep
+# traversal for each one. The operation cap is set to
+# MAX_MEMORY_OBSERVATIONS × MAX_MEMORY_OBSERVATION_NODES so a well-behaved
+# provider filling the full accepted prefix with max-node payloads still fits,
+# while a malformed tail exhausts the shared budget and every subsequent
+# candidate fails on its first budget decrement instead of walking its tree.
+MAX_MEMORY_OBSERVATION_OPERATION_NODES = (
+    MAX_MEMORY_OBSERVATIONS * MAX_MEMORY_OBSERVATION_NODES
+)
 
 
 class _FrozenDict(dict):
@@ -223,14 +235,23 @@ def _thaw_json_value(value: Any) -> Any:
     return value
 
 
-def _freeze_memory_observation_payload(payload: Any) -> tuple[Any, int]:
+def _freeze_memory_observation_payload(
+    payload: Any,
+    *,
+    budget: Optional[List[int]] = None,
+) -> tuple[Any, int]:
     """Validate, freeze, and size a provider observation payload.
 
     ``MemoryManager`` uses this at the provider boundary. Providers should
     return ordinary JSON values and must not use this to bypass manager
     provenance checks.
+
+    ``budget`` is an optional shared node counter that lets a caller cap the
+    total freeze traversal work across many candidate payloads in one
+    operation (see ``MAX_MEMORY_OBSERVATION_OPERATION_NODES``). When omitted,
+    each call gets an independent per-payload budget as before.
     """
-    frozen = _freeze_json_value(payload)
+    frozen = _freeze_json_value(payload, budget=budget)
     encoded = json.dumps(
         _thaw_json_value(frozen), ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")

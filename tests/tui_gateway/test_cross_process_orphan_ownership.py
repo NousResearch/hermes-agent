@@ -305,6 +305,11 @@ def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
         profile_home=profile_home,
     )
     assert owner_lease is not None and message is None
+    # The owner vanished minutes ago; a lease written seconds ago is still
+    # inside the self-orphan grace window and must be left alone.
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions._SELF_ORPHAN_GRACE_SECONDS", 0.0
+    )
     ended: list[tuple[str, str]] = []
 
     class _FakeDB:

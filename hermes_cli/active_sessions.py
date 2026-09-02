@@ -757,6 +757,15 @@ def transfer_active_session(
         return updated
 
 
+# A lease this process wrote in the last few seconds may not be in the
+# caller's ``own_live_lease_ids`` yet: ``try_acquire_active_session`` writes
+# the registry entry under the file lock and the server attaches the lease to
+# its session record only after that returns. A concurrent finalize that
+# snapshotted its live ids in between would otherwise read the brand-new lease
+# as an orphan and drop it. Real orphans are minutes old (#101415).
+_SELF_ORPHAN_GRACE_SECONDS = 30.0
+
+
 def _drop_self_orphans(
     entries: list[dict[str, Any]], own_live_lease_ids: set[str] | None
 ) -> list[dict[str, Any]]:
@@ -764,11 +773,13 @@ def _drop_self_orphans(
     if own_live_lease_ids is None:
         return entries
     pid = os.getpid()
+    cutoff = time.time() - _SELF_ORPHAN_GRACE_SECONDS
     return [
         entry
         for entry in entries
         if entry.get("pid") != pid
         or str(entry.get("lease_id") or "") in own_live_lease_ids
+        or (_optional_float(entry.get("started_at")) or 0.0) > cutoff
     ]
 
 

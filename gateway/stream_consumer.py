@@ -2106,6 +2106,24 @@ class GatewayStreamConsumer:
             logger.error("Stream send chunk error: %s", e)
             return reply_to_id
 
+    @staticmethod
+    def _delivered_text_for(result: Any, sent_text: str) -> str:
+        """Return the text the adapter reports the platform actually stored.
+
+        Adapters that clip an oversized progressive edit instead of splitting
+        it (Telegram's saturated stream preview) still report success, and
+        surface what landed as ``raw_response["delivered_prefix"]`` — the same
+        field the ``partial_overflow`` contract uses on the failure branch.
+        Adapters that deliver exactly what they were given report nothing and
+        keep ``sent_text``.
+        """
+        raw = getattr(result, "raw_response", None)
+        if isinstance(raw, dict):
+            delivered = raw.get("delivered_prefix")
+            if isinstance(delivered, str) and delivered:
+                return delivered
+        return sent_text
+
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
         prefix = self._last_sent_text or ""
@@ -3445,7 +3463,17 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            self._last_sent_text = text
+                            # Track what the platform actually STORED, not what
+                            # we asked it to store.  An adapter may accept an
+                            # oversized progressive edit and keep only a
+                            # truncated preview (Telegram, #48648); advancing
+                            # from ``text`` then makes every "already seen"
+                            # derivation — _visible_prefix, _continuation_text,
+                            # the turn-final payload record — describe text no
+                            # API call ever carried (#98552).
+                            self._last_sent_text = self._delivered_text_for(
+                                result, text,
+                            )
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True

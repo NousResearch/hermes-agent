@@ -517,7 +517,19 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+def _is_homebrew_install(project_root: Optional[Path] = None) -> bool:
+    """Return whether the running install is in Homebrew's Cellar layout."""
+    root = _install_method_project_root(project_root)
+    parts = root.resolve().parts
+    return any(
+        parts[index : index + 2] == ("Cellar", "hermes-agent")
+        for index in range(len(parts) - 1)
+    )
+
+
 def detect_install_method(project_root: Optional[Path] = None) -> str:
+    if _is_homebrew_install(project_root):
+        return "homebrew"
     """Detect how Hermes was installed: 'apt', 'docker', 'nix', 'nixos',
     'home-manager', 'git', or 'unknown'.
 
@@ -570,7 +582,16 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # "home-manager" is here because step 3 can return it. A stamp must name
     # every method that this function returns. Without it, the stamp of a
     # home-manager install gives "unknown".
-    supported_methods = {"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"}
+    supported_methods = {
+        "apt",
+        "docker",
+        "nix",
+        "nixos",
+        "home-manager",
+        "homebrew",
+        "git",
+        "unknown",
+    }
 
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
@@ -669,6 +690,8 @@ def is_nix_install_method(method: str) -> bool:
 
 
 def recommended_update_command_for_method(method: str) -> str:
+    if method == "homebrew":
+        return "brew upgrade hermes-agent"
     """Return the update command or guidance for a given install method."""
     if is_nix_install_method(method):
         return _NIX_UPDATE_MSG

@@ -123,6 +123,30 @@ def test_unmanaged_install_offers_no_update_command(hermes_home, monkeypatch):
     assert config_mod.get_managed_update_command() is None
 
 
+def test_homebrew_formula_is_package_managed(tmp_path):
+    install_tree = (
+        tmp_path
+        / "opt"
+        / "homebrew"
+        / "Cellar"
+        / "hermes-agent"
+        / "2026.8.31"
+        / "libexec"
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+    )
+    install_tree.mkdir(parents=True)
+
+    method = config_mod.detect_install_method(install_tree)
+
+    assert method == "homebrew"
+    assert (
+        config_mod.recommended_update_command_for_method(method)
+        == "brew upgrade hermes-agent"
+    )
+
+
 def test_unreadable_marker_still_reports_managed(hermes_home, monkeypatch):
     """A marker we cannot read is still a marker. Fail closed, not open."""
     marker = hermes_home / ".managed"

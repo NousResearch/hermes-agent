@@ -257,6 +257,33 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 
 
+def _stream_preview_truncated_result(
+    message_id: str, delivered_prefix: str
+) -> "SendResult":
+    """Success result for a mid-stream edit Telegram stored only in part.
+
+    A progressive edit that overflows the 4,096 UTF-16 cap is truncated to one
+    message instead of being split (#48648), so the text that reaches Telegram
+    is SHORTER than the text the caller passed.  Reporting a bare success made
+    that invisible: the stream consumer advanced ``_last_sent_text`` — and
+    every "what has the user already seen" derivation built on it
+    (``_visible_prefix``, ``_continuation_text``, the turn-final payload
+    record) — to text no API call ever carried, so a later fallback skipped
+    the un-stored middle and the gateway suppressed its corrective send
+    (#98552).  ``delivered_prefix`` states what Telegram actually holds; the
+    existing ``partial_overflow`` contract carries the same field on the
+    failure branch.
+    """
+    return SendResult(
+        success=True,
+        message_id=message_id,
+        raw_response={
+            "stream_preview_truncated": True,
+            "delivered_prefix": delivered_prefix,
+        },
+    )
+
+
 def _flood_cap_result(wait: float) -> "SendResult":
     """The shared fail-closed SendResult for an over-cap flood wait."""
     return SendResult(
@@ -5917,7 +5944,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # stream trips flood control (200s+ penalties) and hangs the final
             # delivery. Skip silently until finalize.
             if self._last_overflow_preview.get(_preview_key) == content:
-                return SendResult(success=True, message_id=message_id)
+                return _stream_preview_truncated_result(message_id, content)
         elif not finalize:
             # Content shrank back under the cap (segment break / new message
             # id) — clear stale saturation state so dedup can't mask a real
@@ -5933,6 +5960,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
+                    return _stream_preview_truncated_result(message_id, content)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -5982,14 +6010,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 truncated = self._truncate_stream_overflow_preview(content)
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     # Saturated-preview dedup (see pre-flight path above).
-                    return SendResult(success=True, message_id=message_id)
+                    return _stream_preview_truncated_result(message_id, truncated)
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
-                return SendResult(success=True, message_id=message_id)
+                return _stream_preview_truncated_result(message_id, truncated)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.

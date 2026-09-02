@@ -1261,6 +1261,18 @@ def create_profile(
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
+        # A clone-all copies auth.json and .anthropic_oauth.json verbatim.
+        # Single-use OAuth grants (Anthropic / Codex / xAI) forked that way
+        # are one credential with two owners: the first profile to refresh
+        # revokes the pair for every sibling (#100339). Drop the copies; the
+        # clone reads the root grant through the credential-pool fallback.
+        from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+        stripped = strip_cloned_single_use_oauth_grants(profile_dir)
+        if any(stripped.values()):
+            logger.info(
+                "profile %s: dropped cloned single-use OAuth grants %s "
+                "(inherits the root grant instead)", canon, stripped,
+            )
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)

@@ -1687,6 +1687,120 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
+# Pool providers whose OAuth refresh tokens are SINGLE-USE: redeeming the
+# refresh token rotates the pair and revokes the old one. A grant forked into
+# two auth.json files is therefore not two credentials but one credential with
+# two owners — the first owner to refresh strands the other with
+# ``invalid_grant`` / ``refresh_token_reused`` (#100339; same class as the
+# ``providers.<id>`` write-through hazard in #48415 / #43589). Profiles must
+# never receive a copy of these grants: ONE grant lives at the global root and
+# named profiles read it through the ``read_credential_pool`` root fallback.
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({
+    "anthropic",
+    "openai-codex",
+    "xai-oauth",
+})
+
+# Singleton credential files that hold the same single-use grants outside
+# ``auth.json``. Copying one into a profile re-seeds a forked pool row on the
+# profile's next ``load_pool()``.
+SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
+
+
+def _is_oauth_pool_payload(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    auth_type = str(entry.get("auth_type") or "").strip().lower()
+    if auth_type == "oauth":
+        return True
+    # Legacy rows predating ``auth_type``: an Anthropic OAuth access token or
+    # any row carrying a refresh token is an OAuth grant.
+    if str(entry.get("refresh_token") or "").strip():
+        return True
+    return str(entry.get("access_token") or "").startswith("sk-ant-oat")
+
+
+def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
+    """Remove forked single-use OAuth grants from a freshly cloned profile.
+
+    Called after any code path that copies credential files from one profile
+    into another (``hermes profile create --clone-all``, the dashboard/TUI
+    ``mirror_credentials`` flow). API-key pool rows are kept — a static key is
+    safe to duplicate. OAuth rows for the providers in
+    ``SINGLE_USE_REFRESH_POOL_PROVIDERS``, the matching ``providers.<id>``
+    device-code blocks, and the ``.anthropic_oauth.json`` singleton are
+    dropped so the clone reads the grant from the global root instead of
+    holding its own doomed copy (#100339).
+
+    Returns a summary ``{"pool": [...provider ids], "providers": [...],
+    "files": [...]}`` of what was stripped (empty lists when nothing was).
+    Never raises: a clone must not fail because credential hygiene could not
+    run — the caller logs the summary.
+    """
+    stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
+    profile_dir = Path(profile_dir)
+    for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
+        try:
+            target = profile_dir / name
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                stripped["files"].append(name)
+        except OSError:
+            logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
+
+    auth_path = profile_dir / "auth.json"
+    if not auth_path.is_file():
+        return stripped
+    try:
+        store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return stripped
+    if not isinstance(store, dict):
+        return stripped
+
+    changed = False
+    pool = store.get("credential_pool")
+    if isinstance(pool, dict):
+        for provider_id in list(pool):
+            if provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+                continue
+            entries = pool.get(provider_id)
+            if not isinstance(entries, list):
+                continue
+            kept = [e for e in entries if not _is_oauth_pool_payload(e)]
+            if len(kept) != len(entries):
+                changed = True
+                stripped["pool"].append(provider_id)
+                if kept:
+                    pool[provider_id] = kept
+                else:
+                    # No local rows at all → read_credential_pool falls back
+                    # to the root slice for this provider.
+                    del pool[provider_id]
+    providers = store.get("providers")
+    if isinstance(providers, dict):
+        # Device-code grants for these providers live under providers.<id>;
+        # _load_provider_state has the same root fallback, so dropping the
+        # copy keeps the profile working while removing the fork.
+        for provider_id in ("openai-codex", "xai-oauth"):
+            block = providers.get(provider_id)
+            if isinstance(block, dict) and block:
+                del providers[provider_id]
+                stripped["providers"].append(provider_id)
+                changed = True
+    if not changed:
+        return stripped
+    try:
+        _save_auth_store(store, target_path=auth_path)
+    except Exception:
+        logger.debug(
+            "Failed to strip cloned single-use OAuth grants from %s",
+            auth_path,
+            exc_info=True,
+        )
+    return stripped
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 

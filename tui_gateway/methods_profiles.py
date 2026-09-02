@@ -467,6 +467,15 @@ def _(rid, params: dict) -> dict:
                     os.chmod(str(dst_auth), 0o600)
                 except OSError:
                     pass
+                # Mirroring must not fork single-use OAuth grants (Anthropic /
+                # Codex / xAI): the first profile to refresh strands every
+                # sibling (#100339). API keys stay; OAuth rows are dropped
+                # and read from the root grant via the pool fallback.
+                try:
+                    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+                    strip_cloned_single_use_oauth_grants(path)
+                except Exception:
+                    pass
                 mirrored["auth"] = True
         except Exception:
             pass

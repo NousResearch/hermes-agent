@@ -1217,8 +1217,9 @@ export const host = {
    *  caller falls through to its authoritative open path. */
   focusOpenWorkspaceSession: (
     workspaceOwnerKey: string,
-    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean
-  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile),
+    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
+    onlyStoredIds?: readonly string[]
+  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

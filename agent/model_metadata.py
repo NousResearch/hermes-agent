@@ -370,6 +370,58 @@ def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
     except Exception as e:
         logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
+def _get_endpoint_metadata_cache_path() -> Path:
+    """On-disk memo of remote ``/models`` probes (see ``_endpoint_disk_cache_get``)."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "endpoint_model_metadata.json"
+
+
+def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Return a still-fresh (``_ENDPOINT_MODEL_CACHE_TTL``) disk memo for one endpoint.
+
+    The in-memory endpoint cache only helps within a process. One-shot runs
+    (``hermes -q``, cron, every Bot Mode DM hop) start cold and re-probed the
+    live ``/models`` endpoint on every launch — 0.3–0.6s of pure network per
+    process on Nous, whose persistent context cache is bypassed by design so
+    the portal stays authoritative. This memo keeps that authority (same TTL
+    as the in-memory cache, so reconciliation still lands within 5 minutes)
+    while sharing the answer across processes. Local endpoints are never
+    memoized: their loaded context is transient (LM Studio reloads).
+    """
+    try:
+        with _get_endpoint_metadata_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        entry = data.get(normalized) if isinstance(data, dict) else None
+        if not isinstance(entry, dict):
+            return None
+        if (time.time() - float(entry.get("at", 0))) >= _ENDPOINT_MODEL_CACHE_TTL:
+            return None
+        models = entry.get("models")
+        return models if isinstance(models, dict) else None
+    except Exception:
+        return None
+
+
+def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) -> None:
+    """Memoize a successful remote ``/models`` probe; expired siblings are dropped."""
+    try:
+        path = _get_endpoint_metadata_cache_path()
+        data: Dict[str, Any] = {}
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                now = time.time()
+                data = {
+                    k: v for k, v in loaded.items()
+                    if isinstance(v, dict) and (now - float(v.get("at", 0))) < _ENDPOINT_MODEL_CACHE_TTL
+                }
+        data[normalized] = {"at": time.time(), "models": cache}
+        atomic_json_write(path, data, indent=0, separators=(",", ":"))
+    except Exception as e:
+        logger.debug("Failed to save endpoint model metadata disk cache: %s", e)
+
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the
@@ -1362,6 +1414,12 @@ def fetch_endpoint_model_metadata(
         cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
+        if not is_local_endpoint(normalized):
+            memo = _endpoint_disk_cache_get(normalized)
+            if memo is not None:
+                _endpoint_model_metadata_cache[normalized] = memo
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return memo
 
     # Blackholed endpoint: every candidate below would spend its full 5s
     # connect budget. Returned empty rather than cached, so the endpoint is
@@ -1536,6 +1594,8 @@ def fetch_endpoint_model_metadata(
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
+            if cache and not is_local_endpoint(normalized):
+                _endpoint_disk_cache_put(normalized, cache)
             return cache
         except Exception as exc:
             last_error = exc

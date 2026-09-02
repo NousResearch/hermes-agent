@@ -7933,15 +7933,6 @@ class APIServerAdapter(BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
 
-            # Start background sweep to clean up orphaned (unconsumed) run streams
-            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
-            try:
-                self._background_tasks.add(sweep_task)
-            except TypeError:
-                pass
-            if hasattr(sweep_task, "add_done_callback"):
-                sweep_task.add_done_callback(self._background_tasks.discard)
-
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the
             # agent's terminal/file tools as the host user; on a public bind
@@ -8025,6 +8016,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     self.name, self._host, self._port, exc,
                 )
                 return False
+
+            # Start the permanent run-stream sweeper only after the server has
+            # bound successfully. Retryable bind failures discard this adapter;
+            # starting the task earlier would retain every failed instance.
+            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
+            try:
+                self._background_tasks.add(sweep_task)
+            except TypeError:
+                pass
+            if hasattr(sweep_task, "add_done_callback"):
+                sweep_task.add_done_callback(self._background_tasks.discard)
 
             self._mark_connected()
             logger.info(

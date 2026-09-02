@@ -2985,13 +2985,36 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _env_ref_lookup(name: str) -> Optional[str]:
+    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` config ref.
+
+    Outside a profile secret scope this is a plain ``os.environ`` read — the
+    default profile and every single-profile caller keep their legacy
+    behavior.  Inside a scope (a multiplexed gateway turn, a secondary
+    profile's config load, a cron job) the read goes through
+    ``agent.secret_scope.get_secret`` so the ref resolves against *that*
+    profile's ``.env``: under multiplexing a miss is a miss, never another
+    profile's ``os.environ`` value (#84079 — every profile "had" the default
+    profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out).  Same policy as
+    ``gateway.config._getenv`` and ``get_env_value``.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+    except Exception:
+        return os.environ.get(name)
+    if current_secret_scope() is None:
+        return os.environ.get(name)
+    return _get_secret(name)
+
+
 def _env_expand_match(m: re.Match) -> str:
     """Expand one ``${...}`` config reference.
 
     Two accepted shapes, matching what MCP server config already resolves
     (``tools/mcp_tool.py::_env_ref_name``):
 
-    * ``${VAR}`` — legacy bare name, resolved via ``os.environ``.
+    * ``${VAR}`` — legacy bare name, resolved via ``_env_ref_lookup``
+      (``os.environ``, or the active profile secret scope).
     * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
       ``env:`` prefix is stripped.  Before this, the prefixed form worked in
       MCP config but stayed a literal string in config.yaml — a confusing
@@ -3009,7 +3032,7 @@ def _env_expand_match(m: re.Match) -> str:
         name = inner[len("env:"):].strip()
         if not name:
             return raw
-        val = os.environ.get(name)
+        val = _env_ref_lookup(name)
         if val is not None:
             return val
         logger.warning(
@@ -3030,7 +3053,8 @@ def _env_expand_match(m: re.Match) -> str:
         )
         return raw
     # Legacy ``${VAR}`` — bare name.
-    return os.environ.get(inner, raw)
+    val = _env_ref_lookup(inner)
+    return val if val is not None else raw
 
 
 def _env_ref_var_name(ref: str) -> Optional[str]:
@@ -3083,7 +3107,7 @@ def _env_ref_snapshot(obj, snapshot=None):
         for raw in re.findall(r"\${([^}]+)}", obj):
             name = _env_ref_var_name(raw)
             if name is not None:
-                snapshot[name] = os.environ.get(name)
+                snapshot[name] = _env_ref_lookup(name)
     elif isinstance(obj, dict):
         for value in obj.values():
             _env_ref_snapshot(value, snapshot)
@@ -4097,7 +4121,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
             # life of the process (#58514).
             env_snapshot = cached[5] if len(cached) > 5 else {}
-            if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
+            if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
                 return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)

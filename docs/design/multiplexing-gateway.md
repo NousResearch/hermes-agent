@@ -92,7 +92,19 @@ B's turns and into every subprocess spawned with `env=dict(os.environ)`.
 
 Because the per-turn `.env` reload is a no-op under multiplexing, rotated
 credentials are picked up through the profile scope on the next turn — never
-via `os.environ`.
+via `os.environ`. This holds at the loader boundary, not just the gateway's
+reload helper: `hermes_cli.env_loader.load_hermes_dotenv` skips the
+process-global load whenever multiplexing is active *and* a profile-home
+override is installed (import-time and cron callers hit it mid-turn), while
+still hydrating the profile's external secret sources into its private
+snapshot (`#77562`). The unscoped startup load is unchanged.
+
+The same scope-authoritative rule covers the other `os.environ` seams a
+routed turn can reach: `${VAR}` / `${env:VAR}` references in a profile's
+`config.yaml` resolve through `get_secret` when a scope is installed
+(`#84079`), and `.env` writes made under a scope (`save_env_value`, e.g. a
+`/pair` grant mirror) update the installed scope mapping instead of the
+process environment (`#88441`).
 
 ## The HERMES_HOME override
 

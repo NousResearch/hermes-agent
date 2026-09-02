@@ -7575,7 +7575,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"It already timed out (and was denied) or was resolved elsewhere."
                     )
 
-                await query.answer(text=label)
+                try:
+                    await query.answer(text=label)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Telegram approval callback ACK failed; continuing to edit "
+                        "the approval message so buttons are removed: %s",
+                        self.name,
+                        _redact_telegram_error_text(exc),
+                    )
 
                 # Edit message to show decision, remove buttons
                 try:

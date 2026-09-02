@@ -145,12 +145,20 @@ export function modelStatusLabelParts(
   parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
   const slug = options?.provider?.trim() ?? ''
-  const idPrefix = providerPrefixOf(model)
+  const trimmedModel = model.trim()
+  const idPrefix = providerPrefixOf(trimmedModel)
+  // Only a bare `provider/model` id makes the row's provider redundant with
+  // the id's own prefix (e.g. `openai/gpt-5.5` + `openai` → hide). Relay-style
+  // ids (`openrouter/anthropic/claude-opus-4.8` + `openrouter`) carry an
+  // upstream vendor in the deeper path: the top-level prefix names the relay,
+  // so both halves are information and both show.
+  const relayPath = idPrefix !== '' && trimmedModel.slice(idPrefix.length + 1).includes('/')
 
   return {
     meta: parts.join(' '),
     name,
-    provider: slug && slug.toLowerCase() !== idPrefix.toLowerCase() ? slug : ''
+    provider:
+      slug && (slug.toLowerCase() !== idPrefix.toLowerCase() || relayPath) ? slug : ''
   }
 }
 

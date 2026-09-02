@@ -303,6 +303,17 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             profile_homes = list(profiles_to_serve(multiplex=True))
             if len(profile_homes) > 1:
                 start_kwargs["profile_homes"] = profile_homes
+                # Stand down, per tick, for any profile whose OWN gateway is
+                # running: that gateway ticks it with live adapters, and the
+                # tick-lock race otherwise lets this adapter-less ticker win
+                # and deliver the job through the standalone path (#100489).
+                # Evaluated every cycle so a gateway starting/stopping later
+                # is picked up without a dashboard restart.
+                from hermes_cli.profiles import _check_gateway_running
+
+                start_kwargs["profile_gate"] = (
+                    lambda _name, home: not _check_gateway_running(Path(home))
+                )
                 from hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(profile_homes)

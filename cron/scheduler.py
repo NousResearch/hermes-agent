@@ -4005,7 +4005,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        # The fallback worker is a fresh thread: it does NOT
+                        # inherit the multiplexed profile ContextVars (home
+                        # override + secret scope). Run inside a copy of the
+                        # active context so the standalone sender reads THIS
+                        # profile's bot token, not the process default's
+                        # (#100489) — same pattern as the session-db and
+                        # heartbeat workers in this module.
+                        _fallback_context = contextvars.copy_context()
+                        future = pool.submit(
+                            _fallback_context.run,
+                            asyncio.run,
+                            _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files),
+                        )
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

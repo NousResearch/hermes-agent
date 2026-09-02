@@ -560,6 +560,7 @@ class InProcessCronScheduler(CronScheduler):
         profile_homes=None,
         profile_adapters=None,
         default_profile=None,
+        profile_gate=None,
     ):
         import logging
         from cron.scheduler import CronTickYielded
@@ -590,6 +591,7 @@ class InProcessCronScheduler(CronScheduler):
                 can_dispatch=can_dispatch,
                 profile_adapters=profile_adapters,
                 default_profile=default_profile,
+                profile_gate=profile_gate,
             )
             return
 
@@ -670,6 +672,7 @@ class InProcessCronScheduler(CronScheduler):
         can_dispatch=None,
         profile_adapters=None,
         default_profile=None,
+        profile_gate=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -678,6 +681,11 @@ class InProcessCronScheduler(CronScheduler):
         agent execution to that profile's home — mirroring how
         ``_profile_runtime_scope`` scopes the multiplexed inbound path and
         ``web_server.py`` scopes per-profile cron API calls.
+
+        ``profile_gate(name, home) -> bool``, when given, is consulted every
+        cycle; a profile it rejects is neither ticked nor heartbeated that
+        cycle (the desktop ticker uses it to stand down for profiles whose
+        own gateway is running, #100489).
         """
         import logging
         from cron.scheduler import tick as cron_tick
@@ -734,11 +742,21 @@ class InProcessCronScheduler(CronScheduler):
             # Worst per-profile failure this cycle (fd exhaustion wins) so the
             # #87644 backoff/reclaim is applied once per cycle, not per profile.
             _cycle_exc: BaseException | None = None
+            cycle_homes = _existing_profile_homes(profile_homes)
+            if profile_gate is not None:
+                cycle_homes = [
+                    entry
+                    for entry in cycle_homes
+                    if profile_gate(
+                        entry[0] if isinstance(entry, tuple) else None,
+                        entry[1] if isinstance(entry, tuple) else entry,
+                    )
+                ]
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    for entry in _existing_profile_homes(profile_homes):
+                    for entry in cycle_homes:
                         _pname = entry[0] if isinstance(entry, tuple) else None
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
@@ -803,7 +821,7 @@ class InProcessCronScheduler(CronScheduler):
             # beat reflects its own outcome, so a yielding profile does not
             # darken healthy siblings — from an aborted one (exception), where
             # no profile completed and all beats are unsuccessful (#32612).
-            for entry in _existing_profile_homes(profile_homes):
+            for entry in cycle_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:

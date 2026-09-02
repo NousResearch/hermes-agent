@@ -2894,8 +2894,10 @@ class BuzzAdapter(BasePlatformAdapter):
                         mimetypes.guess_type(download_path.name)[0]
                         or "application/octet-stream"
                     )
+                    # Up to the inbound media cap (128 MiB) — read off the loop too.
+                    data = await asyncio.to_thread(download_path.read_bytes)
                     cached = await cache_media_bytes_async(
-                        download_path.read_bytes(),
+                        data,
                         filename=download_path.name,
                         mime_type=mime_type,
                     )

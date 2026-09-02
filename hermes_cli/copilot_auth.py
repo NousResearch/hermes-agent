@@ -607,11 +607,21 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     """
     fp = _token_fingerprint(raw_token)
 
-    # Fast path outside the lock: a valid in-process JWT needs no exchange.
+    # Fast paths outside the lock: a valid in-process JWT needs no exchange,
+    # and a recent failure means queueing behind the in-flight holder (up to
+    # ~50 s) would only park an executor thread to learn the same answer.
     cached = _jwt_cache.get(fp)
     if cached and time.time() < cached[1] - _JWT_REFRESH_MARGIN_SECONDS:
         return cached
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
 
+    # Note: a waiter's own ``timeout`` is not honoured across the lock wait —
+    # by design of single-flight, it observes the holder's outcome instead.
     with _exchange_lock_for(fp):
         return _exchange_copilot_token_locked(raw_token, fp, timeout=timeout)
 

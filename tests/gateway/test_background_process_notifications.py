@@ -180,6 +180,41 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
 
 
 @pytest.mark.asyncio
+async def test_run_process_watcher_off_mode_overrides_notify_on_complete(monkeypatch, tmp_path):
+    """Operator-level ``off`` must win over a per-call ``notify_on_complete=True``.
+
+    ``display.background_process_notifications: off`` is meant to be an
+    operator kill switch, but the silent/wait-only branch only triggered when
+    ``notify_mode == "off" and not agent_notify`` — so a call-site
+    ``notify_on_complete=True`` request (agent_notify) fell through to the
+    normal delivery path and re-enabled the completion message the operator
+    had turned off. The watcher must still wait for exit (lifecycle logging /
+    cleanup stay intact), it just must not push anything to the user.
+    """
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1; echo done",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["chat_type"] = "dm"  # routable evt so a real delivery attempt is observable
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

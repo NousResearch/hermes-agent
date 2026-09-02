@@ -883,10 +883,10 @@ class TestEnvironmentHints:
 
     def test_probe_remote_backend_tolerates_kwargless_cleanup(self, monkeypatch):
         """Backends that inherit the base ``cleanup(self)`` take no kwargs; the
-        probe must fall back to the bare call instead of dying on TypeError."""
+        probe must use the bare call instead of dying on TypeError."""
         import agent.prompt_builder as _pb
 
-        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
         _pb._clear_backend_probe_cache()
 
         calls = []
@@ -907,8 +907,38 @@ class TestEnvironmentHints:
         import tools.terminal_tool as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
-        assert _pb._probe_remote_backend("ssh") is not None
+        assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
+
+    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
+        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
+        socket shared with the agent's real environment, so the probe must
+        leave it alone (nothing leaks — ControlPersist expires the master)."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _SharedSshEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("cleanup")
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+
+        assert _pb._probe_remote_backend("ssh") is not None
+        assert calls == []
 
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):

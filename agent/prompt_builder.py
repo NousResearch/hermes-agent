@@ -1300,12 +1300,21 @@ def _probe_remote_backend(env_type: str) -> str | None:
         # backend leaves a second idle sandbox (task_id="prompt-backend-probe")
         # running for the whole process lifetime, alongside the agent's own
         # "default" sandbox. force_remove overrides persist mode for this
-        # throwaway env; backends whose cleanup() takes no kwargs fall back.
-        if env is not None:
+        # throwaway env; backends whose cleanup() takes no kwargs get the
+        # bare call (same signature check as tools.terminal_tool.cleanup_vm).
+        #
+        # SSH is the exception: SSHEnvironment has no task-scoped sandbox —
+        # its cleanup() runs sync_back() and `ssh -O exit` on a ControlMaster
+        # socket keyed only by user@host:port, i.e. shared with the agent's
+        # real environment. Nothing leaks there (ControlPersist expires the
+        # master), so leave it alone.
+        if env is not None and env_type != "ssh":
             try:
-                try:
+                import inspect
+
+                if "force_remove" in inspect.signature(env.cleanup).parameters:
                     env.cleanup(force_remove=True)
-                except TypeError:
+                else:
                     env.cleanup()
             except Exception:
                 logger.debug("Backend probe cleanup failed", exc_info=True)

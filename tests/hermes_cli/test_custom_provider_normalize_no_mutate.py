@@ -48,6 +48,53 @@ def test_providers_dict_roundtrip_leaves_cached_config_untouched():
     assert config == snapshot
 
 
+def test_bare_base_url_warns_about_missing_v1_prefix(caplog):
+    """A scheme+host-only base_url is the silent-404 shape: OpenAI-compatible
+    clients append /chat/completions to base_url, so the request misses the
+    server's /v1/chat/completions (#89334). The normalizer must say so once."""
+    import logging
+
+    import hermes_cli.config as config_mod
+
+    entry = {"base_url": "https://api.example.com", "key_env": "MY_KEY"}
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        out = config_mod._normalize_custom_provider_entry(entry, provider_key="dots")
+    assert out is not None
+    assert any(
+        "has no path" in r.getMessage() for r in caplog.records
+    ), "bare base_url must warn about the missing /v1 prefix"
+
+
+def test_base_url_with_path_does_not_warn(caplog):
+    import logging
+
+    import hermes_cli.config as config_mod
+
+    entry = {"base_url": "https://api.example.com/v1", "key_env": "MY_KEY"}
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        out = config_mod._normalize_custom_provider_entry(entry, provider_key="dots")
+    assert out is not None
+    assert not any(
+        "has no path" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_bare_base_url_placeholder_does_not_warn(caplog):
+    """Env-ref/template URLs are expanded at runtime; the path may come from
+    the expansion, so the bare check must not fire on them."""
+    import logging
+
+    import hermes_cli.config as config_mod
+
+    entry = {"base_url": "https://api-{region}.example.com", "key_env": "MY_KEY"}
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        out = config_mod._normalize_custom_provider_entry(entry, provider_key="dots")
+    assert out is not None
+    assert not any(
+        "has no path" in r.getMessage() for r in caplog.records
+    )
+
+
 def test_normalized_models_mapping_is_not_shared_with_input():
     entry = {
         "base_url": "https://x.example/v1",

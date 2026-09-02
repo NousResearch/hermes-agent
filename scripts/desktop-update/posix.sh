@@ -39,7 +39,7 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_SUID=0 SUID_PHASE=""
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,6 +54,8 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
+    --self-test-suid) SELF_TEST_SUID=1; shift ;;
+    --suid-phase) SUID_PHASE="$2"; shift 2 ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
@@ -293,6 +295,99 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
   UI_SERVER_PID="" UI_BROWSER_PID=""
 }
 
+# ── setuid sandbox helper, preserved across the rebuild ─────────────────────
+# electron-builder rewrites release/linux-unpacked/chrome-sandbox as the
+# invoking (unprivileged) user, so the root:root 4755 helper install.sh
+# configured is replaced by a user-owned 0755 copy on EVERY update. Where
+# Chromium's namespace sandbox is unavailable -- Ubuntu 23.10+ with
+# apparmor_restrict_unprivileged_userns=1, exactly the hosts 3a7f2234a6 carved
+# out -- the gate below then sees a non-root helper and downgrades to `manual`,
+# so post-update auto-relaunch never fires (#58593 all over again). Until now
+# the helper was only ever restored later, by `hermes gui` shelling out to
+# sudo, which cannot prompt from this detached, TTY-less script.
+#
+# rename(2) preserves the inode's uid/gid/mode and needs only write permission
+# on the containing directory -- which we have. So park the privileged inode
+# beside the tree before the rebuild and rename it back afterwards: no sudo, no
+# prompt, and the sandbox stays fully enabled. A hard link cannot stand in for
+# the rename: fs.protected_hardlinks refuses links to a root-owned file we have
+# no write access to.
+#
+# Restore ONLY when the rebuilt helper is byte-identical. An Electron upgrade
+# ships a new helper, and silently reinstating the old one would pair a stale
+# setuid binary with a new Chromium -- a worse failure than the manual card.
+#
+# Park OUTSIDE the checkout: electron-builder recreates release/linux-unpacked
+# wholesale (every file in it carries the same rebuild mtime), so anything left
+# beside the helper goes down with the directory -- including, fatally, the one
+# inode we cannot recreate. HERMES_HOME is the same filesystem, so the rename
+# still works, and it is outside git, so no stash or checkout can move it.
+SANDBOX_HELPER_PATH="" SANDBOX_HELPER_PARKED=""
+# Production always demands root ownership. --self-test-suid relaxes it, for
+# the one reason that matters: a test running as an ordinary user cannot
+# create a root-owned fixture, and the behaviour worth pinning here (which
+# inode survives the rebuild) is independent of who owns it. The test asserts
+# the strict predicate separately, with this back at 1.
+SUID_REQUIRE_ROOT=1
+
+sandbox_helper_is_privileged() { # $1 = path; setuid + root-owned, never a symlink
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -u "$1" ] || return 1
+  [ "$SUID_REQUIRE_ROOT" -eq 0 ] && return 0
+  [ "$(stat -c %u "$1" 2>/dev/null)" = "0" ]
+}
+
+preserve_sandbox_helper() {
+  [ "$(uname)" = "Linux" ] && [ -n "$INSTALL_ROOT" ] && [ -n "$HERMES_HOME" ] || return 0
+  local sb parked
+  sb="$INSTALL_ROOT/apps/desktop/release/linux-unpacked/chrome-sandbox"
+  parked="$HERMES_HOME/.chrome-sandbox.suid-preserved"
+
+  # Crash recovery: a previous run was killed between park and restore, so the
+  # privileged inode is still parked and the app has no helper at all. Reclaim
+  # it before anything else -- this is the one path that must never no-op.
+  if [ ! -e "$sb" ] && sandbox_helper_is_privileged "$parked"; then
+    if mv "$parked" "$sb" 2>/dev/null; then
+      log "reclaimed a sandbox helper left parked by an interrupted update"
+    fi
+  fi
+
+  sandbox_helper_is_privileged "$sb" || return 0
+  rm -f "$parked" 2>/dev/null || true
+  if mv "$sb" "$parked" 2>/dev/null; then
+    SANDBOX_HELPER_PATH="$sb" SANDBOX_HELPER_PARKED="$parked"
+    log "parked the root-owned setuid sandbox helper across the rebuild"
+  else
+    log "WARNING: could not park the setuid sandbox helper; the rebuild will drop its root ownership"
+  fi
+}
+
+restore_sandbox_helper() {
+  [ -n "$SANDBOX_HELPER_PARKED" ] || return 0
+  local parked="$SANDBOX_HELPER_PARKED" sb="$SANDBOX_HELPER_PATH"
+  SANDBOX_HELPER_PATH="" SANDBOX_HELPER_PARKED=""
+
+  # No rebuild happened (or it produced nothing): ours goes straight back.
+  # mkdir because a wiped-and-not-repopulated release/ tree is exactly the
+  # case where the app most needs its helper handed back.
+  if [ ! -e "$sb" ]; then
+    mkdir -p "$(dirname "$sb")" 2>/dev/null || true
+    mv "$parked" "$sb" 2>/dev/null ||
+      log "WARNING: could not restore the sandbox helper to $sb"
+    return 0
+  fi
+
+  if cmp -s "$sb" "$parked"; then
+    if mv "$parked" "$sb" 2>/dev/null; then
+      log "restored the root-owned setuid sandbox helper after the rebuild"
+      return 0
+    fi
+    log "WARNING: could not restore the preserved sandbox helper; keeping the rebuilt one"
+  else
+    log "sandbox helper changed (Electron upgrade); keeping the rebuilt one -- it needs a privileged install"
+  fi
+  rm -f "$parked" 2>/dev/null || true
+}
+
 # ── relaunch ────────────────────────────────────────────────────────────────
 # Linux relaunch gate -- an exact port of the deleted update-relaunch.ts
 # decision (#45205/#37541), not a loosened rewrite:
@@ -431,6 +526,12 @@ finish() {
   #      back", manual means "it is not, here's what to do", error is error.
   # A rejected launch rewrites the result (nothing consumed it — the app
   # never started) so the next boot tells the truth too.
+  #
+  # 0. put the privileged sandbox helper back FIRST. It runs here, on the EXIT
+  #    trap, so an aborted or signalled update can never leave the app without
+  #    a helper — and deliver_outcome's gate must judge the restored tree, not
+  #    the half-second in which the rebuild owned it.
+  restore_sandbox_helper
   deliver_outcome
   [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && { FINAL_MSG="$DONE_NOTE"; MANUAL=1; }
   write_result
@@ -618,6 +719,28 @@ if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$SELF_TEST_SUID" -eq 1 ]; then
+  # Drives one half of the preserve/restore pair against the given
+  # --install-root and exits; scripts/desktop-update/repro.sh suid asserts the
+  # matrix. Split into phases because the real pair straddles the rebuild, and
+  # the test has to stand in for electron-builder in between.
+  trap - EXIT
+  SUID_REQUIRE_ROOT="${HERMES_SUID_SELFTEST_REQUIRE_ROOT:-0}"
+  case "$SUID_PHASE" in
+    park) preserve_sandbox_helper ;;
+    restore)
+      parked_probe="$HERMES_HOME/.chrome-sandbox.suid-preserved"
+      if [ -e "$parked_probe" ]; then
+        SANDBOX_HELPER_PATH="$INSTALL_ROOT/apps/desktop/release/linux-unpacked/chrome-sandbox"
+        SANDBOX_HELPER_PARKED="$parked_probe"
+      fi
+      restore_sandbox_helper
+      ;;
+    *) echo "--suid-phase must be park or restore" >&2; exit 64 ;;
+  esac
+  exit 0
+fi
+
 if [ "$SELF_TEST_GATE" -eq 1 ]; then
   # Prints the gate decision for the given --install-root/--relaunch-target
   # and exits; scripts/desktop-update/repro.sh gate asserts the matrix.
@@ -742,6 +865,9 @@ cd "$INSTALL_ROOT" || {
   log "$FINAL_MSG"; exit 3
 }
 export PYTHONUNBUFFERED=1
+# Park the privileged sandbox helper before anything can rebuild it; finish()
+# renames it back on every exit path.
+preserve_sandbox_helper
 # --keep-stash: never re-apply local source edits after the update (they stay
 # parked in git stash). Probe --help first: older installed backends don't
 # know the flag and argparse would abort with exit 2, which collides with the

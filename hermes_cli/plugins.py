@@ -720,6 +720,8 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     # v2 (#64165)
     "manifest_version", "api_version", "requires_plugins",
     "python_dependencies", "config_schema", "license", "homepage", "tags",
+    # runtime behavior disclosure (#87287)
+    "type", "auto_dispatches", "spawns_workers",
     # owned by sibling sub-issues but reserved so their manifests don't warn
     "capabilities", "emits", "listens", "hermes", "depends",
 }
@@ -859,6 +861,28 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
         logger.warning("Plugin %s: tags must be a list; ignoring", key)
         raw_tags = None
     out["tags"] = [str(t) for t in (raw_tags or [])]
+
+    # Runtime behavior disclosure. ``type`` is distinct from ``kind``: kind
+    # controls how Hermes loads a plugin, while type describes what it does.
+    raw_type = data.get("type")
+    if raw_type is None:
+        out["plugin_type"] = ""
+    elif isinstance(raw_type, str):
+        out["plugin_type"] = raw_type.strip().lower()
+    else:
+        logger.warning("Plugin %s: type must be a string; ignoring", key)
+        out["plugin_type"] = ""
+
+    for field_name in ("auto_dispatches", "spawns_workers"):
+        raw_value = data.get(field_name, False)
+        if not isinstance(raw_value, bool):
+            logger.warning(
+                "Plugin %s: %s must be a boolean; treating as false",
+                key,
+                field_name,
+            )
+            raw_value = False
+        out[field_name] = raw_value
 
     # Forward compat: unknown fields warn (never fail). Keep v1 manifests
     # quiet at warning level — they predate the known-field census.
@@ -1159,6 +1183,11 @@ class PluginManifest:
     license: str = ""
     homepage: str = ""
     tags: List[str] = field(default_factory=list)
+    # Operational behavior disclosure. ``plugin_type`` comes from the raw
+    # manifest's ``type`` field and intentionally does not affect ``kind``.
+    plugin_type: str = ""
+    auto_dispatches: bool = False
+    spawns_workers: bool = False
     # Inter-plugin event bus declarations (advisory in v1 — NOT enforced).
     # ``emits`` lists the bare event names this plugin publishes under its own
     # ``<key>:`` namespace (e.g. ``["ping"]`` → publishes ``<key>:ping``).

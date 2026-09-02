@@ -336,6 +336,90 @@ class TestReadManifest:
         assert result == {}
 
 
+class TestOrchestratorRuntimeContract:
+    def test_orchestrator_install_requires_root_skill_contract(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        with pytest.raises(
+            PluginOperationError,
+            match=r"type: orchestrator.*SKILL\.md",
+        ):
+            pc._validate_orchestrator_runtime_contract(
+                tmp_path,
+                {"name": "dispatcher", "type": "orchestrator"},
+            )
+
+    def test_orchestrator_contract_requires_explicit_behavior_flags(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        (tmp_path / "SKILL.md").write_text("# Operations\n", encoding="utf-8")
+
+        with pytest.raises(
+            PluginOperationError,
+            match="auto_dispatches.*spawns_workers",
+        ):
+            pc._validate_orchestrator_runtime_contract(
+                tmp_path,
+                {"name": "dispatcher", "type": "orchestrator"},
+            )
+
+    def test_install_discloses_orchestrator_process_behavior(self, tmp_path):
+        from rich.console import Console
+        import hermes_cli.plugins_cmd as pc
+
+        contract = tmp_path / "SKILL.md"
+        contract.write_text("# Dispatcher operations\n", encoding="utf-8")
+        console = Console(record=True, width=120)
+
+        pc._print_orchestrator_runtime_contract(
+            {
+                "name": "dispatcher",
+                "type": "orchestrator",
+                "auto_dispatches": True,
+                "spawns_workers": True,
+            },
+            tmp_path,
+            console,
+        )
+
+        output = console.export_text()
+        assert "Orchestrator runtime contract" in output
+        assert "automatically dispatch tasks" in output
+        assert "spawn worker processes" in output
+        assert "running Hermes gateway with dispatch enabled" in output
+        assert str(contract) in output
+
+    def test_plugins_show_surfaces_runtime_contract(self, tmp_path, monkeypatch, capsys):
+        import hermes_cli.plugins_cmd as pc
+
+        (tmp_path / "plugin.yaml").write_text(
+            "name: dispatcher\n"
+            "type: orchestrator\n"
+            "auto_dispatches: true\n"
+            "spawns_workers: true\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "SKILL.md").write_text("# Operations\n", encoding="utf-8")
+        monkeypatch.setattr(
+            pc,
+            "_discover_all_plugins",
+            lambda: [
+                ("dispatcher", "1.0", "Coordinates work", "user", tmp_path, "dispatcher")
+            ],
+        )
+        monkeypatch.setattr(pc, "_get_enabled_set", lambda: {"dispatcher"})
+        monkeypatch.setattr(pc, "_get_disabled_set", lambda: set())
+
+        pc.cmd_show("dispatcher")
+
+        output = capsys.readouterr().out
+        assert "Type: orchestrator" in output
+        assert "Auto-dispatches: yes" in output
+        assert "Spawns workers: yes" in output
+        assert "Operational contract:" in output
+        assert "SKILL.md" in output
+
+
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 
 
@@ -740,6 +824,55 @@ class TestSubdirInstallE2E:
         # ...and the repo-root noise is NOT.
         assert not (target / "README.md").exists()
         assert not (target / "tests").exists()
+
+    def test_invalid_orchestrator_does_not_replace_existing_plugin(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        import subprocess as sp
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+        manifest = repo_root / "my-plugin" / "plugin.yaml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + "type: orchestrator\nauto_dispatches: true\nspawns_workers: true\n",
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(
+            ["git", "commit", "-q", "-m", "declare orchestrator"],
+            cwd=repo_root,
+            check=True,
+            env=env,
+        )
+
+        plugins_dir = tmp_path / "installed"
+        existing = plugins_dir / "my-plugin"
+        existing.mkdir(parents=True)
+        sentinel = existing / "keep.txt"
+        sentinel.write_text("original\n", encoding="utf-8")
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        with pytest.raises(PluginOperationError, match=r"SKILL\.md"):
+            pc._install_plugin_core(
+                f"file://{repo_root}#my-plugin",
+                force=True,
+            )
+
+        assert sentinel.read_text(encoding="utf-8") == "original\n"
 
     def test_missing_subdir_raises(self, tmp_path, monkeypatch):
         if shutil.which("git") is None:

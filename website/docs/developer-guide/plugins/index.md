@@ -290,6 +290,9 @@ this Hermes understands still loads with a warning.
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+| `type` | str | Operational role. Set to `orchestrator` for plugins that coordinate or dispatch other agents. This is disclosure metadata and does not change the plugin's load `kind`. |
+| `auto_dispatches` | bool | Whether an orchestrator may dispatch tasks without a per-task user action. Required when `type: orchestrator`. |
+| `spawns_workers` | bool | Whether an orchestrator may create worker processes. Required when `type: orchestrator`. |
 
 ```yaml
 # plugin.yaml — manifest v2 example
@@ -308,6 +311,32 @@ python_dependencies:
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
+
+### Orchestrator runtime contracts
+
+Orchestrator plugins must disclose process-starting behavior in `plugin.yaml`
+and ship a root `SKILL.md` that explains their operational contract:
+
+```yaml
+name: task-dispatcher
+manifest_version: 2
+type: orchestrator
+auto_dispatches: true
+spawns_workers: true
+```
+
+`hermes plugins install` rejects an orchestrator declaration when either
+behavior flag is not an explicit boolean or the root `SKILL.md` is missing.
+For a valid package, installation prints a prominent warning that identifies
+automatic dispatch, worker spawning, the gateway/dispatcher startup
+dependency, and the contract path. The same metadata remains inspectable with
+`hermes plugins show <name>`.
+
+The skill should describe at least: when dispatch starts, concurrency and
+budget controls, which service must be running, how to pause or stop workers,
+and how to recover from an accidental fan-out. Register it from the plugin's
+`register(ctx)` function with `ctx.register_skill(...)` when agents also need
+to load the contract through `skill_view`.
 
 :::note pip-dependency isolation is deferred
 `python_dependencies` is intentionally declare-and-surface only. Installing

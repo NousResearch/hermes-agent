@@ -360,6 +360,59 @@ def _read_manifest(plugin_dir: Path) -> dict:
         return {}
 
 
+def _validate_orchestrator_runtime_contract(
+    plugin_dir: Path,
+    manifest: dict,
+) -> Optional[Path]:
+    """Require an operational skill for explicitly declared orchestrators."""
+    plugin_type = manifest.get("type")
+    if not isinstance(plugin_type, str) or plugin_type.strip().lower() != "orchestrator":
+        return None
+
+    contract = plugin_dir / "SKILL.md"
+    if not contract.is_file():
+        plugin_name = manifest.get("name") or plugin_dir.name
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' declares `type: orchestrator` but does not "
+            "ship the required root SKILL.md operational contract."
+        )
+
+    invalid_flags = [
+        name
+        for name in ("auto_dispatches", "spawns_workers")
+        if not isinstance(manifest.get(name), bool)
+    ]
+    if invalid_flags:
+        plugin_name = manifest.get("name") or plugin_dir.name
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' declares `type: orchestrator` and must declare "
+            "boolean auto_dispatches and spawns_workers fields."
+        )
+    return contract
+
+
+def _print_orchestrator_runtime_contract(
+    manifest: dict,
+    plugin_dir: Path,
+    console,
+) -> None:
+    """Disclose process-starting behavior declared by an orchestrator plugin."""
+    plugin_type = manifest.get("type")
+    if not isinstance(plugin_type, str) or plugin_type.strip().lower() != "orchestrator":
+        return
+
+    console.print("\n[bold yellow]Orchestrator runtime contract[/bold yellow]")
+    if manifest.get("auto_dispatches") is True:
+        console.print("  [yellow]•[/yellow] May automatically dispatch tasks.")
+    if manifest.get("spawns_workers") is True:
+        console.print("  [yellow]•[/yellow] May spawn worker processes.")
+    console.print(
+        "  [yellow]•[/yellow] Activation requires a running Hermes gateway "
+        "with dispatch enabled."
+    )
+    console.print(f"  [yellow]•[/yellow] Operational contract: {plugin_dir / 'SKILL.md'}\n")
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 
@@ -800,6 +853,7 @@ def _install_plugin_core(
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
+        _validate_orchestrator_runtime_contract(tmp_target, manifest)
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -1032,6 +1086,8 @@ def cmd_install(
     _prompt_plugin_env_vars(installed_manifest, console)
 
     _print_python_dependencies(installed_manifest, console)
+
+    _print_orchestrator_runtime_contract(installed_manifest, target, console)
 
     _display_after_install(target, identifier)
 
@@ -2223,6 +2279,19 @@ def cmd_show(name: str) -> None:
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
+    plugin_type = manifest.get("type")
+    if isinstance(plugin_type, str) and plugin_type.strip():
+        plugin_type = plugin_type.strip().lower()
+        console.print(f"[dim]Type:[/dim] {plugin_type}")
+        if plugin_type == "orchestrator":
+            auto_dispatches = "yes" if manifest.get("auto_dispatches") is True else "no"
+            spawns_workers = "yes" if manifest.get("spawns_workers") is True else "no"
+            console.print(f"[dim]Auto-dispatches:[/dim] {auto_dispatches}")
+            console.print(f"[dim]Spawns workers:[/dim] {spawns_workers}")
+            if dir_path:
+                console.print(
+                    f"[dim]Operational contract:[/dim] {Path(dir_path) / 'SKILL.md'}"
+                )
     console.print(
         "[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]")
     )

@@ -6802,7 +6802,21 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "handoff so it stays actionable (#100818)"
             )
 
-        if _template_visible_role(compressed[-1]) == "user":
+        # Alternation is judged on template-visible rows only: a tail of
+        # tool_calls/tool pairs is exempt, so a user-pinned summary followed by
+        # such a tail still "ends on user" for the Mistral-style pre-flight
+        # check (#58753). Look through the exempt tail, not just at [-1].
+        last_visible_role = next(
+            (
+                role
+                for role in (
+                    _template_visible_role(msg) for msg in reversed(compressed)
+                )
+                if role is not None
+            ),
+            None,
+        )
+        if last_visible_role == "user":
             carrier["content"] = _append_text_to_content(
                 carrier.get("content"),
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,

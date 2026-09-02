@@ -1037,6 +1037,16 @@ class GatewaySlashCommandsMixin:
             return False
         if origin.platform != current.platform:
             return False
+        if (
+            current.platform == Platform.WEIXIN
+            and origin.platform == Platform.WEIXIN
+            and current.chat_type == "dm"
+            and origin.chat_type == "dm"
+            and current.shared_session_id
+            and origin.shared_session_id
+            and current.shared_session_id == origin.shared_session_id
+        ):
+            return True
         if origin.chat_id != current.chat_id:
             return False
         # thread_id is part of the session key for every chat type when present

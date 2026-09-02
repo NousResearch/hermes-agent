@@ -74,8 +74,30 @@ def _reply_timeout() -> float:
         return 300.0
 
 
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed inside ``_profile_runtime_scope``
+    (secret scope installed + multiplex active) — the same discriminator the
+    Buzz/SimpleX adapters use for this bug class (#98738). The DEFAULT profile
+    under multiplexing runs unscoped: ``os.environ`` holds its own bridge
+    output there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _default_agent_name() -> str:
-    name = os.getenv("A2A_AGENT_NAME", "").strip()
+    # Scope-aware: inside a secondary multiplex profile, os.environ holds the
+    # DEFAULT profile's bridged A2A_AGENT_NAME — borrowing it would brand a
+    # secondary profile's Agent Card with another profile's identity. There
+    # is no per-profile config.yaml equivalent yet, so a scoped profile just
+    # falls through to the hostname-based default below instead.
+    name = "" if _profile_scoped() else os.getenv("A2A_AGENT_NAME", "").strip()
     if name:
         return name
     try:
@@ -343,7 +365,15 @@ class A2AAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=platform)
 
         extra = getattr(config, "extra", {}) or {}
-        self.port = int(os.getenv("A2A_PORT") or extra.get("port", _DEFAULT_PORT))
+        # Scope-aware: a secondary multiplex profile must not borrow the
+        # default profile's bridged A2A_PORT (mirrors the Buzz/SimpleX fix
+        # for #98738) — an unconfigured profile falls closed to the module
+        # default port instead. (advertised_toolsets has the same env-leak
+        # shape but is left unscoped here — see the "Scope note" in this
+        # fix's PR description: open PR #98937 is actively rewriting this
+        # field's None-vs-empty-list semantics.)
+        _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
+        self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
         self.host = security.resolve_bind_host()
         self.agent_name = _default_agent_name()
         self._advertised_toolsets = [
@@ -502,9 +532,15 @@ class A2AAdapter(BasePlatformAdapter):
             raw = cfg.get("a2a_served_agents") or (cfg.get("a2a") or {}).get("served_agents")
 
         agents: dict[str, dict] = {}
-        default_desc = os.getenv(
-            "A2A_AGENT_DESCRIPTION",
-            "Hermes Agent — a general-purpose agent reachable over A2A.",
+        # Scope-aware for the same reason as port/toolsets above: a secondary
+        # profile must not inherit the default profile's A2A_AGENT_DESCRIPTION.
+        default_desc = (
+            "Hermes Agent — a general-purpose agent reachable over A2A."
+            if _profile_scoped()
+            else os.getenv(
+                "A2A_AGENT_DESCRIPTION",
+                "Hermes Agent — a general-purpose agent reachable over A2A.",
+            )
         )
         agents[""] = {
             "slug": "",

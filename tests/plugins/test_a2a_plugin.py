@@ -1618,3 +1618,101 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# --------------------------------------------------------------------------
+# Multiplex secondary-profile scope (construction-time config leak)
+# --------------------------------------------------------------------------
+#
+# __init__'s port/advertised-toolsets reads and _load_served_agents's
+# description default all previously read raw A2A_* env vars unconditionally.
+# Under a multiplexed secondary profile, os.environ holds the DEFAULT
+# profile's YAML-to-env bridge output — a secondary profile with its own
+# (different, or absent) A2A config would silently borrow the default
+# profile's port, toolset advertisement, agent name, or Agent Card
+# description. Mirrors the Buzz/SimpleX fix for #98738.
+
+_A2A_ENV_VARS = (
+    "A2A_PORT",
+    "A2A_AGENT_NAME",
+    "A2A_ADVERTISED_TOOLSETS",
+    "A2A_AGENT_DESCRIPTION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_a2a_construction_env(monkeypatch):
+    """Keep the new multiplex tests hermetic regardless of ambient env."""
+    for var in _A2A_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("A2A_PORT", "9111")
+    monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
+    monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
+    monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+
+
+class TestMultiplexConstructionScope:
+
+    def test_secondary_profile_never_borrows_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config is authoritative; keys absent
+        from it fall to the module defaults, never to the default profile's
+        bridged A2A_* env values."""
+        from plugins.platforms.a2a.adapter import A2AAdapter, _DEFAULT_PORT
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        assert A2AAdapter(PlatformConfig(enabled=True, extra={"port": 9222})).port == 9222
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.port == _DEFAULT_PORT
+        assert adapter.agent_name != "default-profile-agent"
+        assert adapter._agents[""]["description"] == (
+            "Hermes Agent — a general-purpose agent reachable over A2A."
+        )
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        set_multiplex_active(True)
+        try:
+            adapter = A2AAdapter(PlatformConfig(enabled=True, extra={}))
+        finally:
+            set_multiplex_active(False)
+        assert adapter.port == 9111
+        assert adapter.agent_name == "default-profile-agent"
+        assert adapter._agents[""]["description"] == "Default profile's own agent."

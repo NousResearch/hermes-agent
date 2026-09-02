@@ -37,6 +37,9 @@ _SA_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 WORKSPACE_CONTAINER_NAME = "workspace"
 # Grace beyond the caller's timeout; _wait_for_process is expected to act first.
 _EXEC_GRACE_SECONDS = 15
+# A status-channel probe is diagnostic, not user work. Keep it short so one
+# poisoned exec endpoint cannot consume another foreground-tool deadline.
+_EXEC_HEALTH_PROBE_SECONDS = 5
 # Terminator for the stdin file-sync payload (see _stdin_upload).
 _SYNC_SENTINEL = "__HERMES_TAR_EOF__"
 _STDIN_CHUNK_BYTES = 64 * 1024
@@ -1066,7 +1069,7 @@ class KubernetesEnvironment(BaseEnvironment):
         self._lock = threading.Lock()
         # Held across a whole re-provision; _lock itself must never be held
         # over an API call.
-        self._provision_lock = threading.Lock()
+        self._provision_lock = threading.RLock()
         self._sync_manager = None
         # Captured once: the synced ~/.hermes tree stays where the first sync
         # put it, even after the agent cds away.
@@ -1223,13 +1226,19 @@ class KubernetesEnvironment(BaseEnvironment):
         )
         return CoreV1Api(api_client), api_client
 
-    def _open_stream(self, command: list[str], *, stdin: bool = False):
+    def _open_stream(
+        self, command: list[str], *, stdin: bool = False,
+        ref: PodRef | None = None, connect_timeout: float | None = None,
+    ):
         """Open an exec websocket with the connect in a bounded worker;
         stream() itself has no connect timeout and would pin the thread."""
         from kubernetes.stream import stream as k8s_stream
 
-        ref = self._pod_ref
-        if ref is None:
+        pod_ref = ref
+        if pod_ref is None:
+            with self._lock:
+                pod_ref = self._pod_ref
+        if pod_ref is None:
             raise RuntimeError("kubernetes session pod is not provisioned")
         api, api_client = self._exec_client()
 
@@ -1239,9 +1248,9 @@ class KubernetesEnvironment(BaseEnvironment):
             try:
                 result["stream"] = k8s_stream(
                     api.connect_get_namespaced_pod_exec,
-                    ref.pod_name,
-                    ref.namespace,
-                    container=ref.container,
+                    pod_ref.pod_name,
+                    pod_ref.namespace,
+                    container=pod_ref.container,
                     command=command,
                     stderr=True,
                     stdin=stdin,
@@ -1256,13 +1265,17 @@ class KubernetesEnvironment(BaseEnvironment):
             target=_connect, name="k8s-exec-connect", daemon=True
         )
         worker.start()
-        worker.join(API_TIMEOUT[0] + API_TIMEOUT[1])
+        connect_bound = (
+            API_TIMEOUT[0] + API_TIMEOUT[1]
+            if connect_timeout is None else max(0.1, connect_timeout)
+        )
+        worker.join(connect_bound)
         try:
             if worker.is_alive():
                 raise TimeoutError(
                     "kubernetes exec: the API server accepted no websocket "
-                    f"within {API_TIMEOUT[0] + API_TIMEOUT[1]:.0f}s "
-                    f"(pod {ref.pod_name})"
+                    f"within {connect_bound:.0f}s "
+                    f"(pod {pod_ref.pod_name})"
                 )
             if "error" in result:
                 raise self._explain_exec_failure(result["error"])
@@ -1341,11 +1354,18 @@ class KubernetesEnvironment(BaseEnvironment):
         return rc if isinstance(rc, int) else None
 
     def _exec_capture(
-        self, command: list[str], *, timeout: int = 60
+        self, command: list[str], *, timeout: int = 60,
+        ref: PodRef | None = None, recover_unknown: bool = True,
+        connect_timeout: float | None = None,
     ) -> "tuple[str, int | None]":
         """Blocking exec for the file-sync transport: (output, returncode),
         raising TimeoutError instead of mistaking still-running for success."""
-        resp = self._open_stream(command)
+        exec_ref = ref
+        if exec_ref is None:
+            with self._lock:
+                exec_ref = self._pod_ref
+        resp = self._open_stream(
+            command, ref=exec_ref, connect_timeout=connect_timeout)
         chunks: list[str] = []
         deadline = time.monotonic() + max(1, timeout)
         timed_out = False
@@ -1369,9 +1389,29 @@ class KubernetesEnvironment(BaseEnvironment):
                 f"kubernetes exec did not finish within {timeout}s: "
                 f"{' '.join(command[:2])}"
             )
-        return "".join(chunks), self._safe_returncode(resp)
+        rc = self._safe_returncode(resp)
+        if rc is None and recover_unknown and exec_ref is not None:
+            self._recover_ambiguous_exec(exec_ref)
+        return "".join(chunks), rc
 
-    def _forget_pod_if_dead(self, exc: Exception) -> bool:
+    def _invalidate_expected_ref(self, expected: PodRef) -> bool:
+        """Forget *expected* only if it is still the tracked pod.
+
+        A failed exec can finish recovery after another worker replaced its pod;
+        it must never clear that newer ref.
+        """
+        with self._lock:
+            if self._pod_ref != expected:
+                return False
+            self._pod_ref = None
+        self._snapshot_ready = False
+        return True
+
+    @staticmethod
+    def _pod_uid(pod: Any) -> str:
+        return str(getattr(getattr(pod, "metadata", None), "uid", "") or "")
+
+    def _forget_pod_if_dead(self, exc: Exception, expected: PodRef) -> bool:
         """Drop the pod ref when the pod is gone or terminal-but-present
         (phase Failed serves exec 400 forever, and nothing deletes it)."""
         dead = (
@@ -1379,25 +1419,108 @@ class KubernetesEnvironment(BaseEnvironment):
             or "not found" in str(exc).lower()
         )
         if not dead:
-            with self._lock:
-                ref = self._pod_ref
             api = self._exec_api
-            if ref is None or api is None:
+            if api is None:
                 return False
             try:
                 pod = api_call(
                     api.read_namespaced_pod,
-                    name=ref.pod_name, namespace=ref.namespace,
+                    name=expected.pod_name, namespace=expected.namespace,
                 )
-                dead = pod_cannot_exec(pod, ref.container)
+                pod_uid = self._pod_uid(pod)
+                if expected.uid and pod_uid and pod_uid != expected.uid:
+                    return False
+                dead = pod_cannot_exec(pod, expected.container)
             except Exception as read_exc:
                 dead = getattr(read_exc, "status", None) == 404
         if not dead:
             return False
-        with self._lock:
-            self._pod_ref = None
-        self._snapshot_ready = False
-        return True
+        return self._invalidate_expected_ref(expected)
+
+    def _recover_ambiguous_exec(self, expected: PodRef) -> bool:
+        """Classify one unknown exec status and retire a proven-bad pod.
+
+        The probe uses the raw capture path so its own missing status cannot
+        recursively start another recovery. Provisioning remains deferred to
+        the normal next-command path.
+        """
+        with self._provision_lock:
+            with self._lock:
+                if self._pod_ref != expected or self._torn_down:
+                    return False
+            api = self._exec_api
+            if api is None:
+                logger.warning(
+                    "exec status unavailable for pod %s, but its state cannot "
+                    "be inspected; keeping the current reference",
+                    expected.pod_name,
+                )
+                return False
+            try:
+                pod = api_call(
+                    api.read_namespaced_pod,
+                    name=expected.pod_name, namespace=expected.namespace,
+                )
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    return self._invalidate_expected_ref(expected)
+                logger.warning(
+                    "exec status unavailable for pod %s and its health check "
+                    "could not read the pod: %s",
+                    expected.pod_name, exc,
+                )
+                return False
+
+            pod_uid = self._pod_uid(pod)
+            if expected.uid and pod_uid and pod_uid != expected.uid:
+                # The name already belongs to a different object. A late worker
+                # must neither probe nor delete it.
+                return False
+            if pod_cannot_exec(pod, expected.container):
+                return self._invalidate_expected_ref(expected)
+            if getattr(getattr(pod, "status", None), "phase", "") != "Running":
+                return False
+
+            try:
+                _output, probe_rc = self._exec_capture(
+                    ["sh", "-c", "true"],
+                    timeout=_EXEC_HEALTH_PROBE_SECONDS,
+                    ref=expected,
+                    recover_unknown=False,
+                    connect_timeout=_EXEC_HEALTH_PROBE_SECONDS,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "exec health probe failed for Running pod %s: %s",
+                    expected.pod_name, exc,
+                )
+                probe_rc = None
+            if probe_rc is not None:
+                return False
+
+            recycle_ref = expected
+            if not recycle_ref.uid and pod_uid:
+                recycle_ref = PodRef(
+                    expected.namespace, expected.pod_name,
+                    expected.container, uid=pod_uid,
+                )
+            if not recycle_ref.uid:
+                logger.error(
+                    "Running pod %s failed its exec health probe, but no UID "
+                    "is available for a safe recycle; keeping the reference",
+                    expected.pod_name,
+                )
+                return False
+            with self._lock:
+                if self._pod_ref != expected:
+                    return False
+            logger.warning(
+                "Running session pod %s no longer returns exec statuses; "
+                "recycling it before the next command",
+                expected.pod_name,
+            )
+            self._provisioner.destroy(recycle_ref)
+            return self._invalidate_expected_ref(expected)
 
     def _run_bash(
         self, cmd_string: str, *, login: bool = False, timeout: int = 120,
@@ -1415,13 +1538,17 @@ class KubernetesEnvironment(BaseEnvironment):
         # Created before the worker starts, or a kill() landing mid-connect
         # would be erased.
         state = _ExecState()
+        with self._lock:
+            exec_ref = self._pod_ref
+        if exec_ref is None:
+            raise RuntimeError("kubernetes session pod is not provisioned")
 
         def exec_fn() -> tuple[str, int]:
             chunks: list[str] = []
             resp = None
             timed_out = False
             try:
-                resp = self._open_stream(command)
+                resp = self._open_stream(command, ref=exec_ref)
                 with self._lock:
                     state.stream = resp
                     already_cancelled = state.cancelled
@@ -1444,7 +1571,7 @@ class KubernetesEnvironment(BaseEnvironment):
                     logger.warning("exec stream error: %s", exc)
                     # Check for a dead pod first; the raw websocket error
                     # tells the model nothing it can act on.
-                    died = self._forget_pod_if_dead(exc)
+                    died = self._forget_pod_if_dead(exc, exec_ref)
                     chunks.append(
                         "\n[the session workspace stopped (deadline, eviction "
                         "or OOM) and its files are gone; the next command "
@@ -1470,6 +1597,7 @@ class KubernetesEnvironment(BaseEnvironment):
             rc = self._safe_returncode(resp)
             if rc is None:
                 # Unknown is not success; reporting 0 would lie to the model.
+                self._recover_ambiguous_exec(exec_ref)
                 chunks.append("\n[kubernetes: exec status unavailable]")
                 return "".join(chunks), 1
             return "".join(chunks), rc
@@ -1492,13 +1620,12 @@ class KubernetesEnvironment(BaseEnvironment):
                     ["sh", "-c",
                      "for p in $(grep -lz " + marker + "=1 /proc/*/environ "
                      "2>/dev/null | sed 's#/proc/##;s#/environ##'); do "
-                     "kill -TERM -$(ps -o pgid= -p \"$p\" 2>/dev/null | tr -d ' ') "
-                     "2>/dev/null || kill -TERM \"$p\" 2>/dev/null; done; "
+                     "kill -TERM \"$p\" 2>/dev/null; done; "
                      "sleep 0.3; "
                      "for p in $(grep -lz " + marker + "=1 /proc/*/environ "
                      "2>/dev/null | sed 's#/proc/##;s#/environ##'); do "
                      "kill -KILL \"$p\" 2>/dev/null; done; true"],
-                    timeout=15,
+                    timeout=15, ref=exec_ref, recover_unknown=False,
                 )
             except Exception as exc:
                 logger.debug("exec cancel: kill pass failed: %s", exc)
@@ -1551,7 +1678,10 @@ class KubernetesEnvironment(BaseEnvironment):
         remote = (
             f"sed -n '/^{_SYNC_SENTINEL}$/q;p' | base64 -d | tar xf - -C /"
         )
-        resp = self._open_stream(["sh", "-c", remote], stdin=True)
+        with self._lock:
+            exec_ref = self._pod_ref
+        resp = self._open_stream(
+            ["sh", "-c", remote], stdin=True, ref=exec_ref)
         chunks: list[str] = []
         timed_out = False
         # Set before the write loop: writes are the phase most likely to hang.
@@ -1595,6 +1725,8 @@ class KubernetesEnvironment(BaseEnvironment):
                 f"{timeout}s ({''.join(chunks).strip()})"
             )
         rc = self._safe_returncode(resp)
+        if rc is None and exec_ref is not None:
+            self._recover_ambiguous_exec(exec_ref)
         if rc != 0:
             # rc None lands here too: an unknown status must never commit the
             # sync state as if it succeeded.

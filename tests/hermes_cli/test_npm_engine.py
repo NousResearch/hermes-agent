@@ -221,7 +221,10 @@ class TestRepairDecision:
         seen = {}
 
         def fake_run(cmd, **kwargs):
-            seen.update(kwargs)
+            # Only the upgrade call matters — the repair may also probe
+            # `npm --version` afterwards to detect a no-op upgrade (#88791).
+            if "install" in cmd:
+                seen.update(kwargs)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -240,6 +243,47 @@ class TestRepairDecision:
         assert not maybe_repair_npm_engine(
             str(managed_npm), EBADENGINE_OUTPUT, quiet=True
         )
+
+    @staticmethod
+    def _upgrade_then_probe(probe_stdout: str):
+        """subprocess.run double: the upgrade succeeds, `npm --version`
+        answers *probe_stdout* afterwards."""
+
+        def fake_run(cmd, **kwargs):
+            if "--version" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, probe_stdout, "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return fake_run
+
+    def test_noop_upgrade_declines_retry_when_npm_already_satisfies(
+        self, managed_npm, monkeypatch, capsys
+    ):
+        """Both node and npm ranges present, npm already in range: the
+        upgrade reinstalls the same version and must NOT gate a retry —
+        the violator is Node and a retry would fail identically (#88791)."""
+        # Actual npm in EBADENGINE_OUTPUT is 11.10.0; probe reports the same
+        # version back — the upgrade moved nothing.
+        monkeypatch.setattr(
+            subprocess, "run", self._upgrade_then_probe("11.10.0\n")
+        )
+        assert not maybe_repair_npm_engine(
+            str(managed_npm), EBADENGINE_OUTPUT, quiet=False
+        )
+        err = capsys.readouterr().err
+        assert "failing engine is Node" in err
+
+    def test_real_upgrade_still_gates_the_retry(
+        self, managed_npm, monkeypatch
+    ):
+        """When the version actually moved, the upgrade did something and
+        the caller's single retry stays warranted."""
+        monkeypatch.setattr(
+            subprocess, "run", self._upgrade_then_probe("12.5.0\n")
+        )
+        assert maybe_repair_npm_engine(
+            str(managed_npm), EBADENGINE_OUTPUT, quiet=True
+        ) == str(managed_npm)
 
     def test_foreign_npm_provisions_managed_runtime_instead(
         self, tmp_path, monkeypatch

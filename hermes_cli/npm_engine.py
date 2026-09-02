@@ -338,7 +338,28 @@ def maybe_repair_npm_engine(
         # failure is fixable this way; a Node mismatch needs a Node upgrade.
         if not npm_range:
             return None
+        # When the EBADENGINE block states BOTH node and npm ranges and npm
+        # already satisfies its own, the violator is Node. `npm install
+        # npm@<range>` then reinstalls the very version that is already
+        # installed — a no-op "success" that makes every retry loop without
+        # touching the actual problem (#88791). Detect it behaviorally (the
+        # version did not move) instead of a semver range matcher, which this
+        # module deliberately avoids.
+        before = actual_npm_version(output)
         if upgrade_managed_npm(npm, npm_range, prefix=prefix, quiet=quiet):
+            after = _probe_version(npm)
+            if before and after and before == after:
+                if not quiet:
+                    print(
+                        f"  ⚠ npm {after} already satisfies {npm_range} — the "
+                        "failing engine is Node, not npm. A managed npm "
+                        "upgrade cannot fix this; the Hermes-managed Node.js "
+                        "tree must be updated instead (remove "
+                        f"{get_hermes_home() / 'node'} and re-run so a fresh "
+                        "tree is provisioned).",
+                        file=sys.stderr,
+                    )
+                return None
             return npm
         return None
 

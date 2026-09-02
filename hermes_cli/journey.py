@@ -347,6 +347,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
     import os
+    import shlex
     import subprocess
     import tempfile
 
@@ -355,7 +356,7 @@ def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
         fh.write(initial)
         path = fh.name
     try:
-        subprocess.call([*editor.split(), path])
+        subprocess.call([*shlex.split(editor, posix=(os.name != "nt")), path])
         with open(path, encoding="utf-8") as fh:
             return fh.read()
     except OSError as exc:

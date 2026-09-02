@@ -518,3 +518,44 @@ def test_heal_skips_profile_auth_json_hardlinked_to_the_root_store(fleet):
     assert heal_forked_single_use_oauth_grants("openai-codex") is None
     assert (root / "auth.json").read_text() == before
     assert (shared / "auth.json").samefile(root / "auth.json")
+
+
+def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
+    """Separate auth.jsons but a profile `.anthropic_oauth.json` symlinked to
+    root's: one shared grant, not a fork. The heal must not self-compare it
+    or unlink the alias (#101356 sibling site)."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    (root / ".anthropic_oauth.json").write_text(json.dumps({
+        "accessToken": "AT-shared", "refreshToken": "RT-shared",
+        "expiresAt": int((time.time() + 3600) * 1000),
+    }))
+    kid = _profile(fleet, "kid")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({"providers": {}, "credential_pool": {}}))
+    (kid / ".anthropic_oauth.json").symlink_to(root / ".anthropic_oauth.json")
+    before = (root / ".anthropic_oauth.json").read_text()
+
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("anthropic") is None
+    assert (kid / ".anthropic_oauth.json").is_symlink()
+    assert (root / ".anthropic_oauth.json").read_text() == before
+
+
+def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
+    """The shared-store skip must record the clean mark so load_pool()'s
+    per-call heal does not re-stat/resolve both paths every model call."""
+    from hermes_cli import auth as auth_mod
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    fleet["use"](shared)
+
+    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert "openai-codex" in auth_mod._oauth_heal_clean_marks
+    calls = []
+    monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
+    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert calls == [], "same-store check ran again despite the clean mark"

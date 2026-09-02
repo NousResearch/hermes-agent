@@ -1263,18 +1263,17 @@ def _same_path(left: Path, right: Path) -> bool:
 def _is_same_auth_store(left: Path, right: Path) -> bool:
     """True when two auth paths name ONE store rather than two copies.
 
-    ``_same_path`` already resolves symlinks and ``..`` segments; a hardlinked
-    (or bind-mounted) alias keeps two distinct resolved names for one inode, so
-    fall back to filesystem identity. Used by the forked-grant heal: a shared
-    store has no "other side" to consolidate (#101356).
+    ``_same_path`` resolves symlinks and ``..``; ``samefile`` adds hardlinks
+    and bind-mounts (same inode under two resolved names). Used by the
+    forked-grant heal: a shared store has no "other side" to consolidate
+    (#101356).
     """
     if _same_path(left, right):
         return True
     try:
-        left_stat, right_stat = left.stat(), right.stat()
+        return left.samefile(right)
     except OSError:
         return False
-    return (left_stat.st_dev, left_stat.st_ino) == (right_stat.st_dev, right_stat.st_ino)
 
 
 def _auth_lock_holder_for(target_path: Path) -> threading.local:
@@ -2022,17 +2021,6 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         if real_home_env and _same_path(root_path, Path(real_home_env) / ".hermes" / "auth.json"):
             return None
     profile_path = _auth_file_path()
-    if _is_same_auth_store(profile_path, root_path):
-        # The profile's auth.json IS the root store (symlink, hardlink, or any
-        # other alias — a deliberate way to share one grant across profiles).
-        # Both "sides" of the consolidation below would read the same file, so
-        # every OAuth row would match itself as its own fork and the strip
-        # would write through the alias and delete the shared credential.
-        # A shared store has nothing to consolidate (#101356).
-        logger.debug(
-            "%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path
-        )
-        return None
     profile_home = profile_path.parent
     root_home = root_path.parent
     profile_singleton = profile_home / ".anthropic_oauth.json" if provider_id == "anthropic" else None
@@ -2051,6 +2039,16 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         return None
     if fingerprint[1] is None and fingerprint[2] is None:
         _oauth_heal_clean_marks[provider_id] = fingerprint
+        return None
+    if _is_same_auth_store(profile_path, root_path):
+        # The profile's auth.json IS the root store (symlink/hardlink alias —
+        # a deliberate way to share one grant). Both "sides" below would read
+        # the same file, every OAuth row would match itself, and the strip
+        # would write through the alias and delete the shared credential.
+        # Nothing to consolidate (#101356); the mtime mark keeps this off the
+        # per-call hot path until the shared file changes.
+        _oauth_heal_clean_marks[provider_id] = fingerprint
+        logger.debug("%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path)
         return None
 
     summary: Dict[str, Any] = {"adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
@@ -2142,7 +2140,13 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
                         summary["providers_block"] = True
 
             # ── profile-local .anthropic_oauth.json singleton ───────────
-            if profile_singleton is not None and profile_singleton.exists():
+            if (
+                profile_singleton is not None
+                and profile_singleton.exists()
+                # An aliased singleton pair is one shared grant, not a fork
+                # (#101356): never self-compare or unlink it.
+                and not (root_singleton is not None and _is_same_auth_store(profile_singleton, root_singleton))
+            ):
                 p_single = _singleton_as_row(profile_singleton)
                 root_has_grant = bool(r_oauth) or root_singleton_row is not None
                 if p_single is not None and root_has_grant:

@@ -20,7 +20,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import _read_text_with_timeout, _scan_context_content
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class SubdirectoryHintTracker:
             try:
                 if not candidate.is_file():
                     continue
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(candidate) or "").strip()
             except (OSError, UnicodeDecodeError):
                 continue
             if content:
@@ -285,7 +285,7 @@ class SubdirectoryHintTracker:
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(hint_path) or "").strip()
                 if not content:
                     continue
                 # Skip content we've already injected. The same AGENTS.md is

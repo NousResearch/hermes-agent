@@ -5,6 +5,8 @@ import importlib
 import logging
 import os
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -1140,3 +1142,40 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+class TestContextFileReadTimeout:
+    def test_slow_hermes_md_is_skipped_and_agents_md_still_loads(self, tmp_path, monkeypatch, caplog):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("Hermes project rules.")
+        (tmp_path / "AGENTS.md").write_text("Agent fallback rules.")
+        # Patch the module object build_context_files_prompt actually closes
+        # over: an earlier test re-imports agent.prompt_builder, so the
+        # sys.modules entry can be a different module object.
+        pb_mod = sys.modules[build_context_files_prompt.__module__]
+        monkeypatch.setattr(pb_mod, "_CONTEXT_FILE_READ_TIMEOUT_SECS", 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name == ".hermes.md":
+                time.sleep(0.6)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        start = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger=pb_mod.__name__):
+            result = build_context_files_prompt(cwd=str(tmp_path))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4, f"context load blocked for {elapsed:.2f}s"
+        assert "Agent fallback rules" in result
+        assert "Hermes project rules" not in result
+        assert "timed out" in caplog.text.lower()
+
+    def test_read_errors_still_propagate_to_caller(self, tmp_path):
+        from agent.prompt_builder import _read_text_with_timeout
+
+        with pytest.raises(FileNotFoundError):
+            _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)

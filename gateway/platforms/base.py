@@ -3669,12 +3669,25 @@ class BasePlatformAdapter(ABC):
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
 
-    def _mark_connected(self) -> None:
+    def _mark_connected(self, *, degraded: bool = False) -> None:
         self._running = True
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+        if degraded:
+            # connect() succeeded but the adapter knows its send/receive path
+            # is not actually confirmed active yet (e.g. Telegram polling
+            # never proved a first getUpdates round-trip). Publishing
+            # "connected" here would be indistinguishable from a healthy
+            # adapter to anything reading gateway_state.json (#101391).
+            self._write_runtime_status_safe(
+                "connected_degraded",
+                platform_state="retrying",
+                error_code=None,
+                error_message="connected but not yet confirmed active; recovering in background",
+            )
+        else:
+            self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
 
     def _mark_disconnected(self) -> None:
         self._running = False

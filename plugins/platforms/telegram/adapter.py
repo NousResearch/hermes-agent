@@ -902,7 +902,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
-        super()._mark_connected()
+        # _send_path_degraded is already true whenever this connect's
+        # polling generation has not proven a first getUpdates round-trip
+        # (set at generation start, cleared in _record_polling_progress) —
+        # publish that instead of an unconditional "connected" (#101391).
+        super()._mark_connected(degraded=getattr(self, "_send_path_degraded", False))
         # Drain anything held while we were down. PTB will not redeliver —
         # these events exist only in our hold queue now.
         self._schedule_held_inbound_redispatch()
@@ -2694,6 +2698,16 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_conflict_recovery_generation = None
         else:
             self._polling_conflict_count = 0
+        # If connect() already published "connected" while polling was
+        # confirmed degraded (or the reconnect watcher stamped that state
+        # once connect() returned), gateway_state.json is still showing the
+        # pre-recovery status. This is the first proof getUpdates is
+        # actually flowing again, so flip it back now instead of leaving it
+        # wedged at "retrying" until the next disconnect/reconnect (#101391).
+        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
+            self._write_runtime_status_safe(
+                "connected", platform_state="connected", error_code=None, error_message=None,
+            )
         self._send_path_degraded = False
 
     def _observe_polling_request_result(self, request, generation, result):

@@ -1320,52 +1320,489 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
-def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
-    """Mixed failure kinds must not consume the violation retry budget.
-
-    Regression for the #61233 review finding: expressed as a plain
-    ``failure_limit`` over the unified ``consecutive_failures`` counter, the
-    violation budget was consumed by earlier timeouts / nonzero exits. As a
-    violation-only streak, a prior real crash must not eat violation
-    retries, and below-budget violations must leave the unified counter
-    untouched (so the two budgets stay independent).
-    """
+def test_clean_exit_without_terminal_event_blocks_immediately(kanban_home):
+    """A clean worker exit without a terminal event blocks on first detection."""
     import hermes_cli.kanban_db as _kb
+
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="mixed", assignee="worker")
+        tid = kb.create_task(
+            conn, title="missing terminal", assignee="worker", max_retries=99,
+        )
+        crashed = _drive_protocol_violation(conn, tid, 991001)
 
-        # One real crash: unified counter ticks to 1 (below
-        # DEFAULT_FAILURE_LIMIT=2 — task stays ready).
-        _drive_nonzero_crash(conn, tid, 991000)
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.consecutive_failures == 1
-
-        # Two violations after it: streak 1 and 2 — both retry, unified
-        # counter untouched. (Pre-fix: the crash consumed the budget and the
-        # violations blocked well before three of them happened.)
-        for i, pid in enumerate((991001, 991002)):
-            _drive_protocol_violation(conn, tid, pid)
-            task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"violation {i + 1} after a crash must still retry, "
-                f"got {task.status}"
-            )
-            assert task.consecutive_failures == 1, (
-                "below-budget violations must not tick the unified counter"
-            )
-
-        # Third consecutive violation: streak hits the bound — blocked.
-        _drive_protocol_violation(conn, tid, 991003)
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
-            _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        assert task.block_kind == "worker_protocol"
+        assert task.consecutive_failures == 0
+        assert tid not in crashed
+        assert tid in getattr(_kb.detect_crashed_workers, "_last_auto_blocked", [])
+
+        events = kb.list_events(conn, tid)
+        assert not [e for e in events if e.kind in {"protocol_violation", "gave_up"}]
+        blocked = [e for e in events if e.kind == "blocked"]
+        assert len(blocked) == 1
+        payload = blocked[0].payload or {}
+        assert set(payload) == {
+            "reason_code", "reason", "kind", "auto_blocked", "trigger",
+            "terminal_event_observed", "exit_kind", "exit_code",
+            "worker_pid", "last_heartbeat_at",
+        }
+        assert payload == {
+            "reason_code": "worker_exited_without_terminal_event",
+            "reason": (
+                "Worker exited successfully without kanban_complete or "
+                "kanban_block; dispatcher auto-blocked the task."
+            ),
+            "kind": "worker_protocol",
+            "auto_blocked": True,
+            "trigger": "missing_terminal_event",
+            "terminal_event_observed": False,
+            "exit_kind": "clean_exit",
+            "exit_code": 0,
+            "worker_pid": 991001,
+            "last_heartbeat_at": payload["last_heartbeat_at"],
+        }
+        assert payload["last_heartbeat_at"] is None or isinstance(
+            payload["last_heartbeat_at"], int,
+        )
+
+        runs = kb.list_runs(conn, tid)
+        assert len(runs) == 1
+        assert runs[0].outcome == "blocked"
+        assert runs[0].status == "blocked"
+        assert blocked[0].run_id == runs[0].id
     finally:
         conn.close()
+
+
+def test_missing_terminal_autoblock_is_idempotent(kanban_home):
+    """Repeated reaper passes cannot duplicate the dispatcher block event."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="idempotent", assignee="worker")
+        _drive_protocol_violation(conn, tid, 991002)
+
+        assert _kb.detect_crashed_workers(conn) == []
+        blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert len(blocked) == 1
+        assert len(kb.list_runs(conn, tid)) == 1
+    finally:
+        conn.close()
+
+
+def test_clean_exit_payload_preserves_existing_heartbeat(kanban_home):
+    """A real worker heartbeat remains visible on the auto-block event."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    original_alive = _kb._pid_alive
+    try:
+        tid = kb.create_task(conn, title="heartbeat preserved", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        _kb._set_worker_pid(conn, tid, 991004)
+        assert kb.heartbeat_worker(conn, tid)
+        observed = kb.get_task(conn, tid)
+        assert observed is not None
+        assert isinstance(observed.last_heartbeat_at, int)
+
+        _kb._record_worker_exit(991004, 0)
+        _kb._pid_alive = lambda _pid: False
+        _kb.detect_crashed_workers(conn)
+
+        blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert len(blocked) == 1
+        assert (blocked[0].payload or {})["last_heartbeat_at"] == \
+            observed.last_heartbeat_at
+    finally:
+        _kb._pid_alive = original_alive
+        conn.close()
+
+
+def test_nonzero_worker_exit_keeps_existing_retry_behavior(kanban_home):
+    """Control A must not change the non-zero crash branch."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="real crash", assignee="worker")
+        crashed = _drive_nonzero_crash(conn, tid, 991003)
+
+        task = kb.get_task(conn, tid)
+        assert tid in crashed
+        assert task.status == "ready"
+        assert task.block_kind is None
+        assert task.consecutive_failures == 1
+        assert not [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "crashed"]
+    finally:
+        conn.close()
+
+
+def test_stale_running_backfill_preview_is_read_only_and_exact(kanban_home):
+    """Backfill preview finds dead running workers without mutating the board."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    original_alive = _kb._pid_alive
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        stale = kb.create_task(conn, title="stale", assignee="worker")
+        live = kb.create_task(conn, title="live", assignee="worker")
+        assert kb.claim_task(conn, stale, claimer=f"{host}:stale")
+        assert kb.claim_task(conn, live, claimer=f"{host}:live")
+        _kb._set_worker_pid(conn, stale, 991010)
+        _kb._set_worker_pid(conn, live, 991011)
+        _kb._pid_alive = lambda pid: pid == 991011
+
+        preview = _kb.preview_stale_running_workers(conn)
+        assert [row["task_id"] for row in preview] == [stale]
+        assert preview[0]["worker_pid"] == 991010
+        assert preview[0]["exit_kind"] == "unknown"
+        assert preview[0]["exit_code"] is None
+        assert kb.get_task(conn, stale).status == "running"
+        assert kb.get_task(conn, live).status == "running"
+    finally:
+        _kb._pid_alive = original_alive
+        conn.close()
+
+
+def test_stale_running_backfill_uses_same_contract_and_is_idempotent(kanban_home):
+    """The explicit one-time backfill blocks stale tasks once with honest values."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    original_alive = _kb._pid_alive
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="stale", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer=f"{host}:stale")
+        _kb._set_worker_pid(conn, tid, 991020)
+        _kb._pid_alive = lambda _pid: False
+
+        touched = _kb.reap_stale_running_workers(conn)
+        assert touched == [tid]
+        assert _kb.reap_stale_running_workers(conn) == []
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "worker_protocol"
+        blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert len(blocked) == 1
+        payload = blocked[0].payload or {}
+        assert set(payload) == {
+            "reason_code", "reason", "kind", "auto_blocked", "trigger",
+            "terminal_event_observed", "exit_kind", "exit_code",
+            "worker_pid", "last_heartbeat_at",
+        }
+        assert payload["reason_code"] == "worker_exited_without_terminal_event"
+        assert payload["trigger"] == "stale_running_backfill"
+        assert payload["exit_kind"] == "unknown"
+        assert payload["exit_code"] is None
+        assert payload["worker_pid"] == 991020
+    finally:
+        _kb._pid_alive = original_alive
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("label", "raw_status"),
+    [
+        pytest.param("nonzero_exit", 7 << 8, id="nonzero-exit"),
+        pytest.param("signaled", 9, id="signaled"),
+        pytest.param("unknown", None, id="unknown"),
+        pytest.param(
+            "rate_limited",
+            kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8,
+            id="rate-limited",
+        ),
+    ],
+)
+def test_expired_nonclean_exit_keeps_recovery_precedence(
+    kanban_home,
+    label,
+    raw_status,
+):
+    """Expired non-clean exits keep the base TTL-reclaim behavior."""
+    import hermes_cli.kanban_db as _kb
+
+    pid_by_kind = {
+        "nonzero_exit": 991040,
+        "signaled": 991041,
+        "unknown": 991042,
+        "rate_limited": 991043,
+    }
+    pid = pid_by_kind[label]
+    conn = kb.connect()
+    original_alive = _kb._pid_alive
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(
+            conn,
+            title=f"expired {label}",
+            assignee="worker",
+            max_retries=99,
+        )
+        assert kb.claim_task(conn, tid, claimer=f"{host}:expired-{label}")
+        _kb._set_worker_pid(conn, tid, pid)
+        _kb._recent_worker_exits.pop(pid, None)
+        if raw_status is not None:
+            _kb._record_worker_exit(pid, raw_status)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, tid),
+        )
+        conn.commit()
+        _kb._pid_alive = lambda _pid: False
+
+        result = _kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: None,
+            max_spawn=0,
+            reconcile_orphans=False,
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.block_kind is None
+        assert task.consecutive_failures == 0
+        assert result.reclaimed == 1
+        assert tid not in result.crashed
+        assert tid not in result.rate_limited
+        assert tid not in result.auto_blocked
+        events = kb.list_events(conn, tid)
+        assert len([event for event in events if event.kind == "reclaimed"]) == 1
+        assert not [
+            event for event in events
+            if event.kind in {"crashed", "rate_limited", "gave_up", "blocked"}
+        ]
+    finally:
+        _kb._recent_worker_exits.pop(pid, None)
+        _kb._pid_alive = original_alive
+        conn.close()
+
+
+def test_foreign_host_candidates_skip_liveness_and_classification(
+    kanban_home,
+    monkeypatch,
+):
+    """Foreign-host candidates are rejected before local PID inspection."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    task_ids = []
+    try:
+        pids = (991050, 991051)
+        for label, pid in zip(("clean", "unknown"), pids):
+            tid = kb.create_task(conn, title=f"foreign {label}", assignee="worker")
+            task_ids.append(tid)
+            assert kb.claim_task(conn, tid, claimer=f"foreign-host:{label}")
+            _kb._set_worker_pid(conn, tid, pid)
+        _kb._record_worker_exit(pids[0], 0)
+        _kb._recent_worker_exits.pop(pids[1], None)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("foreign-host PID must not be inspected")
+
+        monkeypatch.setattr(_kb, "_pid_alive", forbidden)
+        monkeypatch.setattr(_kb, "_classify_worker_exit", forbidden)
+
+        assert _kb.preview_stale_running_workers(conn) == []
+        prepass = getattr(_kb, "_auto_block_clean_exits_before_recovery")
+        assert prepass(conn) == []
+        assert _kb.detect_crashed_workers(conn) == []
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "running"
+    finally:
+        for pid in (991050, 991051):
+            _kb._recent_worker_exits.pop(pid, None)
+        conn.close()
+
+
+def test_live_recycled_pid_skips_autoblock_and_signal(
+    kanban_home,
+    monkeypatch,
+):
+    """A live PID wins over stale clean-exit evidence without signaling."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    pid = 991052
+    signal_attempts = []
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="recycled pid", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer=f"{host}:recycled")
+        _kb._set_worker_pid(conn, tid, pid)
+        _kb._record_worker_exit(pid, 0)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        def forbidden_termination(*args, **kwargs):
+            signal_attempts.append((args, kwargs))
+            raise AssertionError("live/recycled PID must not be signaled")
+
+        monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", forbidden_termination)
+
+        result = _kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: None,
+            max_spawn=0,
+            reconcile_orphans=False,
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.worker_pid == pid
+        assert result.reclaimed == 0
+        assert tid not in result.auto_blocked
+        assert signal_attempts == []
+        events = kb.list_events(conn, tid)
+        assert len([event for event in events if event.kind == "claim_extended"]) == 1
+        assert not [event for event in events if event.kind == "blocked"]
+    finally:
+        _kb._recent_worker_exits.pop(pid, None)
+        conn.close()
+
+
+def test_dispatch_observes_clean_exit_before_expired_claim_reclaim(kanban_home):
+    """An expired claim cannot hide a clean missing-terminal exit from Control A."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    original_alive = _kb._pid_alive
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="expired clean exit", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer=f"{host}:expired")
+        _kb._set_worker_pid(conn, tid, 991026)
+        _kb._record_worker_exit(991026, 0)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, tid),
+        )
+        conn.commit()
+        _kb._pid_alive = lambda _pid: False
+
+        result = _kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: None,
+            max_spawn=0,
+            reconcile_orphans=False,
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "worker_protocol"
+        assert tid in result.auto_blocked
+        assert result.reclaimed == 0
+        assert not [e for e in kb.list_events(conn, tid) if e.kind == "reclaimed"]
+        assert len([e for e in kb.list_events(conn, tid) if e.kind == "blocked"]) == 1
+    finally:
+        _kb._pid_alive = original_alive
+        conn.close()
+
+
+def test_autoblock_skips_run_with_existing_terminal_event(kanban_home):
+    """An observed terminal event wins even if task state is momentarily stale."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="terminal race", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer=f"{host}:race")
+        _kb._set_worker_pid(conn, tid, 991025)
+        observed = kb.get_task(conn, tid)
+        assert observed is not None
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, tid, "completed", {"result_len": 0},
+                run_id=observed.current_run_id,
+            )
+
+        blocked_run = _kb._auto_block_missing_terminal_event(
+            conn,
+            task_id=tid,
+            expected_run_id=observed.current_run_id,
+            expected_pid=991025,
+            expected_claim_lock=observed.claim_lock,
+            last_heartbeat_at=observed.last_heartbeat_at,
+            exit_kind="clean_exit",
+            exit_code=0,
+            trigger="missing_terminal_event",
+        )
+        assert blocked_run is None
+        assert kb.get_task(conn, tid).status == "running"
+        assert not [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+    finally:
+        conn.close()
+
+
+def test_autoblock_compare_and_swap_allows_only_one_writer(kanban_home):
+    """Two contenders for the same observed run produce one transition/event."""
+    import hermes_cli.kanban_db as _kb
+
+    setup = kb.connect()
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(setup, title="race", assignee="worker")
+        task = kb.claim_task(setup, tid, claimer=f"{host}:race")
+        assert task is not None
+        _kb._set_worker_pid(setup, tid, 991030)
+        observed = kb.get_task(setup, tid)
+        expected = {
+            "task_id": tid,
+            "expected_run_id": observed.current_run_id,
+            "expected_pid": 991030,
+            "expected_claim_lock": observed.claim_lock,
+            "last_heartbeat_at": observed.last_heartbeat_at,
+            "exit_kind": "clean_exit",
+            "exit_code": 0,
+            "trigger": "missing_terminal_event",
+        }
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def contender():
+        conn = kb.connect()
+        try:
+            barrier.wait()
+            results.append(_kb._auto_block_missing_terminal_event(conn, **expected))
+        except Exception as exc:  # pragma: no cover - assertion reports detail
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=contender) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert sorted(bool(result) for result in results) == [False, True]
+    verify = kb.connect()
+    try:
+        assert kb.get_task(verify, tid).status == "blocked"
+        assert len([e for e in kb.list_events(verify, tid) if e.kind == "blocked"]) == 1
+        assert len(kb.list_runs(verify, tid)) == 1
+    finally:
+        verify.close()
 
 
 

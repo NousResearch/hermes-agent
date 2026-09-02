@@ -122,6 +122,69 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
     assert "profile_name" in kw
     assert "board" in kw
 
+
+@pytest.mark.parametrize("path", ["dispatcher", "backfill"])
+def test_missing_terminal_hooks_fire_after_committed_block(
+    kanban_home, monkeypatch, path,
+):
+    """Both Control A paths notify observers only after the block commits."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    fired: list[tuple[str, dict, str, int]] = []
+
+    def _capture(hook_name):
+        def callback(**kw):
+            # A fresh connection proves the transition and event were committed
+            # before either observer ran.
+            c2 = sqlite3.connect(kb.kanban_db_path())
+            try:
+                row = c2.execute(
+                    "SELECT status FROM tasks WHERE id = ?", (kw["task_id"],)
+                ).fetchone()
+                event_count = c2.execute(
+                    "SELECT COUNT(*) FROM task_events "
+                    "WHERE task_id = ? AND kind = 'blocked'",
+                    (kw["task_id"],),
+                ).fetchone()[0]
+            finally:
+                c2.close()
+            fired.append((hook_name, kw, row[0], event_count))
+        return callback
+
+    for hook in ("kanban_task_blocked", "on_kanban_worker_exited"):
+        mgr._hooks.setdefault(hook, []).append(_capture(hook))
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title=path, assignee="worker")
+        assert kb.claim_task(conn, tid)
+        pid = 98766 if path == "dispatcher" else 98767
+        kb._set_worker_pid(conn, tid, pid)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        if path == "dispatcher":
+            kb._record_worker_exit(pid, 0)
+            kb.detect_crashed_workers(conn)
+        else:
+            assert kb.reap_stale_running_workers(conn) == [tid]
+    finally:
+        conn.close()
+        mgr._hooks = saved
+
+    assert [entry[0] for entry in fired] == [
+        "kanban_task_blocked", "on_kanban_worker_exited",
+    ]
+    assert all(
+        status == "blocked" and count == 1
+        for _, _, status, count in fired
+    )
+    worker_kw = fired[1][1]
+    assert worker_kw["outcome"] == "blocked"
+    assert worker_kw["retry_status"] == "blocked"
+    assert worker_kw["exit_kind"] == (
+        "clean_exit" if path == "dispatcher" else "unknown"
+    )
+
+
 def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     """A TTL-expired reclaim fires the stale-claim observer post-commit."""
     conn = kb.connect()

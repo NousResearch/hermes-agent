@@ -397,23 +397,71 @@ def _stop_systemd_unit(unit_name: str) -> bool:
 # while ANY process in its cgroup lives (dev servers, browsers, databases a
 # worker double-forked), and ``--collect`` only unloads the unit AFTER it
 # becomes empty.  "Is this worker really gone?" therefore cannot be answered
-# from a PID — the unit's cgroup state is the authority.  ``systemctl show
-# -p ActiveState`` reports exactly that (a scope is ``active`` iff its
-# cgroup is non-empty), which keeps the check shimmable in tests without
-# reaching into cgroupfs.
+# from a PID — and not from ``ActiveState`` alone either: a ``systemctl
+# show`` failure yields no answer at all, and ``deactivating`` means the
+# stop job is still draining the cgroup.  The kernel truth is the unit's
+# ``cgroup.procs`` file: dead means the unit is not loaded AND that file is
+# absent or empty.  Everything else ("unknown", "deactivating", a failed
+# query) is NOT dead — callers keep their claim and retry.
 # ---------------------------------------------------------------------------
 
 _SCOPE_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
 
+# How long ``_stop_systemd_unit_verified`` waits after its SIGKILL
+# escalation before giving up (liveness re-probes every 0.2 s).  A module
+# constant rather than a hardcoded literal so tests can shrink it.
+_SCOPE_STOP_VERIFY_TIMEOUT = 6.0
 
-def _scope_unit_active_state(unit_name: str) -> str:
-    """Return ``"active"``, ``"dead"``, or ``"unknown"`` for a user unit.
+# Worst-case wall clock of one ``_stop_systemd_unit_verified`` call: stop
+# (15 s) + SIGKILL escalation (10 s) + verify loop (6 s).  Callers that
+# must bound their own waits (dispatcher ticks, shutdown joins) use this
+# as the per-unit deadline instead of inventing their own.
+SCOPE_STOP_VERIFY_BOUND_SECONDS = 31.0
 
-    ``"active"`` — the unit's cgroup holds at least one live process
-    (for scopes this is exactly "is anything of this worker alive").
-    ``"dead"`` — unit absent/inactive/failed; nothing is running in it.
-    ``"unknown"`` — systemctl missing, errored, or timed out; callers
-    must fall back to PID-based checks rather than treat this as dead.
+
+def _scope_cgroup_procs_path(
+    unit_name: str, control_group: str = ""
+) -> Optional[str]:
+    """Filesystem path of the unit's ``cgroup.procs`` file.
+
+    ``control_group`` is the ``systemctl show -p ControlGroup`` value
+    (cgroupfs-relative, e.g. ``/user.slice/user-1000.slice/...``); an
+    already-absolute path (real cgroupfs mount, or a test shim's state
+    dir) is honoured as-is.  When empty, fall back to the canonical
+    user-scope location so a unit systemd forgot to report on is still
+    verified.  ``None`` when no path can be formed (non-Linux without a
+    reported ControlGroup) — callers treat that as "unknown", never
+    "dead".
+    """
+    control_group = (control_group or "").strip()
+    if control_group:
+        if control_group.startswith((
+            "/user.slice", "/machine.slice", "/system.slice", "/init.scope",
+            "/user-0.slice",
+        )):
+            # cgroupfs-relative path as systemd reports it.
+            return "/sys/fs/cgroup" + control_group.rstrip("/") + "/cgroup.procs"
+        return control_group.rstrip("/") + "/cgroup.procs"
+    if platform.system() != "Linux" or not hasattr(os, "getuid"):
+        return None
+    uid = os.getuid()
+    return (
+        f"/sys/fs/cgroup/user.slice/user-{uid}.slice/"
+        f"user@{uid}.service/app.slice/{unit_name}/cgroup.procs"
+    )
+
+
+def _scope_unit_liveness(unit_name: str) -> str:
+    """``"alive"`` / ``"dead"`` / ``"unknown"`` — cgroup truth for a unit.
+
+    ``"alive"`` — the unit's cgroup.procs lists at least one pid.
+    ``"dead"`` — VERIFIED: the unit is not loaded (LoadState=not-found)
+    or its cgroup.procs is absent/empty.  Nothing of this unit runs.
+    ``"unknown"`` — systemctl missing/failed/timed out, a load state we
+    cannot interpret, or ActiveState ``deactivating`` (stop job still
+    draining).  Callers must treat unknown as NOT dead: keep the claim,
+    retry, and never release bookkeeping that guards against a
+    duplicate spawn.
     """
     import shutil
 
@@ -422,7 +470,12 @@ def _scope_unit_active_state(unit_name: str) -> str:
         return "unknown"
     try:
         result = subprocess.run(
-            [binary, "--user", "show", unit_name, "--property", "ActiveState"],
+            [
+                binary, "--user", "show", unit_name,
+                "--property", "LoadState",
+                "--property", "ActiveState",
+                "--property", "ControlGroup",
+            ],
             capture_output=True,
             timeout=5,
         )
@@ -431,45 +484,127 @@ def _scope_unit_active_state(unit_name: str) -> str:
         return "unknown"
     if result.returncode != 0:
         return "unknown"
+    props: Dict[str, str] = {}
     for line in (result.stdout or b"").decode(errors="replace").splitlines():
-        if line.startswith("ActiveState="):
-            state = line.partition("=")[2].strip().lower()
-            if state in _SCOPE_ACTIVE_STATES:
-                return "active"
-            if state:
-                return "dead"
-    return "unknown"
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key and key not in props:
+            props[key] = value.strip()
+    load_state = props.get("LoadState", "").lower()
+    active_state = props.get("ActiveState", "").lower()
+    if load_state == "not-found":
+        # The transient unit was never created or has been collected —
+        # nothing can be running in it.
+        return "dead"
+    if load_state != "loaded" or not active_state:
+        # masked/error/garbled — we cannot verify this unit.
+        return "unknown"
+    if active_state == "deactivating":
+        # A stop job is mid-flight: the cgroup is being drained but the
+        # unit is not gone.  NOT dead.
+        return "unknown"
+    procs_path = _scope_cgroup_procs_path(
+        unit_name, props.get("ControlGroup", "")
+    )
+    if procs_path is None:
+        return "unknown"
+    try:
+        with open(procs_path, "r", encoding="utf-8") as f:
+            contents = f.read()
+    except FileNotFoundError:
+        # No cgroup at all = the unit holds nothing.
+        return "dead"
+    except OSError as exc:
+        logger.debug("read %s failed: %s", procs_path, exc)
+        return "unknown"
+    return "alive" if contents.strip() else "dead"
 
 
-def _stop_systemd_unit_verified(unit_name: str) -> bool:
+def _scope_unit_active_state(unit_name: str) -> str:
+    """Return ``"active"``, ``"dead"``, or ``"unknown"`` for a user unit.
+
+    Compat mapping over :func:`_scope_unit_liveness` (cgroup.procs
+    truth): ``active`` means the unit's cgroup holds at least one live
+    process; ``dead`` means the unit is verified gone (not loaded, or
+    cgroup.procs absent/empty); ``unknown`` means the query could not
+    verify either way and callers must fall back to PID-based checks
+    rather than treat this as dead.
+    """
+    liveness = _scope_unit_liveness(unit_name)
+    return {"alive": "active", "dead": "dead"}.get(liveness, "unknown")
+
+
+def _scope_unit_was_created(unit_name: str) -> bool:
+    """True when the transient unit exists or existed on the bus.
+
+    ``systemctl show -p LoadState``: ``not-found`` means systemd never
+    created the unit (a refused ``systemd-run`` launch); ``loaded``
+    means it exists — and stays loaded until ``--collect`` unloads it,
+    so this stays True after a fast worker exit, which is exactly the
+    signal the spawn probe needs to tell "launch refused" from "worker
+    ran and exited".  A failed query also returns True: when we cannot
+    tell, assume the launch happened (the cost of wrongly assuming a
+    refused launch is a duplicate plain-spawn beside a live scope).
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return True
+    try:
+        result = subprocess.run(
+            [binary, "--user", "show", unit_name, "--property", "LoadState"],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user show %s failed: %s", unit_name, exc)
+        return True
+    if result.returncode != 0:
+        return True
+    for line in (result.stdout or b"").decode(errors="replace").splitlines():
+        if line.startswith("LoadState="):
+            return line.partition("=")[2].strip().lower() != "not-found"
+    return True
+
+
+def _stop_systemd_unit_verified(
+    unit_name: str,
+    *,
+    verify_timeout: Optional[float] = None,
+) -> bool:
     """Stop a user unit AND verify its cgroup is actually empty.
 
     Unlike :func:`_stop_systemd_unit` (fire-and-forget, used where the
     caller cannot act on the difference), this escalates to
-    ``systemctl kill --signal=SIGKILL`` when the unit is still active
-    after the stop, and returns True only once the unit is verified
-    dead.  A ``systemctl stop`` client timeout does NOT mean the unit
-    died: the stop job may still be running server-side, so callers
-    must treat a False return as "still stopping" — retry next tick,
-    never assume success and release bookkeeping that guards against a
-    duplicate spawn.
+    ``systemctl kill --signal=SIGKILL`` when the unit is not verified
+    dead after the stop — including a ``systemctl stop`` client timeout,
+    which does NOT mean the unit died (the stop job may still be running
+    server-side) — and returns True only once liveness is verified dead.
+    Callers must treat a False return as "still stopping": retry next
+    tick, never assume success and release bookkeeping that guards
+    against a duplicate spawn.
+
+    Worst case one call takes about ``SCOPE_STOP_VERIFY_BOUND_SECONDS``
+    (stop + SIGKILL + verify loop); anything that cannot afford that
+    must hand the unit to a background stopper instead of calling this
+    synchronously (the kanban dispatcher's scope-stop service does).
     """
     import shutil
 
     binary = shutil.which("systemctl")
     if binary is None:
         return False
-    if not _stop_systemd_unit(unit_name):
-        # The stop command itself failed.  Distinguish "nothing to stop"
-        # (already gone — _stop_systemd_unit returns True for that) from a
-        # genuine failure by asking the unit state directly.
-        state = _scope_unit_active_state(unit_name)
-        return state == "dead"
-    if _scope_unit_active_state(unit_name) != "active":
+    # Fire the stop; its return value is only a hint.  A non-zero exit
+    # with "not loaded" means already gone, and liveness below confirms
+    # that; anything else (including a client timeout) leaves the real
+    # verdict to the liveness checks that follow.
+    _stop_systemd_unit(unit_name)
+    if _scope_unit_liveness(unit_name) == "dead":
         return True
-    # Still active (slow descendants, stop timeout consumed by a stubborn
-    # child).  Escalate: SIGKILL every process in the unit's cgroup, then
-    # re-verify.
+    # Not verified dead (slow descendants, a wedged stop job draining
+    # the cgroup, or an unreachable bus).  Escalate: SIGKILL every
+    # process in the unit's cgroup, then re-verify until the deadline.
     try:
         subprocess.run(
             [binary, "--user", "kill", "--signal=SIGKILL", unit_name],
@@ -479,8 +614,10 @@ def _stop_systemd_unit_verified(unit_name: str) -> bool:
     except Exception as exc:
         logger.debug("systemctl --user kill %s failed: %s", unit_name, exc)
         return False
-    for _ in range(5):
-        if _scope_unit_active_state(unit_name) != "active":
+    timeout = _SCOPE_STOP_VERIFY_TIMEOUT if verify_timeout is None else verify_timeout
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _scope_unit_liveness(unit_name) == "dead":
             return True
         time.sleep(0.2)
     logger.warning(

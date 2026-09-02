@@ -61,11 +61,16 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 # Shared state layout (root passed via HERMES_KANBAN_TEST_SHIM_STATE):
-#   units/<unit>.json    {"pids": [...], "argv": [...]} — the unit's cgroup
+#   units/<unit>.json    {"pids": [...], "argv": [...]} — unit EXISTS on
+#                        the bus (LoadState=loaded) while this file lives
+#   cgroup/<unit>/cgroup.procs  the unit's cgroup LIVE pids, refreshed on
+#                        every mutation and every show (the kernel drops
+#                        dead pids from the real file automatically)
 #   sticky/<unit>        extra pid(s) counted in the unit's liveness
 #                        (a "leaked descendant" that ignores SIGTERM)
 #   killproof/<unit>     stop/kill refuse to complete for this unit
 #                        (a hung stop job: unit stays active)
+#   deactivating/<unit>  ActiveState=deactivating (stop job draining)
 #   fail_next            integer countdown: systemd-run refuses N launches
 #   stops.jsonl          every stop/kill invocation, for assertions
 _SYSTEMD_RUN_SHIM = f'''#!{sys.executable}
@@ -185,6 +190,10 @@ def killproof(unit):
     return os.path.exists(os.path.join(STATE, "killproof", unit))
 
 
+def deactivating(unit):
+    return os.path.exists(os.path.join(STATE, "deactivating", unit))
+
+
 def unit_pids(unit):
     data = load(unit)
     return (list(data.get("pids", [])) if data else []) + sticky_pids(unit)
@@ -198,11 +207,25 @@ def alive(pid):
         return False
 
 
+def refresh_cgroup(unit):
+    # cgroup.procs lists LIVE pids only (the kernel drops dead ones). A
+    # unit that was never created (no json) has no cgroup at all.
+    if load(unit) is None:
+        return
+    d = os.path.join(STATE, "cgroup", unit)
+    os.makedirs(d, exist_ok=True)
+    live = [p for p in unit_pids(unit) if alive(p)]
+    with open(os.path.join(d, "cgroup.procs"), "w") as f:
+        f.write("".join(str(p) + "\\n" for p in live))
+
+
 def state_of(unit):
     # A scope is active iff its cgroup holds a live process (or the stop
     # job is wedged — killproof).
     if killproof(unit):
         return "active"
+    if deactivating(unit):
+        return "deactivating"
     if any(alive(p) for p in unit_pids(unit)):
         return "active"
     return "inactive"
@@ -214,7 +237,16 @@ if argv and argv[0] == "--user":
 op = argv[0]
 
 if op == "show":
-    print("ActiveState=" + state_of(argv[1]))
+    unit = argv[1]
+    if load(unit) is None:
+        print("LoadState=not-found")
+        print("ActiveState=inactive")
+        print("ControlGroup=")
+    else:
+        refresh_cgroup(unit)
+        print("LoadState=loaded")
+        print("ActiveState=" + state_of(unit))
+        print("ControlGroup=" + os.path.join(STATE, "cgroup", unit))
     sys.exit(0)
 
 if op == "stop":
@@ -242,6 +274,7 @@ if op == "stop":
         data["pids"] = []
         save(unit, data)
         # Sticky pids that died still count until kill clears them.
+    refresh_cgroup(unit)
     sys.exit(0)
 
 if op == "kill":
@@ -260,6 +293,7 @@ if op == "kill":
     time.sleep(0.05)
     data["pids"] = [p for p in data.get("pids", []) if alive(p)]
     save(unit, data)
+    refresh_cgroup(unit)
     sys.exit(0)
 
 if op == "list-units":
@@ -304,6 +338,13 @@ class Shims:
         d = self.root / "units"
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{unit}.json").write_text(json.dumps({"pids": pids}))
+        # Creating the unit creates its cgroup with those pids in it
+        # (the shim's show/stop/kill keep the file fresh after this).
+        cg = self.root / "cgroup" / unit
+        cg.mkdir(parents=True, exist_ok=True)
+        (cg / "cgroup.procs").write_text(
+            "".join(f"{p}\n" for p in pids)
+        )
 
     def stops(self) -> list[dict]:
         try:
@@ -311,6 +352,18 @@ class Shims:
                 json.loads(line)
                 for line in (self.root / "stops.jsonl").read_text().splitlines()
                 if line.strip()
+            ]
+        except OSError:
+            return []
+
+    def cgroup_pids(self, unit: str) -> list[int]:
+        """The unit's cgroup.procs contents (live pids after last refresh)."""
+        try:
+            return [
+                int(x)
+                for x in (
+                    self.root / "cgroup" / unit / "cgroup.procs"
+                ).read_text().split()
             ]
         except OSError:
             return []
@@ -326,6 +379,15 @@ class Shims:
 
     def clear_killproof(self, unit: str) -> None:
         (self.root / "killproof" / unit).unlink(missing_ok=True)
+
+    def arm_deactivating(self, unit: str) -> None:
+        """Model a stop job mid-flight: ActiveState=deactivating."""
+        d = self.root / "deactivating"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / unit).write_text("1")
+
+    def clear_deactivating(self, unit: str) -> None:
+        (self.root / "deactivating" / unit).unlink(missing_ok=True)
 
     def arm_sticky(self, unit: str, pid: int) -> None:
         d = self.root / "sticky"
@@ -408,7 +470,13 @@ def shims(tmp_path, monkeypatch):
         kb, "_resolve_hermes_argv",
         lambda: [sys.executable, "-c", "import time; time.sleep(120)"],
     )
-    # Keep the launch-probe window short — the shims fail/succeed fast.
+    # Shrink the post-SIGKILL verify loop so wedged-stop tests stay fast.
+    monkeypatch.setattr(
+        "tools.process_registry._SCOPE_STOP_VERIFY_TIMEOUT", 0.5,
+    )
+    # Keep the launch-probe window short until the spawn path learns to
+    # exit it early (see test_default_spawn_*): the shims fail/succeed
+    # well inside a second.
     monkeypatch.setattr(kb, "WORKER_SPAWN_PROBE_SECONDS", 1.0)
     handle = Shims(root, bin_dir)
     yield handle
@@ -1115,6 +1183,81 @@ def test_unscoped_rows_are_normalized_not_failed(shims, conn):
 # ---------------------------------------------------------------------------
 # Verified stops + deferral when the stop cannot be confirmed
 # ---------------------------------------------------------------------------
+
+def test_scope_liveness_is_cgroup_procs_truth(shims):
+    """Alive/dead comes from the unit's cgroup.procs, not ActiveState
+    alone: a live pid → alive; the pid dying (kernel drops it from the
+    cgroup) → dead even though the unit is still loaded; a unit that was
+    never created (LoadState=not-found) → dead."""
+    from tools import process_registry as pr
+
+    never = kb._kanban_worker_scope_unit("t_never", 1)
+    assert pr._scope_unit_liveness(never) == "dead"
+    assert pr._scope_unit_active_state(never) == "dead"
+
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_cg", 1)
+    shims.write_unit(unit, [pid])
+    assert pid in shims.cgroup_pids(unit)
+    assert pr._scope_unit_liveness(unit) == "alive"
+    assert pr._scope_unit_active_state(unit) == "active"
+
+    # The pid dies outside any stop: the cgroup empties, the unit stays
+    # loaded — still dead, because pids are the truth.
+    os.kill(pid, signal.SIGKILL)
+    assert shims.wait_for(
+        lambda: pr._scope_unit_liveness(unit) == "dead"
+    ), "kernel-dropped pid must read as dead via cgroup.procs"
+
+
+def test_scope_liveness_deactivating_and_query_failure_are_not_dead(shims):
+    """ActiveState=deactivating (stop job draining) and an unreachable
+    systemctl are 'unknown' — never 'dead': releasing a claim on either
+    would let the dispatcher spawn beside a still-draining scope."""
+    from tools import process_registry as pr
+
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_drain", 1)
+    shims.write_unit(unit, [pid])
+    shims.arm_deactivating(unit)
+    assert pr._scope_unit_liveness(unit) == "unknown"
+    assert pr._scope_unit_active_state(unit) == "unknown"
+
+    # systemctl gone entirely (a wedged user bus): unknown, and the
+    # verified stop reports failure instead of assuming success.
+    real_which = shutil.which
+
+    def no_systemctl(name, *args, **kwargs):
+        return None if name == "systemctl" else real_which(name, *args, **kwargs)
+
+    shims.clear_deactivating(unit)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(shutil, "which", no_systemctl)
+    try:
+        assert pr._scope_unit_liveness(unit) == "unknown"
+        assert pr._stop_systemd_unit_verified(unit) is False
+    finally:
+        monkey.undo()
+
+
+def test_verified_stop_escalates_to_sigkill_on_stop_timeout(shims):
+    """A SIGTERM-immune descendant (the stop "times out" server-side)
+    forces the SIGKILL escalation, and the stop is only confirmed once
+    the cgroup is actually empty."""
+    from tools import process_registry as pr
+
+    stubborn = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_stubborn", 1)
+    shims.write_unit(unit, [stubborn])
+
+    assert pr._stop_systemd_unit_verified(unit) is True
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions[0] == "stop" and "kill" in actions
+    assert shims.wait_for(lambda: not kb._pid_alive(stubborn)), (
+        "SIGKILL escalation must reap the SIGTERM-immune descendant"
+    )
+    assert not shims.cgroup_pids(unit)
+
 
 def test_release_stale_claims_stops_worker_scope(shims, conn):
     """TTL-expired reclaim of a scoped worker stops the whole unit before

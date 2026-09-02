@@ -9765,8 +9765,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
-    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> int:
-        """Stage any orphaned FIFO overflow into the pending slot (#99882).
+    def _rescue_orphaned_overflow(
+        self, session_key: str, adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Pop the oldest orphaned FIFO overflow event for an idle session (#99882).
 
         The FIFO overflow (``queued_events``) drains only at the post-turn
         promotion site (``_promote_queued_event`` inside the ``_run_agent``
@@ -9781,29 +9783,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This rescue runs at the point where a NEW event arrives for a
         session that is NOT busy (the idle entry in
         ``_process_message_priority``).  If the session went idle with a
-        populated overflow, the orphaned events are re-staged in FIFO
-        order ahead of the incoming event's own enqueue, so arrival order
-        (#28503) is preserved: the orphaned follow-ups run first, then the
-        new message.  The slot must be empty at this point (the session is
-        idle), so staging is a plain slot assignment.
+        populated overflow, the oldest orphan is returned so the caller runs
+        it as THIS turn, and the next orphan (if any) is staged into the
+        slot so the post-turn drain continues the chain in arrival order
+        (#28503).  The caller then enqueues the incoming event behind the
+        chain via ``_enqueue_fifo``.
 
-        Returns the number of orphaned events re-staged (0 when none).
+        The returned event is REMOVED from both stores: leaving it in the
+        slot while it also runs as the current turn would make the post-turn
+        ``_dequeue_pending_event`` run it a second time.
+
+        Returns the orphaned event to run now, or ``None`` when there is
+        nothing to rescue (no overflow, slot occupied, or no slot storage).
         """
         try:
             _q_state = self._peek_session_state(session_key)
             overflow = _q_state.conversation.queued_events if _q_state else None
             if not overflow:
-                return 0
+                return None
             pending_slot = getattr(adapter, "_pending_messages", None)
             if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
                 # Slot occupied (busy) or no slot storage — promotion owns
                 # this; do not fight it from the idle path.
-                return 0
-            # Only stage ONE orphan into the slot — the remaining overflow
-            # stays queued and will drain via the normal
-            # _promote_queued_event post-turn promotion.  Staging more than
-            # one would clobber the slot (single-slot design).
-            pending_slot[session_key] = overflow.pop(0)
+                return None
+            head = overflow.pop(0)
+            # Keep the slot occupied for the rest of the chain so the drain
+            # promotes in order and any mid-chain arrival routes to overflow
+            # instead of jumping the queue (same invariant as the drain's
+            # own _promote_queued_event).  Only ONE event fits the slot.
+            if overflow:
+                pending_slot[session_key] = overflow.pop(0)
             logger.warning(
                 "Rescued orphaned FIFO overflow event for idle session "
                 "%s — it was queued during a busy window but the post-turn "
@@ -9817,10 +9826,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     len(overflow),
                     session_key,
                 )
-            return 1
+            return head
         except Exception:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
-            return 0
+            return None
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -19787,27 +19796,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _orphan_adapter is not None
                 and not bool(getattr(event, "internal", False))
                 and not event.get_command()
-                and self._queue_depth(
-                    _quick_key, adapter=_orphan_adapter
-                ) >= 1
-                and not _orphan_adapter._pending_messages.get(_quick_key)
             ):
                 _rescued = self._rescue_orphaned_overflow(
                     _quick_key, _orphan_adapter
                 )
-                if _rescued:
-                    # Orphans staged in the slot; park the incoming event
-                    # behind them in the overflow so it runs AFTER the
-                    # rescued chain (FIFO).
-                    _head = _orphan_adapter._pending_messages.get(_quick_key)
-                    if _head is not None:
-                        # The slot head runs as this turn via the loop
-                        # below; enqueue the incoming event into overflow.
-                        self._session_state(_quick_key).conversation.queued_events.append(
-                            event
-                        )
-                        # Swap: this turn now processes the oldest orphan.
-                        event = _head
+                if _rescued is not None:
+                    # The oldest orphan runs as THIS turn.  Park the
+                    # incoming event behind the rest of the chain: into the
+                    # slot when the chain was a single orphan (so the
+                    # post-turn drain picks it up), otherwise into overflow
+                    # behind the already-staged next orphan (FIFO).
+                    self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+                    event = _rescued
+                    # Same session key by construction; carry the orphan's
+                    # own source so reply anchors / thread metadata point
+                    # at the message that is actually being answered.
+                    _rescued_source = getattr(_rescued, "source", None)
+                    if _rescued_source is not None:
+                        source = _rescued_source
+                    is_internal = bool(getattr(_rescued, "internal", False))
         except Exception:
             logger.debug(
                 "FIFO orphan rescue pre-claim failed for %s",

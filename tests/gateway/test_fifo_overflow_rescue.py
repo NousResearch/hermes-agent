@@ -5,18 +5,16 @@ it lands in SessionState.conversation.queued_events (overflow) with
 the current turn's event occupying adapter._pending_messages[session_key]
 (slot).  After the slot's turn completes, _promote_queued_event moves
 the overflow head into the slot.  When that drain never runs — the
-compression window ended through an exit that skipped the promotion
-site — the overflow is silently orphaned: never dispatched, never
-persisted, never logged.
+busy window ended through an exit that skipped the promotion site
+(/stop, turn exception, generation bump) — the overflow is silently
+orphaned: never dispatched, never persisted, never logged.
 
-The rescue in GatewayRunner._rescue_orphaned_overflow stages one orphan
-into the slot on the next idle arrival, so FIFO order (#28503) holds.
+The rescue in GatewayRunner._rescue_orphaned_overflow pops the oldest
+orphan for the caller to run as the current turn and stages the next
+orphan in the slot, so FIFO order (#28503) holds and nothing runs twice.
 """
 
-import asyncio
 from unittest.mock import MagicMock
-
-import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -56,33 +54,47 @@ def _text_event(text: str, msg_id: str) -> MessageEvent:
     )
 
 
+def _runner() -> GatewayRunner:
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._queued_events = {}
+    return runner
+
+
 class TestRescueOrphanedOverflow:
-    def test_moves_overflow_head_to_empty_slot(self):
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
-        # Minimal session_state with queued_events
+    def test_single_orphan_is_returned_and_removed_from_both_stores(self):
+        runner = _runner()
         adapter = _StubAdapter()
         session_key = "telegram:user:1"
-        # Two overflow items orphaned after slot turn completed
-        runner._session_state(session_key).conversation.queued_events.extend(
-            [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
+        runner._session_state(session_key).conversation.queued_events.append(
+            _text_event("orphan-1", "o1")
         )
-        # Slot empty (session went idle)
         assert session_key not in adapter._pending_messages
 
         rescued = runner._rescue_orphaned_overflow(session_key, adapter)
 
-        assert rescued == 1
-        # Slot now holds the oldest orphan
-        assert adapter._pending_messages[session_key].text == "orphan-1"
-        # Remaining orphan stays in overflow
-        overflow = runner._session_state(session_key).conversation.queued_events
-        assert len(overflow) == 1
-        assert overflow[0].text == "orphan-2"
+        assert rescued is not None and rescued.text == "orphan-1"
+        # The rescued event runs as the current turn, so it must NOT also
+        # sit in the slot — the post-turn drain would run it a second time.
+        assert session_key not in adapter._pending_messages
+        assert runner._session_state(session_key).conversation.queued_events == []
+
+    def test_two_orphans_return_oldest_and_stage_next_in_slot(self):
+        runner = _runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:1b"
+        runner._session_state(session_key).conversation.queued_events.extend(
+            [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
+        )
+
+        rescued = runner._rescue_orphaned_overflow(session_key, adapter)
+
+        assert rescued is not None and rescued.text == "orphan-1"
+        # Slot now holds the NEXT orphan so the drain continues the chain.
+        assert adapter._pending_messages[session_key].text == "orphan-2"
+        assert runner._session_state(session_key).conversation.queued_events == []
 
     def test_noop_when_slot_occupied(self):
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
+        runner = _runner()
         adapter = _StubAdapter()
         session_key = "telegram:user:2"
         runner._session_state(session_key).conversation.queued_events.append(
@@ -92,41 +104,56 @@ class TestRescueOrphanedOverflow:
 
         rescued = runner._rescue_orphaned_overflow(session_key, adapter)
 
-        assert rescued == 0
+        assert rescued is None
         assert adapter._pending_messages[session_key].text == "busy-slot"
         assert len(runner._session_state(session_key).conversation.queued_events) == 1
 
     def test_noop_when_no_overflow(self):
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
+        runner = _runner()
         adapter = _StubAdapter()
         session_key = "telegram:user:3"
 
         rescued = runner._rescue_orphaned_overflow(session_key, adapter)
 
-        assert rescued == 0
+        assert rescued is None
         assert session_key not in adapter._pending_messages
 
     def test_fifo_order_preserved_across_rescue_and_new_message(self):
-        """Oldest orphan runs first, new arrival last — FIFO (#28503)."""
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
+        """Oldest orphan runs first, new arrival last — FIFO (#28503).
+
+        Mirrors the idle-arrival call site: rescue → _enqueue_fifo(new).
+        """
+        runner = _runner()
         adapter = _StubAdapter()
         session_key = "telegram:user:4"
-
-        # Two orphans from the lost window
         runner._session_state(session_key).conversation.queued_events.extend(
             [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
         )
 
-        # New message arrives for idle session — rescue stages orphan-1
         rescued = runner._rescue_orphaned_overflow(session_key, adapter)
-        assert rescued == 1
-        # Simulate the caller enqueueing the new message behind the rescued chain
-        new_event = _text_event("new-msg", "new1")
-        runner._session_state(session_key).conversation.queued_events.append(new_event)
+        assert rescued is not None and rescued.text == "orphan-1"
+        runner._enqueue_fifo(session_key, _text_event("new-msg", "new1"), adapter)
 
-        # Drain order: slot (orphan-1), then overflow[0] (orphan-2), then new-msg
-        assert adapter._pending_messages[session_key].text == "orphan-1"
-        overflow_texts = [e.text for e in runner._session_state(session_key).conversation.queued_events]
-        assert overflow_texts == ["orphan-2", "new-msg"]
+        # Drain order after this turn: slot (orphan-2), then overflow (new-msg)
+        assert adapter._pending_messages[session_key].text == "orphan-2"
+        overflow_texts = [
+            e.text for e in runner._session_state(session_key).conversation.queued_events
+        ]
+        assert overflow_texts == ["new-msg"]
+
+    def test_single_orphan_then_new_message_lands_in_slot(self):
+        """With one orphan the slot is free after rescue, so the incoming
+        message must go to the slot (not overflow) or the drain never sees it."""
+        runner = _runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:5"
+        runner._session_state(session_key).conversation.queued_events.append(
+            _text_event("orphan-1", "o1")
+        )
+
+        rescued = runner._rescue_orphaned_overflow(session_key, adapter)
+        assert rescued is not None and rescued.text == "orphan-1"
+        runner._enqueue_fifo(session_key, _text_event("new-msg", "new1"), adapter)
+
+        assert adapter._pending_messages[session_key].text == "new-msg"
+        assert runner._session_state(session_key).conversation.queued_events == []

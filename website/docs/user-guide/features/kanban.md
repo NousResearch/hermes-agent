@@ -424,6 +424,22 @@ streak — and a per-task `max_retries` overrides the bound. This usually means
 the model wrote a plain-text answer and exited without using the Kanban tool
 surface.
 
+**Goal-mode auto-recovery (retro t_16a245cc):** When a `goal_mode=true` task
+hits a streak of clean-exit protocol violations, the dispatcher spawns a
+**single-shot recovery card** with `goal_mode=false` and an explicit
+"close the original" body, then blocks the original with `needs_input` so the
+violation counter stops accumulating. The threshold defaults to 2 violations
+(override via `HERMES_KANBAN_GOAL_RECOVERY_STREAK`) — one less than the
+breaker trip — so the recovery card is the canonical forward path before the
+unified breaker ever trips. The recovery card inherits the original's
+`assignee`, `branch_name`, `workspace_kind`, and `project_id` so the worker
+lands in the same git tree. `idempotency_key="goal-mode-recovery:<original>"`
+keeps re-runs of the dispatcher safe (no duplicate recovery cards), and a
+`created_by="system:goal-mode-recovery"` marker refuses recovery-of-recovery
+so the helper cannot loop on itself. The recovery card emits a
+`goal_mode_recovery_spawned` event on the original with `recovery_id`,
+`streak`, and `limit` for board-UI wiring.
+
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
 ### Pinning extra skills to a specific task

@@ -5458,6 +5458,53 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    async def send_notification(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send operational notices through the dedicated SoLo Hermes bot.
+
+        Operational delivery is deliberately fail-closed: the connected
+        conversation bot is never a permissible fallback for cron receipts.
+        """
+        if str(chat_id) != "8148316720":
+            return SendResult(success=False, error="operational Telegram target is not canonical")
+
+        try:
+            from agent.secret_scope import get_secret
+
+            token = (get_secret("SOLO_HERMES_BOT_TOKEN", "") or "").strip()
+        except Exception:
+            token = ""
+        if not token:
+            return SendResult(
+                success=False,
+                error="SOLO_HERMES_BOT_TOKEN is required for operational Telegram delivery",
+            )
+
+        from tools.send_message_tool import _send_telegram
+
+        result = await _send_telegram(
+            token,
+            chat_id,
+            content,
+            thread_id=None,
+            disable_link_previews=self._disable_link_previews,
+            include_sender_proof=True,
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=(
+                str(result.get("message_id"))
+                if result.get("message_id") is not None
+                else None
+            ),
+            error=result.get("error"),
+            notification_proof=result.get("notification_proof"),
+        )
     async def send(
         self,
         chat_id: str,
@@ -11192,12 +11239,25 @@ async def _standalone_send(
     deliver=telegram cron jobs succeed when cron runs separately from the
     gateway."""
     token = getattr(pconfig, "token", None)
-    if not token:
-        # Profile-scoped read: honor the secret scope's verdict rather than
-        # borrowing another profile's env-bridged token under multiplex.
+    # Operational delivery is never permitted to use the conversation token.
+    try:
         from agent.secret_scope import get_secret
 
-        token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
+        token = (get_secret("SOLO_HERMES_BOT_TOKEN", "") or "").strip()
+    except Exception:
+        token = ""
+    if str(chat_id) != "8148316720":
+        return {"success": False, "error": "operational Telegram target is not canonical"}
+    if not token:
+        return {
+            "success": False,
+            "error": (
+                "No Telegram bot token configured. Set SOLO_HERMES_BOT_TOKEN "
+                "for operational/cron notifications."
+            ),
+        }
+
+
     disable_link_previews = bool(
         getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")
     )
@@ -11207,9 +11267,10 @@ async def _standalone_send(
         chat_id,
         message,
         media_files=media_files,
-        thread_id=thread_id,
+        thread_id=None,
         disable_link_previews=disable_link_previews,
         force_document=force_document,
+        include_sender_proof=True,
     )
 
 

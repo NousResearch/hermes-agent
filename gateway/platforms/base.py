@@ -2686,6 +2686,7 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+
     # Adapter-specific metadata.  Cross-layer contracts that affect delivery
     # semantics must be documented at the producer and consumer sites.  Current
     # known contract: Telegram edit overflow partials set
@@ -2711,6 +2712,10 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # Verified sender/target identity for operational notifications.  This is
+    # intentionally structured result metadata so delivery consumers can retain
+    # proof instead of losing it while converting the standalone sender dict.
+    notification_proof: Optional[dict] = None
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every

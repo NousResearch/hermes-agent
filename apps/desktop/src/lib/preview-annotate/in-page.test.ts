@@ -258,9 +258,7 @@ describe('annotateInPage overlay', () => {
 
     expect(pins().style.display).toBe('none')
     // The draft's own marker must survive — it is the point of the crop.
-    expect(
-      (shadow.querySelector('[data-annotate-outline="draft"]') as HTMLElement).style.display
-    ).toBe('block')
+    expect((shadow.querySelector('[data-annotate-outline="draft"]') as HTMLElement).style.display).toBe('block')
 
     api.endCapture()
 

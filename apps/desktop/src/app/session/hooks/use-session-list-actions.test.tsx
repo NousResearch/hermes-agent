@@ -216,6 +216,57 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
+  it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {
+    // Backend contract on disk I/O / lock: HTTP 200, recents=[], errors=[{profile}].
+    // mergeSessionPage only keeps working/pinned/selected, so Yesterday/This-week
+    // idle rows must be carried forward from the previous list — not clobbered.
+    const idle = [row('yesterday'), row('week')]
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: idle }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+
+    setSessionProfilesTruncated({ default: true })
+    setSessionProfilesUsage({ default: { cost_usd: 3, tokens: 30 } })
+    setMessagingTruncated(true)
+
+    listSidebarSessions.mockResolvedValue({
+      ...sidebar({ sessions: [] }),
+      errors: [{ error: 'disk I/O error', profile: 'default' }]
+    })
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+    expect($sessionProfilesTruncated.get()).toEqual({ default: true })
+    expect($sessionProfilesUsage.get()).toEqual({ default: { cost_usd: 3, tokens: 30 } })
+    expect($messagingTruncated.get()).toBe(true)
+  })
+
+  it('still accepts a genuine empty recents page when the backend reported no errors', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get()).toEqual([])
+  })
+
   it('drops tombstoned rows from the messaging slice and per-platform paging too (#50928)', async () => {
     // The same delete race exists on every ingestion point: the batched
     // refresh's messaging slice and the per-platform "load more" pager must

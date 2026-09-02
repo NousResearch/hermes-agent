@@ -24,7 +24,9 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  carryForwardFailedProfileSessions,
   CRON_SECTION_LIMIT,
+  keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -198,7 +200,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
-        ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
+        ...mergeSessionPage(
+          prev.filter(inPlatform),
+          carryForwardFailedProfileSessions(prev.filter(inPlatform), incoming, result.errors),
+          sessionsToKeep()
+        )
       ])
 
       const total = result.total ?? incoming.length
@@ -282,13 +288,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // in-flight mutation and the backend page still carries the doomed row.
           // Honoring the optimistic tombstone keeps the removal from flashing back
           // (the tombstone self-clears once projects.tree confirms the delete).
-          const incoming = dropTombstoned(recents.sessions)
-
           // Signature-gate the swap (same pattern as cron/messaging): a refresh
           // that returns content-identical rows must keep the previous array
           // identity, or every sidebar memo keyed on $sessions recomputes and the
           // whole list re-renders once per turn/broadcast for nothing.
           setSessions(prev => {
+            const incoming = dropTombstoned(
+              carryForwardFailedProfileSessions(
+                prev,
+                recents.sessions ?? [],
+                recents.errors ?? result.errors
+              )
+            )
+
             const next = mergeSessionPage(prev, incoming, sessionsToKeep())
 
             return sameCronSignature(prev, next) ? prev : next
@@ -298,8 +310,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // top of the rows it already read (the old exact totals ran a COUNT(*)
           // per profile DB on every refresh). Reference-stable when unchanged so
           // the sidebar's group memos don't recompute per refresh.
+          const recentsErrors = recents.errors ?? result.errors
           setSessionProfilesTruncated(prev => {
-            const next = recents.profiles_truncated ?? {}
+            const next = keepFailedProfileMeta(prev, recents.profiles_truncated ?? {}, recentsErrors)
             const prevKeys = Object.keys(prev)
 
             return prevKeys.length === Object.keys(next).length && prevKeys.every(key => prev[key] === next[key])
@@ -309,7 +322,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // Same identity gate: these totals only move when a session bills, and
           // a fresh object every refresh would repaint every profile header.
           setSessionProfilesUsage(prev => {
-            const next = recents.profiles_usage ?? {}
+            const next = keepFailedProfileMeta(prev, recents.profiles_usage ?? {}, recentsErrors)
             const prevKeys = Object.keys(prev)
 
             return prevKeys.length === Object.keys(next).length &&
@@ -322,16 +335,35 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
           // Cron section: latest N cron sessions (kept so a pinned cron run still
           // resolves via sessionByAnyId), signature-gated like above.
-          setCronSessions(prev => (sameCronSignature(prev, result.cron.sessions) ? prev : result.cron.sessions))
+          setCronSessions(prev => {
+            const incoming = carryForwardFailedProfileSessions(
+              prev,
+              result.cron.sessions ?? [],
+              result.cron.errors ?? result.errors
+            )
+
+            return sameCronSignature(prev, incoming) ? prev : incoming
+          })
 
           // Messaging sections: drop any non-messaging source the broad exclude
           // didn't catch (custom sources stay in local recents), then split per
           // platform in the UI.
-          const messagingRows = dropTombstoned(result.messaging.sessions.filter(s => isMessagingSource(s.source)))
+          const messagingErrors = result.messaging.errors ?? result.errors
+          setMessagingSessions(prev => {
+            const messagingRows = dropTombstoned(
+              carryForwardFailedProfileSessions(
+                prev,
+                (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
+                messagingErrors
+              )
+            )
 
-          setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
+            return sameCronSignature(prev, messagingRows) ? prev : messagingRows
+          })
           // Hit the cap → at least one platform may have more on disk than loaded.
-          setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
+          setMessagingTruncated(prev =>
+            messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
+          )
         }
       } finally {
         // Request identity preserves the zero-argument refresh contract across a

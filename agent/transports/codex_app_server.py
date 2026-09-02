@@ -187,6 +187,7 @@ class CodexAppServerClient:
         if self._closed:
             return
         self._closed = True
+        self._fail_pending_requests("codex app-server client is closing")
         try:
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -200,6 +201,28 @@ class CodexAppServerClient:
                 self._proc.kill()
                 self._proc.wait(timeout=1.0)
             except Exception:
+                pass
+
+    def _fail_pending_requests(self, reason: str) -> None:
+        """Unblock every thread currently sitting in request() instead of
+        leaving them to ride out their own per-call timeout (up to 30s by
+        default) after the transport they're waiting on has already died.
+        Mirrors _read_stdout's own pop-then-deliver dispatch under the same
+        lock, so a reply that lands at the exact same moment still wins the
+        race cleanly instead of being dropped or double-delivered."""
+        with self._pending_lock:
+            pending_items = list(self._pending.items())
+            self._pending.clear()
+        if not pending_items:
+            return
+        synthetic = {"error": {"code": -32000, "message": reason}}
+        for _rid, pending in pending_items:
+            try:
+                pending.queue.put_nowait(synthetic)
+            except queue.Full:
+                # A real reply already landed in this queue at the same
+                # moment (the reader thread raced us) — the blocked
+                # request() call gets that instead, which is fine.
                 pass
 
     def __enter__(self) -> "CodexAppServerClient":

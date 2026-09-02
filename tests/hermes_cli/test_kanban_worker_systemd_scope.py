@@ -2782,6 +2782,65 @@ def test_reap_sweep_escalates_a_wedged_deactivating_orphan(shims, conn):
     )
 
 
+def test_dispatch_tick_at_concurrency_cap_still_sweeps_orphan_scopes(
+    shims, conn,
+):
+    """T: the cap guards return before the spawn loops, but the orphan
+    scope audit must still fire — under sustained caps the tick used to
+    return at the first guard and leaked scopes persisted indefinitely."""
+    spawns: list[str] = []
+
+    def never_spawn(task, workspace, board):
+        spawns.append(task.id)
+        return None
+
+    orphan_pid = shims.sleeper()
+    orphan_unit = kb._kanban_worker_scope_unit("t_cap_orphan", 1)
+    shims.write_unit(orphan_unit, [orphan_pid])
+    live_pid = shims.sleeper()
+    live_unit = kb._kanban_worker_scope_unit("t_cap_live", 1)
+    shims.write_unit(live_unit, [live_pid])
+    tid = _scoped_task_row(conn, scope=live_unit, pid=live_pid)
+
+    result = kb._dispatch_once_locked(
+        conn, spawn_fn=never_spawn, max_spawn=1,  # running_count == cap
+    )
+
+    assert spawns == []                       # the cap held
+    assert result.scopes_reaped == [orphan_unit]  # but the audit ran
+    assert shims.wait_for(lambda: not kb._pid_alive(orphan_pid))
+    assert kb._pid_alive(live_pid)            # the claimed worker survives
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] == "running"
+
+
+def test_dispatch_tick_under_critical_pressure_still_sweeps_orphan_scopes(
+    shims, conn, monkeypatch,
+):
+    """T, the other early return: critical memory pressure stands the
+    spawn side down but must not skip the orphan scope audit either."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "critical")
+
+    spawns: list[str] = []
+
+    def never_spawn(task, workspace, board):
+        spawns.append(task.id)
+        return None
+
+    orphan_pid = shims.sleeper()
+    orphan_unit = kb._kanban_worker_scope_unit("t_mem_orphan", 1)
+    shims.write_unit(orphan_unit, [orphan_pid])
+
+    result = kb._dispatch_once_locked(conn, spawn_fn=never_spawn)
+
+    assert spawns == []
+    assert result.memory_pressure == "critical"
+    assert result.scopes_reaped == [orphan_unit]
+    assert shims.wait_for(lambda: not kb._pid_alive(orphan_pid))
+
+
 def test_stop_all_scoped_workers_is_host_local(shims, conn):
     """The shutdown policy stops every scoped worker THIS host claims and
     leaves other hosts' workers to their own gateways."""

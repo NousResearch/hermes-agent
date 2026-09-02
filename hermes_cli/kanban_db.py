@@ -12215,7 +12215,10 @@ def _dispatch_once_locked(
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
       8. Audit: stop any active worker scope that no running task claims
-         (leaked descendants / stale retry units).
+         (leaked descendants / stale retry units). The audit also runs
+         when a concurrency or memory-pressure guard stands the tick
+         down early — otherwise orphaned scopes could persist for as
+         long as the caps hold.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
@@ -12301,9 +12304,20 @@ def _dispatch_once_locked(
     # Convert any concurrency caps into a shared additional-spawns budget
     # for this tick. Both ready and review loops consume from the same
     # budget so the total number of new workers stays bounded.
+    def _stand_down_early(reason: str) -> DispatchResult:
+        # Cap guards return before the spawn loops, but the scope audit
+        # must still fire (Gate B pass 4, T): under sustained caps this
+        # tick used to return at the first guard and the orphan sweep at
+        # the bottom never ran, so leaked scopes persisted indefinitely.
+        # Dry runs stay read-only like the normal end-of-tick sweep.
+        if not dry_run:
+            result.scopes_reaped = reap_orphaned_worker_scopes(conn)
+        _log.debug("kanban dispatch: tick stood down early (%s)", reason)
+        return result
+
     if max_spawn is not None:
         if running_count >= max_spawn:
-            return result
+            return _stand_down_early("max_spawn concurrency cap reached")
         spawn_budget = max_spawn - running_count
 
     # Honour kanban.max_in_progress across both ready and review queues: if
@@ -12319,7 +12333,7 @@ def _dispatch_once_locked(
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
-            return result
+            return _stand_down_early("max_in_progress host cap reached")
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
             spawn_budget = remaining
@@ -12338,7 +12352,7 @@ def _dispatch_once_locked(
             "kanban dispatch: system memory pressure is critical; "
             "spawning no new workers this tick (deferred, not dropped)"
         )
-        return result
+        return _stand_down_early("critical memory pressure")
     if pressure == "elevated":
         result.memory_pressure = pressure
         if spawn_budget is None or spawn_budget > 1:

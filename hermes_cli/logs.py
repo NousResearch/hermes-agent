@@ -19,6 +19,7 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
+import os
 import re
 import sys
 import time
@@ -338,6 +339,30 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return all_lines[-n:]
 
 
+def _same_file(f, path: Path) -> bool:
+    """True when the open handle ``f`` still refers to the file at ``path``.
+
+    Hermes logs rotate via ``RotatingFileHandler`` (default 5MB, 3 backups):
+    the live file is renamed to ``agent.log.1`` and a fresh file is created
+    at the original path.  A follower holding the old fd would silently go
+    quiet forever.  Compare device+inode (falling back to a size-shrink
+    check on platforms where inodes are unreliable, e.g. Windows).
+    """
+    try:
+        fd_stat = os.fstat(f.fileno())
+        path_stat = os.stat(path)
+    except OSError:
+        # Rotation window: the new file may not exist yet. Treat as rotated
+        # so the caller retries the reopen.
+        return False
+    if (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+        return False
+    # Same inode but the file shrank under us (truncate-in-place rotation).
+    if path_stat.st_size < f.tell():
+        return False
+    return True
+
+
 def _follow_log(
     path: Path,
     *,
@@ -346,20 +371,46 @@ def _follow_log(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> None:
-    """Poll a log file for new content and print matching lines."""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Seek to end
+    """Poll a log file for new content and print matching lines.
+
+    Survives log rotation: when the path is replaced (rename+recreate) or
+    truncated, the follower reopens the new file from the beginning so no
+    post-rotation lines are missed.
+    """
+    f = open(path, "r", encoding="utf-8", errors="replace")
+    try:
+        # Seek to end for the initial attach only; reopens after rotation
+        # start at offset 0 so the new file's first lines are shown.
         f.seek(0, 2)
+        idle_polls = 0
         while True:
             line = f.readline()
             if line:
+                idle_polls = 0
                 if _matches_filters(line, min_level=min_level,
                                     session_filter=session_filter, since=since,
                                     component_prefixes=component_prefixes):
                     print(line, end="")
                     sys.stdout.flush()
             else:
+                # Only stat when idle — rotation can't outrun an active read
+                # of the same file, and this keeps the hot path syscall-free.
+                idle_polls += 1
+                if idle_polls >= 2 and not _same_file(f, path):
+                    try:
+                        new_f = open(path, "r", encoding="utf-8",
+                                     errors="replace")
+                    except OSError:
+                        # Mid-rotation gap — retry on the next poll.
+                        time.sleep(0.3)
+                        continue
+                    f.close()
+                    f = new_f
+                    idle_polls = 0
+                    continue
                 time.sleep(0.3)
+    finally:
+        f.close()
 
 
 def list_logs() -> None:

@@ -28,6 +28,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
+import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -489,14 +490,23 @@ function tileTitle(storedSessionId: string): string {
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
 }
 
+/** The tab's CAPTION: a bot chat's owner name over the canonical stored title
+ *  (#99152). The menu keeps `tileTitle` — rename/delete show the real row. */
+function tileCaption(storedSessionId: string): string {
+  return workspaceOwnerTitle(
+    tileTitle(storedSessionId),
+    $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+  )
+}
+
 /** The `@session` link payload for a tile tab drag — id + owning profile + title.
  *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
-  const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
-  const title = stored ? sessionTitle(stored) : explicit || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const title = stored ? sessionTitle(stored) : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
-  return { id: storedSessionId, profile: stored?.profile ?? '', title }
+  return { id: storedSessionId, profile: stored?.profile ?? '', title: workspaceOwnerTitle(title, tile) }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,14 +693,14 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // $projectTree: a tile whose session is older than the recents page resolves
   // its title through the tree, which loads after the tiles register. (The tab's
   // status dot subscribes to color/state itself, so it needs no `also` entry.)
-  also: [$sessions, $projectTree],
+  also: [$sessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,
   anchor: t => t.anchor,
   before: t => t.before,
   minWidth: '20rem',
-  title: tileTitle,
+  title: tileCaption,
   // The tab's status dot — the SAME primitive the sidebar row renders, keyed by
   // the stored id, so a session's status/color can never disagree between the
   // two surfaces. Self-subscribing (live state + resolved color), so the strip

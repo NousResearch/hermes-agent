@@ -1110,8 +1110,23 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
-function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+/** The bot-mode scope each stored id was last opened under, for the main tab
+ *  (which has no tile to carry one). Window-local: the caption falls back to
+ *  the stored title until the chat is opened again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+
+function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
+  const isBotChat = scope.workspaceMode === 'bots'
   const current = $botChatSessionIds.get()
+  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+
+  const changed = isBotChat
+    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
+    : Boolean(previous)
+
+  if (changed) {
+    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  }
 
   if (current.has(storedSessionId) === isBotChat) {
     return
@@ -1141,7 +1156,7 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
-  rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+  rememberBotChatScope(storedSessionId, scope)
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined

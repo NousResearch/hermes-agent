@@ -36,6 +36,7 @@ import {
   $workspaceMode,
   $workspaceOwnerKey,
   setWorkspaceScope as publishWorkspaceScope,
+  setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
@@ -1159,6 +1160,11 @@ export const host = {
 
     return close
   },
+
+  /** Name a workspace owner on its tabs (a bot's display name). A canonical
+   *  chat's STORED title is an identity the backend resolves by name; this is
+   *  the caption shown for it. Feature-detect on older desktops. */
+  setWorkspaceOwnerLabel,
 
   /** Switch the visible main-pane workspace without unregistering retained panes. */
   setWorkspaceScope: (

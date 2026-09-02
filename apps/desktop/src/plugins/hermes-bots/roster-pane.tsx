@@ -62,6 +62,7 @@ import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
+import { displayName } from './labels'
 import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { $activityToasts, setActivityToasts, trackInboundActivity } from './roster-actions'
 import {
@@ -478,6 +479,11 @@ export function BotsPane() {
     // writes must settle after render: other subscribers of the same atoms
     // would otherwise be updated while BotsPane was still rendering.
     $lastRoster.set(roster.filter(row => !row?.ghost))
+    // Tabs caption a bot chat by its bot (#99152); republished with the
+    // roster so a rename follows and tiles restored at boot resolve.
+    roster.forEach(bot => {
+      host.setWorkspaceOwnerLabel?.(botWorkspaceOwnerKey(bot), displayName(bot, botRosterMeta(bot, allMeta)))
+    })
 
     if (Array.isArray(data?.sources)) {
       $lastSources.set(data.sources)

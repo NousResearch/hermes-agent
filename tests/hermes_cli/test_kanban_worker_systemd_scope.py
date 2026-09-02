@@ -1450,6 +1450,125 @@ def test_queued_stop_skips_when_worker_registers_first(
     kb.reset_scope_stop_service_for_tests()
 
 
+def test_queued_stop_cas_wins_registration_self_aborts(
+    shims, conn, monkeypatch,
+):
+    """R, marker wins: the worker's first heartbeat lands AFTER the
+    drain's re-check but BEFORE the signal — the exact window a plain
+    read cannot close. The stop-pending CAS has already committed by
+    then, so the registration self-aborts (no half-registered row), the
+    stop proceeds on the unregistered-launch verdict, and the run row
+    carries the marker."""
+    import threading
+
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    gate = threading.Event()
+
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_casrace", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(
+        conn, scope=unit, pid=os.getpid(),
+        started_delta=-kb.WORKER_REGISTRATION_GRACE_SECONDS - 300,
+    )
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    registration: dict = {}
+    stops: list[str] = []
+
+    def register_then_confirm(unit_name):
+        # The heartbeat lands at the exact instant between the drain's
+        # re-check and the signal. It runs on the service thread, so it
+        # takes its own connection (sqlite connections are per-thread).
+        stops.append(unit_name)
+        with kb.connect() as c:
+            registration["ok"] = kb.register_worker_pid(
+                c, tid, expected_run_id=run_id, pid=pid,
+            )
+        gate.set()
+        return True
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", register_then_confirm)
+    assert not kb.request_worker_scope_stop(
+        unit, task_id=tid, skip_if_registered=True,
+    )
+    kb.join_scope_stop_service(timeout=5.0)
+
+    assert gate.is_set()          # the stop (and thus the race) ran
+    assert stops == [unit]
+    assert registration["ok"] is False  # self-aborted on the marker
+    row = conn.execute(
+        "SELECT status, worker_pid, worker_registered_at FROM tasks "
+        "WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["worker_pid"] == os.getpid()   # launcher pid kept
+    assert row["worker_registered_at"] is None  # no half-registration
+    marked = conn.execute(
+        "SELECT stop_pending FROM task_runs WHERE id = ?", (run_id,)
+    ).fetchone()["stop_pending"]
+    assert marked == 1
+    kb.reset_scope_stop_service_for_tests()
+
+
+def test_queued_stop_stands_down_when_registration_wins_cas(
+    shims, conn, monkeypatch,
+):
+    """R, registration wins: it commits AFTER the drain's re-check read
+    (the read missed it by a hair) but BEFORE the stop-pending CAS. The
+    CAS excludes registered rows, matches nothing, and the stop stands
+    down — the worker lives on despite the stale read."""
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_caslost", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(
+        conn, scope=unit, pid=os.getpid(),
+        started_delta=-kb.WORKER_REGISTRATION_GRACE_SECONDS - 300,
+    )
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    # Registration commits first (its own connection, as the worker's
+    # heartbeat would)…
+    with kb.connect() as c:
+        assert kb.register_worker_pid(
+            c, tid, expected_run_id=run_id, pid=pid,
+        )
+    # …but the drain's read re-check misses it — the race the CAS closes.
+    monkeypatch.setattr(kb, "_task_has_registered_worker", lambda _tid: False)
+
+    stops: list[str] = []
+
+    def never_stop(unit_name):
+        stops.append(unit_name)
+        return True
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", never_stop)
+    assert not kb.request_worker_scope_stop(
+        unit, task_id=tid, skip_if_registered=True,
+    )
+    kb.join_scope_stop_service(timeout=5.0)
+
+    assert stops == []            # the CAS stood the stop down
+    assert kb._pid_alive(pid)
+    row = conn.execute(
+        "SELECT status, worker_registered_at FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["worker_registered_at"] is not None
+    marked = conn.execute(
+        "SELECT stop_pending FROM task_runs WHERE id = ?", (run_id,)
+    ).fetchone()["stop_pending"]
+    assert marked is None         # registered rows never get marked
+    kb.reset_scope_stop_service_for_tests()
+
+
 def test_reregistration_same_pid_new_fingerprint_rejected(
     shims, conn, monkeypatch,
 ):

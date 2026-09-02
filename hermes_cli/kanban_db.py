@@ -1503,6 +1503,14 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- Scope unit the attempt's worker ran in (mirrors tasks.worker_scope
     -- at spawn time) so run history shows where each attempt lived.
     worker_scope        TEXT,
+    -- Set when the scope-stop service is ABOUT to signal this run's
+    -- worker (registration-sensitive stops only). register_worker_pid
+    -- refuses a marked run, so a registration landing in the window
+    -- between the service's re-check and the signal either wins the
+    -- marker CAS first (the stop stands down) or sees the marker
+    -- (self-aborts). Run-scoped on purpose: a new attempt gets a fresh
+    -- row, so a stale marker can never block a future registration.
+    stop_pending        INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2665,6 +2673,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "task_runs", "worker_scope", "worker_scope TEXT"
         )
+    if run_cols and "stop_pending" not in run_cols:
+        # Registration-race marker for queued scope stops (see the
+        # schema comment on the column). Fresh DBs get it via CREATE
+        # TABLE; only legacy task_runs tables need this.
+        _add_column_if_missing(
+            conn, "task_runs", "stop_pending", "stop_pending INTEGER"
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2957,6 +2972,7 @@ _REBUILD_SPECS = {
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, worker_scope TEXT,"
+        " stop_pending INTEGER,"
         " max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
@@ -9162,6 +9178,28 @@ def _drain_scope_stop_requests() -> None:
                     unit, request.task_id,
                 )
                 continue
+            if (
+                request.skip_if_registered
+                and request.task_id
+                and not _mark_run_stop_pending(request.task_id)
+            ):
+                # Gate B pass 4 (R): the re-check above is a plain read —
+                # registration can still commit after it and before the
+                # signal below. The stop-pending CAS closes that window
+                # atomically: it marks the run only while the task is
+                # still running and unregistered, and a registration for
+                # a marked run self-aborts inside register_worker_pid.
+                # A CAS miss therefore means the registration won this
+                # instant — stand the stop down exactly like the J skip.
+                # It also misses when no board is writable; standing
+                # down then is the safe side (next ticks re-verify).
+                _log.info(
+                    "kanban: standing down queued stop of scope %s — task "
+                    "%s won the stop-pending CAS (or no board was "
+                    "writable)",
+                    unit, request.task_id,
+                )
+                continue
             verified = _stop_kanban_worker_scope(unit)
         finally:
             with _scope_stop_lock:
@@ -9217,8 +9255,11 @@ def request_worker_scope_stop(
     ``skip_if_registered`` (finding J) marks the request as
     evidence-based, not terminal: immediately before the service acts it
     re-checks the task row and stands down when the worker has
-    registered in the meantime. Only the unregistered-launch sweep sets
-    it — a completed task's scope must be reaped regardless.
+    registered in the meantime, and atomically CAS-marks the run
+    ``stop_pending`` so a registration landing inside the remaining
+    window self-aborts instead of dying under the signal (pass 4, R).
+    Only the unregistered-launch sweep sets it — a completed task's
+    scope must be reaped regardless.
 
     Called inside an open :func:`write_txn`, the request becomes
     commit-conditional (finding O): it is collected as an intent and
@@ -9521,6 +9562,27 @@ def register_worker_pid(
             if row["current_run_id"] is None:
                 return False
             if int(row["current_run_id"]) != int(expected_run_id):
+                return False
+        if row["current_run_id"] is not None:
+            marked = conn.execute(
+                "SELECT 1 FROM task_runs WHERE id = ? AND stop_pending = 1",
+                (int(row["current_run_id"]),),
+            ).fetchone()
+            if marked is not None:
+                # Pass 4 (R): the scope-stop service CAS-marked this run
+                # stop-pending — a queued registration-sensitive stop is
+                # signalling the scope right now. Self-abort instead of
+                # registering into a death sentence: the stop's
+                # "never launched" evidence stays valid, and the next
+                # attempt (a fresh run row) registers cleanly. This read
+                # is authoritative because write_txn already holds the
+                # database write lock — the marker cannot be set behind
+                # our back mid-registration.
+                _log.info(
+                    "kanban: task %s registration for run %s self-aborted "
+                    "— a queued scope stop is signalling this run",
+                    task_id, row["current_run_id"],
+                )
                 return False
         first_registration = row["worker_registered_at"] is None
         if not first_registration and row["worker_pid"] is not None:
@@ -10586,6 +10648,59 @@ def _task_has_registered_worker(task_id: str) -> bool:
                 "kanban: registration re-check cannot read board %s: %s",
                 slug, exc,
             )
+    return False
+
+
+def _mark_run_stop_pending(task_id: str) -> bool:
+    """CAS the current run of *task_id* as ``stop_pending`` (pass 4, R).
+
+    Runs on the scope-stop service immediately before it signals a
+    registration-sensitive stop. The UPDATE matches only while the task
+    is still ``running`` AND unregistered: a registration that already
+    committed makes it a no-op (rowcount 0 → False; the caller stands
+    the stop down). Once the marker is committed,
+    :func:`register_worker_pid` refuses the run — both writes take the
+    database write lock, so no interleaving survives between the
+    service's re-check and the signal. Re-marking an already-marked run
+    still matches (SQLite counts no-op updates), so re-enqueued retry
+    stops are not stood down by their own earlier marker.
+
+    Writes across ALL boards with the same traversal as
+    :func:`_task_has_registered_worker`; per-board failures are ignored
+    and the walk continues (a CAS elsewhere still closes the race). No
+    match anywhere → False, which callers treat as "do not signal".
+    """
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        return False
+    slugs = [b.get("slug") for b in boards if b.get("slug")] or [DEFAULT_BOARD]
+    for slug in slugs:
+        conn = None
+        try:
+            path = kanban_db_path(board=slug)
+            if not path.exists():
+                continue
+            conn = connect(db_path=path)
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE task_runs SET stop_pending = 1 "
+                    "WHERE id = (SELECT current_run_id FROM tasks "
+                    "            WHERE id = ? AND status = 'running' "
+                    "              AND worker_registered_at IS NULL)",
+                    (task_id,),
+                )
+                marked = cur.rowcount == 1
+            if marked:
+                return True
+        except Exception as exc:
+            _log.debug(
+                "kanban: stop-pending CAS cannot write board %s: %s",
+                slug, exc,
+            )
+        finally:
+            if conn is not None:
+                conn.close()
     return False
 
 

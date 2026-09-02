@@ -204,6 +204,12 @@ def deactivating(unit):
     return os.path.exists(os.path.join(STATE, "deactivating", unit))
 
 
+def badcg(unit):
+    # A loaded unit whose reported ControlGroup resolves to a path that
+    # cannot be read (mis-derived prefix, custom mount, namespace).
+    return os.path.exists(os.path.join(STATE, "badcg", unit))
+
+
 def unit_pids(unit):
     data = load(unit)
     return (list(data.get("pids", [])) if data else []) + sticky_pids(unit)
@@ -256,7 +262,10 @@ if op == "show":
         refresh_cgroup(unit)
         print("LoadState=loaded")
         print("ActiveState=" + state_of(unit))
-        print("ControlGroup=" + os.path.join(STATE, "cgroup", unit))
+        if badcg(unit):
+            print("ControlGroup=" + os.path.join(STATE, "nonexistent", unit))
+        else:
+            print("ControlGroup=" + os.path.join(STATE, "cgroup", unit))
     sys.exit(0)
 
 if op == "stop":
@@ -408,6 +417,12 @@ class Shims:
     def arm_deactivating(self, unit: str) -> None:
         """Model a stop job mid-flight: ActiveState=deactivating."""
         d = self.root / "deactivating"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / unit).write_text("1")
+
+    def arm_bad_cgroup_path(self, unit: str) -> None:
+        """Loaded unit whose cgroup.procs path cannot be read."""
+        d = self.root / "badcg"
         d.mkdir(parents=True, exist_ok=True)
         (d / unit).write_text("1")
 
@@ -1346,6 +1361,36 @@ def test_scope_liveness_deactivating_and_query_failure_are_not_dead(shims):
         assert pr._stop_systemd_unit_verified(unit) is False
     finally:
         monkey.undo()
+
+
+def test_scope_liveness_unreadable_procs_file_is_not_death(shims):
+    """Gate B pass 4 finding C: a LOADED unit whose cgroup.procs path
+    cannot be read (mis-derived prefix, custom cgroup mount, container
+    or namespace layout) must classify as 'unknown', never 'dead' — the
+    old FileNotFoundError->dead verdict released claims beside live
+    scopes. Only the unit not being loaded, or a procs file that was
+    actually READ and found empty, is verified death."""
+    from tools import process_registry as pr
+
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_badcg", 1)
+    shims.write_unit(unit, [pid])
+    assert pr._scope_unit_liveness(unit) == "alive"
+
+    shims.arm_bad_cgroup_path(unit)
+    assert pr._scope_unit_liveness(unit) == "unknown"
+    assert pr._scope_unit_active_state(unit) == "unknown"
+    # An unreadable cgroup cannot CONFIRM a stop either (the stop still
+    # fires — signalling a unit we want dead is correct — but the
+    # verdict stays False so callers keep their claim and retry).
+    assert pr._stop_systemd_unit_verified(unit) is False
+
+    # Contrast: not-loaded units stay verified dead (cgroup gone with
+    # the unit), and an EMPTY procs file that was read is real death.
+    other = kb._kanban_worker_scope_unit("t_badcg", 2)
+    assert pr._scope_unit_liveness(other) == "dead"
+    shims.write_unit(other, [])
+    assert pr._scope_unit_liveness(other) == "dead"
 
 
 def test_verified_stop_escalates_to_sigkill_on_stop_timeout(shims):

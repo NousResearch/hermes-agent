@@ -455,19 +455,59 @@ _SCOPE_STOP_VERIFY_TIMEOUT = 6.0
 SCOPE_STOP_VERIFY_BOUND_SECONDS = 31.0
 
 
+_CGROUP_V2_MOUNT_FALLBACK = "/sys/fs/cgroup"
+
+
+def _cgroup2_mount_point(
+    mountinfo_path: str = "/proc/self/mountinfo",
+) -> str:
+    """Mount point of the unified (v2) cgroup hierarchy.
+
+    Read from ``/proc/self/mountinfo`` rather than hardcoded
+    ``/sys/fs/cgroup``: containers and alternative layouts mount the
+    hierarchy elsewhere, and joining a systemd-reported ControlGroup
+    onto the wrong prefix yields a path that cannot exist — which must
+    surface as "unknown", not as a false verified death.  Falls back to
+    the canonical mount when mountinfo is unreadable (non-Linux) or has
+    no cgroup2 entry.
+    """
+    mounts: list[str] = []
+    try:
+        with open(mountinfo_path, "r", encoding="utf-8") as f:
+            for line in f:
+                # ... mount-ID parent-ID major:minor root MOUNT-POINT
+                # options [optional...] "-" FSTYPE source superoptions
+                # — fstype is the third field from the end.
+                cols = line.split()
+                if len(cols) > 9 and cols[-3] == "cgroup2":
+                    mounts.append(cols[4])
+    except OSError:
+        return _CGROUP_V2_MOUNT_FALLBACK
+    if not mounts:
+        return _CGROUP_V2_MOUNT_FALLBACK
+    # Prefer the canonical mount when present; otherwise the first
+    # cgroup2 mount wins (a container usually exposes exactly one).
+    for mount in mounts:
+        if mount == _CGROUP_V2_MOUNT_FALLBACK:
+            return mount
+    return mounts[0]
+
+
 def _scope_cgroup_procs_path(
     unit_name: str, control_group: str = ""
 ) -> Optional[str]:
     """Filesystem path of the unit's ``cgroup.procs`` file.
 
     ``control_group`` is the ``systemctl show -p ControlGroup`` value
-    (cgroupfs-relative, e.g. ``/user.slice/user-1000.slice/...``); an
-    already-absolute path (real cgroupfs mount, or a test shim's state
-    dir) is honoured as-is.  When empty, fall back to the canonical
-    user-scope location so a unit systemd forgot to report on is still
-    verified.  ``None`` when no path can be formed (non-Linux without a
-    reported ControlGroup) — callers treat that as "unknown", never
-    "dead".
+    (cgroupfs-relative, e.g. ``/user.slice/user-1000.slice/...``),
+    joined onto the REAL cgroup v2 mount point (see
+    :func:`_cgroup2_mount_point`); an already-absolute path outside the
+    canonical cgroup roots (a real cgroupfs mount spelled out by
+    systemd, or a test shim's state dir) is honoured as-is.  When
+    empty, fall back to the canonical user-scope location so a unit
+    systemd forgot to report on is still verified.  ``None`` when no
+    path can be formed (non-Linux without a reported ControlGroup) —
+    callers treat that as "unknown", never "dead".
     """
     control_group = (control_group or "").strip()
     if control_group:
@@ -476,13 +516,16 @@ def _scope_cgroup_procs_path(
             "/user-0.slice",
         )):
             # cgroupfs-relative path as systemd reports it.
-            return "/sys/fs/cgroup" + control_group.rstrip("/") + "/cgroup.procs"
+            return (
+                _cgroup2_mount_point() + control_group.rstrip("/")
+                + "/cgroup.procs"
+            )
         return control_group.rstrip("/") + "/cgroup.procs"
     if platform.system() != "Linux" or not hasattr(os, "getuid"):
         return None
     uid = os.getuid()
     return (
-        f"/sys/fs/cgroup/user.slice/user-{uid}.slice/"
+        f"{_cgroup2_mount_point()}/user.slice/user-{uid}.slice/"
         f"user@{uid}.service/app.slice/{unit_name}/cgroup.procs"
     )
 
@@ -491,13 +534,16 @@ def _scope_unit_liveness(unit_name: str) -> str:
     """``"alive"`` / ``"dead"`` / ``"unknown"`` — cgroup truth for a unit.
 
     ``"alive"`` — the unit's cgroup.procs lists at least one pid.
-    ``"dead"`` — VERIFIED: the unit is not loaded (LoadState=not-found)
-    or its cgroup.procs is absent/empty.  Nothing of this unit runs.
+    ``"dead"`` — VERIFIED: the unit is not loaded (LoadState=not-found),
+    or its cgroup.procs was READ and is empty (the file exists and the
+    kernel lists zero processes — an open empty file is definitive; a
+    MISSING one is not, see below).  Nothing of this unit runs.
     ``"unknown"`` — systemctl missing/failed/timed out, a load state we
-    cannot interpret, or ActiveState ``deactivating`` (stop job still
-    draining).  Callers must treat unknown as NOT dead: keep the claim,
-    retry, and never release bookkeeping that guards against a
-    duplicate spawn.
+    cannot interpret, ActiveState ``deactivating`` (stop job still
+    draining), or the unit is loaded but its cgroup.procs cannot be
+    opened (mis-derived path, custom mount, namespace).  Callers must
+    treat unknown as NOT dead: keep the claim, retry, and never release
+    bookkeeping that guards against a duplicate spawn.
     """
     import shutil
 
@@ -548,8 +594,12 @@ def _scope_unit_liveness(unit_name: str) -> str:
         with open(procs_path, "r", encoding="utf-8") as f:
             contents = f.read()
     except FileNotFoundError:
-        # No cgroup at all = the unit holds nothing.
-        return "dead"
+        # The unit is LOADED but its cgroup.procs is missing.  That is
+        # NOT verified death: a mis-derived path (custom cgroup mount,
+        # container layout) or a namespace boundary produces exactly
+        # this, and declaring the worker dead on it released claims
+        # beside live scopes (Gate B pass 4 finding C).  Callers retry.
+        return "unknown"
     except OSError as exc:
         logger.debug("read %s failed: %s", procs_path, exc)
         return "unknown"

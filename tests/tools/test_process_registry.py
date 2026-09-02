@@ -1009,6 +1009,80 @@ class TestCheckpoint:
         stop_unit.assert_called_once_with(entry["systemd_unit"])
         assert json.loads(checkpoint.read_text()) == []
 
+    def test_cgroup2_mount_point_prefers_canonical_mount(self, tmp_path):
+        """With several cgroup2 mounts (host + container bind), the
+        canonical ``/sys/fs/cgroup`` mount wins — it is where systemd's
+        ControlGroup paths resolve."""
+        from tools.process_registry import _cgroup2_mount_point
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+            "36 35 0:30 / /custom/cgroup rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+            "37 35 0:31 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+        )
+        assert _cgroup2_mount_point(str(mi)) == "/sys/fs/cgroup"
+
+    def test_cgroup2_mount_point_uses_sole_custom_mount(self, tmp_path):
+        """A container exposes exactly one cgroup2 mount, mounted
+        wherever its namespace places it — that one is used."""
+        from tools.process_registry import _cgroup2_mount_point
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+            "36 35 0:30 / /host/cgroupv2 rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+        )
+        assert _cgroup2_mount_point(str(mi)) == "/host/cgroupv2"
+
+    def test_cgroup2_mount_point_falls_back_when_unreadable_or_absent(
+        self, tmp_path
+    ):
+        """Unreadable mountinfo (non-Linux) or no cgroup2 entry falls
+        back to the canonical mount instead of erroring."""
+        from tools.process_registry import _CGROUP_V2_MOUNT_FALLBACK
+        from tools.process_registry import _cgroup2_mount_point
+
+        missing = tmp_path / "does-not-exist"
+        assert _cgroup2_mount_point(str(missing)) == _CGROUP_V2_MOUNT_FALLBACK
+        no_cgroup2 = tmp_path / "mountinfo"
+        no_cgroup2.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+        )
+        assert _cgroup2_mount_point(str(no_cgroup2)) == _CGROUP_V2_MOUNT_FALLBACK
+
+    def test_scope_cgroup_procs_path_joins_derived_mount_point(
+        self, tmp_path, monkeypatch
+    ):
+        """cgroupfs-relative ControlGroup values join onto the REAL
+        cgroup v2 mount point, not a hardcoded /sys/fs/cgroup prefix —
+        joining onto the wrong prefix yields an unopenable path, which
+        liveness would otherwise misread as verified death.  Absolute
+        paths outside the known slices (a test shim's state dir) are
+        honoured as-is, and a unit systemd did not report falls back
+        to the canonical user-scope location under the real mount."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_cgroup2_mount_point", lambda: "/custom/cgroup")
+
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/user@1000.service/app.slice/w.scope"
+        ) == (
+            "/custom/cgroup/user.slice/user-1000.slice/"
+            "user@1000.service/app.slice/w.scope/cgroup.procs"
+        )
+        # Absolute path outside the standard slices: honoured as-is.
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", f"{tmp_path}/units/w.scope"
+        ) == f"{tmp_path}/units/w.scope/cgroup.procs"
+        # No ControlGroup reported: canonical user-scope layout derived
+        # from the real uid under the real mount.
+        monkeypatch.setattr(pr.platform, "system", lambda: "Linux")
+        expected = (
+            f"/custom/cgroup/user.slice/user-{os.getuid()}.slice/"
+            f"user@{os.getuid()}.service/app.slice/w.scope/cgroup.procs"
+        )
+        assert pr._scope_cgroup_procs_path("w.scope", "") == expected
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"

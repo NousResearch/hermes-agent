@@ -249,6 +249,51 @@ class TestReasoningOffReachesTheWire:
             f"continuation must be sent with thinking off, got {second!r}"
         )
 
+    def test_reasoning_off_is_exactly_one_request_and_prefix_stays_stable(self, loop_agent):
+        """Prompt-cache invariant for the override.
+
+        The reasoning parameter is part of the provider's cache key on
+        config-sensitive providers (Anthropic renders thinking/effort into
+        the prompt; OpenAI lists reasoning.effort as a prefix-affecting
+        setting), so the reasoning-off request is a deliberate one-request
+        cache miss.  It must stay exactly one request: the request AFTER it
+        (a second, visible-text continuation) must go out with the
+        configured reasoning again, and the system prompt must be
+        byte-identical on every request so the miss never compounds into a
+        rebuilt prefix.
+        """
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent._supports_reasoning_extra_body = lambda: True
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_length_response(),
+            _truncated_text_response("PART ONE of the answer"),
+            _full_response(" and PART TWO, done."),
+        ]
+        result = _run(loop_agent, "write me a long report")
+        assert result["completed"] is True
+        assert "PART ONE" in result["final_response"]
+        assert "PART TWO" in result["final_response"]
+
+        calls = loop_agent.client.chat.completions.create.call_args_list
+        assert len(calls) == 3
+        wire = [
+            (c.kwargs.get("extra_body") or {}).get("reasoning") for c in calls
+        ]
+        assert wire[0] == {"enabled": True, "effort": "high"}, wire
+        assert wire[1] == {"enabled": False, "effort": "none"}, wire
+        assert wire[2] == {"enabled": True, "effort": "high"}, (
+            f"reasoning must be restored on the very next request; got {wire!r}"
+        )
+        system_prompts = {
+            c.kwargs["messages"][0]["content"] for c in calls
+            if c.kwargs["messages"][0].get("role") == "system"
+        }
+        assert len(system_prompts) == 1, (
+            "system prompt must be byte-identical across the retry sequence "
+            "(the override may only change request parameters, never the prefix)"
+        )
+        assert loop_agent._ephemeral_reasoning_off is False
+
     def test_stale_flag_does_not_leak_into_next_turn(self, loop_agent):
         """A flag armed by a previous turn that never reached build_api_kwargs
         (interrupt/error between arm and consume) must not silently strip

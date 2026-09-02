@@ -195,3 +195,33 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_gmail_send_body_file_reads_file(api_module, tmp_path, monkeypatch):
+    """--body-file loads the message body from disk before dispatch."""
+    body_path = tmp_path / "body.txt"
+    body_path.write_text("Hello from a file\nwith 'quotes' and $vars intact.")
+
+    captured = {}
+    monkeypatch.setattr(
+        api_module, "gmail_send", lambda args: captured.update(body=args.body)
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        ["google_api.py", "gmail", "send", "--to", "a@b.c",
+         "--subject", "s", "--body-file", str(body_path)],
+    )
+    api_module.main()
+    assert captured["body"] == body_path.read_text()
+
+
+def test_gmail_send_body_and_body_file_mutually_exclusive(api_module, monkeypatch, capsys):
+    """Passing both --body and --body-file is an argparse error."""
+    monkeypatch.setattr(
+        sys, "argv",
+        ["google_api.py", "gmail", "send", "--to", "a@b.c",
+         "--subject", "s", "--body", "x", "--body-file", "y"],
+    )
+    with pytest.raises(SystemExit):
+        api_module.main()
+    assert "not allowed with" in capsys.readouterr().err

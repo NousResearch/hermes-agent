@@ -1071,7 +1071,10 @@ def main():
     p = gmail_sub.add_parser("send")
     p.add_argument("--to", required=True)
     p.add_argument("--subject", required=True)
-    p.add_argument("--body", required=True)
+    body_group = p.add_mutually_exclusive_group(required=True)
+    body_group.add_argument("--body")
+    body_group.add_argument("--body-file", dest="body_file", metavar="FILE",
+                            help="Read body from file (avoids shell escaping issues)")
     p.add_argument("--cc", default="")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.add_argument("--html", action="store_true", help="Send body as HTML")
@@ -1080,7 +1083,10 @@ def main():
 
     p = gmail_sub.add_parser("reply")
     p.add_argument("message_id", help="Message ID to reply to")
-    p.add_argument("--body", required=True)
+    body_group = p.add_mutually_exclusive_group(required=True)
+    body_group.add_argument("--body")
+    body_group.add_argument("--body-file", dest="body_file", metavar="FILE",
+                            help="Read body from file (avoids shell escaping issues)")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.set_defaults(func=gmail_reply)
 
@@ -1218,6 +1224,9 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    if getattr(args, "body_file", None):
+        with open(args.body_file) as _bf:
+            args.body = _bf.read()
     args.func(args)
 
 

@@ -432,3 +432,63 @@ class TestConsentFlow:
         )
         assert granted is True
         console.input.assert_not_called()
+
+
+class TestToolOverrideGrantNonInteractive:
+    """The tool-override consent prompt must fail closed on non-interactive
+    stdio (#89600): with stdout redirected (pipe/CI/wrapper script) the
+    prompt text is swallowed while stdin still blocks on an answer the
+    operator never saw — an indistinguishable deadlock. The docstring
+    always promised deny-on-non-interactive; the body never implemented
+    it."""
+
+    def _console(self):
+        console = MagicMock()
+        console.input.side_effect = AssertionError(
+            "must not prompt on non-interactive stdio"
+        )
+        return console
+
+    def test_non_interactive_denies_without_prompting(self, hermes_home):
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = self._console()
+        with patch("sys.stdin") as stdin, patch("sys.stdout") as stdout:
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = True
+            _resolve_tool_override_grant(console, "ovplug", None)
+
+        console.input.assert_not_called()
+        from hermes_cli.config import load_config
+
+        entry = (load_config().get("plugins") or {}).get("entries", {}).get("ovplug", {})
+        assert entry.get("allow_tool_override") is False
+
+    def test_redirected_stdout_alone_denies(self, hermes_home):
+        """stdin is a tty (PowerShell wrapper case) but stdout is piped —
+        the prompt was invisible, so prompting can never be answered."""
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = self._console()
+        with patch("sys.stdin") as stdin, patch("sys.stdout") as stdout:
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = False
+            _resolve_tool_override_grant(console, "ovplug", None)
+
+        console.input.assert_not_called()
+
+    def test_explicit_flag_never_prompts(self, hermes_home):
+        """--allow-tool-override / --no-tool-override bypass consent."""
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = self._console()
+        with patch("sys.stdin") as stdin, patch("sys.stdout") as stdout:
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            _resolve_tool_override_grant(console, "ovplug", True)
+
+        console.input.assert_not_called()
+        from hermes_cli.config import load_config
+
+        entry = (load_config().get("plugins") or {}).get("entries", {}).get("ovplug", {})
+        assert entry.get("allow_tool_override") is True

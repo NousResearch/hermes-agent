@@ -3344,6 +3344,63 @@ def test_reap_sweep_bounds_synchronous_probes_per_tick(shims, conn, monkeypatch)
     # And the sweep reached completion: a further tick finds nothing.
     probes_per_tick.append(0)
     assert kb.reap_orphaned_worker_scopes(conn) == []
+
+
+def test_reap_sweep_rotation_prevents_wedge_starvation(shims, conn):
+    """AI: oldest-first alone let a handful of permanently wedged old
+    scopes occupy the per-tick bound forever — every orphan behind them
+    starved. The audit window must ROTATE across ticks, so newer
+    orphans are probed (and reaped) within a bounded number of ticks
+    regardless of wedged ones ahead of them in the age order."""
+    # Three permanently wedged old scopes: a stop job that can never
+    # complete (killproof) draining a process that never exits.
+    wedged_units = []
+    wedged_pids = []
+    for i in range(3):
+        pid = shims.sleeper()
+        unit = kb._kanban_worker_scope_unit(f"t_wedge{i}", 1)
+        shims.write_unit(unit, [pid])
+        shims.arm_deactivating(unit)
+        shims.arm_killproof(unit)
+        wedged_units.append(unit)
+        wedged_pids.append(pid)
+
+    # Priming tick: the wedged scopes are seen first and take the whole
+    # bound. They cannot be reaped, so they stay in the listing with an
+    # older first-seen stamp than anything created after this point.
+    assert kb.reap_orphaned_worker_scopes(conn) == []
+
+    # Two FRESH orphans appear behind the wedged ones in the age order.
+    fresh_units = []
+    fresh_pids = []
+    for i in range(2):
+        pid = shims.sleeper()
+        unit = kb._kanban_worker_scope_unit(f"t_fresh{i}", 1)
+        shims.write_unit(unit, [pid])
+        fresh_units.append(unit)
+        fresh_pids.append(pid)
+
+    # Oldest-first would sit on the three wedged scopes every tick and
+    # the fresh orphans would never be probed. Rotation must reach them
+    # within a few ticks.
+    all_reaped: list[str] = []
+    for tick in range(4):
+        all_reaped.extend(kb.reap_orphaned_worker_scopes(conn))
+        if set(fresh_units) <= set(all_reaped):
+            break
+    assert set(fresh_units) <= set(all_reaped), (
+        "the fresh orphans starved behind the wedged scopes"
+    )
+    # The wedged scopes were never reaped (that is what makes them
+    # wedged) and their workers are still alive.
+    assert not (set(wedged_units) & set(all_reaped))
+    assert all(kb._pid_alive(p) for p in wedged_pids)
+    # The fresh orphans were genuinely stopped, not merely listed.
+    assert shims.wait_for(
+        lambda: all(not kb._pid_alive(p) for p in fresh_pids), timeout=8.0
+    )
+
+
 def test_reap_sweep_escalates_a_wedged_deactivating_orphan(shims, conn):
     """D: a deactivating orphan is not terminal — a stop job draining a
     stubborn process sits in deactivating forever.  The sweep must

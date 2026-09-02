@@ -9428,6 +9428,14 @@ _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK = 3
 # work; pruned for units that left the listing, so it cannot grow
 # without bound.
 _scope_audit_first_seen: dict[str, float] = {}
+# Rotating start index into the age-sorted audit window (pass 9, AI):
+# oldest-first alone let a handful of permanently wedged old scopes own
+# the per-tick bound forever, starving every newer orphan behind them.
+# The cursor advances past whatever the window held each tick, so the
+# window rotates and every orphan is probed within a bounded number of
+# ticks regardless of wedged ones. Kept below the list length by the
+# modulo at each use.
+_scope_audit_cursor: int = 0
 
 
 def _scope_stop_service_loop() -> None:
@@ -9737,6 +9745,8 @@ def reset_scope_stop_service_for_tests() -> None:
         _scope_stop_warned.clear()
         _scope_stop_inflight = None
     _scope_audit_first_seen.clear()
+    global _scope_audit_cursor
+    _scope_audit_cursor = 0
     _scope_stop_service_cancel.clear()
     thread = _scope_stop_thread
     _scope_stop_thread = None
@@ -11513,7 +11523,11 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     (``_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK``) and ordered OLDEST
     orphan first, so an old leak never starves behind fresh ones; the
     remainder is deferred to the next tick, when the listing rediscovers
-    it with its original first-seen stamp.
+    it with its original first-seen stamp. The per-tick window also
+    ROTATES across ticks (pass 9, AI): a persistent cursor round-robins
+    over the age-sorted list, so permanently wedged units at its head
+    cannot occupy the bound forever and starve every newer orphan —
+    every orphan is probed within a bounded number of ticks.
 
     Returns the list of reaped unit names. Safe to call every tick.
     """
@@ -11547,14 +11561,35 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
             unit_state[0],
         )
     )
+    global _scope_audit_cursor
     if len(work) > _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK:
+        # Pass 9 (AI): the window must ROTATE. Oldest-first alone let
+        # _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK permanently wedged
+        # units occupy the window every tick, so any newer orphan behind
+        # them was never probed. A persistent cursor round-robins over
+        # the sorted list instead — the head of the age order keeps its
+        # priority only until the cursor passes it, and every orphan is
+        # probed within ceil(total / bound) ticks regardless of wedged
+        # ones.
+        total = len(work)
+        start = _scope_audit_cursor % total
+        window = [
+            work[(start + i) % total]
+            for i in range(_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK)
+        ]
+        _scope_audit_cursor = (
+            start + _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK
+        ) % total
         _log.info(
             "kanban: scope audit deferring %d unit(s) to the next tick "
             "(per-tick synchronous bound %d under the dispatch lock)",
-            len(work) - _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,
+            total - _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,
             _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,
         )
-    for unit, state in work[:_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK]:
+    else:
+        window = work
+        _scope_audit_cursor = 0
+    for unit, state in window:
         if not _kanban_scope_is_live(state) and state != "deactivating":
             # Terminal-but-still-loaded unit (a failed scope stays
             # inspectable without --collect by design): now that nothing

@@ -4906,6 +4906,11 @@ class APIServerAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
+        # Claim ownership while still inside the request's profile scope,
+        # before any run-keyed state exists — the same rule as /v1/runs, so
+        # /v1/runs/{id}* control of this turn is confined to the profile
+        # that started it (#93689).
+        self._run_owners[run_id] = self._run_idempotency_scope(request)
         self._set_run_status(
             run_id,
             "queued",
@@ -5041,6 +5046,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
                 self._active_run_agents.pop(run_id, None)
+                self._release_run_owner_if_forgotten(run_id)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
@@ -7774,6 +7780,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
         return _api_runs._request_owns_run(self, request, run_id)
+
+    def _release_run_owner_if_forgotten(self, run_id: str) -> None:
+        _api_runs._release_run_owner_if_forgotten(self, run_id)
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""

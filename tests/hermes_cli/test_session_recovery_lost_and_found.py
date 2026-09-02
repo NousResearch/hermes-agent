@@ -17,6 +17,7 @@ import pytest
 from hermes_state import SessionDB
 from hermes_cli import session_recovery
 from hermes_cli.session_lost_and_found import (
+    STUB_TITLE_PREFIX,
     classify_lost_and_found_row,
     map_lost_and_found_rows,
     rebuild_fts_indexes,
@@ -817,7 +818,7 @@ def test_lost_and_found_lane_refuses_to_verify_a_physically_shifted_source(
         # The mis-mapping the gate caught: every mapped (non-stub) session got
         # the NOT NULL substitute where its real start time should be.
         mapped = out.execute(
-            "SELECT started_at FROM sessions WHERE COALESCE(title, '') NOT LIKE '[best-effort recovered%'"
+            f"SELECT started_at FROM sessions WHERE COALESCE(title, '') NOT LIKE '{STUB_TITLE_PREFIX}%'"
         ).fetchall()
         assert mapped and all(row[0] == 0.0 for row in mapped)
     finally:

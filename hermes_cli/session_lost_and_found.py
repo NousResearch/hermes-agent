@@ -55,6 +55,11 @@ SESSION_MODEL_USAGE_NFIELD = 18
 _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
 
+# Title prefix of every session row this lane synthesises (legacy-layout rows
+# and stubbed parents). The recovery verifier keys on it to tell synthesised
+# rows from positionally mapped ones.
+STUB_TITLE_PREFIX = "[best-effort recovered"
+
 SQLITE3_CLI_GUIDANCE = (
     "A last-resort page-level salvage is available when a `.recover`-capable "
     "`sqlite3` command-line shell is installed: its `.recover` command can "
@@ -456,7 +461,7 @@ def map_lost_and_found_rows(
                                     cells[1] if _looks_like_source(cells[1])
                                     else "recovered",
                                     _heuristic_started_at(cells),
-                                    "[best-effort recovered] legacy session "
+                                    f"{STUB_TITLE_PREFIX}] legacy session "
                                     "row (layout unknown)",
                                 ),
                             ).rowcount
@@ -525,7 +530,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
         for session_id, info in sorted(orphan_ids.items()):
             while True:
                 title = (
-                    f"[best-effort recovered {sequence}] session metadata "
+                    f"{STUB_TITLE_PREFIX} {sequence}] session metadata "
                     "was unreadable"
                 )
                 sequence += 1

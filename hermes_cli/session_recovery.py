@@ -1448,11 +1448,11 @@ def _lost_and_found_plausibility_errors(
     ``started_at = 0.0`` when no timestamped message survived, so they are
     excluded from the denominator.
     """
-    from hermes_cli.session_lost_and_found import _EPOCH_LOW
+    from hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
 
     errors: list[str] = []
     checks = (
-        ("sessions", "started_at", "WHERE COALESCE(title, '') NOT LIKE '[best-effort recovered%'"),
+        ("sessions", "started_at", f"WHERE COALESCE(title, '') NOT LIKE '{STUB_TITLE_PREFIX}%'"),
         ("messages", "timestamp", ""),
     )
     for table, column, mapped_filter in checks:

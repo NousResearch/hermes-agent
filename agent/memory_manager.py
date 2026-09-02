@@ -22,6 +22,7 @@ from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BATCH_BYTES,
     MAX_MEMORY_OBSERVATION_BYTES,
     MAX_MEMORY_OBSERVATION_FIELD_CHARS,
+    MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
     MAX_MEMORY_OBSERVATION_OPERATION_NODES,
     MAX_MEMORY_OBSERVATIONS,
     MemoryObservation,
@@ -478,6 +479,7 @@ class MemoryManager:
         remaining_bytes: int = MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         inspect_observations: bool = True,
         traversal_budget: Optional[List[int]] = None,
+        inspected_budget: Optional[List[int]] = None,
     ) -> _NormalizedPrefetchResult:
         """Normalize one provider result within the remaining operation budget.
 
@@ -497,6 +499,17 @@ class MemoryManager:
         many malformed payloads. Once the shared budget is exhausted, every
         subsequent freeze call fails on its first decrement and the malformed
         tail is dropped without deep recursion.
+
+        ``inspected_budget`` is an additional operation-wide counter that
+        bounds the total number of candidates the manager pulls before
+        validation. Wrong-type or invalid-metadata candidates fail validation
+        before ``_freeze_json_value`` ever runs, so ``traversal_budget`` alone
+        cannot bound them; without a candidate cap an unbounded or infinite
+        malformed iterable would force unbounded ``next()`` calls and per-item
+        warning spam. Every candidate the manager pulls — valid, malformed, or
+        the single count/bytes look-ahead — decrements this counter, and once
+        it hits zero the tail is dropped without another ``next()`` and the
+        caller records a single truncation warning for the whole operation.
         """
         if raw_result is None:
             raw_result = ""
@@ -530,6 +543,13 @@ class MemoryManager:
         observation_iterator = iter(raw_observations)
         truncated_reason = None
         while True:
+            # Operation-wide inspected-candidate cap: applied *before* any
+            # further next() so wrong-type or invalid-metadata candidates
+            # (which never reach freeze and cost no node budget) cannot force
+            # unbounded synchronous iteration or per-item log spam.
+            if inspected_budget is not None and inspected_budget[0] <= 0:
+                truncated_reason = "inspected"
+                break
             # Once the prefix has consumed a budget, inspect at most one more
             # item to establish that data would be dropped. Do not validate or
             # encode that item, and never continue into the unbounded tail.
@@ -537,6 +557,8 @@ class MemoryManager:
                 len(observations) >= remaining_count
                 or observation_bytes >= remaining_bytes
             ):
+                if inspected_budget is not None:
+                    inspected_budget[0] -= 1
                 try:
                     next(observation_iterator)
                 except StopIteration:
@@ -545,6 +567,8 @@ class MemoryManager:
                     "count" if len(observations) >= remaining_count else "bytes"
                 )
                 break
+            if inspected_budget is not None:
+                inspected_budget[0] -= 1
             try:
                 candidate = next(observation_iterator)
             except StopIteration:
@@ -694,6 +718,11 @@ class MemoryManager:
         # inspected during this operation. Without it, each malformed payload
         # gets a fresh per-payload budget and can force a full traversal.
         traversal_budget: List[int] = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+        # Shared candidate cap spanning every provider. Wrong-type or
+        # invalid-metadata candidates fail before freeze and never spend node
+        # budget, so this counter is what bounds pull/log work against an
+        # unbounded or infinite malformed iterable.
+        inspected_budget: List[int] = [MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES]
         for provider in self._providers:
             try:
                 raw_result = self._prefetch_provider(
@@ -707,6 +736,7 @@ class MemoryManager:
                     - observation_bytes,
                     inspect_observations=not observation_budget_exhausted,
                     traversal_budget=traversal_budget,
+                    inspected_budget=inspected_budget,
                 )
                 result = normalized.result
                 if result.context and result.context.strip():
@@ -733,6 +763,17 @@ class MemoryManager:
                         "remaining observations (reduce observation payload "
                         "sizes or count)",
                         MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+                    )
+                    observation_budget_exhausted = True
+                elif normalized.truncated_reason == "inspected":
+                    logger.warning(
+                        "Memory prefetch operation reached the observation "
+                        "inspected-candidate cap of %d; stopping tail traversal "
+                        "for this and every remaining provider (a provider is "
+                        "returning too many candidates or an unbounded "
+                        "malformed iterable — filter upstream or reduce the "
+                        "observation count)",
+                        MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
                     )
                     observation_budget_exhausted = True
             except Exception as e:

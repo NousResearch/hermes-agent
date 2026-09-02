@@ -305,6 +305,115 @@ class TestVisionConfig:
         assert kwargs["timeout"] == 120.0
 
 
+class TestPublicUrlOnlyMode:
+    """auxiliary.vision.public_url_only forwards http(s) URLs unmodified.
+
+    Providers such as SenseNova reject inline base64 images and only accept
+    a publicly reachable HTTP(S) URL (issue #89628). When the flag is set,
+    vision_analyze_tool must send the URL through as-is instead of
+    downloading + base64-encoding it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_public_url_only_forwards_url_without_base64(self):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A public image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"vision": {"public_url_only": True}}},
+            ),
+            patch(
+                "tools.vision_tools._validate_image_url_async",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    "https://example.com/photo.png", "describe this"
+                )
+            )
+
+        assert result["success"] is True
+        sent_url = mock_llm.await_args.kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        assert sent_url == "https://example.com/photo.png"
+
+    @pytest.mark.asyncio
+    async def test_public_url_only_off_by_default_still_base64_encodes(self):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A public image"
+        mock_response.choices = [mock_choice]
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=MagicMock(data=png_bytes, mime="image/png"),
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    "https://example.com/photo.png", "describe this"
+                )
+            )
+
+        assert result["success"] is True
+        sent_url = mock_llm.await_args.kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        assert sent_url.startswith("data:image/png;base64,")
+
+    @pytest.mark.asyncio
+    async def test_public_url_only_still_enforces_website_policy(self):
+        blocked = {
+            "host": "blocked.test",
+            "rule": "blocked.test",
+            "source": "config",
+            "message": "Blocked by website policy",
+        }
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"vision": {"public_url_only": True}}},
+            ),
+            patch(
+                "tools.vision_tools._validate_image_url_async",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("tools.vision_tools.check_website_access", return_value=blocked),
+            patch(
+                "tools.vision_tools.async_call_llm", new_callable=AsyncMock
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    "https://blocked.test/photo.png", "describe this"
+                )
+            )
+
+        assert result["success"] is False
+        assert "Blocked by website policy" in result["error"]
+        mock_llm.assert_not_awaited()
+
+
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):

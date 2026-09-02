@@ -530,7 +530,9 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
         async def __aexit__(self, *args):
             return None
 
-        async def get(self, _url):
+        async def get(self, _url, **_kwargs):
+            # The fallback download sends UA headers now (#89260); accept
+            # any request kwargs so this stub tracks the real client shape.
             return _FakeResponse()
 
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)

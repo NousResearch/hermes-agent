@@ -22,6 +22,7 @@ from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BATCH_BYTES,
     MAX_MEMORY_OBSERVATION_BYTES,
     MAX_MEMORY_OBSERVATION_FIELD_CHARS,
+    MAX_MEMORY_OBSERVATION_OPERATION_NODES,
     MAX_MEMORY_OBSERVATIONS,
     MemoryObservation,
     MemoryPrefetchResult,
@@ -476,6 +477,7 @@ class MemoryManager:
         remaining_count: int = MAX_MEMORY_OBSERVATIONS,
         remaining_bytes: int = MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         inspect_observations: bool = True,
+        traversal_budget: Optional[List[int]] = None,
     ) -> _NormalizedPrefetchResult:
         """Normalize one provider result within the remaining operation budget.
 
@@ -487,6 +489,14 @@ class MemoryManager:
         previous provider has exhausted the operation budget: the provider's
         context still gets normalized, but its observation container is never
         touched.
+
+        ``traversal_budget`` is an optional shared node counter that
+        ``prefetch_all_result`` allocates once per operation and threads
+        through every candidate — valid or malformed — so a provider cannot
+        force a fresh ``MAX_MEMORY_OBSERVATION_NODES`` traversal for each of
+        many malformed payloads. Once the shared budget is exhausted, every
+        subsequent freeze call fails on its first decrement and the malformed
+        tail is dropped without deep recursion.
         """
         if raw_result is None:
             raw_result = ""
@@ -564,7 +574,7 @@ class MemoryManager:
                     raise ValueError("provider name is too long")
 
                 frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
-                    candidate.payload
+                    candidate.payload, budget=traversal_budget
                 )
                 encoded = json.dumps(
                     {
@@ -680,6 +690,10 @@ class MemoryManager:
         observations: List[MemoryObservation] = []
         observation_bytes = 0
         observation_budget_exhausted = False
+        # Shared node budget spanning every candidate — malformed included —
+        # inspected during this operation. Without it, each malformed payload
+        # gets a fresh per-payload budget and can force a full traversal.
+        traversal_budget: List[int] = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
         for provider in self._providers:
             try:
                 raw_result = self._prefetch_provider(
@@ -692,6 +706,7 @@ class MemoryManager:
                     remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES
                     - observation_bytes,
                     inspect_observations=not observation_budget_exhausted,
+                    traversal_budget=traversal_budget,
                 )
                 result = normalized.result
                 if result.context and result.context.strip():

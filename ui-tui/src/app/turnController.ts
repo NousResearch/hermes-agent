@@ -114,6 +114,8 @@ const clear = (t: Timer): null => {
 }
 
 class TurnController {
+  awaitingCompletion = false
+  completionEpoch = 0
   bufRef = ''
   interrupted = false
   lastStatusNote = ''
@@ -351,6 +353,7 @@ class TurnController {
       return
     }
 
+    this.awaitingCompletion = false
     patchUiState({ status: 'interrupted' })
 
     this.statusTimer = setTimeout(() => {
@@ -556,6 +559,7 @@ class TurnController {
   }
 
   recordError() {
+    this.awaitingCompletion = false
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -675,6 +679,7 @@ class TurnController {
     // Real turn end: surface any notice held back while busy. Done after
     // idle() flips busy=false so applyNotice() reaches the visible slot.
     this.flushPendingNotice()
+    this.awaitingCompletion = false
 
     return { finalMessages, finalText, wasInterrupted }
   }
@@ -929,6 +934,8 @@ class TurnController {
   }
 
   reset() {
+    this.awaitingCompletion = false
+    this.completionEpoch += 1
     this.clearReasoning()
     this.clearStatusTimer()
     this.idle()
@@ -990,7 +997,16 @@ class TurnController {
     patchTurnState({ streaming: boundedLiveRenderText(visible) })
   }
 
+  completionSnapshot() {
+    return {
+      awaiting: this.awaitingCompletion,
+      epoch: this.completionEpoch
+    }
+  }
+
   startMessage() {
+    this.completionEpoch += 1
+    this.awaitingCompletion = true
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

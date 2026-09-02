@@ -1153,7 +1153,7 @@ class TestContextFileReadTimeout:
         # over: an earlier test re-imports agent.prompt_builder, so the
         # sys.modules entry can be a different module object.
         pb_mod = sys.modules[build_context_files_prompt.__module__]
-        monkeypatch.setattr(pb_mod, "_CONTEXT_FILE_READ_TIMEOUT_SECS", 0.05)
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
 
         original_read_text = Path.read_text
 

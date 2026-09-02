@@ -128,7 +128,7 @@ class TestSubdirectoryHintTracker:
 
         # Patch the module object the hint tracker's helper closes over.
         pb_mod = sys.modules[sh_mod._read_text_with_timeout.__module__]
-        monkeypatch.setattr(pb_mod, "_CONTEXT_FILE_READ_TIMEOUT_SECS", 0.05)
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
 
         original_read_text = Path.read_text
 

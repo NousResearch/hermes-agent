@@ -59,11 +59,25 @@ logger = logging.getLogger(__name__)
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
-# Read deadline for context files (SOUL.md, AGENTS.md, .cursorrules, ...).
+# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
+# ...); overridable via ``context_file_read_timeout`` in config.yaml.
 # Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
 # NFS) can fault-in an evicted file and block a cold read indefinitely, which
 # stalls system-prompt assembly before the first turn.
 _CONTEXT_FILE_READ_TIMEOUT_SECS = 5.0
+
+
+def _get_context_file_read_timeout() -> float:
+    """``context_file_read_timeout`` from config.yaml, else the 5s default."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        val = load_config_readonly().get("context_file_read_timeout")
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_read_timeout from config: %s", e)
+    return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
 def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
@@ -75,13 +89,13 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     ``try/except`` handling at each site is unchanged.
     """
     if timeout is None:
-        timeout = _CONTEXT_FILE_READ_TIMEOUT_SECS
+        timeout = _get_context_file_read_timeout()
     result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
 
     def _reader() -> None:
         try:
             result.put((True, path.read_text(encoding="utf-8")))
-        except BaseException as exc:  # re-raised on the caller thread
+        except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
     threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}").start()

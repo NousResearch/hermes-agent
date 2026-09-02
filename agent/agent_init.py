@@ -1178,8 +1178,15 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     if agent._use_prompt_caching:
+        _is_zai_cache = agent._use_native_cache_layout and (
+            (agent.provider or "").lower() in {"zai", "glm", "z-ai", "z.ai", "zhipu"}
+            or base_url_host_matches(agent.base_url or "", "z.ai")
+            or base_url_host_matches(agent.base_url or "", "bigmodel.cn")
+        )
         if agent._use_native_cache_layout and agent.provider == "anthropic":
             source = "native Anthropic"
+        elif _is_zai_cache:
+            source = "Z.AI/GLM Anthropic-wire (cache_control)"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"
         else:

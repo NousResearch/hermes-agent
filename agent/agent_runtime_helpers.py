@@ -1812,6 +1812,16 @@ def anthropic_prompt_cache_policy(
     # them in past the is_claude gate. M3 is excluded above.
     if is_anthropic_wire and is_minimax_route:
         return True, True
+    # Z.AI / Zhipu GLM on its Anthropic-compatible endpoint (``.../api/anthropic``) honours the same
+    # cache_control contract (cached reads ~0.1x). GLM models miss the is_claude gate and would fall
+    # through to (False, False), re-billing the full prompt every turn; opt them in like MiniMax.
+    is_zai_route = (
+        provider_lower in {"zai", "glm", "z-ai", "z.ai", "zhipu"}
+        or base_url_host_matches(eff_base_url, "z.ai")
+        or base_url_host_matches(eff_base_url, "bigmodel.cn")
+    )
+    if is_anthropic_wire and is_zai_route:
+        return True, True
     # Qwen/Alibaba on OpenCode and DashScope accept envelope cache_control on the OpenAI wire
     # (pi-mono's "alibaba" cacheControlFormat). DeepSeek on OpenCode is excluded: its relay 400s on
     # block-array content. Family set/predicate shared with the effective_cache_ttl clamp.

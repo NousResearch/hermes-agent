@@ -346,21 +346,29 @@ def _safe_skills_path(skills_dir: Path) -> str:
     return str(safe_dir)
 
 
-def _is_excluded_skills_dir(rel: Path) -> bool:
-    """True if *rel* sits under a directory excluded from skill scanning.
+def _iter_syncable_files(root: Path):
+    """Yield ``(path, rel)`` for every regular, non-symlink file under *root*
+    that a sandbox should receive.
 
-    Reuses ``agent.skill_utils.EXCLUDED_SKILL_DIRS`` so the sync path agrees
-    with discovery. These are local bookkeeping and dependency directories
-    (``.hub`` download cache, ``.archive``, ``.curator_backups``,
-    ``node_modules``, ``__pycache__``, ``.git``, ...) that the remote agent
-    never reads.
+    Prunes ``agent.skill_utils.EXCLUDED_SKILL_DIRS`` *before* descending, so
+    the walk never enters local bookkeeping and dependency trees (``.hub``
+    download cache, ``.archive``, ``.curator_backups``, ``node_modules``,
+    ``__pycache__``, ``.git``, ...) that the remote agent never reads — the
+    sync path agrees with discovery on what counts as skill content.
 
     This deliberately does not use ``is_excluded_skill_path()``, which also
     prunes ``references/``, ``templates/``, ``assets/`` and ``scripts/``.
     Those hold progressive-disclosure support files and bundled scripts the
     sandbox does execute, so they must keep syncing.
     """
-    return any(part in EXCLUDED_SKILL_DIRS for part in rel.parts[:-1])
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
+        base = Path(dirpath)
+        for name in filenames:
+            item = base / name
+            if item.is_symlink() or not item.is_file():
+                continue
+            yield item, item.relative_to(root)
 
 
 def iter_skills_files(
@@ -379,12 +387,7 @@ def iter_skills_files(
     skills_dir = hermes_home / "skills"
     if skills_dir.is_dir():
         container_root = f"{container_base.rstrip('/')}/skills"
-        for item in skills_dir.rglob("*"):
-            if item.is_symlink() or not item.is_file():
-                continue
-            rel = item.relative_to(skills_dir)
-            if _is_excluded_skills_dir(rel):
-                continue
+        for item, rel in _iter_syncable_files(skills_dir):
             result.append({
                 "host_path": str(item),
                 "container_path": f"{container_root}/{rel}",
@@ -397,12 +400,7 @@ def iter_skills_files(
             if not ext_dir.is_dir():
                 continue
             container_root = f"{container_base.rstrip('/')}/external_skills/{idx}"
-            for item in ext_dir.rglob("*"):
-                if item.is_symlink() or not item.is_file():
-                    continue
-                rel = item.relative_to(ext_dir)
-                if _is_excluded_skills_dir(rel):
-                    continue
+            for item, rel in _iter_syncable_files(ext_dir):
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",
@@ -411,12 +409,7 @@ def iter_skills_files(
             if not proj_dir.is_dir():
                 continue
             container_root = f"{container_base.rstrip('/')}/project_skills/{idx}"
-            for item in proj_dir.rglob("*"):
-                if item.is_symlink() or not item.is_file():
-                    continue
-                rel = item.relative_to(proj_dir)
-                if _is_excluded_skills_dir(rel):
-                    continue
+            for item, rel in _iter_syncable_files(proj_dir):
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",

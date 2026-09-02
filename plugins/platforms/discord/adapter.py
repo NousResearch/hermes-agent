@@ -646,9 +646,9 @@ class VoiceReceiver:
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
-        # Decryption
-        self._secret_key: Optional[bytes] = None
-        self._dave_session = None
+        # Decryption state is read live from the connection for every packet.
+        # discord.py rotates the key, SSRC, and DAVE session on reconnect while
+        # keeping the VoiceConnectionState object alive.
         self._bot_ssrc: int = 0
 
         # SSRC -> user_id mapping (populated from SPEAKING events)
@@ -675,9 +675,7 @@ class VoiceReceiver:
     def start(self):
         """Start listening for voice packets."""
         conn = self._vc._connection
-        self._secret_key = bytes(conn.secret_key)
-        self._dave_session = conn.dave_session
-        self._bot_ssrc = conn.ssrc
+        self._bot_ssrc = self._live_ssrc(conn)
 
         self._install_speaking_hook(conn)
         conn.add_socket_listener(self._on_packet)
@@ -749,9 +747,34 @@ class VoiceReceiver:
     # Packet handler (called from SocketReader thread)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _live_ssrc(conn) -> int:
+        """Return the current bot SSRC, or zero during a voice handshake."""
+        try:
+            return int(conn.ssrc)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _live_box(conn):
+        """Build an AEAD box for the current voice-session key.
+
+        The key is deliberately read per packet. discord.py replaces it on a
+        reconnect but retains the enclosing VoiceConnectionState object.
+        """
+        try:
+            key = bytes(conn.secret_key)
+        except (TypeError, ValueError):
+            return None
+        if len(key) != 32:
+            return None
+        import nacl.secret
+        return nacl.secret.Aead(key)
+
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
+        conn = self._vc._connection
 
         # Log first few raw packets for debugging
         self._packet_debug_count += 1
@@ -775,7 +798,11 @@ class VoiceReceiver:
         first_byte = data[0]
         _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
 
-        # Skip bot's own audio
+        # Skip bot's own audio. discord.py rotates SSRC on reconnect, so this
+        # must be read live alongside the key.
+        live_bot_ssrc = self._live_ssrc(conn)
+        if live_bot_ssrc:
+            self._bot_ssrc = live_bot_ssrc
         if ssrc == self._bot_ssrc:
             return
 
@@ -813,9 +840,10 @@ class VoiceReceiver:
         nonce[:4] = payload_with_nonce[-4:]
         encrypted = bytes(payload_with_nonce[:-4])
 
+        box = self._live_box(conn)
+        if box is None:
+            return
         try:
-            import nacl.secret  # noqa: E402 — delayed import, only in voice path
-            box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
             if self._packet_debug_count <= 10:
@@ -852,21 +880,23 @@ class VoiceReceiver:
                 return
 
         # --- DAVE E2EE decrypt ---
-        if self._dave_session:
+        dave = conn.dave_session
+        if dave is not None:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
             if user_id:
                 try:
                     import davey
-                    decrypted = self._dave_session.decrypt(
+                    decrypted = dave.decrypt(
                         user_id, davey.MediaType.audio, decrypted
                     )
                 except Exception as e:
-                    # Unencrypted passthrough — use NaCl-decrypted data as-is
-                    if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                        return
+                    # DAVE may be in passthrough mode, or its MLS group may not
+                    # yet have a decryptor for this SSRC. In either case retain
+                    # the NaCl-decrypted payload. If it is still E2EE bytes,
+                    # Opus decode rejects that packet and self-recovers.
+                    if self._packet_debug_count <= 10:
+                        logger.debug("DAVE decrypt passthrough for ssrc=%d: %s", ssrc, e)
             # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
             # Opus decode directly — audio may be in passthrough mode.
             # Buffer will get a user_id when SPEAKING event arrives later.

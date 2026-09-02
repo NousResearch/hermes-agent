@@ -56,6 +56,7 @@ import {
   setBusy,
   setSessions
 } from './session'
+import { sessionOwnerScopeFor } from './session-owner-ledger'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   requestForSessionProfile,
@@ -243,6 +244,15 @@ export function foregroundSessionScopes(): Set<string> {
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)
     addRouteScope(tile.ownerRoute)
+
+    // Route-less tile rung — see session-owner-ledger.
+    if (!tile.ownerRoute) {
+      const scope = sessionOwnerScopeFor(tile.storedSessionId)
+
+      if (scope) {
+        scopes.add(scope)
+      }
+    }
   }
 
   // Create → foreground holds. A hold whose scope the rungs above already

@@ -5428,7 +5428,12 @@ def apply_terminal_config_to_env(
             if raw_cwd in {".", "auto", "cwd"}:
                 continue
             if isinstance(value, str):
-                value = os.path.expanduser(value)
+                # Expand ${VAR} references so values like "${DEFAULT_CWD}" resolve
+                # against the secret scope. load_config() runs _expand_env_vars on the
+                # full config, but apply_terminal_config_to_env is also called from
+                # child processes (TUI, dashboard PTY) where raw sub-config hasn't
+                # been through that path yet.
+                value = os.path.expanduser(_expand_env_vars(value))
         if should_override or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target

@@ -43,6 +43,15 @@ logger = logging.getLogger("hermes_state")
 
 _FTS_HOLDER_ESCALATE_ATTEMPTS = 3
 _FTS_HOLDER_ESCALATE_SECONDS = 60.0
+# Minimum spacing between in-process retries of a deferred stale-FTS rebuild
+# (``retry_deferred_fts_recovery``). The startup open already paid the full
+# admission wait once; later retries are non-blocking probes on this cadence
+# so a live holder never stalls a long-lived writer.
+_FTS_STALE_RETRY_SECONDS = 60.0
+# Each failed retry doubles the spacing up to this cap, so a holder that never
+# goes away (a second long-lived writer) costs one deferral warning per hour,
+# not one per minute. A successful rebuild clears the stale state entirely.
+_FTS_STALE_RETRY_MAX_SECONDS = 3600.0
 
 # Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
 # in-memory SQLite database, so derive the statements once per process.
@@ -422,8 +431,14 @@ class SessionSchemaMixin:
             )
             return None
 
-    def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool) -> bool:
-        """Atomically rebuild stale base/trigram indexes and resume syncing."""
+    def _recover_stale_fts(
+        self, cursor: sqlite3.Cursor, *, legacy: bool, timeout_seconds=None
+    ) -> bool:
+        """Atomically rebuild stale base/trigram indexes and resume syncing.
+
+        *timeout_seconds* bounds the cross-process admission wait; None uses
+        the full startup budget, ``0`` is the non-blocking in-process retry.
+        """
         foreign_holders = self._foreign_state_db_holders()
         if foreign_holders:
             now = time.time()
@@ -502,7 +517,9 @@ class SessionSchemaMixin:
         # authority (fail closed). Losing the race means another process is
         # already performing this exact recovery; the stale breadcrumb stays
         # set, so this process simply keeps FTS detached and retries later.
-        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+        with fts_rebuild_admission(
+            getattr(self, "db_path", None), timeout_seconds=timeout_seconds
+        ) as admitted:
             if not admitted:
                 logger.warning(
                     "Deferred stale state.db FTS rebuild: another process "
@@ -511,6 +528,65 @@ class SessionSchemaMixin:
                 )
                 return False
             return self._recover_stale_fts_locked(cursor, legacy=legacy)
+
+    def retry_deferred_fts_recovery(self) -> bool:
+        """Retry a deferred stale-FTS rebuild on this open SessionDB.
+
+        ``_recover_stale_fts`` runs at open and fails closed when foreign
+        holders or the rebuild lock are busy, leaving ``_fts_stale`` set and
+        search on the LIKE fallback. Live write/search paths must never start
+        a full rebuild (#97940), so on a short-lived CLI that deferral is
+        cleared by the next process open — but a gateway opens state.db
+        once and stays up for days, so "next open" never came (#100108).
+        This is the in-process retry: bounded backoff from
+        ``_FTS_STALE_RETRY_SECONDS`` doubling to ``_FTS_STALE_RETRY_MAX_SECONDS``,
+        non-blocking admission (``timeout=0``) so a live holder is skipped and
+        tried again later, no new thread — the caller is an existing periodic
+        tick (gateway housekeeping).
+
+        Returns True only when the index was rebuilt and sync triggers
+        restored. Never raises.
+        """
+        if not getattr(self, "_fts_stale", False):
+            return False
+        if getattr(self, "read_only", False) or getattr(self, "_conn", None) is None:
+            return False
+        now = time.monotonic()
+        if now < getattr(self, "_fts_stale_retry_after", 0.0):
+            return False
+        interval = float(
+            getattr(self, "_fts_stale_retry_interval", 0.0)
+        ) or _FTS_STALE_RETRY_SECONDS
+        self._fts_stale_retry_after = now + interval
+        self._fts_stale_retry_interval = min(
+            interval * 2.0, _FTS_STALE_RETRY_MAX_SECONDS
+        )
+        try:
+            with self._lock:
+                if self._conn is None or not self._fts_stale:
+                    return False
+                cursor = self._conn.cursor()
+                legacy = self._db_has_legacy_inline_fts(cursor)
+                recovered = self._recover_stale_fts(
+                    cursor, legacy=legacy, timeout_seconds=0.0
+                )
+                if recovered:
+                    # CJK was detached alongside the base indexes; its own
+                    # ensure path decides when it comes back online.
+                    self._ensure_fts_cjk_schema(cursor)
+                    self._fts_stale_retry_interval = 0.0
+                try:
+                    self._conn.commit()
+                except sqlite3.Error:
+                    pass
+                return recovered
+        except Exception:  # noqa: BLE001 - background retry must never raise
+            logger.warning(
+                "In-process retry of the deferred stale state.db FTS rebuild "
+                "failed; will retry later.",
+                exc_info=True,
+            )
+            return False
 
     def _recover_stale_fts_locked(
         self, cursor: sqlite3.Cursor, *, legacy: bool
@@ -1510,7 +1586,8 @@ class SessionSchemaMixin:
         breadcrumb is persisted, mirroring ``_enter_fts_fail_open``'s
         ordering contract: triggers must never be live over an index with an
         unrebuilt gap. FTS stays detached for this instance; the winner's
-        rebuild — or ``_recover_stale_fts`` at the next startup — restores
+        rebuild — or ``retry_deferred_fts_recovery`` from the gateway
+        housekeeping tick, or ``_recover_stale_fts`` at the next startup — restores
         the index and triggers atomically.
         """
         with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:

@@ -2382,7 +2382,9 @@ class SessionSearchMixin:
         FAILS CLOSED: if another process holds the rebuild lock beyond the
         bounded wait, this call defers (returns 0) rather than racing it.
         Callers already treat 0 as "rebuild made no progress" and fall back
-        to the stale-FTS breadcrumb path, which retries at next startup.
+        to the stale-FTS breadcrumb path, which retries in-process from the
+        gateway housekeeping tick (``retry_deferred_fts_recovery``) and at
+        next startup.
 
         Safe to call when FTS tables don't exist (skips them).
         Returns the number of FTS indexes that were rebuilt.

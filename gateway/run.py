@@ -32621,6 +32621,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
+    FTS_STALE_RETRY_EVERY = 1  # SessionDB rate-limits the real work (_FTS_STALE_RETRY_SECONDS)
 
     # Every platform media cache prunes on the same hourly cadence — one loop
     # over (name, cleanup_fn), not a copy-pasted try/except per cache.
@@ -32754,6 +32755,29 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                         release_or_close(_adb)
             except Exception as e:
                 logger.debug("Auto-archive tick error: %s", e)
+
+        # Deferred stale-FTS rebuild retry (#100108). A SessionDB that opened
+        # while another process held state.db / the rebuild lock fails closed
+        # and leaves search on the LIKE fallback; a short-lived CLI clears
+        # that on its next open, but the gateway opens once and stays up for
+        # days. Retry here, on the existing tick, against the shared
+        # instances this process already holds: non-blocking admission, no
+        # new thread, rate-limited inside SessionDB. No-op when nothing is
+        # stale (one attribute read per instance).
+        if tick_count % FTS_STALE_RETRY_EVERY == 0:
+            try:
+                from hermes_state_registry import live_shared_session_dbs
+
+                for _sdb in live_shared_session_dbs():
+                    _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
+                    if callable(_retry) and _retry():
+                        logger.info(
+                            "Deferred state.db FTS rebuild completed in-process "
+                            "for %s; full-text search restored.",
+                            getattr(_sdb, "db_path", "state.db"),
+                        )
+            except Exception as exc:
+                logger.debug("Deferred FTS retry tick error: %s", exc)
 
         # This is the long-lived messaging-gateway counterpart to the TUI idle
         # reaper. The helper is config-gated and rate-limited, so calling it on

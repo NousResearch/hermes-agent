@@ -7,6 +7,7 @@ hermes_state re-imports every name here for backward compatibility.
 """
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -925,6 +926,32 @@ _IS_WINDOWS = sys.platform == "win32"
 # short bounded wait suffices — never re-enter the full timeout.
 _LOCK_BREAK_REACQUIRE_SECONDS = 5.0
 
+# errno set for "another process holds this advisory lock". flock() reports
+# contention as EWOULDBLOCK/EAGAIN; msvcrt.locking() as EACCES (and EDEADLK
+# when its internal retry gives up). Anything else — ESTALE on a dropped NFS
+# handle, ENOTSUP/ENOLCK on a filesystem without advisory locks, EIO — is a
+# persistent environment failure that no amount of polling turns into an
+# acquire. Treating every OSError as contention made such a failure look
+# like a live holder and burned the full 120s admission timeout on every
+# attempt (#100108, PR #100130).
+_LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK}
+if hasattr(errno, "EDEADLK"):
+    _LOCK_CONTENTION_ERRNOS.add(errno.EDEADLK)
+
+
+def is_advisory_lock_contention(exc: BaseException) -> bool:
+    """True when *exc* means another process holds the advisory lock.
+
+    False for every other ``OSError`` (ESTALE, ENOTSUP, ENOLCK, EIO, ...):
+    callers must fail closed IMMEDIATELY rather than poll to the deadline,
+    because retrying cannot succeed and the wait only stalls the caller.
+    """
+    if isinstance(exc, BlockingIOError):
+        return True
+    if not isinstance(exc, OSError):
+        return False
+    return exc.errno in _LOCK_CONTENTION_ERRNOS
+
 
 def _proc_start_ticks(pid: int):
     """Kernel start time of *pid* in clock ticks, or None when unknowable.
@@ -1033,7 +1060,11 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     """Bounded POSIX flock acquire with orphaned-holder staleness break.
 
     Returns ``(acquired, handle)``; *handle* may have been re-opened (the
-    caller owns closing whichever handle comes back).
+    caller owns closing whichever handle comes back). *acquired* is True on
+    success, False when a holder kept the lock past the deadline, and None
+    when a non-contention ``OSError`` (ESTALE/ENOTSUP/EIO) made acquisition
+    impossible — already logged here; callers treat None as "not acquired"
+    without emitting the held-by-another-process warning.
 
     Why breaking exists at all (issue #100108): ``flock`` belongs to the open
     file DESCRIPTION, which ``fork()`` duplicates into every child. A holder
@@ -1056,7 +1087,21 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     while True:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
+        except (BlockingIOError, OSError) as exc:
+            if not is_advisory_lock_contention(exc):
+                # ESTALE / ENOTSUP / EIO: not a holder, and polling cannot
+                # fix it. Defer NOW instead of pretending a live process
+                # held the lock for the whole timeout (#100108).
+                logger.warning(
+                    "Could not acquire %s %s (%s) — deferring rather than "
+                    "waiting out the %.0fs holder timeout on a "
+                    "non-contention error.",
+                    description,
+                    lock_path,
+                    exc,
+                    timeout_seconds,
+                )
+                return None, handle
             if time.monotonic() < deadline:
                 time.sleep(poll_seconds)
                 continue
@@ -1129,7 +1174,7 @@ def _describe_lock_holder(record) -> str:
 
 
 @contextlib.contextmanager
-def fts_rebuild_admission(db_path):
+def fts_rebuild_admission(db_path, *, timeout_seconds=None):
     """Serialize full structural FTS rebuilds on *db_path* across processes.
 
     Yields True when this process holds the rebuild authority, False when the
@@ -1142,10 +1187,20 @@ def fts_rebuild_admission(db_path):
     ``db_path`` may be a str or Path; None (in-memory DB / tests without a
     file path) yields True — a private in-memory DB has no cross-process
     surface.
+
+    *timeout_seconds* defaults to ``_FTS_REBUILD_LOCK_TIMEOUT_SECONDS``.
+    Opportunistic in-process retries (``retry_deferred_fts_recovery``) pass
+    ``0`` so a live holder never stalls a long-lived writer for two minutes;
+    the orphaned-holder break still applies on the single attempt.
     """
     if db_path is None:
         yield True
         return
+    timeout = (
+        _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else max(float(timeout_seconds), 0.0)
+    )
     lock_path = f"{db_path}.fts_rebuild.lock"
     try:
         handle = open(lock_path, "a+b")
@@ -1171,7 +1226,7 @@ def fts_rebuild_admission(db_path):
     acquired = False
     try:
         if _IS_WINDOWS:
-            deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
+            deadline = time.monotonic() + timeout
             while True:
                 try:
                     import msvcrt
@@ -1180,7 +1235,15 @@ def fts_rebuild_admission(db_path):
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     acquired = True
                     break
-                except (BlockingIOError, OSError):
+                except (BlockingIOError, OSError) as exc:
+                    if not is_advisory_lock_contention(exc):
+                        logger.warning(
+                            "Could not acquire FTS rebuild lock %s (%s) — "
+                            "deferring on a non-contention error.",
+                            lock_path, exc,
+                        )
+                        acquired = None
+                        break
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
@@ -1188,20 +1251,35 @@ def fts_rebuild_admission(db_path):
             acquired, handle = _acquire_db_flock(
                 lock_path,
                 handle,
-                _FTS_REBUILD_LOCK_TIMEOUT_SECONDS,
+                timeout,
                 _FTS_REBUILD_LOCK_POLL_SECONDS,
                 "FTS rebuild lock",
             )
-        if not acquired:
+        if acquired is None:
+            # Non-contention failure: already logged with the real errno;
+            # a "held by another process" line here would be a lie.
+            acquired = False
+        elif not acquired:
             record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
-            logger.warning(
-                "FTS rebuild lock %s held by another process for more than "
-                "%.0fs — deferring this rebuild to avoid racing the holder "
-                "(the stale-FTS breadcrumb keeps it retryable). "
-                "Recorded holder: %s.",
-                lock_path, _FTS_REBUILD_LOCK_TIMEOUT_SECONDS,
-                _describe_lock_holder(record),
-            )
+            if timeout <= 0:
+                # Non-blocking probe from an in-process retry: a busy lock
+                # is expected and will be tried again, so keep it quiet.
+                logger.info(
+                    "FTS rebuild lock %s is busy — deferring this retry "
+                    "(the stale-FTS breadcrumb keeps it retryable). "
+                    "Recorded holder: %s.",
+                    lock_path,
+                    _describe_lock_holder(record),
+                )
+            else:
+                logger.warning(
+                    "FTS rebuild lock %s held by another process for more than "
+                    "%.0fs — deferring this rebuild to avoid racing the holder "
+                    "(the stale-FTS breadcrumb keeps it retryable). "
+                    "Recorded holder: %s.",
+                    lock_path, timeout,
+                    _describe_lock_holder(record),
+                )
         yield acquired
     finally:
         try:

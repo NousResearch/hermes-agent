@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
     from hermes_state import SessionDB
@@ -287,6 +287,18 @@ def close_all() -> int:
         _teardown(generation.db)
         closed += 1
     return closed
+
+
+def live_shared_session_dbs() -> List["SessionDB"]:
+    """Snapshot of every live (non-retired) shared SessionDB in this process.
+
+    For periodic in-process maintenance (the gateway housekeeping tick's
+    deferred-FTS retry). Refcounts are NOT touched: the caller only invokes
+    a method on an instance that some holder already keeps alive; a
+    concurrent final release closes it and the callee sees ``_conn is None``.
+    """
+    with _lock:
+        return [g.db for g in _generations.values() if not g.retired]
 
 
 def stats() -> Dict[str, int]:

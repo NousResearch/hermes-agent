@@ -834,6 +834,7 @@ const sidebars: SidebarsConfig = {
           label: 'Internals',
           items: [
             'developer-guide/tools-runtime',
+            'developer-guide/untrusted-tool-results',
             'developer-guide/browser-supervisor',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',

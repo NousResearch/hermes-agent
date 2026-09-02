@@ -148,6 +148,7 @@ import {
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
+  cachedSessionRow,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
@@ -2220,9 +2221,7 @@ export function useSessionActions({
       // Same contract as branchStoredSession: the transcript read and the
       // branch RPC must both land on the backend that owns the parent, not on
       // whichever socket is active.
-      const ownerRoute = storedSessionId
-        ? sessionOwnerRouteFromRow($sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)))
-        : undefined
+      const ownerRoute = storedSessionId ? sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId)) : undefined
 
       if (storedSessionId) {
         try {
@@ -2291,9 +2290,11 @@ export function useSessionActions({
       // Right-clicking a session outside the paginated sidebar window is a cache
       // miss: resolve it (cache → active backend → cross-profile) so the branch
       // is created on the parent's OWNING profile, not whichever is live (#67603).
+      // cachedSessionRow spans Recents, cron/messaging and the profile-scoped
+      // project tree, and prefers the self-describing row — an ownerless legacy
+      // Recents copy of the same id must not mask the row carrying the owner.
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
-        (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
+        cachedSessionRow(storedSessionId) ?? (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
 
       const profile = sessionProfile ?? stored?.profile
 

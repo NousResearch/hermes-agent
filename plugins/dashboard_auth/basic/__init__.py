@@ -106,6 +106,12 @@ _SIG_LEN = hashlib.sha256().digest_size
 
 LAST_SKIP_REASON: str = ""
 
+# Outcome of the last _load_config_basic_auth_section() call, for the
+# register() success log: "" (never consulted — e.g. tests stub the loader),
+# "ok:<path>", "no-section:<path>", or "load-failed". Paths are logged, never
+# credential values (#88657).
+LAST_CONFIG_STATUS: str = ""
+
 
 # ---------------------------------------------------------------------------
 # Password hashing (stdlib scrypt)
@@ -336,21 +342,47 @@ def _load_config_basic_auth_section() -> dict:
     """Return ``dashboard.basic_auth`` from config.yaml, or ``{}``.
 
     Robust to load_config() raising, the keys being absent, or the value
-    not being a dict — every shape falls through to ``{}``.
+    not being a dict — every shape falls through to ``{}``. The outcome is
+    recorded in ``LAST_CONFIG_STATUS`` (with the config path consulted) so
+    register() can disclose which side the credentials came from (#88657).
     """
+    global LAST_CONFIG_STATUS
+    LAST_CONFIG_STATUS = ""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import cfg_get, get_config_path, load_config
 
         cfg = load_config()
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
-        logger.debug(
+        LAST_CONFIG_STATUS = "load-failed"
+        logger.warning(
             "dashboard-auth-basic: load_config() raised %s; "
-            "falling back to env-only configuration",
+            "dashboard.basic_auth from config.yaml is unavailable — only "
+            "HERMES_DASHBOARD_BASIC_AUTH_* env vars will be consulted.",
             exc,
         )
         return {}
     section = cfg_get(cfg, "dashboard", "basic_auth", default=None)
-    return section if isinstance(section, dict) else {}
+    try:
+        path = str(get_config_path())
+    except Exception:  # noqa: BLE001 — disclosure is best-effort
+        path = "<unresolved>"
+    if not isinstance(section, dict) or not _section_has_credentials(section):
+        # load_config() pre-fills an all-empty basic_auth schema template, so
+        # "section present but every credential key empty" is the same
+        # operator-facing question ("why were my config creds ignored?") as no
+        # section at all.
+        LAST_CONFIG_STATUS = f"no-section:{path}"
+        return {}
+    LAST_CONFIG_STATUS = f"ok:{path}"
+    return section
+
+
+def _section_has_credentials(section: dict) -> bool:
+    """True when any credential-bearing key holds a non-empty value."""
+    return any(
+        str(section.get(key, "") or "").strip()
+        for key in ("username", "password", "password_hash", "secret")
+    )
 
 
 def _resolve(env_name: str, cfg_section: dict, cfg_key: str) -> str:
@@ -400,8 +432,9 @@ def register(ctx) -> None:
     configured, it registers a password provider that the login page
     renders as a credential form.
     """
-    global LAST_SKIP_REASON
+    global LAST_SKIP_REASON, LAST_CONFIG_STATUS
     LAST_SKIP_REASON = ""
+    LAST_CONFIG_STATUS = ""
 
     section = _load_config_basic_auth_section()
     username = _resolve(
@@ -452,6 +485,7 @@ def register(ctx) -> None:
     ).strip()
     if plaintext_from_env:
         password_hash = hash_password(plaintext_from_env)
+        password_src = "env"
         logger.info(
             "dashboard-auth-basic: hashed env-supplied password in-memory "
             "(overrides any config password_hash)."
@@ -459,11 +493,14 @@ def register(ctx) -> None:
     elif not password_hash:
         # config-only plaintext password.
         password_hash = hash_password(plaintext)
+        password_src = "config (password)"
         logger.info(
             "dashboard-auth-basic: hashed plaintext password in-memory. "
             "For production, precompute dashboard.basic_auth.password_hash "
             "and remove the plaintext password from config."
         )
+    else:
+        password_src = "config (password_hash)"
 
     secret = _resolve_secret(section)
 
@@ -485,7 +522,29 @@ def register(ctx) -> None:
         return
 
     ctx.register_dashboard_auth_provider(provider)
+    username_src = (
+        "env"
+        if os.environ.get(
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME", ""
+        ).strip()
+        else "config"
+    )
+    if LAST_CONFIG_STATUS == "load-failed":
+        config_note = "config.yaml load FAILED — env vars were the only source"
+    elif LAST_CONFIG_STATUS.startswith("no-section:"):
+        config_note = (
+            f"{LAST_CONFIG_STATUS.split(':', 1)[1]} has no "
+            "dashboard.basic_auth section — env vars were the only source"
+        )
+    elif LAST_CONFIG_STATUS.startswith("ok:"):
+        config_note = f"config consulted at {LAST_CONFIG_STATUS.split(':', 1)[1]}"
+    else:
+        config_note = "config source not identified"
     logger.info(
-        "dashboard-auth-basic: registered password provider (username=%s)",
+        "dashboard-auth-basic: registered password provider "
+        "(username=%s; username from %s; password from %s; %s)",
         username,
+        username_src,
+        password_src,
+        config_note,
     )

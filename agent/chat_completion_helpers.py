@@ -2838,7 +2838,12 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
+            # Accumulate reasoning content. Compatible relays may use ``thinking``
+            # instead of the standard field names; pydantic parks undeclared fields
+            # in ``model_extra``.
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            if not reasoning_text and isinstance(getattr(delta, "model_extra", None), dict):
+                reasoning_text = delta.model_extra.get("thinking")
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(

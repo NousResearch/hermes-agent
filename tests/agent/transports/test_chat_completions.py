@@ -33,6 +33,81 @@ class TestChatCompletionsBasic:
         assert normalized.tool_calls is None
         assert normalized.finish_reason == "stop"
 
+    def test_normalize_response_maps_thinking_to_reasoning(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="answer",
+                        tool_calls=None,
+                        thinking="fallback thought",
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.reasoning == "fallback thought"
+
+    def test_normalize_response_ignores_empty_thinking(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="answer",
+                        tool_calls=None,
+                        thinking="",
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.reasoning is None
+
+    def test_normalize_response_prefers_reasoning_over_thinking(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="answer",
+                        tool_calls=None,
+                        reasoning="standard thought",
+                        thinking="fallback thought",
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.reasoning == "standard thought"
+
+    def test_normalize_response_prefers_reasoning_content_over_thinking(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="answer",
+                        tool_calls=None,
+                        reasoning_content="standard thought",
+                        thinking="fallback thought",
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.reasoning is None
+        assert normalized.reasoning_content == "standard thought"
+
     def test_normalize_response_allows_sparse_tool_call_fields(self, transport):
         response = SimpleNamespace(
             choices=[

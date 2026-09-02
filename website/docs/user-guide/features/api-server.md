@@ -347,11 +347,20 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 ```json
 {
   "run_id": "run_abc123",
+  "session_id": "space-session",
   "status": "started"
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string or an OpenAI-style message array. Message
+content can contain `text` and inline `image_url` parts, including
+`data:image/...` URLs. Uploaded files and non-image data URLs are rejected.
+
+Pass the transcript ID in `X-Hermes-Session-Id`, in the optional body
+`session_id`, or in both with the same value. Hermes returns the resolved ID in
+the 202 JSON body, the `X-Hermes-Session-Id` response header, and subsequent run
+status. `instructions`, `conversation_history`, and `previous_response_id` remain
+optional.
 
 ### GET /v1/runs/\{run_id\}
 

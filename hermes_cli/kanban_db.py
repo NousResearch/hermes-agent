@@ -9614,29 +9614,63 @@ def _state_db_path_for_assignee(assignee: Optional[str]) -> Optional[Path]:
     return Path(home) / "state.db"
 
 
-def _cumulative_session_cost(state_db_path, workspace) -> float:
+def _cumulative_session_cost(state_db_path, workspace, task_id=None) -> float:
     """Sum ``estimated_cost_usd`` across a card's kanban worker sessions.
 
-    The mapping is by workspace, not by an explicit run->session join: a card
-    is spawned with ``cwd=workspace`` (and ``TERMINAL_CWD=workspace``), so
-    every session its worker ever produced sits under that one path. Scoping
-    the ledger read to ``cwd`` under the task's workspace captures cumulative
-    spend **across retries** (a worktree/scratch task keeps the same workspace
-    path for every run) while excluding every unrelated session. The workspace
-    directory lives under the dispatcher's workspaces root and is never a
-    real user's cwd, so the path match is safe on its own.
+    **2026-09-02 — this function was structurally blind and the cap never
+    fired once in the fleet's history.** It matched sessions by ``s.cwd``
+    under the task workspace, on the assumption that a worker is spawned with
+    ``cwd=workspace``. In practice ``sessions.cwd`` is NULL for every kanban
+    worker session on this fleet (170/170 on rodge alone), so the query
+    matched nothing, returned 0.0, and ``enforce_max_cost`` compared $0.00
+    against every cap. Measured on real cards: t_0af25226 had spent $0.2146
+    and t_296c6855 $0.1406, and this returned 0.0 for both. Cards therefore
+    ran to completion regardless of their cap — five of them overran by up to
+    64% — and zero ``cost_cap`` blocks exist in the entire board history.
+
+    The fix matches the way the card's sessions are actually identifiable: the
+    worker titles each session ``Work kanban task <task_id> #<n>``, which IS
+    populated. The cwd match is kept as an OR so nothing regresses if a future
+    spawn path does set it, and so a workspace-only match still works when no
+    task id is passed.
 
     Pure read — opens state.db read-only. Any failure (missing file, busy
     lock, malformed ledger) yields 0.0 so a ledger problem can never block
     the tick or fake a false positive.
     """
-    if not state_db_path or not workspace:
+    if not workspace and not task_id:
         return 0.0
-    if not os.path.isfile(str(state_db_path)):
+    # A card's LIFETIME cost is not one profile's spend. t_0ad7eded cost $2.1742
+    # of which $1.9435 was Bob's and $0.2307 Rodge's review; reading only the
+    # assignee's ledger sees 89% of it, and on a review-heavy card far less.
+    # Richie's policy caps the card, so sum every profile that worked on it.
+    if task_id:
+        total = 0.0
+        seen = set()
+        try:
+            roots = []
+            hermes_home = Path(os.path.expanduser("~/.hermes"))
+            roots.append(hermes_home / "state.db")
+            roots.extend(sorted((hermes_home / "profiles").glob("*/state.db")))
+            if state_db_path:
+                roots.append(Path(str(state_db_path)))
+            for db in roots:
+                key = str(db)
+                if key in seen or not os.path.isfile(key):
+                    continue
+                seen.add(key)
+                total += _session_cost_in_db(key, prefix_for=workspace, task_id=task_id)
+        except Exception:
+            return 0.0
+        return total
+    if not state_db_path or not os.path.isfile(str(state_db_path)):
         return 0.0
-    prefix = str(workspace).rstrip("/\\")
-    if not prefix:
-        return 0.0
+    return _session_cost_in_db(str(state_db_path), prefix_for=workspace, task_id=None)
+
+
+def _session_cost_in_db(state_db_path, prefix_for=None, task_id=None) -> float:
+    """Sum matching session cost inside ONE state.db. Fail-open on any error."""
+    prefix = str(prefix_for).rstrip("/\\") if prefix_for else ""
     try:
         sconn = sqlite3.connect(
             f"file:{state_db_path}?mode=ro", uri=True, timeout=10
@@ -9645,12 +9679,32 @@ def _cumulative_session_cost(state_db_path, workspace) -> float:
     except sqlite3.Error:
         return 0.0
     try:
+        clauses, params = [], []
+        if prefix:
+            clauses.append("(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\')")
+            params += [prefix, _escape_like(prefix) + "/%"]
+        if task_id:
+            clauses.append("s.title LIKE ? ESCAPE '\\'")
+            params.append("%" + _escape_like(str(task_id)) + "%")
+        if not clauses:
+            return 0.0
+        where = " OR ".join(clauses)
+        # Prefer the per-session total: session_model_usage is a per-model
+        # breakdown that can be empty even when the session recorded a cost.
+        row = sconn.execute(
+            "SELECT COALESCE(SUM(s.estimated_cost_usd), 0) AS total "
+            f"FROM sessions s WHERE {where}",
+            params,
+        ).fetchone()
+        total = float(row["total"]) if row and row["total"] is not None else 0.0
+        if total > 0.0:
+            return total
+        # Fall back to the per-model ledger if the session column is unset.
         row = sconn.execute(
             "SELECT COALESCE(SUM(u.estimated_cost_usd), 0) AS total "
-            "FROM session_model_usage u "
-            "JOIN sessions s ON s.id = u.session_id "
-            "WHERE (s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\')",
-            (prefix, _escape_like(prefix) + "/%"),
+            "FROM session_model_usage u JOIN sessions s ON s.id = u.session_id "
+            f"WHERE {where}",
+            params,
         ).fetchone()
         return float(row["total"]) if row and row["total"] is not None else 0.0
     except sqlite3.Error:
@@ -9711,6 +9765,9 @@ def enforce_max_cost(
         spend = _cumulative_session_cost(
             state_db_path or _state_db_path_for_assignee(row["assignee"]),
             workspace,
+            # 2026-09-02: pass the card id. sessions.cwd is NULL on this fleet,
+            # so workspace matching alone saw $0 and the cap never fired.
+            task_id=row["id"],
         )
         if spend <= cap:
             continue

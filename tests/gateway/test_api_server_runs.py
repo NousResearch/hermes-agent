@@ -187,11 +187,57 @@ class TestStartRun:
         now = 1_000.0
         monkeypatch.setattr(time, "time", lambda: now)
         adapter._set_run_status("run_recovered", "completed")
-        adapter._remember_idempotent_run("recovery-key", "run_recovered")
+        adapter._remember_idempotent_run(
+            "recovery-key", "request-fingerprint", "run_recovered"
+        )
 
         now += 301
 
-        assert adapter._get_idempotent_run_id("recovery-key") == "run_recovered"
+        assert adapter._get_idempotent_run_id(
+            "recovery-key", "request-fingerprint"
+        ) == "run_recovered"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_does_not_reuse_run_for_different_input(
+        self, adapter
+    ):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agents = []
+                for _ in range(2):
+                    mock_agent = MagicMock()
+                    mock_agent.run_conversation.return_value = {
+                        "final_response": "done"
+                    }
+                    mock_agent.session_prompt_tokens = 0
+                    mock_agent.session_completion_tokens = 0
+                    mock_agent.session_total_tokens = 0
+                    agents.append(mock_agent)
+                mock_create.side_effect = agents
+
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "first"},
+                    headers={"Idempotency-Key": "reused-key"},
+                )
+                second = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second"},
+                    headers={"Idempotency-Key": "reused-key"},
+                )
+                first_data = await first.json()
+                second_data = await second.json()
+
+                assert first.status == second.status == 202
+                assert first_data["run_id"] != second_data["run_id"]
+
+                for _ in range(40):
+                    if not adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert mock_create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_idempotency_key_is_scoped_by_profile(self, adapter, tmp_path):

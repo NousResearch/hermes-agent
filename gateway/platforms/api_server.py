@@ -1286,10 +1286,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Idempotent run starts are local to this runtime adapter and further
-        # scoped by multiplex profile. Values stay bounded and expire after the
-        # same short retry window as the other API idempotency cache.
+        # scoped by multiplex profile and request fingerprint. Values stay
+        # bounded and expire after the dedicated recovery window below.
         self._run_idempotency: Dict[
-            tuple[str, str], tuple[str, float]
+            tuple[str, str, str], tuple[str, float]
         ] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
@@ -6028,7 +6028,7 @@ class APIServerAdapter(BasePlatformAdapter):
         except (OSError, RuntimeError):
             return _api_request_profile.get() or "default"
 
-    def _get_idempotent_run_id(self, key: str) -> Optional[str]:
+    def _get_idempotent_run_id(self, key: str, fingerprint: str) -> Optional[str]:
         """Return a prior run for this runtime/profile retry scope."""
         now = time.time()
         stale = [
@@ -6041,7 +6041,7 @@ class APIServerAdapter(BasePlatformAdapter):
         for cache_key in stale:
             self._run_idempotency.pop(cache_key, None)
 
-        cache_key = (self._run_idempotency_scope(), key)
+        cache_key = (self._run_idempotency_scope(), key, fingerprint)
         item = self._run_idempotency.get(cache_key)
         if item is None:
             return None
@@ -6051,8 +6051,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return run_id
 
-    def _remember_idempotent_run(self, key: str, run_id: str) -> None:
-        cache_key = (self._run_idempotency_scope(), key)
+    def _remember_idempotent_run(
+        self, key: str, fingerprint: str, run_id: str
+    ) -> None:
+        cache_key = (self._run_idempotency_scope(), key, fingerprint)
         self._run_idempotency.pop(cache_key, None)
         self._run_idempotency[cache_key] = (run_id, time.time())
         while len(self._run_idempotency) > self._RUN_IDEMPOTENCY_MAX_ITEMS:
@@ -6190,12 +6192,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 headers=response_headers,
             )
 
-        idempotency_key = request.headers.get("Idempotency-Key")
-        if idempotency_key:
-            existing_run_id = self._get_idempotent_run_id(idempotency_key)
-            if existing_run_id is not None:
-                return _started_response(existing_run_id)
-
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
         limited = self._concurrency_limited_response()
@@ -6206,6 +6202,31 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        from agent.mcp_run_context import read_mcp_run_metadata
+
+        request_mcp_metadata = read_mcp_run_metadata()
+        idempotency_key = request.headers.get("Idempotency-Key")
+        idempotency_fingerprint = ""
+        if idempotency_key:
+            idempotency_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "body": body,
+                        "session_id_header": provided_session_id,
+                        "session_key_header": gateway_session_key,
+                        "mcp_metadata": request_mcp_metadata,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            existing_run_id = self._get_idempotent_run_id(
+                idempotency_key, idempotency_fingerprint
+            )
+            if existing_run_id is not None:
+                return _started_response(existing_run_id)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -6324,7 +6345,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Re-check after all awaits and request validation. Concurrent retries
         # can both miss the fast path, but only the first may allocate a run.
         if idempotency_key:
-            existing_run_id = self._get_idempotent_run_id(idempotency_key)
+            existing_run_id = self._get_idempotent_run_id(
+                idempotency_key, idempotency_fingerprint
+            )
             if existing_run_id is not None:
                 return _started_response(existing_run_id)
 
@@ -6378,10 +6401,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
-        from agent.mcp_run_context import read_mcp_run_metadata
-
-        request_mcp_metadata = read_mcp_run_metadata()
-
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
@@ -6664,7 +6683,9 @@ class APIServerAdapter(BasePlatformAdapter):
             task.add_done_callback(self._background_tasks.discard)
 
         if idempotency_key:
-            self._remember_idempotent_run(idempotency_key, run_id)
+            self._remember_idempotent_run(
+                idempotency_key, idempotency_fingerprint, run_id
+            )
         return _started_response(run_id)
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":

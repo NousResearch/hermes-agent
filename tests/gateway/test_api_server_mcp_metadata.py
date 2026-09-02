@@ -162,6 +162,44 @@ async def test_two_concurrent_api_runs_keep_private_metadata_isolated():
 
 
 @pytest.mark.asyncio
+async def test_run_idempotency_never_reuses_a_different_employee_binding():
+    adapter = _adapter()
+    observed = []
+
+    class _Agent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed.append(read_mcp_run_metadata())
+            return {"final_response": "done"}
+
+    with patch.object(adapter, "_create_agent", side_effect=lambda **_kwargs: _Agent()):
+        async with TestClient(TestServer(_app(adapter))) as client:
+            run_ids = []
+            for employee in ("a", "b"):
+                response = await client.post(
+                    "/v1/runs",
+                    json={"input": "same message"},
+                    headers={
+                        "Authorization": "Bearer sk-test-secret",
+                        "Idempotency-Key": "same-key",
+                        "X-Hermes-MCP-Metadata": _encode_metadata(
+                            {"employee": employee}
+                        ),
+                    },
+                )
+                assert response.status == 202
+                run_id = (await response.json())["run_id"]
+                run_ids.append(run_id)
+                await _wait_for_run(adapter, run_id)
+
+    assert run_ids[0] != run_ids[1]
+    assert observed == [{"employee": "a"}, {"employee": "b"}]
+
+
+@pytest.mark.asyncio
 async def test_runs_preserve_two_employee_transcripts_without_cross_session_leak():
     adapter = _adapter()
     histories = {}

@@ -1729,12 +1729,18 @@ class GatewayKanbanWatchersMixin:
                 """Cheap pre-scan: which units this host will try to stop.
 
                 Checks the abort flag between boards so a cancelled
-                shutdown stops scanning too (finding Q)."""
-                units: list = []
+                shutdown stops scanning too (finding Q). Progress lands
+                in ``state`` live (pass 8, Y): the units list, boards
+                scanned, and boards total are readable while the scan
+                runs, so a scan that outlives the base budget yields a
+                truthful "incomplete" summary instead of a fabricated
+                zero."""
+                units: list = state["expected"]
                 try:
                     boards = _kb.list_boards(include_archived=False)
                 except Exception:
                     boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                state["boards_total"] = len(boards)
                 host_prefix = f"{_kb._claimer_id().split(':', 1)[0]}:"
                 for b in boards:
                     if _should_abort_cleanup():
@@ -1753,6 +1759,7 @@ class GatewayKanbanWatchersMixin:
                     except Exception:
                         pass
                     finally:
+                        state["boards_scanned"] = state.get("boards_scanned", 0) + 1
                         if conn is not None:
                             try:
                                 conn.close()
@@ -1760,7 +1767,7 @@ class GatewayKanbanWatchersMixin:
                                 pass
                 return units
 
-            state: dict = {}
+            state: dict = {"expected": []}
             collected = threading.Event()
             # Finding Q: the cleanup thread must not keep scanning or
             # stopping scopes after the caller's budget expires and the
@@ -1777,7 +1784,7 @@ class GatewayKanbanWatchersMixin:
                 return deadline is not None and time.monotonic() >= deadline
 
             def _run() -> None:
-                state["expected"] = _collect_expected_units()
+                _collect_expected_units()
                 collected.set()
                 try:
                     boards = _kb.list_boards(include_archived=False)
@@ -1791,7 +1798,10 @@ class GatewayKanbanWatchersMixin:
                     try:
                         conn = _kb.connect(board=slug)
                         stopped = _kb.stop_all_scoped_workers(
-                            conn, should_abort=_should_abort_cleanup,
+                            conn,
+                            should_abort=_should_abort_cleanup,
+                            cancel_event=cleanup_cancelled,
+                            deadline=state.get("deadline"),
                         )
                     except Exception:
                         logger.exception("kanban shutdown [%s]: scoped-worker stop failed", slug)
@@ -1824,7 +1834,25 @@ class GatewayKanbanWatchersMixin:
             # full budget and THEN added a whole per-unit timeout for
             # the service drain, up to double the stated budget).
             shutdown_started = time.monotonic()
-            collected.wait(timeout=_SHUTDOWN_STOP_BASE_SECONDS)
+            scan_done = collected.wait(timeout=_SHUTDOWN_STOP_BASE_SECONDS)
+            if not scan_done:
+                # The pre-scan outlived the base budget (slow boards or
+                # a wedged board listing). Its live progress still feeds
+                # the budget below, but the final summary must never
+                # present the unscanned boards' units as "zero
+                # unstopped" (pass 8, Y) — the count is unknowable by
+                # construction, so the incompleteness is what gets
+                # reported.
+                logger.warning(
+                    "kanban shutdown: scope pre-scan incomplete after "
+                    "%.0fs — %d of %s board(s) scanned, %d unit(s) "
+                    "enumerated so far; the stop budget covers only "
+                    "those",
+                    _SHUTDOWN_STOP_BASE_SECONDS,
+                    state.get("boards_scanned", 0),
+                    str(state.get("boards_total", "?")),
+                    len(state.get("expected") or []),
+                )
             try:
                 from tools.process_registry import SCOPE_STOP_VERIFY_BOUND_SECONDS
             except Exception:  # pragma: no cover — import is process-local
@@ -1838,7 +1866,9 @@ class GatewayKanbanWatchersMixin:
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
             # The budget is gone: stand the cleanup thread down NOW — it
             # must not keep scanning boards or stopping scopes while the
-            # next gateway re-adopts them (finding Q).
+            # next gateway re-adopts them (finding Q). The event also
+            # reaches any IN-FLIGHT verified stop through
+            # stop_all_scoped_workers' cancel plumbing (pass 8, Y).
             cleanup_cancelled.set()
             # Tick-queued verified stops must not outlive the lock either:
             # drain the background service within the SAME deadline
@@ -1852,13 +1882,38 @@ class GatewayKanbanWatchersMixin:
                     (set(expected) - stopped_units)
                     | {str(u) for u in leftover}
                 )
+                if scan_done or collected.is_set():
+                    scan_note = ""
+                    count_txt = "%d unit(s) still stopping (%s)" % (
+                        len(still_running),
+                        ", ".join(still_running) or "<unknown>",
+                    )
+                elif state.get("boards_total") is None:
+                    # Not even the board listing returned — nothing about
+                    # the expected set is knowable (pass 8, Y): say so
+                    # instead of printing a fabricated zero.
+                    scan_note = (
+                        " — scan incomplete: boards not enumerated "
+                        "(board listing stalled)"
+                    )
+                    count_txt = "an unknown number of unit(s) still stopping"
+                else:
+                    unscanned = max(
+                        0,
+                        state["boards_total"]
+                        - state.get("boards_scanned", 0),
+                    )
+                    scan_note = (
+                        " — scan incomplete: units on %d unscanned "
+                        "board(s) not enumerated" % unscanned
+                    )
+                    count_txt = "an unknown number of unit(s) still stopping"
                 logger.warning(
                     "kanban shutdown: scoped-worker stop did not finish "
-                    "within its budget (%.0fs) — releasing the dispatcher "
-                    "lock with %d unit(s) still stopping (%s); the next "
-                    "gateway's adoption sweep will re-adopt or reclaim "
-                    "whatever remains",
-                    budget, len(still_running), ", ".join(still_running) or "<unknown>",
+                    "within its budget (%.0fs)%s — releasing the dispatcher "
+                    "lock with %s; the next gateway's adoption sweep will "
+                    "re-adopt or reclaim whatever remains",
+                    budget, scan_note, count_txt,
                 )
 
         def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:

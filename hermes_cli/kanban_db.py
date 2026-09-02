@@ -9296,7 +9296,12 @@ def _collect_kanban_scope(unit_name: Optional[str]) -> None:
         _log.debug("kanban: collect of scope %s failed: %s", unit_name, exc)
 
 
-def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
+def _stop_kanban_worker_scope(
+    unit_name: Optional[str],
+    *,
+    cancel_event: Optional[threading.Event] = None,
+    deadline: Optional[float] = None,
+) -> bool:
     """Stop a worker's transient scope — the whole cgroup, not one pid —
     and VERIFY it is actually dead.
 
@@ -9311,13 +9316,22 @@ def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
     they defer and retry next tick. Stopping an already-dead unit is a
     verified no-op (True), so this is safe to call speculatively from
     every terminal path.
+
+    ``cancel_event``/``deadline`` (pass 8, Y) reach the escalation steps
+    themselves: an in-flight stop checks them after the TERM wait,
+    before the SIGKILL wait, and before each final-verify probe, so a
+    shutdown whose budget expired cancels the stop it is inside of, not
+    just the ones it has not started. Cancelled stops return False
+    ("still stopping") like any unverified one.
     """
     if not unit_name:
         return False
     try:
         from tools.process_registry import _stop_systemd_unit_verified
 
-        return _stop_systemd_unit_verified(unit_name)
+        return _stop_systemd_unit_verified(
+            unit_name, cancel_event=cancel_event, deadline=deadline,
+        )
     except Exception as exc:
         _log.warning(
             "kanban: failed to stop worker scope %s: %s", unit_name, exc,
@@ -11280,6 +11294,8 @@ def stop_all_scoped_workers(
     conn: sqlite3.Connection,
     *,
     should_abort: "Optional[Callable[[], bool]]" = None,
+    cancel_event: Optional[threading.Event] = None,
+    deadline: Optional[float] = None,
 ) -> list[str]:
     """Stop every scoped worker claimed by this host.
 
@@ -11294,7 +11310,11 @@ def stop_all_scoped_workers(
     (shutdown budget expired, caller cancelled) the loop stands down
     immediately — the remaining units stay for the next gateway's
     re-adoption sweep instead of being stopped after the caller has
-    already moved on (Gate B pass 4, finding Q).
+    already moved on (Gate B pass 4, finding Q). ``cancel_event`` /
+    ``deadline`` (pass 8, Y) extend the same cancellation INTO an
+    in-flight verified stop: the escalation steps themselves check them,
+    so a wedged TERM wait or SIGKILL drain is abandoned mid-unit, not
+    merely after the unit finishes.
 
     Returns the list of scope units confirmed stopped. Units that could
     not be confirmed remain for the next gateway's re-adoption sweep.
@@ -11315,7 +11335,10 @@ def stop_all_scoped_workers(
             break
         if not (row["claim_lock"] or "").startswith(host_prefix):
             continue  # another host owns this worker
-        if not _stop_kanban_worker_scope(row["worker_scope"]):
+        if not _stop_kanban_worker_scope(
+            row["worker_scope"],
+            cancel_event=cancel_event, deadline=deadline,
+        ):
             continue  # unconfirmed stop — re-adoption will catch it
         stopped.append(row["worker_scope"])
         _log.info(

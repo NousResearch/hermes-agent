@@ -1744,6 +1744,115 @@ def test_verified_stop_escalates_to_sigkill_on_stop_timeout(shims):
     assert not shims.cgroup_pids(unit)
 
 
+def test_verified_stop_cancel_event_aborts_mid_stop(shims, monkeypatch):
+    """Y: a cancel event reaches INSIDE an in-flight verified stop —
+    after the TERM wait, before the SIGKILL wait, and before the final
+    verify — instead of only between units. Every cancelled stop returns
+    False ("still stopping") without paying for escalation the caller
+    will never read."""
+    import threading
+
+    from tools import process_registry as pr
+
+    # --- 1. cancelled after the TERM wait: no SIGKILL, no verify -----
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_cxl1", 1)
+    shims.write_unit(unit, [pid])
+    cancel = threading.Event()
+
+    def slow_term(u):
+        # The stop job is slow; the caller's budget dies mid-wait.
+        cancel.set()
+        return True
+
+    # A private MonkeyPatch: undoing the shared fixture-level one would
+    # take the shim PATH down with it.
+    mp1 = pytest.MonkeyPatch()
+    mp1.setattr(pr, "_stop_systemd_unit", slow_term)
+    assert pr._stop_systemd_unit_verified(unit, cancel_event=cancel) is False
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions == [], "cancelled stop must not escalate to SIGKILL"
+    assert kb._pid_alive(pid), "nothing was signalled — cgroup still live"
+    mp1.undo()
+
+    # --- 2. cancelled before the SIGKILL wait ------------------------
+    stubborn = shims.stubborn_sleeper()  # ignores SIGTERM
+    unit2 = kb._kanban_worker_scope_unit("t_cxl2", 1)
+    shims.write_unit(unit2, [stubborn])
+    cancel2 = threading.Event()
+    real_liveness = pr._scope_unit_liveness
+    calls = {"n": 0}
+
+    def liveness_that_cancels(u):
+        state = real_liveness(u)
+        calls["n"] += 1
+        if state == "alive":
+            cancel2.set()  # budget dies between TERM and KILL
+        return state
+
+    mp2 = pytest.MonkeyPatch()
+    mp2.setattr(pr, "_scope_unit_liveness", liveness_that_cancels)
+    assert pr._stop_systemd_unit_verified(unit2, cancel_event=cancel2) is False
+    actions2 = [s["action"] for s in shims.stops() if s["unit"] == unit2]
+    assert actions2 == ["stop"], "no SIGKILL after the pre-KILL cancel"
+    assert kb._pid_alive(stubborn)
+    mp2.undo()
+
+    # --- 3. cancelled before the final verify ------------------------
+    stubborn2 = shims.stubborn_sleeper()
+    unit3 = kb._kanban_worker_scope_unit("t_cxl3", 1)
+    shims.write_unit(unit3, [stubborn2])
+    cancel3 = threading.Event()
+    real_run = pr.subprocess.run
+
+    def run_then_cancel(*args, **kwargs):
+        out = real_run(*args, **kwargs)
+        cmd = args[0] if args else kwargs.get("args")
+        if cmd and "kill" in cmd:
+            # Budget dies the instant the SIGKILL is on the wire: the
+            # next verify probe belongs to a caller that moved on.
+            cancel3.set()
+        return out
+
+    mp3 = pytest.MonkeyPatch()
+    mp3.setattr(pr.subprocess, "run", run_then_cancel)
+    assert pr._stop_systemd_unit_verified(unit3, cancel_event=cancel3) is False
+    # The escalation DID run (cancel came too late to spare it), but the
+    # verdict is still "still stopping": a cancelled caller must re-read
+    # state, and the next stop confirms the already-empty cgroup for free.
+    actions3 = [s["action"] for s in shims.stops() if s["unit"] == unit3]
+    assert "kill" in actions3
+    assert shims.wait_for(lambda: not kb._pid_alive(stubborn2))
+
+
+def test_verified_stop_deadline_aborts_like_cancel_event(shims, monkeypatch):
+    """Y: a monotonic deadline is the event's twin — a stop whose
+    deadline already passed never even fires the TERM."""
+    from tools import process_registry as pr
+
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_dx", 1)
+    shims.write_unit(unit, [pid])
+    fired: list[str] = []
+
+    def no_term(u):
+        fired.append("term")
+        return True
+
+    monkeypatch.setattr(pr, "_stop_systemd_unit", no_term)
+    assert pr._stop_systemd_unit_verified(
+        unit, deadline=time.monotonic() - 1.0,
+    ) is False
+    # The TERM was faked (never reached the shim); the point is the
+    # verdict — False even though nothing was wrong with the unit —
+    # and that no escalation followed.
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions == []
+    assert kb._pid_alive(pid)
+
+
+
+
 def test_release_stale_claims_stops_worker_scope(shims, conn):
     """TTL-expired reclaim of a scoped worker stops the whole unit before
     the pid kill backstop, and clears the scope bookkeeping."""
@@ -3018,7 +3127,7 @@ def test_shutdown_waits_for_cleanup_before_releasing_lock(
 
     real_stop = kb.stop_all_scoped_workers
 
-    def gated_stop(c, should_abort=None):
+    def gated_stop(c, should_abort=None, **kwargs):
         cleanup_started.set()
         gate.wait(timeout=10.0)
         return real_stop(c)
@@ -3086,7 +3195,7 @@ def test_shutdown_budget_expiry_logs_leftovers_and_releases(
     gate = threading.Event()
     released = threading.Event()
 
-    def wedged_stop(c, should_abort=None):
+    def wedged_stop(c, should_abort=None, **kwargs):
         gate.wait(timeout=10.0)  # "worse than any budget"
         return []
 
@@ -3472,7 +3581,7 @@ def test_shutdown_single_budget_bounds_both_joins(
     gate = threading.Event()
     timings: dict[str, float] = {}
 
-    def wedged_stop(c, should_abort=None):
+    def wedged_stop(c, should_abort=None, **kwargs):
         timings["stop_entered"] = time.time()
         gate.wait(timeout=10.0)  # worse than any budget
         return []
@@ -3737,7 +3846,7 @@ def test_stop_all_scoped_workers_honors_abort_between_units(
     stopped_calls: list[str] = []
     monkeypatch.setattr(
         kb, "_stop_kanban_worker_scope",
-        lambda unit: (stopped_calls.append(unit), True)[1],
+        lambda unit, **kw: (stopped_calls.append(unit), True)[1],
     )
 
     def abort_after_first() -> bool:
@@ -3783,7 +3892,7 @@ def test_shutdown_cancels_cleanup_thread_and_reports_unstopped(
     attempts: list[str] = []
     gate = threading.Event()
 
-    def slow_verified_stop(unit):
+    def slow_verified_stop(unit, **kwargs):
         attempts.append(unit)
         if unit == u1:
             gate.wait(timeout=15.0)  # slow fake stop: outlives the budget
@@ -3822,3 +3931,111 @@ def test_shutdown_cancels_cleanup_thread_and_reports_unstopped(
     assert stood_down, "cleanup thread never logged its stand-down"
     assert u2 in stood_down[0].message
     assert attempts == [u1]  # u2 was never signalled after cancellation
+
+def test_shutdown_prescan_timeout_reports_incomplete_not_zero(
+    shims, conn, kanban_home, monkeypatch, caplog,
+):
+    """Y: when the shutdown pre-scan outlives its base budget the summary
+    must say the scan is incomplete — never a confident "0 unit(s) still
+    stopping" for boards it never enumerated."""
+    import asyncio
+    import logging
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_scanx", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.1)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.1,
+    )
+
+    gate = threading.Event()
+    real_list_boards = kb.list_boards
+
+    def stalled_list_boards(**kwargs):
+        gate.wait(timeout=15.0)  # board listing wedged past any budget
+        return real_list_boards(**kwargs)
+
+    monkeypatch.setattr(kb, "list_boards", stalled_list_boards)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(Harness()._kanban_dispatcher_watcher())
+        gate.set()  # let the daemon thread finish for teardown
+
+    warnings = [r for r in caplog.records if "still stopping" in r.message]
+    assert warnings, "expected the leftover-units warning"
+    msg = warnings[0].message
+    assert "scan incomplete" in msg
+    assert "not enumerated" in msg
+    assert "0 unit(s) still stopping" not in msg, (
+        "an incomplete scan must not present an enumerated zero"
+    )
+
+def test_shutdown_prescan_partial_names_unscanned_boards(
+    shims, conn, kanban_home, monkeypatch, caplog,
+):
+    """Y, partial-scan branch: the board listing returned (so the board
+    count is known) but a board's connect stalls — the summary names the
+    unscanned boards instead of a zero."""
+    import asyncio
+    import logging
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_scanp", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.1)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.1,
+    )
+
+    gate = threading.Event()
+    real_connect = kb.connect
+
+    def stalled_connect(*args, **kwargs):
+        gate.wait(timeout=15.0)  # per-board scan wedged past any budget
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "connect", stalled_connect)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(Harness()._kanban_dispatcher_watcher())
+        gate.set()  # let the daemon thread finish for teardown
+
+    warnings = [r for r in caplog.records if "still stopping" in r.message]
+    assert warnings, "expected the leftover-units warning"
+    msg = warnings[0].message
+    assert "scan incomplete" in msg
+    assert "unscanned board(s) not enumerated" in msg
+    assert "0 unit(s) still stopping" not in msg
+    pre = [r for r in caplog.records if "pre-scan incomplete" in r.message]
+    assert pre, "expected the pre-scan timeout warning"

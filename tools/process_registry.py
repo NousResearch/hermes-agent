@@ -849,6 +849,8 @@ def _stop_systemd_unit_verified(
     unit_name: str,
     *,
     verify_timeout: Optional[float] = None,
+    cancel_event: Optional["threading.Event"] = None,
+    deadline: Optional[float] = None,
 ) -> bool:
     """Stop a user unit AND verify its cgroup is actually empty.
 
@@ -869,8 +871,20 @@ def _stop_systemd_unit_verified(
     (stop + SIGKILL + verify loop); anything that cannot afford that
     must hand the unit to a background stopper instead of calling this
     synchronously (the kanban dispatcher's scope-stop service does).
+
+    ``cancel_event``/``deadline`` (pass 8, Y) make that worst case
+    cancellable mid-flight: an in-progress stop checks them after the
+    TERM wait, before the SIGKILL wait, and before each final-verify
+    probe, returning False ("still stopping") the moment either fires —
+    so a shutdown whose budget expired stops paying for escalation a
+    caller that already moved on will not read.
     """
     import shutil
+
+    def _cancelled() -> bool:
+        if cancel_event is not None and cancel_event.is_set():
+            return True
+        return deadline is not None and time.monotonic() >= deadline
 
     def confirmed_dead(unit: str) -> bool:
         state = _scope_unit_liveness(unit)
@@ -888,12 +902,24 @@ def _stop_systemd_unit_verified(
     # that; anything else (including a client timeout) leaves the real
     # verdict to the liveness checks that follow.
     _stop_systemd_unit(unit_name)
+    if _cancelled():
+        logger.info(
+            "stop of systemd unit %s cancelled after the TERM wait; "
+            "treating it as still stopping", unit_name,
+        )
+        return False
     if confirmed_dead(unit_name):
         _collect_dead_systemd_unit(unit_name)
         return True
     # Not verified dead (slow descendants, a wedged stop job draining
     # the cgroup, or an unreachable bus).  Escalate: SIGKILL every
     # process in the unit's cgroup, then re-verify until the deadline.
+    if _cancelled():
+        logger.info(
+            "stop of systemd unit %s cancelled before the SIGKILL "
+            "escalation; treating it as still stopping", unit_name,
+        )
+        return False
     try:
         subprocess.run(
             [binary, "--user", "kill", "--signal=SIGKILL", unit_name],
@@ -904,8 +930,14 @@ def _stop_systemd_unit_verified(
         logger.debug("systemctl --user kill %s failed: %s", unit_name, exc)
         return False
     timeout = _SCOPE_STOP_VERIFY_TIMEOUT if verify_timeout is None else verify_timeout
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline_local = time.monotonic() + timeout
+    while time.monotonic() < deadline_local:
+        if _cancelled():
+            logger.info(
+                "stop of systemd unit %s cancelled before the final "
+                "verify; treating it as still stopping", unit_name,
+            )
+            return False
         if confirmed_dead(unit_name):
             _collect_dead_systemd_unit(unit_name)
             return True

@@ -1685,20 +1685,10 @@ class ShellFileOperations(FileOperations):
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
-        cached = getattr(self, "_native_read_ok", None)
-        if cached is not None:
-            return cached
-        ok = False
-        if sys.platform != "win32":
-            env = getattr(self, "env", None)
-            if env is not None:
-                try:
-                    from tools.environments.local import LocalEnvironment
-                    ok = isinstance(env, LocalEnvironment)
-                except Exception:  # noqa: BLE001 - never let an import problem break a read
-                    ok = False
-        self._native_read_ok = ok
-        return ok
+        # Same "is this env the local host" test the LSP path already uses;
+        # ``self.env`` is bound once in __init__ and never rebound, and the
+        # isinstance check is microseconds, so there is nothing to memoize.
+        return sys.platform != "win32" and self._lsp_local_only()
 
     def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
         """``read_file`` without a shell: the file lives on this host.
@@ -1757,6 +1747,13 @@ class ShellFileOperations(FileOperations):
                     if not chunk:
                         break
                     last_byte = chunk[-1:]
+                    if lineno > end_line:
+                        # Past the requested window: only the line count and
+                        # trailing byte are still needed, so let memchr do the
+                        # rest instead of the per-line bookkeeping below.
+                        total_lines += chunk.count(b"\n")
+                        have_partial = chunk[-1:] != b"\n"
+                        continue
                     pos, n = 0, len(chunk)
                     while pos < n:
                         nl = chunk.find(b"\n", pos)

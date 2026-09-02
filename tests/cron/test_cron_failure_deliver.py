@@ -405,3 +405,58 @@ class TestOutcomeBookkeeping:
 
         assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
         assert self._outcome(run_env) == "delivered"
+
+
+class TestPreflightAndDashboardLanes:
+    """Follow-up (salvage): the failure lane is validated everywhere the
+    deliver lane is — preflight config checks and the dashboard update
+    normalizer — so a typo'd failure target is caught before a failure
+    needs it."""
+
+    def test_preflight_blocks_unknown_failure_platform(self, monkeypatch):
+        """A bogus failure_deliver platform blocks at preflight, exactly
+        like a bogus deliver platform would."""
+        monkeypatch.setattr(s, "_is_known_delivery_platform", lambda _p: False)
+        err = s._preflight_check_delivery({
+            "id": "p1", "deliver": "local",
+            "failure_deliver": "nonexistent-platform:C1",
+        })
+        assert err is not None and "not a known" in err
+
+    def test_preflight_failure_deliver_local_adds_no_platforms(self):
+        """failure_deliver: local adds nothing to check — a deliver=local
+        job with suppressed failures stays zero-cost at preflight."""
+        assert s._preflight_check_delivery({
+            "id": "p2", "deliver": "local", "failure_deliver": "local",
+        }) is None
+
+    def test_preflight_duplicate_lane_not_checked_twice(self, monkeypatch):
+        """failure_deliver equal to deliver must not double-check (or
+        double-report) the same platform."""
+        seen = []
+
+        def _known(p):
+            seen.append(p)
+            return False
+
+        monkeypatch.setattr(s, "_is_known_delivery_platform", _known)
+        s._preflight_check_delivery({
+            "id": "p3", "deliver": "ghost:C1", "failure_deliver": "ghost:C1",
+        })
+        assert seen == ["ghost"]
+
+    def test_dashboard_update_normalizes_failure_deliver(self, tmp_path):
+        """The dashboard update lane normalizes failure_deliver like
+        deliver: text stripped, empty clears (None) instead of
+        coalescing to a target."""
+        from hermes_cli.web_server import _normalize_dashboard_cron_updates
+
+        out = _normalize_dashboard_cron_updates(
+            {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path
+        )
+        assert out["failure_deliver"] == "slack:D0ALERTS"
+
+        cleared = _normalize_dashboard_cron_updates(
+            {"failure_deliver": ""}, tmp_path
+        )
+        assert cleared["failure_deliver"] is None

@@ -5459,19 +5459,30 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     the same source `cron_delivery_targets` uses). Gateway-config load
     failures fail OPEN so a transient config hiccup never wedges delivery
     that would have worked.
+
+    ``failure_deliver`` is checked with the same rules: a typo'd failure
+    platform would otherwise only surface when a failure occurs — exactly
+    when the notice must not be lost (NS-788 follow-up).
     """
     deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    failure_deliver_value = _normalize_deliver_value(
+        _delivery_lane_value(job, for_failure=True)
+    )
+    lane_values = [deliver_value]
+    if failure_deliver_value != deliver_value:
+        lane_values.append(failure_deliver_value)
     platform_parts: list[str] = []
-    for part in deliver_value.split(","):
-        part = part.strip()
-        if not part or part.lower() in {"local", "origin", "all"}:
-            continue
-        # bot-chat targets need no gateway credentials — they deliver via a
-        # local chat subprocess. Unknown-profile failures surface per run in
-        # last_delivery_error (and are validated at create time).
-        if parse_bot_chat_deliver_token(part) is not None:
-            continue
-        platform_parts.append(part.split(":", 1)[0].strip())
+    for lane_value in lane_values:
+        for part in lane_value.split(","):
+            part = part.strip()
+            if not part or part.lower() in {"local", "origin", "all"}:
+                continue
+            # bot-chat targets need no gateway credentials — they deliver via a
+            # local chat subprocess. Unknown-profile failures surface per run in
+            # last_delivery_error (and are validated at create time).
+            if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
 

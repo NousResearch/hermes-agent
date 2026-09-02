@@ -12977,6 +12977,13 @@ def _normalize_dashboard_cron_updates(
         )
     if "deliver" in normalized:
         normalized["deliver"] = _cron_optional_text(normalized["deliver"]) or "local"
+    if "failure_deliver" in normalized:
+        # Same text normalization as deliver, but empty CLEARS the override
+        # (failures fall back to deliver) rather than coalescing to a target
+        # — the field is optional by design (NS-788).
+        normalized["failure_deliver"] = _cron_optional_text(
+            normalized["failure_deliver"]
+        )
     if "context_from" in normalized:
         normalized["context_from"] = _cron_string_list(normalized["context_from"])
     if "enabled_toolsets" in normalized:

@@ -681,7 +681,7 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.scheduler import CronTickYielded
+        from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -701,6 +701,8 @@ class InProcessCronScheduler(CronScheduler):
         # A profile may have been deleted since this snapshot was taken;
         # never recreate a deleted home's cron workspace via the heartbeat
         # below (#47368).
+        # One profile's broken store (corrupt executions.db, unreadable
+        # cron dir) must not abort startup for every other profile (#74878).
         for entry in _existing_profile_homes(profile_homes):
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
@@ -714,6 +716,13 @@ class InProcessCronScheduler(CronScheduler):
                             home,
                         )
                     record_ticker_heartbeat()
+            except BaseException as e:
+                logger.error(
+                    "Cron startup recovery error for profile at %s: %s",
+                    home,
+                    e,
+                    exc_info=True,
+                )
             finally:
                 reset_hermes_home_override(home_token)
 
@@ -722,6 +731,9 @@ class InProcessCronScheduler(CronScheduler):
             ok = False
             _tick_error = None
             _profile_errors: dict[str, str] = {}
+            # Worst per-profile failure this cycle (fd exhaustion wins) so the
+            # #87644 backoff/reclaim is applied once per cycle, not per profile.
+            _cycle_exc: BaseException | None = None
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -761,9 +773,26 @@ class InProcessCronScheduler(CronScheduler):
                             # only ticker in the same cycle.
                             logger.info("Cron tick yielded for profile at %s: %s", home, e)
                             _profile_errors[str(home)] = f"{type(e).__name__}: {e}"
+                        except BaseException as e:
+                            # Any other failure is THIS profile's failure
+                            # (#74878): record it against this profile's
+                            # status and keep ticking the remaining profiles.
+                            # BaseException for the same reason as the
+                            # single-profile loop (#32612).
+                            logger.error(
+                                "Cron tick error for profile at %s: %s",
+                                home,
+                                e,
+                                exc_info=True,
+                            )
+                            _profile_errors[str(home)] = f"{type(e).__name__}: {e}"
+                            if _cycle_exc is None or _is_fd_exhaustion(e):
+                                _cycle_exc = e
                         finally:
                             reset_hermes_home_override(home_token)
                     ok = not _profile_errors
+                    if _cycle_exc is not None:
+                        consecutive_failures = _note_tick_failure(_cycle_exc, consecutive_failures)
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"

@@ -12852,6 +12852,17 @@ def _prepare_agent_startup(args) -> None:
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )
+    # -t/--toolsets narrows which configured MCP servers get spawned, on
+    # every discovery path (inline below, background thread, TUI/desktop
+    # deferred start). Built-in toolset names never match a server key, so
+    # `-t terminal` simply spawns nothing; `-t all` keeps the full set.
+    try:
+        from hermes_cli.mcp_startup import set_mcp_server_filter
+
+        set_mcp_server_filter(getattr(args, "toolsets", None))
+    except Exception:
+        logger.debug("MCP server filter setup failed", exc_info=True)
+
     _run_inline_mcp_discovery = True
     if _is_tui_chat_launch(args):
         # The TUI launcher hands off to a dedicated startup path that already
@@ -12880,9 +12891,14 @@ def _prepare_agent_startup(args) -> None:
         try:
             # MCP tool discovery remains synchronous for entrypoints that do
             # not own a later bounded/executor startup path.
+            from hermes_cli.mcp_startup import get_mcp_server_filter
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            _mcp_filter = get_mcp_server_filter()
+            if _mcp_filter is None:
+                discover_mcp_tools()
+            else:
+                discover_mcp_tools(allowed_mcp_names=_mcp_filter)
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",

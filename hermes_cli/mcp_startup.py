@@ -10,6 +10,37 @@ _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
 _mcp_discovery_deferred: Optional[threading.Timer] = None
+# Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
+# ``None`` = no filter (spawn every configured server). Set once at CLI
+# startup by ``set_mcp_server_filter`` and honored by every discovery path
+# in this module (inline, background, deferred), so a ``-t terminal``
+# oneshot never cold-starts MCP subprocesses it cannot use.
+_mcp_server_filter: Optional[list[str]] = None
+
+
+def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
+    """Derive the MCP spawn allowlist from a ``-t/--toolsets`` value.
+
+    Built-in toolset names in the list are harmless (they never match a
+    configured ``mcp_servers`` key). ``all``/``*`` or an empty/absent value
+    clears the filter. Returns the stored list for logging/tests.
+    """
+    global _mcp_server_filter
+    names: list[str] = []
+    if isinstance(toolsets, str):
+        names = [t.strip() for t in toolsets.split(",") if t.strip()]
+    elif isinstance(toolsets, (list, tuple, set)):
+        for item in toolsets:
+            names.extend(t.strip() for t in str(item).split(",") if t.strip())
+    if not names or "all" in names or "*" in names:
+        _mcp_server_filter = None
+    else:
+        _mcp_server_filter = names
+    return _mcp_server_filter
+
+
+def get_mcp_server_filter() -> Optional[list[str]]:
+    return _mcp_server_filter
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -170,7 +201,13 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
     with suppress_interactive_oauth():
         from tools.mcp_tool import discover_mcp_tools
 
-        discover_mcp_tools()
+        # Only pass the kwarg when a filter is set: many tests (and any
+        # out-of-tree caller) stub discover_mcp_tools with a zero-arg
+        # callable, and the unfiltered call shape is unchanged.
+        if _mcp_server_filter is None:
+            discover_mcp_tools()
+        else:
+            discover_mcp_tools(allowed_mcp_names=_mcp_server_filter)
 
 
 def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) -> None:

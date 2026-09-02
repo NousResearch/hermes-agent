@@ -184,6 +184,16 @@ def _codex_commentary_message_response(text: str):
     )
 
 
+def _codex_empty_response():
+    return SimpleNamespace(
+        output=[],
+        output_text="",
+        usage=SimpleNamespace(input_tokens=4, output_tokens=0, total_tokens=4),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_final_tool_response(commentary: str, final_answer: str = "Done."):
     return SimpleNamespace(
         output=[
@@ -1915,6 +1925,69 @@ def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentar
     assert (assistant_message.content or "") == ""
     assert "call the tool" in (assistant_message.reasoning or "")
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+
+
+def test_codex_empty_after_delivered_commentary_recovers_visible_response(monkeypatch):
+    """A completed commentary bubble must survive an empty continuation.
+
+    Codex can classify a short final answer as ``phase=commentary``. Hermes
+    displays that item, asks Codex for a separate final answer, and can then
+    receive a genuinely empty completion. Preserve the already-delivered text
+    as the durable final response instead of replacing it with a provider
+    error or dropping it when the session reloads.
+    """
+    agent = _build_agent(monkeypatch)
+    delivered = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: delivered.append(text)
+    )
+    responses = [
+        _codex_commentary_message_response("Pong."),
+        _codex_empty_response(),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    result = agent.run_conversation("ping")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Pong."
+    assert result.get("error") is None
+    assert delivered == ["Pong."]
+    assistant_rows = [
+        message for message in result["messages"]
+        if message.get("role") == "assistant"
+    ]
+    assert [message.get("content") for message in assistant_rows] == ["Pong."]
+    assert assistant_rows[0].get("finish_reason") == "stop"
+    assert not assistant_rows[0].get("codex_message_items")
+    assert result["response_previewed"] is True
+
+
+def test_codex_empty_after_undelivered_commentary_keeps_retry_behaviour(monkeypatch):
+    """Never promote commentary that was not exposed to the user."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_commentary_message_response("Internal progress."),
+        _codex_empty_response(),
+        _codex_empty_response(),
+        _codex_empty_response(),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    result = agent.run_conversation("ping")
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert "Invalid API response" in result["final_response"]
+    assert len(responses) == 0
 
 
 

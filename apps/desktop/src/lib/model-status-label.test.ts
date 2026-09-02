@@ -4,7 +4,8 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
-  modelDisplayParts
+  modelDisplayParts,
+  modelStatusLabelParts
 } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
@@ -72,9 +73,22 @@ describe('model-status-label', () => {
     )
   })
 
-  it('omits the provider when it is unknown', () => {
+  it('hides the provider when none is known', () => {
     expect(formatModelStatusLabel('gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('gpt-5.5', { provider: '  ', reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
+  })
+
+  it('does not deduplicate when provider is only a substring of model prefix', () => {
+    // 'openai-custom/gpt-6' does NOT have prefix 'openai/', so 'openai' should not be stripped
+    expect(formatModelStatusLabel('openai-custom/gpt-6', { provider: 'openai' })).toBe('Gpt-6 · openai · Med')
+  })
+
+  it('handles provider names with custom colons or slashes', () => {
+    expect(modelStatusLabelParts('gpt-5.5', { provider: 'custom:corp/gateway' })).toEqual({
+      meta: 'Med',
+      name: 'GPT-5.5',
+      provider: 'custom:corp/gateway'
+    })
   })
 
   it('splits the label into styled parts for the composer pill', () => {

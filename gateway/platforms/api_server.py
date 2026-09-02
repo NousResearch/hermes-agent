@@ -6013,7 +6013,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
-    _RUN_IDEMPOTENCY_TTL = 300
+    # Keep terminal retries deduplicated beyond the caller's 300s recovery
+    # window. Active runs remain retained regardless of age.
+    _RUN_IDEMPOTENCY_TTL = 600
     _RUN_IDEMPOTENCY_MAX_ITEMS = 1000
 
     @staticmethod

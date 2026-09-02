@@ -181,6 +181,18 @@ class TestStartRun:
                         break
                     await asyncio.sleep(0.05)
 
+    def test_terminal_idempotency_outlives_caller_recovery_window(
+        self, adapter, monkeypatch
+    ):
+        now = 1_000.0
+        monkeypatch.setattr(time, "time", lambda: now)
+        adapter._set_run_status("run_recovered", "completed")
+        adapter._remember_idempotent_run("recovery-key", "run_recovered")
+
+        now += 301
+
+        assert adapter._get_idempotent_run_id("recovery-key") == "run_recovered"
+
     @pytest.mark.asyncio
     async def test_idempotency_key_is_scoped_by_profile(self, adapter, tmp_path):
         async def profiled_runs(request):

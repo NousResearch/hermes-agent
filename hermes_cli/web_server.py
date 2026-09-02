@@ -1543,6 +1543,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",
+    # `nous.keepalive_interval_seconds` is the only schema-surfaced nous field
+    # (Portal tokens live in auth.json) — fold it into the agent tab.
+    "nous": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

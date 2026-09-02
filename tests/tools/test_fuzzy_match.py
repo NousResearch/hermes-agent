@@ -191,6 +191,51 @@ class TestReplaceAll:
         assert "2 matches" in err
 
 
+    def test_self_overlapping_pattern_via_line_strategies(self):
+        """The line-based strategies must be non-overlapping too.
+
+        Regression: #56211 fixed _strategy_exact but left the identical
+        one-line-at-a-time advance in _find_normalized_matches (shared by
+        line_trimmed / indentation_flexible / whitespace_normalized) and in
+        _strategy_trimmed_boundary. Those fire whenever old_string's
+        indentation does not match the file's — the common case when a model
+        quotes a snippet without its leading whitespace.
+
+        _apply_replacements splices in reverse order using offsets computed
+        against the original string, so overlapping spans made every splice
+        after the first index into shifted text and deleted surrounding
+        content while still reporting success.
+        """
+        # Indentation mismatch forces a line-based strategy, not exact.
+        content = "    x = 1\n    x = 1\n    x = 1\n"
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "x = 1\nx = 1", "y = 2", replace_all=True
+        )
+        assert err is None
+        # 3 identical lines hold exactly one non-overlapping 2-line match.
+        assert count == 1
+        # The untouched third line and the trailing newline must survive.
+        assert new.count("x = 1") == 1
+        assert new.endswith("\n")
+
+        # 4 lines -> two non-overlapping matches, nothing left over.
+        content4 = "    x = 1\n    x = 1\n    x = 1\n    x = 1\n"
+        new4, count4, _, err4 = fuzzy_find_and_replace(
+            content4, "x = 1\nx = 1", "y = 2", replace_all=True
+        )
+        assert err4 is None
+        assert count4 == 2
+        assert "x = 1" not in new4
+
+        # Non-overlapping content is unaffected by the change.
+        content_distinct = "    a = 1\n    b = 2\n    a = 1\n    b = 2\n"
+        new_d, count_d, _, err_d = fuzzy_find_and_replace(
+            content_distinct, "a = 1\nb = 2", "c = 3", replace_all=True
+        )
+        assert err_d is None
+        assert count_d == 2
+
+
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""
 

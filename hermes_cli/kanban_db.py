@@ -3325,6 +3325,64 @@ def resolve_default_max_cost() -> Optional[float]:
     return val
 
 
+def _resolve_cost_key(key: str, fallback: float) -> float:
+    """Read a float ``kanban.<key>`` from config, falling back on any error."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("kanban", {}).get(key, None)
+        if raw is None:
+            return fallback
+        val = float(raw)
+        return val if val > 0 else fallback
+    except Exception:
+        return fallback
+
+
+def resolve_max_cost_ceiling() -> float:
+    """Hardest cap allowed on a NEW card (``kanban.max_cost_ceiling``).
+
+    WeRoll cost policy 2026-09-02 (Richie): every card carries an estimate and a
+    cap of estimate + 20% contingency, and **no new card may be created above
+    $1.00**. Steve-o owns estimates and caps; a card needing more than the
+    ceiling must be split, not raised at creation.
+    """
+    return _resolve_cost_key("max_cost_ceiling", 1.00)
+
+
+def resolve_max_cost_hard_ceiling() -> float:
+    """Absolute lifetime ceiling for a card including Steve-o's extensions.
+
+    Steve-o may grant at most two extensions to a single card, in increments of
+    his choosing, up to a total card cost of ``kanban.max_cost_hard_ceiling``
+    ($1.50). A third cap break is never extended: the card is blocked and Richie
+    is asked for a decision on Slack and iMessage.
+    """
+    return _resolve_cost_key("max_cost_hard_ceiling", 1.50)
+
+
+def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
+    """Apply the WeRoll cost policy to a cap supplied at card creation.
+
+    Used by EVERY task-insert path so no card can be minted uncapped: the CLI,
+    the ``kanban_create`` tool, the dashboard API, the auto-decomposer, the
+    auto-generated ``Deploy:`` follow-ups and the swarm. Before 2026-09-02 the
+    default was applied on the CLI/tool paths only, which left 68% of cards
+    uncapped and let one card reach $2.17 against a $0.60 cap.
+
+    ``None`` -> the configured default. Any value -> clamped to the new-card
+    ceiling. A card that genuinely needs more gets split by Steve-o.
+    """
+    try:
+        val = resolve_default_max_cost() if max_cost is None else float(max_cost)
+    except Exception:
+        val = None
+    if val is None:
+        return None
+    ceiling = resolve_max_cost_ceiling()
+    return min(val, ceiling) if val > 0 else None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3722,7 +3780,11 @@ def create_task(
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
-                        max_cost,
+                        # WeRoll cost policy 2026-09-02: apply the default and the
+                        # $1.00 new-card ceiling HERE, so every caller of
+                        # create_task is covered — CLI, kanban_create tool,
+                        # dashboard API, Deploy: follow-ups and swarm alike.
+                        effective_max_cost(max_cost),
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         model_override,
@@ -7924,8 +7986,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, max_cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7937,6 +7999,11 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    # WeRoll cost policy 2026-09-02: decomposer children were the
+                    # single biggest uncapped path — t_0ad7eded was minted here
+                    # and reached $2.17 with no cap. Children inherit the default
+                    # under the $1.00 ceiling; Steve-o re-estimates from there.
+                    effective_max_cost(None),
                 ),
             )
             _append_event(

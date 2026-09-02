@@ -33,6 +33,13 @@ __all__ = ["register"]
 # asserts Jobsy is the default and `switch` is never a target.
 DEFAULT_ASSESSOR = "jobsy"
 RUNTIME_ASSESSOR = "default"  # Agent Smith's profile id
+# WeRoll cost policy 2026-09-02: spend is Steve-o's lane, not Jobsy's and not
+# Smith's. Steve-o owns every cost estimate and every cap on this board, so a
+# cap break escalates to him — he decides extend / split / rewrite. Checked
+# BEFORE the runtime markers because a cap-break reason can contain words that
+# look like runtime faults.
+COST_ASSESSOR = "steve-o"
+_COST_MARKERS = ("max_cost", "cost cap", "cost_cap", "cumulative spend")
 
 # Signals that a block is a runtime/environment/profile fault (Smith's lane)
 # rather than a scope/AC/product decision (Jobsy's lane). Matched case-
@@ -104,6 +111,11 @@ def _is_truly_blocked(task_id: str) -> bool:
 def _assessor_for(task_id: str, assignee: str | None, reason: str | None) -> str | None:
     """Choose the assessor for the first hop, or None to skip (loop guard)."""
     text = (reason or "").lower()
+    if any(m in text for m in _COST_MARKERS):
+        # Cap breaks go to Steve-o even if he is the blocked assignee: he is the
+        # only profile allowed to adjudicate spend, so there is no other tier to
+        # climb to. The loop guard below is deliberately skipped for this case.
+        return COST_ASSESSOR
     assessor = RUNTIME_ASSESSOR if any(m in text for m in _RUNTIME_MARKERS) else DEFAULT_ASSESSOR
 
     # Loop guard: never escalate a card back to the profile that blocked it.
@@ -124,13 +136,28 @@ def on_block(task_id: str = "", assignee: str | None = None, reason: str | None 
     if not assessor:
         return
 
-    prompt = (
-        f"Assess the blocked kanban card {task_id} and unblock it if resolvable. "
-        f"Block reason: {reason or '(none)'.strip()!r}. "
-        "Classify it (scope/AC vs runtime/env) and either resolve-and-unblock, "
-        "or escalate to the next agent up the chain. Only a genuinely critical "
-        "block (missing creds, owner decision, money) stops at Richie."
-    )
+    if assessor == COST_ASSESSOR:
+        prompt = (
+            f"COST CAP BREAK on kanban card {task_id}. "
+            f"Block reason: {reason or '(none)'.strip()!r}. "
+            "You own this decision — see the cost-policy block in your SOUL. "
+            "Read the card's events and comments, establish what it actually "
+            "achieved for the spend, and decide: EXTEND (only if you are "
+            "confident the work completes within the extension), SPLIT into "
+            "smaller cards each with its own estimate and cap, or DELETE AND "
+            "REWRITE. You may grant at most two extensions to one card, in "
+            "increments of your choosing, to a lifetime total of $1.50. On a "
+            "third break do not extend: leave the card blocked and escalate to "
+            "Richie with your recommendation and the supporting evidence."
+        )
+    else:
+        prompt = (
+            f"Assess the blocked kanban card {task_id} and unblock it if resolvable. "
+            f"Block reason: {reason or '(none)'.strip()!r}. "
+            "Classify it (scope/AC vs runtime/env) and either resolve-and-unblock, "
+            "or escalate to the next agent up the chain. Only a genuinely critical "
+            "block (missing creds, owner decision, money) stops at Richie."
+        )
 
     try:
         # Fire-and-forget in a new session so the (short-lived) firing worker

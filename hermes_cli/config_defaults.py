@@ -2832,6 +2832,14 @@ DEFAULT_CONFIG = {
         # installs that never opt in. The reference sample config
         # (cli-config.yaml.example / README) ships this set to 2.50.
         "default_max_cost": None,
+    # WeRoll cost policy 2026-09-02. Caps are set by Steve-o as
+    # (cost estimate + 20% contingency). No NEW card may exceed
+    # max_cost_ceiling; a card that needs more must be split, not raised.
+    # Steve-o may grant at most two extensions to a card that breaks its cap,
+    # up to max_cost_hard_ceiling in total. A third break is never extended —
+    # the card blocks and Richie decides (Slack + iMessage).
+    "max_cost_ceiling": 1.00,
+    "max_cost_hard_ceiling": 1.50,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

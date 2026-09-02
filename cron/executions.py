@@ -7,6 +7,7 @@ proved gone. Terminal states are immutable.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import sqlite3
 import threading
@@ -25,6 +26,28 @@ MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
+
+
+def _utc_epoch_and_iso(dt: datetime) -> tuple[str, int]:
+    """Return both string and integer timestamp for stable ordering."""
+    utc_dt = dt.astimezone(timezone.utc)
+    return utc_dt.isoformat(), int(utc_dt.timestamp() * 1_000_000)
+
+
+def _claimed_epoch(claimed_at: Optional[str]) -> Optional[int]:
+    """Parse a stored claimed-at marker into UTC epoch seconds."""
+    if claimed_at is None:
+        return None
+    text = str(claimed_at)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.astimezone(timezone.utc).timestamp() * 1_000_000)
 
 
 def _connect() -> sqlite3.Connection:
@@ -53,18 +76,33 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              status TEXT NOT NULL CHECK(status IN
                ('claimed','running','completed','failed','unknown')),
              claimed_at TEXT NOT NULL,
+             claimed_epoch INTEGER,
              started_at TEXT,
              finished_at TEXT,
              error TEXT
            )"""
     )
+    table_info = {row[1] for row in conn.execute("PRAGMA table_info(executions)")}
+    if "claimed_epoch" not in table_info:
+        conn.execute("ALTER TABLE executions ADD COLUMN claimed_epoch INTEGER")
+
+    for row in conn.execute(
+        "SELECT id, claimed_at FROM executions WHERE claimed_epoch IS NULL"
+    ).fetchall():
+        epoch = _claimed_epoch(row["claimed_at"])
+        if epoch is None:
+            continue
+        conn.execute(
+            "UPDATE executions SET claimed_epoch=? WHERE id=?", (epoch, row["id"])
+        )
+
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
-        "ON executions(job_id, claimed_at DESC, id DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed_epoch "
+        "ON executions(job_id, claimed_epoch DESC, id DESC)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
-        "ON executions(status, claimed_at DESC, id DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed_epoch "
+        "ON executions(status, claimed_epoch DESC, id DESC)"
     )
 
 
@@ -132,7 +170,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+             ORDER BY claimed_epoch DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (limit,),
     )
@@ -140,17 +178,17 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
 
 def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
-    now = _hermes_now().isoformat()
+    claimed_at, claimed_epoch = _utc_epoch_and_iso(_hermes_now())
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, claimed_epoch)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), claimed_at, claimed_epoch),
         )
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
@@ -250,14 +288,17 @@ def list_executions(
         clauses.append("job_id=?")
         params.append(str(job_id))
     if before_claimed_at is not None:
-        clauses.append("claimed_at < ?")
-        params.append(str(before_claimed_at))
+        cursor_epoch = _claimed_epoch(before_claimed_at)
+        if cursor_epoch is None:
+            return []
+        clauses.append("claimed_epoch < ?")
+        params.append(cursor_epoch)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
     with _transaction() as conn:
         rows = conn.execute(
             "SELECT * FROM executions" + where
-            + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
+            + " ORDER BY claimed_epoch DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -277,10 +318,10 @@ def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     with _transaction() as conn:
         rows = conn.execute(
             f"""SELECT e.* FROM executions e
-                WHERE e.job_id IN ({placeholders})
-                  AND e.id=(SELECT e2.id FROM executions e2
-                            WHERE e2.job_id=e.job_id
-                            ORDER BY e2.claimed_at DESC, e2.id DESC LIMIT 1)""",
+            WHERE e.job_id IN ({placeholders})
+              AND e.id=(SELECT e2.id FROM executions e2
+                        WHERE e2.job_id=e.job_id
+                        ORDER BY e2.claimed_epoch DESC, e2.id DESC LIMIT 1)""",
             clean,
         ).fetchall()
     return {row["job_id"]: dict(row) for row in rows}

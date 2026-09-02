@@ -9354,12 +9354,29 @@ def request_worker_scope_stop(
         # next tick.
         return False
     with _scope_stop_lock:
-        _scope_stop_pending[unit_name] = _ScopeStopRequest(
-            unit=unit_name,
-            task_id=task_id,
-            attempts=_scope_stop_attempts.get(unit_name, 0),
-            skip_if_registered=skip_if_registered,
-        )
+        existing = _scope_stop_pending.get(unit_name)
+        if existing is not None:
+            # Pass 8, finding AB: coalescing must not let whichever
+            # request arrived LAST decide whether the stop can be
+            # skipped. A terminal request (skip_if_registered=False — the
+            # completed task's scope MUST be reaped) and an
+            # unregistered-launch request (True) for the same unit
+            # compose with AND: once a terminal stop is queued, no later
+            # True can re-enable skipping past it, in either arrival
+            # order.
+            existing.skip_if_registered = (
+                existing.skip_if_registered and skip_if_registered
+            )
+            if task_id and not existing.task_id:
+                existing.task_id = task_id
+            existing.attempts = _scope_stop_attempts.get(unit_name, 0)
+        else:
+            _scope_stop_pending[unit_name] = _ScopeStopRequest(
+                unit=unit_name,
+                task_id=task_id,
+                attempts=_scope_stop_attempts.get(unit_name, 0),
+                skip_if_registered=skip_if_registered,
+            )
     if _scope_stop_inline:
         _drain_scope_stop_requests()
         with _scope_stop_lock:

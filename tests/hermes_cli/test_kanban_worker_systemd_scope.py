@@ -3122,6 +3122,36 @@ def test_scope_stop_intents_are_connection_local_not_thread_local(
         kb.reset_scope_stop_service_for_tests()
 
 
+def test_queue_coalescing_never_reenables_skipping(monkeypatch):
+    """AB: two queued requests for one unit coalesce into one entry and
+    ``skip_if_registered`` composes with AND. A terminal request (False —
+    the completed task's scope must be reaped regardless of registration)
+    makes the coalesced entry False in BOTH arrival orders: a later True
+    can never re-enable skipping past a terminal stop."""
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
+    kb.reset_scope_stop_service_for_tests()
+    unit = kb._kanban_worker_scope_unit("t_coal", 2)
+    try:
+        # Registration-sensitive first, terminal second.
+        assert not kb.request_worker_scope_stop(unit, skip_if_registered=True)
+        assert not kb.request_worker_scope_stop(
+            unit, task_id="t_coal", skip_if_registered=False,
+        )
+        assert kb._scope_stop_pending[unit].skip_if_registered is False
+        kb.reset_scope_stop_service_for_tests()
+
+        # Terminal first, registration-sensitive second.
+        assert not kb.request_worker_scope_stop(
+            unit, task_id="t_coal", skip_if_registered=False,
+        )
+        assert not kb.request_worker_scope_stop(unit, skip_if_registered=True)
+        assert kb._scope_stop_pending[unit].skip_if_registered is False
+    finally:
+        kb.reset_scope_stop_service_for_tests()
+
+
 def test_shutdown_single_budget_bounds_both_joins(
     shims, conn, kanban_home, monkeypatch, caplog,
 ):

@@ -16523,6 +16523,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
             except Exception:
                 pass
+            # The FIFO tail lives in SessionState.conversation.queued_events,
+            # not in the slot dict above — flush it too or every follow-up
+            # parked in overflow at restart time is lost (#99882).
+            try:
+                from gateway.shutdown_flush import flush_overflow_to_file
+                flush_overflow_to_file(
+                    {
+                        _k: list(_v)
+                        for _k, _v in dict(getattr(self, "_queued_events", None) or {}).items()
+                        if _v
+                    },
+                    reason="shutdown",
+                )
+            except Exception:
+                pass
             # On the real runner these are live SessionState views whose
             # clear() resets one field per session — never a wholesale dict
             # swap, so a concurrent writer on another session can't lose its

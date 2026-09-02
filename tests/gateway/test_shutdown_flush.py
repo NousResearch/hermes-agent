@@ -11,6 +11,7 @@ import pytest
 
 from gateway.shutdown_flush import (
     _serialise_value,
+    flush_overflow_to_file,
     flush_pending_to_file,
     recover_pending_to_db,
 )
@@ -168,3 +169,72 @@ def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
     assert result == tmp_path / "pending_messages"
 
 
+
+
+# ── FIFO overflow tail durability (#99882) ─────────────────────────────
+
+
+def _overflow_event(text: str, session_id: str = "20260901_120000_fifo"):
+    event = MagicMock()
+    event.text = text
+    event.session_id = session_id
+    event.platform = "telegram"
+    event.sender_id = "1572286605"
+    event.sender_name = "tester"
+    event.reply_to = None
+    event.media = None
+    event.raw_event = None
+    return event
+
+
+def test_flush_overflow_writes_one_payload_per_event_in_arrival_order(tmp_path, monkeypatch):
+    """The FIFO tail (queued_events) must survive shutdown like the slot does.
+
+    Each overflow entry is its own recover_pending_to_db-compatible payload,
+    with ``seq`` recording arrival order inside the session.
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+
+    count = flush_overflow_to_file(
+        {
+            "agent:main:telegram:dm:1": [
+                _overflow_event("follow-up B"),
+                _overflow_event("follow-up C"),
+            ],
+            "agent:main:telegram:dm:2": [],
+            "": [_overflow_event("keyless — skipped")],
+        },
+        reason="shutdown",
+    )
+    assert count == 2
+    payloads = sorted(
+        (json.loads(f.read_text(encoding="utf-8")) for f in flush_dir.glob("*.json")),
+        key=lambda p: p["seq"],
+    )
+    assert [p["data"]["text"] for p in payloads] == ["follow-up B", "follow-up C"]
+    assert {p["session_key"] for p in payloads} == {"agent:main:telegram:dm:1"}
+    assert all(p["reason"] == "shutdown" for p in payloads)
+
+
+def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeypatch):
+    """Round-trip: overflow payloads use the slot-flush shape, so the existing
+    startup recovery inserts them as user rows without any new reader."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    flush_overflow_to_file({"agent:main:telegram:dm:1": [_overflow_event("orphan-1")]})
+
+    db = MagicMock()
+    recovered = recover_pending_to_db(session_db=db)
+    assert recovered == 1
+    db.append_message.assert_called_once()
+    kwargs = db.append_message.call_args.kwargs
+    assert kwargs["session_id"] == "20260901_120000_fifo"
+    assert kwargs["role"] == "user"
+    assert kwargs["content"] == "orphan-1"
+    assert list(flush_dir.glob("*.json")) == []
+
+
+def test_flush_overflow_noop_on_empty():
+    assert flush_overflow_to_file({}) == 0
+    assert flush_overflow_to_file({"k": []}) == 0

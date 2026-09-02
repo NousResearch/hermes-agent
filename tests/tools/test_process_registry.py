@@ -2,6 +2,8 @@
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -848,6 +850,33 @@ class TestEnvPollerIncrementalRead:
     def test_read_command_starts_from_zero_on_first_poll(self):
         cmd = ProcessRegistry._log_delta_command("'/tmp/bg.log'", 0)
         assert "O=0" in cmd
+
+    @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
+    def test_read_command_holds_back_a_split_utf8_sequence(self, tmp_path):
+        """A multibyte character straddling two polls must not be split.
+
+        The backend decodes each execute() result on its own, so returning
+        the first byte of an 'é' in one poll and the rest in the next would
+        yield replacement characters in the transcript (and break watch
+        patterns at the seam). Every prefix of a mixed ASCII/2/3/4-byte
+        string must come back decodable, with at most 3 bytes held back and
+        nothing held back once the trailing character is complete.
+        """
+        full = "hé😀中a\n€bz🚀".encode()
+        log = tmp_path / "bg.log"
+        quoted = shlex.quote(str(log))
+        for n in range(1, len(full) + 1):
+            log.write_bytes(full[:n])
+            out = subprocess.run(
+                ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
+                capture_output=True, timeout=30,
+            ).stdout
+            header, _, delta = out.partition(b"\n")
+            size, _offset = map(int, header.split())
+            delta.decode("utf-8")  # must not raise
+            assert delta == full[:size]
+            complete = full[:n].decode("utf-8", "ignore").encode() == full[:n]
+            assert (n - size) == 0 if complete else 0 < (n - size) <= 3
 
     def test_first_poll_reads_from_the_start(self, registry):
         session = _make_session(sid="proc_delta")

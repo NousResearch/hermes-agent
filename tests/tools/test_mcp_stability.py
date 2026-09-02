@@ -66,6 +66,36 @@ class TestStdioPidTracking:
         for pid in result:
             assert isinstance(pid, int)
 
+    def test_snapshot_sees_child_spawned_from_another_thread(self):
+        """/proc/<pid>/task/<tid>/children is per-thread; the MCP subprocess
+        is spawned from the background loop thread, so a main-thread-only
+        read misses it and every dead-child fast-fail / respawn / killpg
+        path silently no-ops."""
+        import subprocess
+        import sys as _sys
+        import threading
+
+        from tools.mcp_tool import _snapshot_child_pids
+
+        procs = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def _spawn():
+            procs.append(subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"]))
+            started.set()
+            release.wait(10)  # keep the spawning thread alive while we snapshot
+
+        t = threading.Thread(target=_spawn, daemon=True)
+        t.start()
+        assert started.wait(10)
+        try:
+            assert procs[0].pid in _snapshot_child_pids()
+        finally:
+            release.set()
+            procs[0].kill()
+            procs[0].wait(5)
+
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""

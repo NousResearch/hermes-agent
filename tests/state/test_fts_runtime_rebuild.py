@@ -332,7 +332,15 @@ class TestRuntimeFtsRebuild:
         with pytest.raises(sqlite3.DatabaseError) as caught:
             db._execute_write(lambda _conn: (_ for _ in ()).throw(structural))
 
-        assert caught.value is structural
+        # Structural corruption quarantines the handle: the typed error wraps
+        # the original (cause preserved, SQLite result code copied) and the
+        # sticky flag is set, so later writes fail fast.
+        from hermes_state import StateDbCorruptError
+
+        assert isinstance(caught.value, StateDbCorruptError)
+        assert caught.value.__cause__ is structural
+        assert caught.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+        assert db._db_corrupt is True
         assert rebuild_called is False
         assert db._fts_stale is False
         assert _meta_value(tmp_path / "state.db", FTS_STALE_KEY) is None
@@ -831,6 +839,19 @@ class TestPhysicalCorruptionAcceptance:
             # The misdiagnosis message from the field incident must be gone.
             assert "canonical message rows are preserved" not in caplog.text
             assert "attempting one-shot in-place FTS rebuild" not in caplog.text
+            # Structural damage quarantines the handle: typed error, sticky
+            # flag, later writes fail fast, and close() must not checkpoint
+            # the WAL over a damaged page image (the #90950 page-1 clobber).
+            from hermes_state import StateDbCorruptError
+
+            assert isinstance(caught.value, StateDbCorruptError)
+            assert db._db_corrupt is True
+            with pytest.raises(StateDbCorruptError):
+                db.append_message("s1", "user", "second write after corruption")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                db.close()
+            assert "Skipping the close-time WAL checkpoint" in caplog.text
         finally:
             db.close()
 

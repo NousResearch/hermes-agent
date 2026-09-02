@@ -93,6 +93,7 @@ from hermes_cli.dashboard_auth import (
     LoginStart,
     ProviderError,
     RefreshExpiredError,
+    classify_jwks_lookup_error,
     Session,
 )
 
@@ -617,10 +618,11 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             signing_key = self._get_jwks_client().get_signing_key_from_jwt(
                 id_token
             )
-        except jwt.PyJWKClientError as exc:
-            raise ProviderError(f"JWKS lookup failed: {exc}") from exc
-        except Exception as exc:  # pragma: no cover - defensive
-            raise ProviderError(f"JWKS lookup failed: {exc!r}") from exc
+        except Exception as exc:
+            # Unreachable JWKS -> ProviderError (503); a bearer that is not
+            # one of our JWTs (opaque peer key, foreign kid) -> InvalidCodeError
+            # (None / next provider). Folding both into 503 produced #94558.
+            raise classify_jwks_lookup_error(exc) from exc
 
         try:
             claims = jwt.decode(

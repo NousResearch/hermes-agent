@@ -295,4 +295,54 @@ class TestKeepaliveProbeFallback:
 
         assert task._ping_unsupported is False
 
+    async def test_silent_ping_drop_falls_back_to_list_tools(self):
+        """Regression for #97245: a server that silently drops ping (no
+        response at all) produces a TimeoutError. If list_tools succeeds,
+        the transport is alive — latch _ping_unsupported and return
+        normally instead of reconnect-looping."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        # Should NOT raise — the server is alive.
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_silent_ping_drop_both_fail_propagates(self):
+        """When both ping AND list_tools time out, it is a genuine liveness
+        failure — propagate so the caller reconnects."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(side_effect=asyncio.TimeoutError()),
+        )
+
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await task._keepalive_probe()
+
+        assert task._ping_unsupported is False
+
+    async def test_silent_ping_drop_no_tools_propagates(self):
+        """A server that has no tools capability and times out on ping has no
+        fallback probe — the timeout must propagate immediately."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(prompts=SimpleNamespace())  # no tools
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(),
+        )
+
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await task._keepalive_probe()
+
+        # list_tools must not be called — no tools capability advertised.
+        task.session.list_tools.assert_not_called()
+        assert task._ping_unsupported is False
 

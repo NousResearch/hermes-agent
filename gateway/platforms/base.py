@@ -161,6 +161,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    # Routed Hermes profile for shared state.db namespaces (topic bindings
+    # under multiplex / profile_routes). Outbound prune paths must not
+    # assume the transport adapter's static profile stamp.
+    profile = str(getattr(source, "profile", None) or "").strip()
+    if profile:
+        metadata["hermes_profile"] = profile
     return metadata
 
 
@@ -489,7 +495,8 @@ def resolve_proxy_url(
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
     Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
-    of ``target_hosts``.
+    of ``target_hosts``. Steps 1-2 are skipped when ``gateway.trust_env`` is
+    false in config.yaml (see :func:`gateway_trust_env`).
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
@@ -497,6 +504,10 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+    if not gateway_trust_env():
+        # gateway.trust_env: false — ignore inherited generic proxy env and
+        # system proxy; only the explicit per-platform var above is honored.
+        return None
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
@@ -538,6 +549,28 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
             )
             return {}
     return {"proxy": proxy_url}
+
+
+def gateway_trust_env() -> bool:
+    """Return the ``trust_env`` value every gateway ``aiohttp.ClientSession`` uses.
+
+    Reads ``gateway.trust_env`` from config.yaml (default ``True``: honor
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY`` / ``SSL_CERT_FILE`` from the
+    process environment). Set it to ``false`` when the gateway inherits a
+    proxy env it should not use — e.g. a Windows Scheduled Task picking up a
+    Clash/V2Ray ``HTTP_PROXY`` the interactive shell never sees (#48820).
+    One knob for all platform adapters; fail-open to the default if config
+    is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly as _load_config
+        gw = (_load_config() or {}).get("gateway") or {}
+    except Exception:
+        return True
+    value = gw.get("trust_env", True) if isinstance(gw, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value) if value is not None else True
 
 
 def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
@@ -925,6 +958,11 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+    """Cache image bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -969,7 +1007,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="image",
                     )
-                return cache_image_from_bytes(content, ext)
+                return await cache_image_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1067,6 +1105,11 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
+async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
+    """Cache audio bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_audio_from_bytes, data, ext)
+
+
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
@@ -1111,7 +1154,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="audio",
                     )
-                return cache_audio_from_bytes(content, ext)
+                return await cache_audio_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1172,6 +1215,11 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
+    """Cache video bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_video_from_bytes, data, ext)
 
 
 def cleanup_video_cache(max_age_hours: int = 24) -> int:
@@ -1522,6 +1570,25 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _tenv(name: str, default: str = "") -> str:
+    """Scope-aware TERMINAL_* read (tools.terminal_scope.terminal_env).
+
+    Media-path translation runs in the gateway process concurrently for
+    several profiles; the per-turn terminal scope carries the ACTIVE
+    profile's terminal settings, while a raw os.getenv would read whatever
+    profile's config a previous turn pinned into the process env.
+
+    Only an import failure falls back: an active refusal scope must raise —
+    reconstructing mounts/backends from ambient env under refusal would
+    rebuild another profile's terminal policy.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.getenv(name, default)
+    return terminal_env(name, default)
+
+
 def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     """Parse configured Docker volume mounts into ``(host_path, container_path)``.
 
@@ -1530,7 +1597,7 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     Named volumes and non-absolute hosts are skipped because they cannot be
     resolved on the gateway host for media delivery.
     """
-    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
     if not raw:
         return []
     try:
@@ -1598,7 +1665,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     except Exception:
         return ["default"]
     # Explicit trusted-profiles opt-in: one shared container identity.
-    shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
     if shared:
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
     try:
@@ -1624,9 +1691,9 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     actually resolves — the profile sandbox dir existing does not mean the
     file lives there when it was produced in a legacy per-session container.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -1634,13 +1701,13 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     }:
         return []
     # Explicit cwd mount takes over /workspace when enabled.
-    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
+    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
         try:
             host = Path(os.path.expanduser(cwd)).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
@@ -1668,9 +1735,9 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
     produced a real host file the gateway couldn't find. Ordered best-first:
     the profile-scoped layout, then the legacy bug-window per-session layout.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -1700,7 +1767,7 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
     longer prefixes than the ``/root`` home mount, so longest-prefix matching
     picks the cache translation over the home translation for them.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
@@ -1721,7 +1788,7 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
     file seemingly vanished. Point at the sandbox/session mismatch instead.
     Gated to Docker mode so host-path rejections stay quiet.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return
     logger.warning(
         "Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
@@ -2280,6 +2347,11 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
+async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
+    """Cache document bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_document_from_bytes, data, filename)
+
+
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached documents older than *max_age_hours*.
@@ -2398,6 +2470,23 @@ def cache_media_bytes(
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+async def cache_media_bytes_async(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache attachment bytes without blocking the event loop."""
+    return await asyncio.to_thread(
+        cache_media_bytes,
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
 
 
 class MessageType(Enum):
@@ -3916,6 +4005,9 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         chat_type: Optional[str] = None,
         chat_id: Optional[str] = None,
+        *,
+        is_bot: bool = False,
+        thread_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Return whether ``user_id`` is on the allowlist, if a check is configured.
 
@@ -3923,6 +4015,11 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        ``is_bot`` / ``thread_id`` are forwarded as keywords only when set, so
+        the gateway callback can apply its bot policy (``*_ALLOW_BOTS``) and
+        thread-level profile routes while legacy three-positional callbacks
+        keep working unchanged.
 
         Only the literal booleans are propagated. A callback that returns
         anything else is treated as "unknown" rather than coerced with
@@ -3932,8 +4029,13 @@ class BasePlatformAdapter(ABC):
         """
         if not user_id or self._authorization_check is None:
             return None
+        extra: Dict[str, Any] = {}
+        if is_bot:
+            extra["is_bot"] = True
+        if thread_id is not None:
+            extra["thread_id"] = thread_id
         try:
-            result = self._authorization_check(user_id, chat_type, chat_id)
+            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
             if result is True:
                 return True
             if result is False:

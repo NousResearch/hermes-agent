@@ -15,9 +15,9 @@ Two values must be absolute for the entry to work:
     checkout. Do not copy the icon: ``Exec`` already depends on that tree.
 
 Cache refresh is best-effort and tool-gated: ``update-desktop-database``
-for the freedesktop menu cache, and ``kbuildsycoca6``/``kbuildsycoca5``
-for Plasma. Run each tool only when it exists. A missing tool is not an
-error.
+for the freedesktop menu cache, ``gtk-update-icon-cache`` for the user
+hicolor tree, and ``kbuildsycoca6``/``kbuildsycoca5`` for Plasma. Run
+each tool only when it exists. A missing tool is not an error.
 
 Import-light and side-effect-free at import time: the uninstaller uses
 this without loading the full CLI.
@@ -25,6 +25,7 @@ this without loading the full CLI.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import struct
@@ -624,31 +625,135 @@ def _run_quiet(cmd: "list[str]") -> bool:
     return result.returncode == 0
 
 
+# Sizes a typical hicolor ``index.theme`` actually lists. ``scalable`` is
+# SVG-only — a raster PNG there is what Cinnamon's panel draws as a
+# mangled low-res blob. The shipped desktop asset is 1024×1024, which is
+# also not an indexed dir name, so a copy-only fallback lands in ``256x256``.
+_HICOLOR_INDEXED_SIZES = (16, 22, 24, 32, 36, 48, 64, 72, 96, 128, 192, 256, 512)
+# Cinnamon's panel is ~24–32px. Write these so the theme loads an exact
+# raster instead of downscaling a 1024px PNG at lookup time.
+_HICOLOR_INSTALL_SIZES = (24, 32, 48, 256)
+
+
+def _png_dimensions(raw: bytes) -> Optional[tuple[int, int]]:
+    """Return ``(width, height)`` from a PNG IHDR, or ``None`` if unreadable."""
+    if len(raw) >= 24 and raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR":
+        return struct.unpack(">II", raw[16:24])
+    return None
+
+
+def _hicolor_subdir(dimensions: Optional[tuple[int, int]]) -> str:
+    """Pick a fixed-size hicolor dir the theme indexes. Never ``scalable``."""
+    if dimensions is None:
+        return "256x256"
+    width, height = dimensions
+    if width != height or width <= 0:
+        return "256x256"
+    if width in _HICOLOR_INDEXED_SIZES:
+        return f"{width}x{width}"
+    if width > 256:
+        return "256x256"
+    nearest = min(_HICOLOR_INDEXED_SIZES, key=lambda size: abs(size - width))
+    return f"{nearest}x{nearest}"
+
+
+def _hicolor_icon_dest(subdir: str) -> Path:
+    return _xdg_data_home() / "icons" / "hicolor" / subdir / "apps" / "hermes.png"
+
+
+def _remove_stale_scalable_icon() -> bool:
+    """Drop a leftover PNG from ``scalable/`` (the pre-fix install path).
+
+    Return True when a file was removed so the caller can refresh the
+    icon cache. A missing file is not an error.
+    """
+    stale = _hicolor_icon_dest("scalable")
+    try:
+        if stale.is_file():
+            stale.unlink()
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def _refresh_hicolor_cache() -> None:
+    """Best-effort reindex of the user hicolor tree. Missing tool is fine."""
+    hicolor = _xdg_data_home() / "icons" / "hicolor"
+    for tool in ("gtk-update-icon-cache", "gtk4-update-icon-cache"):
+        resolved = shutil.which(tool)
+        if resolved:
+            _run_quiet([resolved, "-f", "-t", str(hicolor)])
+            return
+
+
+def _resized_hicolor_pngs(raw: bytes) -> Optional[dict[str, bytes]]:
+    """Lanczos-resize *raw* to each panel size. ``None`` when it will not decode.
+
+    Pillow is a core dep but this module stays import-light: the import is
+    local so the uninstaller does not pay it. A truncated/fake PNG (tests,
+    interrupted copy) returns None and the caller falls back to a copy.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            rgba = im.convert("RGBA")
+            out: dict[str, bytes] = {}
+            for size in _HICOLOR_INSTALL_SIZES:
+                resized = rgba.resize((size, size), Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                resized.save(buf, format="PNG")
+                out[f"{size}x{size}"] = buf.getvalue()
+            return out
+    except (OSError, ValueError):
+        return None
+
+
+def _write_hicolor_pngs(files: dict[str, bytes]) -> bool:
+    """Write *files* keyed by hicolor size dir. Return True if any file changed."""
+    wrote = False
+    for subdir, data in files.items():
+        dest = _hicolor_icon_dest(subdir)
+        if dest.is_file() and dest.read_bytes() == data:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        wrote = True
+    return wrote
+
+
 def _install_icon_to_hicolor(icon: Path) -> bool:
-    """Copy the app icon into the user's hicolor icon theme tree.
+    """Install the app icon into the user's hicolor icon theme tree.
 
     The freedesktop icon lookup finds an installed ``apps/hermes.png``
     by the unqualified name ``hermes``, so the entry can reference the
-    icon without an absolute checkout path. The size subdirectory must
-    be one the theme actually indexes (hicolor's index.theme lists
-    fixed sizes and ``scalable`` — an unindexed dir like ``1024x1024``
-    would never be found), so the icon lands in ``scalable`` unless the
-    source is exactly 256x256, which goes to the fixed-size dir.
-    Idempotent via content-compare; OSError caught internally (False) —
-    the caller then falls back to the absolute path.
+    icon without an absolute checkout path. Raster PNGs go to indexed
+    fixed-size dirs, never ``scalable`` (SVG-only). When the source
+    decodes, it is Lanczos-resized to 24/32/48/256 so Cinnamon's panel
+    does not nearest-neighbor a 1024px PNG. Undecodable bytes fall back
+    to a copy into one indexed dir. Idempotent via content-compare;
+    OSError caught internally (False) — the caller then falls back to
+    the absolute path.
     """
     try:
         raw = icon.read_bytes()
-        is_256 = False
-        if len(raw) >= 24 and raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR":
-            width, height = struct.unpack(">II", raw[16:24])
-            is_256 = (width, height) == (256, 256)
-        subdir = "256x256" if is_256 else "scalable"
-        dest = _xdg_data_home() / "icons" / "hicolor" / subdir / "apps" / "hermes.png"
-        if dest.is_file() and dest.read_bytes() == raw:
-            return True
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(icon, dest)
+        resized = _resized_hicolor_pngs(raw)
+        if resized is not None:
+            wrote = _write_hicolor_pngs(resized)
+        else:
+            dest = _hicolor_icon_dest(_hicolor_subdir(_png_dimensions(raw)))
+            wrote = True
+            if dest.is_file() and dest.read_bytes() == raw:
+                wrote = False
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(icon, dest)
+        removed_stale = _remove_stale_scalable_icon()
+        if wrote or removed_stale:
+            _refresh_hicolor_cache()
         return True
     except OSError:
         return False

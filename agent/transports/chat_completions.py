@@ -767,9 +767,18 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["reasoning"] = gh_reasoning
             else:
                 _effort = "medium"
+                _enabled = True
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                    # Honor an explicit "thinking off" (agent.reasoning_effort:
+                    # none / the one-shot length-continuation override) the same
+                    # way the provider-profile path does — never re-enable it.
+                    if reasoning_config.get("enabled") is False or _effort == "none":
+                        _enabled = False
+                if _enabled:
+                    extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                else:
+                    extra_body["reasoning"] = {"enabled": False, "effort": "none"}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

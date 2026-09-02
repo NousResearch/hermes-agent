@@ -855,6 +855,19 @@ class TestAuthFailureAborts:
         )
         assert _is_summary_access_or_quota_error(err) is True
 
+    def test_unscoped_secret_read_is_terminal_access_failure(self):
+        # Multiplexed gateway: a credential read reached get_secret() from a
+        # worker thread without the profile scope. The summary model is
+        # unreachable until the spawn site is fixed — abort and preserve the
+        # session rather than truncating the middle window (#100849 bundle).
+        from agent.secret_scope import UnscopedSecretError
+
+        err = UnscopedSecretError(
+            "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
+            "active while multiplexing is on."
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
 
 
 

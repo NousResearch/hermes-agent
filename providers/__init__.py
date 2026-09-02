@@ -108,6 +108,57 @@ def _user_plugins_dir() -> Path | None:
         return None
 
 
+def _installed_plugins_dir() -> Path | None:
+    """Return ``$HERMES_HOME/plugins/`` if it exists.
+
+    This is where ``hermes plugins install`` clones a plugin — flat, one
+    directory per plugin, NOT under ``model-providers/``. See
+    :func:`_discover_installed_provider_plugins`.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        d = get_hermes_home() / "plugins"
+        return d if d.is_dir() else None
+    except Exception:
+        return None
+
+
+def _declares_model_provider_kind(plugin_dir: Path) -> bool:
+    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
+
+    Only that kind is imported from the flat install directory — every other
+    plugin there belongs to ``PluginManager``, which owns its lifecycle and
+    consent flow. Parsed with PyYAML when available, falling back to a line
+    scan so provider discovery never hard-depends on it.
+    """
+    for filename in ("plugin.yaml", "plugin.yml"):
+        manifest = plugin_dir / filename
+        if not manifest.is_file():
+            continue
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return False
+        try:
+            import yaml
+
+            data = yaml.safe_load(text)
+            if isinstance(data, dict):
+                return str(data.get("kind", "")).strip() == "model-provider"
+        except Exception:
+            pass
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or ":" not in stripped:
+                continue
+            key, _, value = stripped.partition(":")
+            if key.strip() == "kind":
+                return value.strip().strip("\"'") == "model-provider"
+        return False
+    return False
+
+
 def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     """Import a single plugin directory so it self-registers.
 
@@ -274,6 +325,8 @@ def _discover_providers() -> None:
     Order:
       1. Bundled plugins at ``<repo>/plugins/model-providers/<name>/``
       2. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
+      2b. Plugins installed by ``hermes plugins install`` at
+          ``$HERMES_HOME/plugins/<name>/`` that declare ``kind: model-provider``
       3. Legacy per-file modules at ``providers/<name>.py`` (back-compat)
 
     Each step imports its plugins, which call ``register_provider()`` at
@@ -314,6 +367,25 @@ def _discover_providers() -> None:
     if user_dir is not None:
         for child in sorted(user_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            _import_plugin_dir(child, "user")
+
+    # 2b. Plugins installed by ``hermes plugins install`` / the plugin index.
+    #     Those clone into $HERMES_HOME/plugins/<name>/ — flat, NOT under
+    #     model-providers/ — so step 2 never sees them. PluginManager does not
+    #     import them either: it classifies ``kind: model-provider`` and routes
+    #     it here on purpose. Without this step the documented install path
+    #     silently half-works — the CLI reports success and the provider does
+    #     not exist. Only manifests declaring that kind are imported; every
+    #     other plugin in this directory belongs to PluginManager.
+    installed_dir = _installed_plugins_dir()
+    if installed_dir is not None:
+        for child in sorted(installed_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            if child.name == "model-providers":
+                continue  # handled by step 2
+            if not _declares_model_provider_kind(child):
                 continue
             _import_plugin_dir(child, "user")
 

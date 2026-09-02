@@ -85,3 +85,40 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
     assert "profiles/ops/platforms/pairing" in str(store._dir).replace("\\", "/"), (
         f"store not profile-scoped: {store._dir}"
     )
+
+
+def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatch):
+    """A /pair grant mirrored under a routed profile scope must update THAT
+    profile's .env and installed scope, never the shared os.environ (#88441,
+    #77490). Outside multiplex the legacy os.environ publish is unchanged."""
+    import os
+
+    from agent import secret_scope as ss
+    from gateway.pairing import _sync_allowlist_add
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import save_env_value
+
+    root = tmp_path / ".hermes"
+    prof = root / "profiles" / "b"
+    prof.mkdir(parents=True)
+    (root / ".env").write_text("DISCORD_ALLOWED_USERS=default-admin\n")
+    (prof / ".env").write_text("DISCORD_ALLOWED_USERS=b-admin\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
+
+    was_active = ss.is_multiplex_active()
+    ss.set_multiplex_active(True)
+    try:
+        with _profile_runtime_scope(prof):
+            _sync_allowlist_add("discord", "111")
+            assert ss.get_secret("DISCORD_ALLOWED_USERS") == "b-admin,111"
+    finally:
+        ss.set_multiplex_active(was_active)
+
+    assert (prof / ".env").read_text().strip() == "DISCORD_ALLOWED_USERS=b-admin,111"
+    assert (root / ".env").read_text().strip() == "DISCORD_ALLOWED_USERS=default-admin"
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "default-admin"
+
+    # Single-profile: no multiplex -> save still publishes to the process env.
+    save_env_value("DISCORD_ALLOWED_USERS", "default-admin,222")
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "default-admin,222"

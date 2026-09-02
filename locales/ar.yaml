@@ -160,6 +160,8 @@ gateway:
     picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
     choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"
     choice_normal:         "normal — المعالجة القياسية"
+    choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
+    choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
 
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"

@@ -987,7 +987,18 @@ def _(rid, params: dict) -> dict:
             5071,
             f"session storage could not be written: {exc}",
         )
-    _start_agent_build(sid, session)
+    # A completed FAILED build must not wedge the session: the error frame
+    # says retryable, so a new send (or the error card's Retry) rebuilds the
+    # agent with fresh provider resolution instead of replaying the cached
+    # failure forever. Before this, only a model switch reset the failed
+    # generation — a session that failed once (local server off) kept
+    # erroring after the server came back, while new sessions worked. Falls
+    # through to the normal build when there is no completed failure to
+    # clear.
+    if not _restart_completed_failed_agent_build(
+        sid, session, session.get("agent_ready")
+    ):
+        _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         # Patient wait (#63078): the user's message is already the accepted

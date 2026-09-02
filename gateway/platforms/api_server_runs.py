@@ -225,6 +225,7 @@ def _make_run_event_callback(
                 "task_index",
                 "subagent_id",
                 "child_session_id",
+                "delegation_id",
                 "parent_id",
                 "depth",
                 "model",
@@ -1016,6 +1017,7 @@ async def _handle_runs(
             self._active_run_tasks.pop(run_id, None)
             self._run_approval_sessions.pop(run_id, None)
             self._stopping_run_ids.discard(run_id)
+            self._release_run_owner_if_forgotten(run_id)
 
     self._activate_admitted_request()
     task = asyncio.create_task(_run_and_close())
@@ -1037,25 +1039,36 @@ async def _handle_runs(
     )
 
 
-def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
-    scope = self._run_idempotency_scope(request)
-    owner = self._run_owners.get(run_id)
-    if self._room_grant_token(request):
-        return owner == scope or (
-            owner is None
-            and self._run_idempotency_store.owns_run(scope, run_id)
-        )
-    if owner is None and (
+def _release_run_owner_if_forgotten(self, run_id: str) -> None:
+    """Drop the owner stamp only once nothing keyed by *run_id* survives.
+
+    Ownership must outlive every surface it protects (statuses, live
+    agent/task refs, SSE transport, approval sessions), which are retired
+    on different clocks. Releasing earlier would leave a stateful run
+    without an owner, which ``_request_owns_run`` treats as fail-closed.
+    """
+    if (
         run_id in self._run_statuses
         or run_id in self._active_run_agents
         or run_id in self._active_run_tasks
+        or run_id in self._run_streams
+        or run_id in self._run_approval_sessions
     ):
-        # Backward compatibility for statuses created by older/in-process
-        # integrations before ownership tracking was introduced.
-        return True
-    return owner == scope or (
-        owner is None and self._run_idempotency_store.owns_run(scope, run_id)
-    )
+        return
+    self._run_owners.pop(run_id, None)
+
+
+def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
+    scope = self._run_idempotency_scope(request)
+    owner = self._run_owners.get(run_id)
+    if owner is not None:
+        return owner == scope
+    # No in-memory owner: only a durable record under the caller's own scope
+    # admits it. Run state that exists without an owner stamp is an
+    # unanswered authorization question, not a run anyone may control —
+    # under gateway.multiplex_profiles every served profile holds a valid
+    # key, so admitting it would make the boundary allow-all (#93689).
+    return self._run_idempotency_store.owns_run(scope, run_id)
 
 
 async def _handle_get_run(
@@ -1153,6 +1166,7 @@ async def _handle_run_events(
         self._run_stream_subscribers.discard(run_id)
         self._run_streams.pop(run_id, None)
         self._run_streams_created.pop(run_id, None)
+        self._release_run_owner_if_forgotten(run_id)
 
     return response
 
@@ -1484,6 +1498,7 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
             self._active_run_tasks.pop(run_id, None)
             self._run_approval_sessions.pop(run_id, None)
             self._stopping_run_ids.discard(run_id)
+        self._release_run_owner_if_forgotten(run_id)
 
     stale_statuses = [
         run_id
@@ -1494,4 +1509,4 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     for run_id in stale_statuses:
         self._run_statuses.pop(run_id, None)
         self._run_idempotency_ids.discard(run_id)
-        self._run_owners.pop(run_id, None)
+        self._release_run_owner_if_forgotten(run_id)

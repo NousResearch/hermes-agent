@@ -1113,6 +1113,34 @@ def test_gc_spares_reopened_task_even_when_old(kanban_home):
         conn.close()
 
 
+def _set_task_status(kb, conn, tid, status):
+    """Force a task into ``status`` with a matching status event."""
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, tid))
+        kb._append_event(conn, tid, "status", {"status": status})
+
+
+def test_gc_purges_blocked_task_that_never_done(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stuck blocked", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c-blocked",
+            notifier_profile="default",
+        )
+        _set_task_status(kb, conn, tid, "blocked")
+        _backdate_task(kb, conn, tid, days=45)
+
+        purged = kb.purge_stale_done_notify_subs(conn, max_age_days=30)
+
+        assert purged == 1
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
 def test_gc_archived_rows_already_removed_by_unsub(kanban_home):
     import hermes_cli.kanban_db as kb
 

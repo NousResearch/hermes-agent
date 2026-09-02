@@ -63,9 +63,10 @@ def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Pat
     assert "Migrating config schema 12 ->" in proc.stdout
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
-    # v24→25 lowers the old default model_catalog TTL; v32→33 folds
+    # v24→25 lowers the old default model_catalog TTL to 1h, v39→40 drops
+    # that default so ttl_minutes (20) applies; v32→33 folds
     # max_async_children into max_concurrent_children.
-    assert raw["model_catalog"]["ttl_hours"] == 1
+    assert "ttl_hours" not in raw["model_catalog"]
     assert raw["delegation"] == {"max_concurrent_children": 8}
     assert list(tmp_path.glob("config.yaml.bak-*"))
     assert list(tmp_path.glob(".env.bak-*"))

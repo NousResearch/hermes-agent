@@ -37,6 +37,30 @@ from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
+# Scale-to-zero: tell the (separate) gateway process that a dashboard/desktop/
+# TUI client is attached, via the mtime of a marker file it reads in its idle
+# predicate. Clients ping every 15s; one mtime write per 5s per process is
+# plenty and keeps the volume quiet. See gateway/scale_to_zero.py.
+_DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
+_dashboard_client_touched_at = 0.0
+_dashboard_client_touch_lock = threading.Lock()
+
+
+def _note_dashboard_client_activity(*, force: bool = False) -> None:
+    """Refresh the dashboard-client liveness marker (throttled, best-effort)."""
+    global _dashboard_client_touched_at
+    now = time.monotonic()
+    with _dashboard_client_touch_lock:
+        if not force and now - _dashboard_client_touched_at < _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S:
+            return
+        _dashboard_client_touched_at = now
+    try:
+        from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+
+        touch_dashboard_client_heartbeat()
+    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+        _log.debug("dashboard client heartbeat touch failed", exc_info=True)
+
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
@@ -346,6 +370,9 @@ async def handle_ws(
         else:
             await ws.accept()
         disconnect_reason = "connected"
+        # A client is attached from the moment the upgrade is accepted — mark it
+        # before the (possibly slow) ready/skin setup so scale-to-zero sees it.
+        _note_dashboard_client_activity(force=True)
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
@@ -420,6 +447,7 @@ async def handle_ws(
         while True:
             try:
                 raw = await ws.receive_text()
+                _note_dashboard_client_activity()
             except _WebSocketDisconnect as exc:
                 disconnect_reason = (
                     "client_disconnect("

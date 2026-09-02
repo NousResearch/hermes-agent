@@ -21,7 +21,16 @@ import type { GatewayEventContext } from './types'
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
-  const { compactedTurnRef, failAssistantMessage, flushQueuedDeltas, queryClient, updateSessionState } = deps
+
+  const {
+    compactedTurnRef,
+    failAssistantMessage,
+    flushQueuedDeltas,
+    hydrateFromStoredSession,
+    queryClient,
+    sessionStateByRuntimeIdRef,
+    updateSessionState
+  } = deps
 
   if (event.type === 'status.update') {
     if (sessionId && payload?.kind === 'compacting') {
@@ -30,6 +39,17 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     } else if (sessionId && payload?.kind === 'compacted') {
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
+
+      // A compress that finished with no live turn (manual /compress whose
+      // RPC answered `pending` because the compute host outlived the wait,
+      // #97948) has no turn-end hydrate to refresh the transcript — the
+      // summarized bubbles would stay on screen forever. Mid-turn compaction
+      // still defers to the turn's own settle path.
+      const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+      if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
+        void hydrateFromStoredSession(3, state.storedSessionId, sessionId)
+      }
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
       // completions / watch matches here — re-sync the status stack.

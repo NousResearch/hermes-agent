@@ -6,6 +6,7 @@ import { persistString, storedString } from '@/lib/storage'
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
 import { requestForOwnedSession } from './session-states'
 
@@ -353,6 +354,10 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
     return
   }
 
+  if (sessionId && isSessionGone(sessionId)) {
+    return
+  }
+
   const gateway = $gateway.get()
 
   if (!gateway) {
@@ -373,7 +378,11 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
       { choice, session_id: sessionId ?? undefined }
     )
     clearApprovalRequest(sessionId)
-  } catch {
+  } catch (error) {
+    if (sessionId && isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sessionId)
+    }
+
     // Leave the prompt parked so the user can still resolve it in-app.
   }
 }

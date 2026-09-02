@@ -256,7 +256,11 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    # Scope-aware: under gateway multiplexing the routed profile's cwd lives in
+    # the per-turn terminal scope, not the process env (#68559).
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -1128,9 +1132,13 @@ _file_ops_cache: dict = {}
 #   "consecutive":  how many times that exact call has been repeated in a row
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 #   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
-#                   Used to skip re-reads of unchanged files.  Reset on
-#                   context compression (the original content is summarised
-#                   away so the model needs the full content again).
+#                   Used to skip re-reads of unchanged files.  Survives
+#                   context compression so unchanged files can resume
+#                   returning lightweight stubs after one recovery read.
+#   "dedup_generation_reads": set of dedup keys whose full content has been
+#                   served since the latest compaction boundary. Cleared on
+#                   compression so the first post-compaction read can recover
+#                   exact bytes that the summary may have omitted.
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
 #                      this task.  Used by write_file and patch to detect
@@ -1234,6 +1242,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
             try:
                 dedup_hits.pop(next(iter(dedup_hits)))
             except (StopIteration, KeyError):
+                break
+
+    generation_reads = task_data.get("dedup_generation_reads")
+    if generation_reads is not None and len(generation_reads) > _DEDUP_CAP:
+        excess = len(generation_reads) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                generation_reads.pop()
+            except KeyError:
                 break
 
     ts = task_data.get("read_timestamps")
@@ -1795,7 +1812,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "dedup_hits": {}, "read_timestamps": {},
+                "dedup_hits": {}, "dedup_generation_reads": set(),
+                "read_timestamps": {},
             })
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
@@ -1804,12 +1822,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
+            generation_reads = task_data.setdefault("dedup_generation_reads", set())
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            content_served_in_generation = dedup_key in generation_reads
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
-                if current_mtime == cached_mtime:
+                if current_mtime == cached_mtime and content_served_in_generation:
                     # Count repeated stub returns so weak tool-followers that
                     # ignore the "refer to earlier result" hint don't burn
                     # their iteration budget in an infinite read loop.  After
@@ -1933,6 +1953,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
+            task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -2011,30 +2032,29 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
 
 def reset_file_dedup(task_id: str = None):
-    """Clear the deduplication cache for file reads.
+    """Advance the read-dedup generation after context compression.
 
-    Called after context compression — the original read content has been
-    summarised away, so the model needs the full content if it reads the
-    same file again.  Without this, reads after compression would return
-    a "file unchanged" stub pointing at content that no longer exists in
-    context.
+    Called after context compression.  The per-key ``dedup`` mtime map is
+    preserved, but the generation-read set is cleared. The first unchanged
+    read of each key after compaction therefore returns full content that may
+    have been summarized away; later reads in the same generation return the
+    lightweight stub. Stub-hit counters are also cleared so the hard block
+    restarts fresh (issue #84857).
 
-    Call with a task_id to clear just that task, or without to clear all.
+    Call with a task_id to reset just that task, or without to reset all.
     """
     with _read_tracker_lock:
         if task_id:
             task_data = _read_tracker.get(task_id)
             if task_data:
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
         else:
             for task_data in _read_tracker.values():
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):

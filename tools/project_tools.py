@@ -160,7 +160,7 @@ registry.register(
     schema={
         "name": "desktop_project",
         "description": (
-            "Desktop Projects (named workspaces). create: make one and switch "
+            "Create or switch desktop Projects (named workspaces). create: one and switch "
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "

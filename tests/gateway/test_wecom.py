@@ -76,6 +76,40 @@ class TestWeComAdapterAuthzScope:
         assert adapter._dm_policy == "pairing"
         assert adapter._allow_from == []
 
+    def test_scoped_construction_reads_bot_id_from_scope_not_environ(self, multiplex_on, monkeypatch):
+        """bot_id must honor the same scope as its neighboring _secret read
+        (both are read on adjacent lines in __init__) -- a secondary profile's
+        own bot_id must never fall back to the default profile's os.environ
+        value."""
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
+        monkeypatch.setenv("WECOM_SECRET", "default-profile-secret")
+        token = secret_scope.set_secret_scope(
+            {"WECOM_BOT_ID": "scoped-bot-id", "WECOM_SECRET": "scoped-secret"}
+        )
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._bot_id == "scoped-bot-id"
+        assert adapter._secret == "scoped-secret"
+
+    def test_scoped_miss_does_not_leak_default_profiles_bot_id(self, multiplex_on, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import DEFAULT_WS_URL, WeComAdapter
+
+        monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
+        monkeypatch.setenv("WECOM_WEBSOCKET_URL", "wss://default-profile.example/ws")
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._bot_id == ""
+        assert adapter._ws_url == DEFAULT_WS_URL
+
 
 class TestWeComConnect:
 

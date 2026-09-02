@@ -205,3 +205,21 @@ class TestCLIJudgeGate:
         rc, complete_calls = self._run(monkeypatch, goal_mode=False)
         assert rc == 0
         assert complete_calls == ["t1"]
+
+    def test_judge_blocked_verdict_rejects_completion(self, monkeypatch, capsys):
+        """#100954: an unachievable goal must not complete silently.
+
+        The judge's ``blocked`` verdict is a refusal, not a completion —
+        ``complete_task`` must never run and stderr must steer the user
+        toward re-scoping / recording the block.
+        """
+        rc, complete_calls = self._run(
+            monkeypatch,
+            verdict="blocked",
+            reason="the target repository does not exist",
+        )
+        err = capsys.readouterr().err
+        assert rc != 0, "blocked verdict must reject the completion"
+        assert complete_calls == [], "an unachievable goal must never reach complete_task"
+        assert "unachievable" in err.lower()
+        assert "kanban block" in err.lower()

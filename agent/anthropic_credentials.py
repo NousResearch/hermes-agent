@@ -917,6 +917,22 @@ def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _root_hermes_oauth_file() -> Optional[Path]:
+    """Global-root ``.anthropic_oauth.json`` when running inside a named profile.
+
+    ``None`` in classic mode (profile == root). Used to commit a rotation of a
+    grant the profile borrowed through the credential-pool root fallback.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+        if root.resolve(strict=False) == get_hermes_home().resolve(strict=False):
+            return None
+        return root / ".anthropic_oauth.json"
+    except Exception:
+        return None
+
+
 def _generate_pkce() -> tuple:
     """Generate PKCE code_verifier and code_challenge (S256)."""
     import base64
@@ -1077,8 +1093,15 @@ def _write_hermes_oauth_credentials(
     access_token: str,
     refresh_token: Optional[str],
     expires_at_ms: Optional[int],
+    *,
+    target: Optional[Path] = None,
 ) -> None:
     """Write refreshed hermes_pkce tokens back to ~/.hermes/.anthropic_oauth.json.
+
+    ``target`` overrides the destination: a named profile that rotated a grant
+    it BORROWED from the global root (credential-pool root fallback) must
+    commit the new pair to the ROOT singleton, not create a forked copy under
+    its own HERMES_HOME (#100339).
 
     Without this, a successful pool-level refresh of a ``hermes_pkce``-sourced
     entry is invisible to this singleton file. The next ``load_pool()`` call
@@ -1090,7 +1113,7 @@ def _write_hermes_oauth_credentials(
     file, for the same reason ``_write_claude_code_credentials`` does: this is
     the commit step of the refresh transaction.
     """
-    oauth_file = _get_hermes_oauth_file()
+    oauth_file = target if target is not None else _get_hermes_oauth_file()
     try:
         oauth_data = {
             "accessToken": access_token,

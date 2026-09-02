@@ -199,3 +199,108 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
     )
 
 
+
+
+# --- -t/--toolsets MCP spawn filter (#19000) --------------------------------
+
+
+@pytest.fixture
+def _reset_mcp_server_filter():
+    saved = mcp_startup._mcp_server_filter
+    try:
+        yield
+    finally:
+        mcp_startup._mcp_server_filter = saved
+
+
+@pytest.mark.parametrize(
+    ("toolsets", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("all", None),
+        (["*"], None),
+        ("terminal,web", ["terminal", "web"]),
+        (["terminal", "code-mcp,web"], ["terminal", "code-mcp", "web"]),
+    ],
+)
+def test_set_mcp_server_filter_normalizes(_reset_mcp_server_filter, toolsets, expected):
+    assert mcp_startup.set_mcp_server_filter(toolsets) == expected
+    assert mcp_startup.get_mcp_server_filter() == expected
+
+
+def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
+    """The filter must narrow the spawn set before any server is connected;
+    built-in toolset names in the list are ignored."""
+    from tools import mcp_tool
+
+    servers = {
+        "code-mcp": {"command": "true"},
+        "docs-mcp": {"command": "true"},
+    }
+    seen: dict[str, dict] = {}
+
+    sdk_probes = {"n": 0}
+
+    def _fake_ensure_sdk():
+        sdk_probes["n"] += 1
+        return True
+
+    monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: dict(servers))
+    monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", _fake_ensure_sdk)
+    monkeypatch.setattr(mcp_tool, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
+    monkeypatch.setattr(mcp_tool, "_release_mcp_discovery_lock", lambda *_a, **_k: None, raising=False)
+
+    def _fake_register(cfgs):
+        seen.update(cfgs)
+        return []
+
+    monkeypatch.setattr(mcp_tool, "register_mcp_servers", _fake_register)
+    monkeypatch.setattr(mcp_tool, "_servers", {})
+    monkeypatch.setattr(mcp_tool, "_server_connecting", set())
+
+    # Everything (no filter) — both would be registered.
+    mcp_tool.discover_mcp_tools()
+    assert set(seen) == {"code-mcp", "docs-mcp"}
+
+    # `-t terminal,code-mcp` — only the matching server; "terminal" is a no-op.
+    seen.clear()
+    mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
+    assert set(seen) == {"code-mcp"}
+
+    # `-t terminal` — no MCP server in the filter: skip the whole MCP load,
+    # including the ~260ms `mcp` SDK import.
+    seen.clear()
+    sdk_probes["n"] = 0
+    assert mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
+    assert seen == {}
+    assert sdk_probes["n"] == 0
+
+
+def test_background_discovery_honors_server_filter(monkeypatch, _reset_mcp_server_filter):
+    calls: list = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=nullcontext),
+    )
+    mcp_startup.set_mcp_server_filter("terminal,code-mcp")
+    mcp_startup._discover_mcp_tools_without_interactive_oauth()
+    assert calls == [["terminal", "code-mcp"]]
+
+
+def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_server_filter):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setattr(main_mod, "_should_background_mcp_startup", lambda args: False)
+    monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
+    main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
+    assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]

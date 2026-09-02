@@ -173,7 +173,7 @@ from gateway.platforms.base import (
     SendResult,
     MessageEvent,
     MessageType,
-    cache_media_bytes,
+    cache_media_bytes_async,
 )
 from gateway.config import Platform
 
@@ -2376,7 +2376,7 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.warning("Buzz: attachment SHA-256 does not match imeta")
             return None
         try:
-            return cache_media_bytes(
+            return await cache_media_bytes_async(
                 bytes(data),
                 filename=metadata["filename"],
                 mime_type=metadata["mime_type"],
@@ -2863,7 +2863,7 @@ class BuzzAdapter(BasePlatformAdapter):
         media_kinds: List[str] = []
 
         from gateway.platforms.base import (
-            cache_media_bytes,
+            cache_media_bytes_async,
             validate_inbound_media_size,
         )
 
@@ -2894,8 +2894,10 @@ class BuzzAdapter(BasePlatformAdapter):
                         mimetypes.guess_type(download_path.name)[0]
                         or "application/octet-stream"
                     )
-                    cached = cache_media_bytes(
-                        download_path.read_bytes(),
+                    # Up to the inbound media cap (128 MiB) — read off the loop too.
+                    data = await asyncio.to_thread(download_path.read_bytes)
+                    cached = await cache_media_bytes_async(
+                        data,
                         filename=download_path.name,
                         mime_type=mime_type,
                     )

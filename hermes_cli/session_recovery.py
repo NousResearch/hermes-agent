@@ -45,6 +45,34 @@ _TOPIC_TABLES = (
     "telegram_dm_topic_bindings",
 )
 
+
+
+def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
+    from gateway.delivery_ledger import _initialize_schema
+
+    _initialize_schema(conn)
+
+
+# Tables that live in state.db but are created lazily by a gateway module on
+# first use, so base ``SessionDB`` never creates them on a fresh destination.
+# Every entry maps the table to the initializer that owns its DDL; recovery
+# creates the table on the destination before copying, so owed rows survive
+# instead of silently vanishing from a "complete" salvage (#100313, #86236).
+# Add new lazily-created state.db tables HERE, never as one-off ``if table ==``
+# branches.
+_AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
+    "delivery_obligations": _init_delivery_ledger_schema,
+}
+
+_AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
+
+_INVENTORY_TABLES = (
+    *_CANONICAL_TABLES,
+    "state_meta",
+    *_TOPIC_TABLES,
+    *_AUXILIARY_TABLES,
+)
+
 # These values describe derived indexes or the schema that owns an optional
 # table. A fresh destination must generate them from its own current schema.
 _GENERATED_META_KEYS = frozenset({
@@ -305,7 +333,7 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
         # A damaged journal pragma must not block rows that are still readable.
         report["warnings"].append(f"journal mode: {exc}")
 
-    for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+    for table in _INVENTORY_TABLES:
         report["tables"][table] = _table_inventory(conn, table)
 
     for required in ("sessions", "messages"):
@@ -383,6 +411,25 @@ def inspect_session_database(
         }
     finally:
         temp_dir.cleanup()
+
+
+def _ensure_auxiliary_destination_schema(
+    destination: sqlite3.Connection,
+    table: str,
+) -> None:
+    """Create a lazy auxiliary table on the recovered destination.
+
+    Recovery initializes the destination through base ``SessionDB``, which
+    does not create gateway-owned tables. Copying into a missing dest table
+    would report ``missing`` / ``no compatible columns`` and drop the rows.
+    """
+
+    initialize = _AUXILIARY_TABLE_SCHEMAS.get(table)
+    if initialize is None:
+        raise SessionRecoverySafetyError(
+            f"no destination schema initializer registered for table {table!r}"
+        )
+    initialize(destination)
 
 
 def _copy_table(
@@ -1243,7 +1290,7 @@ def _verify_recovered_database(
             )
 
         counts: dict[str, int] = {}
-        for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+        for table in _INVENTORY_TABLES:
             columns = _table_columns(conn, table)
             if columns:
                 counts[table] = int(
@@ -1251,7 +1298,7 @@ def _verify_recovered_database(
                 )
         verification["table_counts"] = counts
 
-        for table in ("sessions", "messages"):
+        for table in ("sessions", "messages", *_AUXILIARY_TABLES):
             expected = expected_counts.get(table)
             if expected is not None and counts.get(table) != expected:
                 message = (
@@ -1662,6 +1709,27 @@ def recover_session_database(
                     progress_cb=progress_cb,
                     source_rows=table_inspection.get("rows"),
                 )
+
+            for table in _AUXILIARY_TABLES:
+                table_inspection = inspection["tables"][table]
+                if not table_inspection.get("available"):
+                    copy_report[table] = {
+                        "status": "missing",
+                        "copied_rows": 0,
+                    }
+                    continue
+                _ensure_auxiliary_destination_schema(destination_conn, table)
+                copy_function = (
+                    _copy_table_salvage if allow_partial else _copy_table
+                )
+                copy_report[table] = copy_function(
+                    source_conn,
+                    destination_conn,
+                    table,
+                    chunk_size=chunk_size,
+                    progress_cb=progress_cb,
+                    source_rows=table_inspection.get("rows"),
+                )
             orphan_cleanup = (
                 _cleanup_partial_orphans(destination_conn)
                 if allow_partial
@@ -1678,8 +1746,15 @@ def recover_session_database(
         verification = _verify_recovered_database(
             output,
             expected_counts={
-                table: inspection["tables"][table].get("rows")
-                for table in _CANONICAL_TABLES
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _CANONICAL_TABLES
+                },
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _AUXILIARY_TABLES
+                    if inspection["tables"].get(table, {}).get("available")
+                },
             },
             copy_report=copy_report,
             allow_partial=allow_partial,

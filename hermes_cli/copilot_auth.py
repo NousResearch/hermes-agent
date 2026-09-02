@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -380,6 +381,20 @@ _JWT_DISK_MAX_BYTES = 1_048_576  # 1 MiB cap on the persisted JWT store read
 # Maps raw-token fingerprint -> epoch until which exchange attempts are
 # skipped (raise immediately). Success clears the entry.
 _exchange_failure_cache: dict[str, float] = {}
+# Single-flight guard per token fingerprint: concurrent callers (the dashboard
+# polls /api/credentials/pool every few seconds, each poll off-loop) wait on
+# the ONE in-flight exchange and then hit the positive/negative cache, instead
+# of each spawning their own hung resolver thread during a DNS outage.
+_exchange_locks: dict[str, threading.Lock] = {}
+_exchange_locks_guard = threading.Lock()
+
+
+def _exchange_lock_for(fp: str) -> threading.Lock:
+    with _exchange_locks_guard:
+        lock = _exchange_locks.get(fp)
+        if lock is None:
+            lock = _exchange_locks[fp] = threading.Lock()
+        return lock
 _EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS = 60.0     # network blips: retry soon
 _EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS = 1800.0   # 401/403/404: won't heal
 # HTTP statuses that indicate the token itself is rejected — retrying with
@@ -520,6 +535,60 @@ def _save_jwt_to_disk(
         logger.debug("Failed to persist Copilot JWT: %s", exc)
 
 
+# Hard wall-clock cap for the token-exchange HTTP call. urllib's ``timeout``
+# only bounds socket operations AFTER DNS resolution succeeds; getaddrinfo
+# blocks in C and ignores it entirely, so on a networkless Windows host the
+# resolver can hang for many minutes (observed: a 17-minute event-loop stall
+# on 2026-08-22 that took the whole backend down with it).
+_DNS_GRACE_SECONDS = 5.0
+
+
+def _urlopen_bounded(req, timeout: float):
+    """urlopen() with a hard wall-clock cap of timeout + _DNS_GRACE_SECONDS.
+
+    Runs the call on a daemon thread and abandons it if the cap fires, so a
+    DNS/getaddrinfo hang cannot block the caller indefinitely. Raises the
+    worker's exception, or TimeoutError when the cap fires.
+    """
+    import urllib.request
+
+    box: dict = {}
+    abandoned = threading.Event()
+
+    def _worker() -> None:
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["exc"] = exc
+            return
+        if abandoned.is_set():
+            # The caller already timed out; nobody will read this response,
+            # so release its socket instead of leaking it with the thread.
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return
+        box["resp"] = resp
+
+    t = threading.Thread(
+        target=_worker, name="copilot-token-exchange", daemon=True
+    )
+    t.start()
+    t.join(timeout + _DNS_GRACE_SECONDS)
+    if t.is_alive():
+        abandoned.set()
+        raise TimeoutError(
+            "copilot token exchange exceeded hard cap of "
+            f"{timeout + _DNS_GRACE_SECONDS:.0f}s (DNS/getaddrinfo hang?)"
+        )
+    if "exc" in box:
+        raise box["exc"]
+    if "resp" not in box:
+        raise TimeoutError("copilot token exchange worker died without result")
+    return box["resp"]
+
+
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float, Optional[str]]:
     """Exchange a raw GitHub token for a short-lived Copilot API token.
 
@@ -536,11 +605,34 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     Results are cached in-process and reused until close to expiry.
     Raises ``ValueError`` on failure.
     """
-    import urllib.request
-
     fp = _token_fingerprint(raw_token)
 
-    # Check in-process cache first
+    # Fast paths outside the lock: a valid in-process JWT needs no exchange,
+    # and a recent failure means queueing behind the in-flight holder (up to
+    # ~50 s) would only park an executor thread to learn the same answer.
+    cached = _jwt_cache.get(fp)
+    if cached and time.time() < cached[1] - _JWT_REFRESH_MARGIN_SECONDS:
+        return cached
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
+
+    # Note: a waiter's own ``timeout`` is not honoured across the lock wait —
+    # by design of single-flight, it observes the holder's outcome instead.
+    with _exchange_lock_for(fp):
+        return _exchange_copilot_token_locked(raw_token, fp, timeout=timeout)
+
+
+def _exchange_copilot_token_locked(
+    raw_token: str, fp: str, *, timeout: float
+) -> tuple[str, float, Optional[str]]:
+    import urllib.request
+
+    # Re-check the caches under the lock: a concurrent caller may have just
+    # completed (or just failed) the exchange we were queued behind.
     cached = _jwt_cache.get(fp)
     if cached:
         api_token, expires_at, base_url = cached
@@ -593,7 +685,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     permanent_failure = False
     for attempt in range(_EXCHANGE_MAX_ATTEMPTS):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_bounded(req, timeout) as resp:
                 data = json.loads(resp.read().decode())
             break
         except Exception as exc:  # noqa: BLE001 — retry all, re-raise below

@@ -107,6 +107,34 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
+# Hermes-managed runtime downloads that only exist at the top of a profile
+# home: local GGUF models, llama.cpp runtime binaries, and the managed Node
+# installation. All of them are re-downloaded on demand (model catalog,
+# runtime bootstrap, node installer) and routinely reach tens to hundreds of
+# GB, so zipping them turns a backup into an hours-long compress of
+# incompressible weights (the "backup stuck at N files" symptom). Matched
+# ONLY at the root of HERMES_HOME and at ``profiles/<name>/`` — a deeper
+# directory that happens to share one of these names (a skill's ``models/``,
+# a user checkout) is user data and stays in the backup.
+_EXCLUDED_ROOT_DIRS = {
+    "models",
+    "runtimes",
+    "node",
+}
+
+
+def _in_excluded_root_dir(rel_path: Path) -> bool:
+    """True when *rel_path* (relative to HERMES_HOME) is, or sits inside, a
+    Hermes-managed runtime tree at the top of a profile home."""
+    parts = rel_path.parts
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    # Named profiles are profile homes too: profiles/<name>/models etc.
+    return len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS
+
+
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
@@ -127,6 +155,16 @@ _EXCLUDED_NAMES = {
     "gateway.pid",
     "cron.pid",
 }
+
+# File-name prefixes to skip. The desktop updater's pre-flight drops
+# ``state.db.pre-update-emergency-<timestamp>.bak`` at the HERMES_HOME root
+# (apps/desktop/electron/main.ts preflightStateDb) — a backup artifact in
+# the same class as ``backups/`` and ``state-snapshots/``, so a full backup
+# must not re-ship it. Matched by prefix because the name carries a
+# timestamp; a plain ``.bak`` suffix rule would drop user files.
+_EXCLUDED_PREFIXES = (
+    "state.db.pre-update-emergency-",
+)
 
 # File names that ``hermes import`` must never overwrite, matched by basename so
 # they're caught for the root profile (``gateway_state.json``) and for named
@@ -335,6 +373,9 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
+    if _in_excluded_root_dir(rel_path):
+        return True
+
     for part in parts:
         if part not in _EXCLUDED_DIRS:
             continue
@@ -348,6 +389,9 @@ def _should_exclude(rel_path: Path) -> bool:
     name = rel_path.name
 
     if name in _EXCLUDED_NAMES:
+        return True
+
+    if name.startswith(_EXCLUDED_PREFIXES):
         return True
 
     if name.endswith(_EXCLUDED_SUFFIXES):
@@ -370,6 +414,48 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return abs_path.resolve() == out_path.resolve()
     except (OSError, ValueError):
         return False
+
+
+def _iter_backup_files(
+    hermes_root: Path,
+    out_path: Path,
+    skipped_dirs: Optional[set] = None,
+):
+    """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
+
+    The one owner of the backup walk policy: directory pruning (so os.walk
+    never descends a multi-GB excluded tree), the root-only ``hermes-agent``
+    carve-out, profile-home-root runtime trees, and the per-file exclusion
+    rules — shared by the manual ``hermes backup`` path and the automatic
+    pre-update/pre-migration path so the two can never drift.
+
+    ``skipped_dirs``, when given, collects pruned directories (root-relative,
+    as strings) for the end-of-run summary.
+    """
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(hermes_root)
+
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved. Managed
+        # runtime trees (models/, runtimes/, node/) are pruned only at a
+        # profile-home root — see _EXCLUDED_ROOT_DIRS.
+        is_root = rel_dir == Path(".")
+        orig_dirnames = dirnames[:]
+        dirnames[:] = [
+            d for d in dirnames
+            if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
+            and not _in_excluded_root_dir(rel_dir / d)
+        ]
+        if skipped_dirs is not None:
+            for removed in set(orig_dirnames) - set(dirnames):
+                skipped_dirs.add(str(rel_dir / removed))
+
+        for fname in filenames:
+            rel = rel_dir / fname
+            fpath = hermes_root / rel
+            if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+            yield fpath, rel
 
 
 # ---------------------------------------------------------------------------
@@ -869,33 +955,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     scan_started = time.monotonic()
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
-    files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
-    skipped_dirs = set()
-
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-        dp = Path(dirpath)
-        rel_dir = dp.relative_to(hermes_root)
-
-        # Prune excluded directories in-place so os.walk doesn't descend
-        # ``hermes-agent`` is only pruned at the root level; nested dirs
-        # with the same name (e.g. in skills/) must be preserved.
-        is_root = rel_dir == Path(".")
-        orig_dirnames = dirnames[:]
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
-        ]
-        for removed in set(orig_dirnames) - set(dirnames):
-            skipped_dirs.add(str(rel_dir / removed))
-
-        for fname in filenames:
-            fpath = dp / fname
-            rel = fpath.relative_to(hermes_root)
-
-            if _should_skip_backup_file(fpath, rel, out_path):
-                continue
-
-            files_to_add.append((fpath, rel))
+    skipped_dirs: set = set()
+    files_to_add: list[tuple[Path, Path]] = list(
+        _iter_backup_files(hermes_root, out_path, skipped_dirs)
+    )
 
     # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
     # outside HERMES_HOME, so the walk above never sees it. Ask the active
@@ -2328,24 +2391,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     """
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
-    files_to_add: list[tuple[Path, Path]] = []
     try:
-        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-            dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-
-            for fname in filenames:
-                fpath = dp / fname
-                try:
-                    rel = fpath.relative_to(hermes_root)
-                except ValueError:
-                    continue
-
-                if _should_skip_backup_file(fpath, rel, out_path):
-                    continue
-
-                files_to_add.append((fpath, rel))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

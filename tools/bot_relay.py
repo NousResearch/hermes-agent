@@ -524,7 +524,10 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
-        "    time.sleep(2)\n"
+        # 250ms cadence: the reply file is written once by the target
+        # gateway's deliver path; a 2s sleep here added up to 2s of dead
+        # air to every cross-machine reply for no benefit (stat is cheap).
+        "    time.sleep(0.25)\n"
         f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"

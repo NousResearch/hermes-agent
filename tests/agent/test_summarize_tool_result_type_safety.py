@@ -112,7 +112,7 @@ class TestBackstopWrapper:
             "terminal", "read_file", "write_file", "search_files", "patch",
             "browser_navigate", "web_search", "web_extract", "delegate_task",
             "execute_code", "skill_view", "vision_analyze", "memory",
-            "cronjob", "process", "totally_unknown_tool",
+            "cronjob_manage", "process_manage", "totally_unknown_tool",
         ]
         keys = ["command", "path", "content", "pattern", "url", "query",
                 "urls", "goal", "code", "name", "question", "action",
@@ -151,12 +151,12 @@ class TestDisplayPreviewTypeSafety:
     def test_process_preview_non_string_data(self):
         from agent.display import build_tool_preview
         result = build_tool_preview(
-            "process", {"action": "submit", "session_id": "abc", "data": 42}
+            "process_manage", {"action": "submit", "session_id": "abc", "data": 42}
         )
         assert result == 'submit abc "42"'
 
     def test_process_preview_none_action(self):
         from agent.display import build_tool_preview
-        result = build_tool_preview("process", {"action": None, "session_id": "abc"})
+        result = build_tool_preview("process_manage", {"action": None, "session_id": "abc"})
         assert isinstance(result, str)
 

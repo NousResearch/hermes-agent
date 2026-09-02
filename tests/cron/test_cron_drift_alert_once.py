@@ -48,7 +48,7 @@ def _tick(job, tmp_path, current_provider, deliveries):
     """Run one run_one_job tick with the provider resolution pinned."""
     fake_db = MagicMock()
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
         return None
 
@@ -129,7 +129,7 @@ class TestDriftAlertOnce:
         job = _job(provider_snapshot=None, drift_alerted=True)
         deliveries = []
 
-        def fake_deliver(jb, content, adapters=None, loop=None):
+        def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
             return None
 

@@ -129,7 +129,7 @@ _STEP_SCHEMA = {
 }
 
 TOUR_SCHEMA = {
-    "name": "tour",
+    "name": "gui_tour",
     # Dieted (#95681): targets-first flow + stable-selector preference kept
     # (pre-effect: skipping them means guessed selectors on re-rendering UI).
     "description": (
@@ -189,7 +189,7 @@ def check_tours_enabled() -> bool:
 
 
 registry.register(
-    name="tour",
+    name="gui_tour",
     toolset="desktop_ui",
     schema=TOUR_SCHEMA,
     handler=lambda args, **kw: tour_tool(

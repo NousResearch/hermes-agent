@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
     from hermes_state import SessionDB
@@ -91,6 +91,11 @@ _lock = threading.Lock()
 _generations: Dict[Path, _Generation] = {}
 # Object-keyed retired generations still draining holders.
 _retired: Dict[int, _Generation] = {}  # id(db) → generation
+# Paths whose next generation is currently being constructed.  Construction
+# stays outside _lock because schema reconciliation can take seconds, but peers
+# for the SAME file must wait: otherwise every cold caller opens a writable
+# SQLite connection before the registry chooses one winner.
+_opening: Dict[Path, threading.Event] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
@@ -132,42 +137,67 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     """
     from hermes_state import _default_db_path
 
-    path = Path(db_path) if db_path is not None else Path(_default_db_path())
+    raw_path = Path(db_path) if db_path is not None else Path(_default_db_path())
+    try:
+        path = raw_path.resolve()
+    except OSError:
+        path = raw_path
 
-    with _lock:
-        generation = _generations.get(path)
-        if generation is not None:
-            current = _stat_db_file_identity(path)
-            if (
-                current is not None
-                and generation.identity is not None
-                and current != generation.identity
-            ):
-                # File replaced: retire the live generation (its
-                # holders keep it until they release) and fall
-                # through to opening a fresh one below.
-                _retire_generation_locked(path, generation)
-            else:
-                generation.refcount += 1
-                return generation.db
+    while True:
+        with _lock:
+            generation = _generations.get(path)
+            if generation is not None:
+                current = _stat_db_file_identity(path)
+                if (
+                    current is not None
+                    and generation.identity is not None
+                    and current != generation.identity
+                ):
+                    # File replaced: retire the live generation (its
+                    # holders keep it until they release) and elect one
+                    # caller to construct the replacement below.
+                    _retire_generation_locked(path, generation)
+                else:
+                    generation.refcount += 1
+                    return generation.db
 
-    # Open a fresh generation OUTSIDE the lock: construction can
-    # take seconds (write-lock patience) and must not block every
-    # other state.db acquisition in the process.
-    db = _open_session_db(path)
-    db._shared_registry_owned = True
-    identity = _stat_db_file_identity(path)
+            opening = _opening.get(path)
+            if opening is None:
+                opening = threading.Event()
+                _opening[path] = opening
+                break
+
+        # Another caller is constructing this path.  Do not hold the global
+        # registry lock while waiting: unrelated databases continue opening.
+        # A failed opener signals too, so one waiter can retry as the successor.
+        opening.wait()
+
+    # Open a fresh generation OUTSIDE the lock.  The per-path opening marker
+    # prevents redundant writer connections without serialising other files.
+    try:
+        db = _open_session_db(path)
+        db._shared_registry_owned = True
+        identity = _stat_db_file_identity(path)
+    except BaseException:
+        with _lock:
+            if _opening.get(path) is opening:
+                _opening.pop(path, None)
+            opening.set()
+        raise
+
     with _lock:
         existing = _generations.get(path)
         if existing is not None:
-            # Someone else opened a generation while we were
-            # constructing (or retired ours and installed a new one).
-            # Ours loses — close it (outside the lock) and use theirs.
+            # Defensive: a generation may have been installed by explicit
+            # registry manipulation while this open was in flight.
             existing.refcount += 1
             winner = existing.db
         else:
             _generations[path] = _Generation(db, identity)
             winner = db
+        if _opening.get(path) is opening:
+            _opening.pop(path, None)
+        opening.set()
     if winner is not db:
         _teardown(db)
     return winner
@@ -257,6 +287,18 @@ def close_all() -> int:
         _teardown(generation.db)
         closed += 1
     return closed
+
+
+def live_shared_session_dbs() -> List["SessionDB"]:
+    """Snapshot of every live (non-retired) shared SessionDB in this process.
+
+    For periodic in-process maintenance (the gateway housekeeping tick's
+    deferred-FTS retry). Refcounts are NOT touched: the caller only invokes
+    a method on an instance that some holder already keeps alive; a
+    concurrent final release closes it and the callee sees ``_conn is None``.
+    """
+    with _lock:
+        return [g.db for g in _generations.values() if not g.retired]
 
 
 def stats() -> Dict[str, int]:

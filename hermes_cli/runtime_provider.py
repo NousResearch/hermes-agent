@@ -1228,6 +1228,53 @@ def _resolve_named_custom_runtime(
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+
+    # Managed llama.cpp runtime: a llamacpp-flavored alias with no explicit
+    # base_url resolves to the supervised server (or a detected external
+    # one) before the generic custom fallthrough. Explicit base_url always
+    # wins — a user pointing at a specific server means that server.
+    if requested_norm in ("llamacpp", "llama.cpp", "llama-cpp") and not explicit_base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            endpoint = resolve_llamacpp_endpoint()
+        except Exception:  # noqa: BLE001 — resolution is best-effort
+            endpoint = None
+        if endpoint:
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": endpoint["base_url"],
+                "api_key": (explicit_api_key or "").strip()
+                or endpoint["api_key"] or "no-key-required",
+                "source": "local-runtime",
+                "requested_provider": requested_provider,
+            }
+        # No server to serve this model. Say so and stop — falling through
+        # to the generic custom path sends the request to whatever provider
+        # picks it up (OpenRouter with a placeholder key), and the user's
+        # "local server is off" surfaces as that provider's baffling
+        # "401 Invalid API key". The switch's own state picks the message:
+        # the user who turned the server off gets pointed at the switch,
+        # anyone else at the setup pane.
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+
+            _lr_enabled = bool((_load_cfg().get("local_runtime") or {}).get("enabled"))
+        except Exception:  # noqa: BLE001
+            _lr_enabled = False
+        if _lr_enabled:
+            raise ValueError(
+                "The local model server isn't running. It may still be "
+                "starting — try again in a moment, or check Settings → "
+                "Providers → Local models."
+            )
+        raise ValueError(
+            "The local model server is turned off. Turn it back on in "
+            "Settings → Providers → Local models, or switch to another "
+            "model."
+        )
+
     if requested_norm and requested_norm != "custom":
         try:
             from hermes_cli.auth import resolve_provider as _resolve_provider
@@ -1905,6 +1952,33 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _is_external_process_provider(provider: str) -> bool:
+    """Whether ``provider`` is declared as an external-process (CLI) provider.
+
+    Reads the CLI provider registry first (which now absorbs registered
+    ProviderProfiles, in-tree and out), then falls back to the profile registry
+    directly so the check works before the CLI registry has been extended.
+    """
+    name = (provider or "").strip().lower()
+    if not name:
+        return False
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(name)
+        if pconfig is not None:
+            return pconfig.auth_type == "external_process"
+    except Exception:
+        pass
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        return False
+    return profile is not None and getattr(profile, "auth_type", "") == "external_process"
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -2290,10 +2364,13 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    # External-process providers (an agent CLI driven over stdio, e.g. ACP).
+    # Keyed on the registered provider's auth_type rather than on one name, so a
+    # provider shipped outside this tree lands on the same credential path.
+    if _is_external_process_provider(provider):
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

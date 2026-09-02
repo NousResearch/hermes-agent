@@ -4,6 +4,7 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  cronLastResult,
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
@@ -151,5 +152,51 @@ describe("cronJobFormFromJob", () => {
     expect(cronJobFormFromJob(job)).toMatchObject({
       schedule: "2026-02-03T14:00:00+08:00",
     });
+  });
+});
+
+describe("cronLastResult", () => {
+  it("renders nothing for a job that never ran", () => {
+    expect(cronLastResult({ last_status: null })).toBeNull();
+    expect(cronLastResult({ last_status: "" })).toBeNull();
+  });
+
+  it("is green for ok with no detail", () => {
+    expect(cronLastResult({ last_status: "ok", last_error: null })).toEqual({
+      status: "ok",
+      tone: "success",
+      detail: null,
+    });
+  });
+
+  it("is amber for delivery_failed and explains it from last_delivery_error", () => {
+    // The agent run succeeded (last_error is null for these runs); the reason
+    // lives in last_delivery_error. Must never render as green or as "unknown".
+    expect(
+      cronLastResult({
+        last_status: "delivery_failed",
+        last_error: null,
+        last_delivery_error: "telegram: 502 Bad Gateway",
+      }),
+    ).toEqual({
+      status: "delivery_failed",
+      tone: "warning",
+      detail: "telegram: 502 Bad Gateway",
+    });
+  });
+
+  it("is red for error and any unrecognised literal", () => {
+    expect(cronLastResult({ last_status: "error", last_error: "boom" })).toEqual({
+      status: "error",
+      tone: "destructive",
+      detail: "boom",
+    });
+    expect(cronLastResult({ last_status: "something_new" })?.tone).toBe("destructive");
+  });
+
+  it("is amber for blocked_config (preflight refused to burn a run)", () => {
+    expect(
+      cronLastResult({ last_status: "blocked_config", last_error: "missing API key" }),
+    ).toEqual({ status: "blocked_config", tone: "warning", detail: "missing API key" });
   });
 });

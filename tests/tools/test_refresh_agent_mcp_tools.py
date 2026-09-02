@@ -224,3 +224,116 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     t0 = time.time()
     mcp_startup.wait_for_mcp_discovery()
     assert time.time() - t0 < 0.2  # never blocks on the bound when nothing's pending
+
+
+# ---------------------------------------------------------------------------
+# preserve_prefix: the tool array is a cached request prefix (#100336)
+# ---------------------------------------------------------------------------
+
+
+def _registered(monkeypatch, names):
+    """Make the registry report exactly *names* as still registered."""
+    from tools import registry as registry_mod
+
+    entries = [types.SimpleNamespace(name=n) for n in names]
+    monkeypatch.setattr(
+        registry_mod.registry, "get_all_entries", lambda: entries, raising=False
+    )
+
+
+def _serve(monkeypatch, defs):
+    import model_tools
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: list(defs))
+
+
+def test_preserve_prefix_carries_a_flapping_tool_forward(monkeypatch):
+    """A check_fn flip must not shrink a live session's tool prefix.
+
+    ``browser_navigate``'s availability probe fails this turn (headless box,
+    expired credential, docker blip) so ``get_tool_definitions`` omits it. The
+    tool is still *registered* — only its probe flapped — so the snapshot must
+    keep it, byte-for-byte, instead of forking the cached prefix.
+    """
+    agent = _agent(["read_file", "browser_navigate", "terminal"])
+    before = list(agent.tools)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "browser_navigate", "terminal"])
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == set()
+    assert agent.tools == before
+    assert "browser_navigate" in agent.valid_tool_names
+
+
+def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
+    """``get_definitions`` sorts by name, so a late tool can splice in at 0.
+
+    Under ``preserve_prefix`` the live order is authoritative and the new tool
+    extends the array, leaving every earlier byte where the provider cached it.
+    """
+    agent = _agent(["read_file", "terminal"])
+
+    # Sorted order would put the new tool first.
+    _serve(monkeypatch, [_tool("aaa_mcp_late"), _tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["aaa_mcp_late", "read_file", "terminal"])
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == {"aaa_mcp_late"}
+    assert [t["function"]["name"] for t in agent.tools] == [
+        "read_file", "terminal", "aaa_mcp_late",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
+# ---------------------------------------------------------------------------
+
+
+def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
+    """A fresh AIAgent for an EXISTING session must keep the saved tools[] pin.
+
+    Gateway agent-cache eviction rebuilds the agent; ``agent_init`` re-probes
+    every ``check_fn`` and ``browser_navigate``'s flips false. The persisted
+    name list stands in for the missing predecessor: the tool is carried
+    forward from the registry schema, byte-for-byte in its old slot.
+    """
+    from tools import registry as registry_mod
+
+    saved = ["read_file", "browser_navigate", "terminal"]
+    entries = {n: types.SimpleNamespace(name=n, schema=_tool(n)["function"]) for n in saved}
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: list(entries.values()), raising=False)
+    monkeypatch.setattr(registry_mod.registry, "get_entry", lambda name, **kw: entries.get(name), raising=False)
+
+    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_navigate gone
+    changed = mcp_tool.restore_agent_tool_prefix(rebuilt, saved)
+
+    assert changed is True
+    assert [t["function"]["name"] for t in rebuilt.tools] == saved
+    assert rebuilt.valid_tool_names == set(saved)
+
+
+def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
+    """/reload-mcp is the explicit hatch: a cached False must be re-probed."""
+    from tools import registry as registry_mod
+    import model_tools
+
+    verdict = {"ok": False}
+
+    def probe():
+        return verdict["ok"]
+
+    monkeypatch.setattr(registry_mod, "check_fn_cache_scope", lambda: "test-scope")
+    assert registry_mod._check_fn_cached(probe) is False
+    verdict["ok"] = True
+    assert registry_mod._check_fn_cached(probe) is False  # TTL cache replays stale verdict
+    with model_tools._tool_defs_cache_lock:
+        model_tools._tool_defs_cache[("sentinel",)] = []
+
+    mcp_tool.reprobe_tool_availability()
+
+    assert registry_mod._check_fn_cached(probe) is True
+    assert ("sentinel",) not in model_tools._tool_defs_cache

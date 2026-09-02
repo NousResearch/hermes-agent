@@ -491,3 +491,82 @@ class TestTruncateHelper:
         assert _ntfy._truncate_body("hi", context="test") == b"hi"
 
 
+# ---------------------------------------------------------------------------
+# 13. Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s server/topic/publish_topic, _env_enablement's topic/server/
+# publish_topic/markdown/home_channel, and check_requirements/validate_config/
+# is_connected's topic reads, all previously read raw os.getenv
+# unconditionally (only NTFY_TOKEN was already scoped). Under multiplex,
+# os.environ holds the DEFAULT profile's YAML-to-env bridge output -- a
+# secondary profile with its own (different or absent) ntfy config would
+# silently subscribe to / publish on the default profile's topic, or get
+# auto-enabled using the default profile's topic entirely. Mirrors the
+# LINE/Buzz/SimpleX fix for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("NTFY_TOPIC", "default-topic")
+    monkeypatch.setenv("NTFY_SERVER_URL", "https://default.example.com")
+    monkeypatch.setenv("NTFY_PUBLISH_TOPIC", "default-out")
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config.yaml extra is authoritative,
+        not the default profile's bridged topic/server/publish_topic."""
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "topic": "profile-topic",
+                "server": "https://profile.example.com",
+                "publish_topic": "profile-out",
+            },
+        )
+        adapter = NtfyAdapter(cfg)
+        assert adapter._topic == "profile-topic"
+        assert adapter._server == "https://profile.example.com"
+        assert adapter._publish_topic == "profile-out"
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's own scope must NOT borrow the
+        default profile's bridged env values -- that would silently
+        subscribe/publish on the wrong topic."""
+        multiplex_scope()
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._topic == ""
+        assert adapter._server == DEFAULT_SERVER
+        assert adapter._publish_topic == ""
+        # Nor may the registry auto-enable ntfy for this profile off the default's topic.
+        assert _env_enablement() is None
+        assert is_connected(PlatformConfig(enabled=True, extra={})) is False
+

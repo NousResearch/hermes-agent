@@ -123,9 +123,13 @@ class TestAudioOutputRefcount:
         vm.mark_audio_output_active(False)
         assert vm.is_audio_output_active() is False
 
+    @pytest.mark.real_audio_playback
     def test_play_audio_file_brackets_refcount(self, tmp_path):
         """play_audio_file flags real speaker output for its whole duration,
-        so the thinking loop knows audio is flowing."""
+        so the thinking loop knows audio is flowing. _play_audio_file_impl is
+        mocked, so this never touches real hardware; the marker only bypasses
+        the autouse guard's whole-function stub, which would otherwise
+        shadow the real play_audio_file wrapper this test targets (#88898)."""
         _reset()
         seen = []
 

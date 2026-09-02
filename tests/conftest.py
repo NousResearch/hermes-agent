@@ -1077,10 +1077,19 @@ def _wal_is_usable() -> bool:
 #    gateway call sites late-import, so patching the module attribute catches
 #    them wherever they import it from.
 #  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
-#    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
-#    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
+#    ``speak_text`` actually plays through.
+#
+# #88898 found a second, independent leak through the same class of bug:
+# ``tools.tts_tool``'s synthesis pipeline and ``cli.py``'s
+# ``_voice_speak_response`` late-import ``tools.voice_mode.play_audio_file``
+# directly — they never touch ``hermes_cli.voice``, so the guard above never
+# saw them, and a bare ``pytest tests/gateway`` run spoke real TTS output out
+# loud. ``tools.voice_mode.play_audio_file`` (and the ``_play_int16_via_tempfile``
+# tone/beep path that also calls it) is the true choke point every player
+# — ``afplay``/``ffplay``/``aplay``/``sounddevice`` — funnels through, so we
+# patch it there too. Tests that legitimately exercise the real function with
+# a mocked audio backend (``tests/tools/test_voice_mode.py`` and friends) opt
+# out with ``@pytest.mark.real_audio_playback``.
 #
 # Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
 # only selects *which* provider speaks, never *whether* to speak — that gate
@@ -1696,6 +1705,17 @@ def _audio_playback_guard(request, monkeypatch):
         monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
     if hasattr(_voice, "play_audio_file"):
         monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+
+    # ``hermes_cli.voice`` imports ``tools.voice_mode`` at module load, so a
+    # successful import above guarantees this one succeeds too (#88898).
+    import tools.voice_mode as _vm
+
+    if hasattr(_vm, "play_audio_file"):
+        monkeypatch.setattr(_vm, "play_audio_file", _blocked_play_audio_file)
+    if hasattr(_vm, "_play_int16_via_tempfile"):
+        monkeypatch.setattr(
+            _vm, "_play_int16_via_tempfile", lambda audio, sample_rate: None
+        )
 
     yield
 

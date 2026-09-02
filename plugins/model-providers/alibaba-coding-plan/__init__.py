@@ -9,6 +9,10 @@ Region split, mirroring the base DashScope pair (#73265):
 
 Profile names match the models.dev catalog keys exactly so model metadata
 lines up and ``model.provider: alibaba-coding-plan-cn`` resolves at runtime.
+
+The CN profile checks its own ``ALIBABA_CODING_PLAN_CN_API_KEY`` first (#101122,
+mirroring kimi-coding-cn) and keeps the shared vars as ordered fallbacks so
+existing CN users configured with the shared key keep working.
 """
 
 from providers import register_provider
@@ -31,7 +35,7 @@ alibaba_coding_plan_cn = ProviderProfile(
     display_name="Alibaba Cloud (Coding Plan, China)",
     description="Alibaba Cloud Coding Plan, mainland-China endpoint",
     signup_url="https://help.aliyun.com/zh/model-studio/",
-    env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_CN_BASE_URL"),
+    env_vars=("ALIBABA_CODING_PLAN_CN_API_KEY", "ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_CN_BASE_URL"),
     base_url="https://coding.dashscope.aliyuncs.com/v1",
     auth_type="api_key",
 )

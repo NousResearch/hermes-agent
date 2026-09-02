@@ -56,6 +56,101 @@ class TestParseUpdateFile:
         assert ops[0].hunks[1].context_hint == "second"
 
 
+
+class TestBlankContextLines:
+    """A blank line inside a hunk body is context, not a line to drop.
+
+    Producers that strip trailing whitespace emit a blank CONTEXT line as ""
+    rather than " ". The parser's `elif current_op and line:` guard treated the
+    empty string as falsy and skipped it, shortening the hunk's search pattern.
+    A shortened pattern can match a *different* block, so the edit lands in the
+    wrong place while reporting success.
+    """
+
+    def test_interior_blank_line_kept_as_context(self):
+        patch = """\
+*** Begin Patch
+*** Update File: conf.py
+@@ PRIMARY = { @@
+     "a": 1,
+
+-    "b": 2,
++    "b": 99,
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert lines == [
+            (" ", '    "a": 1,'),
+            (" ", ""),
+            ("-", '    "b": 2,'),
+            ("+", '    "b": 99,'),
+        ]
+
+    def test_blank_context_anchors_to_the_right_block(self):
+        """Without the blank line the pattern also matches BACKUP."""
+        content = (
+            'PRIMARY = {\n'
+            '    "a": 1,\n'
+            '\n'
+            '    "b": 2,\n'
+            '}\n'
+            'BACKUP = {\n'
+            '    "a": 1,\n'
+            '    "b": 2,\n'
+            '}\n'
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: conf.py
+@@ PRIMARY = { @@
+     "a": 1,
+
+-    "b": 2,
++    "b": 99,
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        search = "\n".join(
+            l.content for l in ops[0].hunks[0].lines if l.prefix in (" ", "-")
+        )
+        # The search text must include the blank line, so it occurs once
+        # (inside PRIMARY) rather than also matching BACKUP.
+        assert content.count(search) == 1
+        assert search.startswith('    "a": 1,\n\n')
+
+    def test_trailing_blank_lines_are_not_context(self):
+        """Blank runs at the end of a hunk are separators, not pattern text."""
+        patch = """\
+*** Begin Patch
+*** Update File: c.py
+@@
+-old
+
++new
+
+
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert lines == [("-", "old"), (" ", ""), ("+", "new")]
+
+    def test_patch_without_blank_lines_unchanged(self):
+        patch = """\
+*** Begin Patch
+*** Update File: c.py
+@@
+ ctx
+-old
++new
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert lines == [(" ", "ctx"), ("-", "old"), ("+", "new")]
+
+
 class TestParseAddFile:
     def test_add_file(self):
         patch = """\

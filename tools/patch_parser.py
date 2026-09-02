@@ -113,6 +113,9 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
     i = start_idx + 1
     current_op: Optional[PatchOperation] = None
     current_hunk: Optional[Hunk] = None
+    # Blank lines seen inside the current hunk body, held until a real hunk
+    # line proves they are interior context rather than trailing separator.
+    pending_blank_context = 0
     
     while i < end_idx:
         line = lines[i]
@@ -135,6 +138,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 file_path=update_match.group(1).strip()
             )
             current_hunk = None
+            pending_blank_context = 0
             
         elif add_match:
             if current_op:
@@ -187,11 +191,33 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 hint_match = re.match(r'@@\s*(.+?)\s*@@', line)
                 hint = hint_match.group(1) if hint_match else None
                 current_hunk = Hunk(context_hint=hint)
+                pending_blank_context = 0
                 
+        elif current_op and not line:
+            # A blank line inside a hunk body. Producers that strip trailing
+            # whitespace turn a blank CONTEXT line (" ") into "", and an empty
+            # string is falsy — so the old `elif current_op and line:` dropped
+            # it. That shortens the hunk's search pattern and can re-anchor the
+            # edit onto a different block that happens to match the shortened
+            # form.
+            #
+            # Buffer instead of appending directly: a blank run at the END of a
+            # hunk is separator whitespace, not context, and must not extend the
+            # pattern. Buffered blanks are only committed when a real hunk line
+            # follows, and are discarded at every hunk/op boundary.
+            if current_hunk is not None and current_hunk.lines:
+                pending_blank_context += 1
+        
         elif current_op and line:
             # Parse hunk line
             if current_hunk is None:
                 current_hunk = Hunk()
+            
+            if pending_blank_context:
+                current_hunk.lines.extend(
+                    HunkLine(' ', '') for _ in range(pending_blank_context)
+                )
+                pending_blank_context = 0
             
             if line.startswith('+'):
                 current_hunk.lines.append(HunkLine('+', line[1:]))

@@ -111,7 +111,7 @@ If `faster-whisper` is installed, voice mode works with **zero API keys** for ST
 
 ## CLI Voice Mode
 
-Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Behavior is identical across both — same slash commands, same VAD silence detection, same streaming TTS, same hallucination filter. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
+Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Both use the same slash commands, VAD silence detection, streaming TTS, and hallucination filter. Their automatic TTS initialisation differs: the classic CLI reads `voice.auto_tts` when `/voice on` starts voice mode, while the TUI uses its runtime `/voice tts` setting. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
 
 ### Quick Start
 
@@ -265,11 +265,13 @@ These work in both Telegram and Discord (DMs and text channels):
 
 | Mode | Command | Behavior |
 |------|---------|----------|
-| `off` | `/voice off` | Text only (default) |
+| `off` | `/voice off` | Text only |
 | `voice_only` | `/voice on` | Speaks reply only when you send a voice message |
 | `all` | `/voice tts` | Speaks reply to every message |
 
-Voice mode setting is persisted across gateway restarts.
+Voice mode setting is persisted across gateway restarts. Before a chat has an
+explicit setting, `voice.auto_tts: true` gives it the effective `all` mode;
+otherwise its effective mode is `off`.
 
 ### Platform Delivery
 
@@ -425,11 +427,11 @@ DISCORD_ALLOWED_USERS=284102345871466496
 ### config.yaml
 
 ```yaml
-# Voice recording (CLI)
+# Voice recording and automatic speech
 voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
-  auto_tts: false                  # Auto-enable TTS when voice mode starts
+  auto_tts: false                  # Automatic speech; does not enable microphone mode
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
@@ -473,6 +475,18 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+### `voice.auto_tts`
+
+This key is a shared automatic speech preference, not a switch for microphone
+mode. Each surface applies the preference according to its interaction model:
+
+| Surface | Behaviour when `voice.auto_tts` is `true` |
+|---------|--------------------------------------------|
+| Classic CLI | `/voice on` starts voice mode with TTS enabled. The key does not enable voice mode itself. |
+| TUI | No initial effect. Use `/voice tts` to change TTS for the current runtime. |
+| Desktop | **Read Responses Aloud** reads each completed assistant response outside a full voice conversation. A full voice conversation speaks through its own conversation loop. |
+| Gateway | Chats without an explicit voice mode receive spoken replies to every message. `/voice on`, `/voice tts`, and `/voice off` override the default for that chat. |
 
 ### Environment Variables
 

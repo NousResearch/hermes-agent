@@ -234,7 +234,12 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
           collapseId: toolZone ? (zone?.id ?? groupIdOf(child)) : null,
-          floor
+          floor,
+          // The flex item the resize target sizes through. For a direct group
+          // child this IS the seam partner (kidA/kidB); for a NESTED section
+          // (edgeFixedZone) it is the inner zone's wrapper — the seam partner
+          // and the resize target differ, and the preview must write both.
+          el
         }
       }
 
@@ -251,6 +256,17 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       const b0px = b.fixed ? b.size : sizeOf(kidB)
       const lo = Math.max(a.min - a0px, b0px - b.max)
       const hi = Math.min(a.max - a0px, b0px - b.min)
+
+      // Preview basis: the seam partners' rendered sizes at pointerdown.
+      // The resize target (a.size / b.size) resolves to the INNER edge zone
+      // for a nested section (the default tree's `spl-right`: review at
+      // 237px inside the 474px section wrapper), while the seam partner is
+      // the section wrapper itself. Using the zone size as the preview
+      // basis collapsed the whole section to the zone's width mid-drag —
+      // the ~2/3 "snap". Clamps and commit stay zone-bounded: the section
+      // genuinely cannot exceed review-max + files.
+      const aWrap0 = sizeOf(kidA)
+      const bWrap0 = sizeOf(kidB)
 
       const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
 
@@ -313,6 +329,11 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const styleA = kidA.getAttribute('style')
       const styleB = kidB.getAttribute('style')
+      // The resize targets' wrappers carry their own inline styles for
+      // nested seams (the zone writes below); capture them for the
+      // no-movement restore. `undefined` marks "same element as kidA/kidB".
+      const styleElA = a.el === kidA ? undefined : a.el.getAttribute('style')
+      const styleElB = b.el === kidB ? undefined : b.el.getAttribute('style')
 
       const previewSide = (el: HTMLElement, fixed: boolean, px: number) => {
         if (fixed) {
@@ -325,8 +346,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       }
 
       const previewShift = (shiftPx: number) => {
-        previewSide(kidA, a.fixed, a0px + shiftPx)
-        previewSide(kidB, b.fixed, b0px - shiftPx)
+        previewSide(kidA, a.fixed, aWrap0 + shiftPx)
+        previewSide(kidB, b.fixed, bWrap0 - shiftPx)
+        // Mirror the commit on the resize target itself. For a nested
+        // section the seam resolves to an INNER zone (edgeFixedZone); the
+        // commit writes that zone's override, so the drag preview must
+        // resize the zone too — otherwise the section wrapper grows while
+        // its content stays put, leaving a gap until release. For a direct
+        // group child the zone's flex item IS the seam partner, so the
+        // wrapper write above already covers it.
+        if (a.fixed && a.el !== kidA) {
+          previewSide(a.el, true, a0px + shiftPx)
+        }
+
+        if (b.fixed && b.el !== kidB) {
+          previewSide(b.el, true, b0px - shiftPx)
+        }
       }
 
       const resize = rafCoalesce(previewShift)
@@ -368,6 +403,18 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         } else {
           // Click without movement: nothing will re-render, so put the
           // wrappers' inline styles back exactly as React last wrote them.
+          const restoreStyle = (el: HTMLElement, captured: string | null | undefined) => {
+            if (captured === undefined) {
+              return // same element as a seam partner restored above
+            }
+
+            if (captured === null) {
+              el.removeAttribute('style')
+            } else {
+              el.setAttribute('style', captured)
+            }
+          }
+
           if (styleA === null) {
             kidA.removeAttribute('style')
           } else {
@@ -379,6 +426,9 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           } else {
             kidB.setAttribute('style', styleB)
           }
+
+          restoreStyle(a.el, styleElA)
+          restoreStyle(b.el, styleElB)
         }
 
         // Geometry vars re-enable AFTER the final store commit above, so the

@@ -79,6 +79,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -1270,6 +1271,13 @@ class Run:
     def from_row(cls, row: sqlite3.Row) -> "Run":
         try:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
+            if isinstance(meta, dict):
+                public_metadata_was_none = bool(
+                    meta.pop("_artifact_manifest_public_none", False)
+                )
+                meta.pop("_artifact_manifest", None)
+                if public_metadata_was_none and not meta:
+                    meta = None
         except Exception:
             meta = None
         return cls(
@@ -1311,6 +1319,11 @@ class Attachment:
     stored_path: str
     content_type: Optional[str]
     size: int
+    sha256: Optional[str]
+    source_path: Optional[str]
+    source_run_id: Optional[int]
+    artifact_role: Optional[str]
+    capture_key: Optional[str]
     uploaded_by: Optional[str]
     created_at: int
 
@@ -1490,6 +1503,11 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     stored_path  TEXT NOT NULL,
     content_type TEXT,
     size         INTEGER NOT NULL DEFAULT 0,
+    sha256       TEXT,
+    source_path  TEXT,
+    source_run_id INTEGER,
+    artifact_role TEXT,
+    capture_key  TEXT,
     uploaded_by  TEXT,
     created_at   INTEGER NOT NULL
 );
@@ -2718,6 +2736,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_run "
         "ON task_events(run_id, id)"
     )
+
+    attachment_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_attachments'"
+    ).fetchone() is not None
+    if attachment_table_exists:
+        attachment_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_attachments)")
+        }
+        for column_name, definition in (
+            ("sha256", "sha256 TEXT"),
+            ("source_path", "source_path TEXT"),
+            ("source_run_id", "source_run_id INTEGER"),
+            ("artifact_role", "artifact_role TEXT"),
+            ("capture_key", "capture_key TEXT"),
+        ):
+            if column_name not in attachment_cols:
+                _add_column_if_missing(conn, "task_attachments", column_name, definition)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_capture_key "
+            "ON task_attachments(capture_key) WHERE capture_key IS NOT NULL"
+        )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
@@ -4078,6 +4117,143 @@ class AttachmentTooLarge(ValueError):
     """
 
 
+def _sha256_file(path: Path) -> str:
+    """Return a streaming SHA-256 digest for one regular file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _open_nofollow(
+    path: str | os.PathLike[str],
+    *,
+    dir_fd: Optional[int] = None,
+    directory: bool = False,
+) -> int:
+    """Open one filesystem entry and prove the opened inode is not a link.
+
+    ``O_NOFOLLOW`` closes the final-component race on POSIX.  The lstat/fstat
+    identity check is retained as a portable second line of defence (and the
+    fallback on platforms without ``O_NOFOLLOW``).
+    """
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        path_stat = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+        opened_stat = os.fstat(fd)
+        expected = stat.S_ISDIR if directory else stat.S_ISREG
+        if (
+            not expected(path_stat.st_mode)
+            or not expected(opened_stat.st_mode)
+            or (path_stat.st_dev, path_stat.st_ino)
+            != (opened_stat.st_dev, opened_stat.st_ino)
+        ):
+            raise OSError("filesystem entry changed or is not the required regular type")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _mkdir_open_nofollow(parent_fd: int, name: str) -> int:
+    """Create/open one child directory without following links, durably."""
+    created = False
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+    except FileExistsError:
+        pass
+    child_fd = _open_nofollow(name, dir_fd=parent_fd, directory=True)
+    if created and os.name != "nt":
+        # Persist the newly-created directory entry in its parent before a DB
+        # row is allowed to refer to anything below it.
+        os.fsync(parent_fd)
+    return child_fd
+
+
+def _ensure_directory_tree_nofollow(path: Path) -> tuple[Path, int]:
+    """Create an absolute directory tree with durable, no-follow components."""
+    absolute = Path(os.path.abspath(path))
+    if os.name != "posix" or not absolute.is_absolute():
+        raise OSError(f"custody root must be absolute: {absolute}")
+    # Walk the lexical path, not Path.resolve(): resolving first would follow
+    # an attacker-controlled intermediate symlink before no-follow admission.
+    current_fd = _open_nofollow(absolute.anchor, directory=True)
+    try:
+        for component in absolute.parts[1:]:
+            next_fd = _mkdir_open_nofollow(current_fd, component)
+            os.close(current_fd)
+            current_fd = next_fd
+        return absolute, current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _open_existing_path_nofollow(path: Path, *, directory: bool = False) -> int:
+    """Open an existing absolute path without following any symlink component."""
+    absolute = Path(os.path.abspath(path))
+    if os.name != "posix" or not absolute.is_absolute():
+        raise OSError(f"secure path must be absolute: {absolute}")
+    current_fd = _open_nofollow(absolute.anchor, directory=True)
+    try:
+        for component in absolute.parts[1:-1]:
+            next_fd = _open_nofollow(component, dir_fd=current_fd, directory=True)
+            os.close(current_fd)
+            current_fd = next_fd
+        opened_fd = _open_nofollow(
+            absolute.parts[-1],
+            dir_fd=current_fd,
+            directory=directory,
+        )
+        os.close(current_fd)
+        return opened_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def _secure_dir_fd_custody_available() -> bool:
+    """Whether this runtime can enforce descriptor-relative no-follow custody.
+
+    Windows' Python filesystem APIs do not expose the dir-fd and no-follow
+    primitives used below. Fail closed there rather than silently falling back
+    to pathname operations that follow junctions or symlinks.
+    """
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def _secure_parent_hydration_available() -> bool:
+    """Whether atomic descriptor-relative no-replace hydration is available."""
+    return (
+        _secure_dir_fd_custody_available()
+        and os.link in os.supports_dir_fd
+    )
+
+
+def _sha256_fd(fd: int) -> str:
+    """Return SHA-256 for an already-open regular-file descriptor."""
+    digest = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, 1024 * 1024):
+        digest.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
 def _safe_attachment_name(raw: str) -> str:
     """Reduce a client-supplied filename to a safe basename.
 
@@ -4153,6 +4329,7 @@ def store_attachment_bytes(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
+    artifact_sha256 = hashlib.sha256(data).hexdigest()
     try:
         return add_attachment(
             conn,
@@ -4161,6 +4338,7 @@ def store_attachment_bytes(
             stored_path=str(dest_path.resolve()),
             content_type=content_type,
             size=len(data),
+            sha256=artifact_sha256,
             uploaded_by=uploaded_by,
         )
     except Exception:
@@ -4181,6 +4359,11 @@ def add_attachment(
     stored_path: str,
     content_type: Optional[str] = None,
     size: int = 0,
+    sha256: Optional[str] = None,
+    source_path: Optional[str] = None,
+    source_run_id: Optional[int] = None,
+    artifact_role: Optional[str] = None,
+    capture_key: Optional[str] = None,
     uploaded_by: Optional[str] = None,
 ) -> int:
     """Record a file attachment for a task. Returns the new attachment id.
@@ -4193,6 +4376,15 @@ def add_attachment(
         raise ValueError("attachment filename is required")
     if not stored_path or not stored_path.strip():
         raise ValueError("attachment stored_path is required")
+    stored_file = Path(stored_path)
+    artifact_sha256 = sha256 or (
+        _sha256_file(stored_file) if stored_file.is_file() else None
+    )
+    if artifact_sha256 is not None and (
+        len(artifact_sha256) != 64
+        or any(ch not in "0123456789abcdef" for ch in artifact_sha256.lower())
+    ):
+        raise ValueError("attachment sha256 must be a 64-character hex digest")
     now = int(time.time())
     with write_txn(conn):
         if not conn.execute(
@@ -4201,14 +4393,20 @@ def add_attachment(
             raise ValueError(f"unknown task {task_id}")
         cur = conn.execute(
             "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(task_id, filename, stored_path, content_type, size, sha256, "
+            "source_path, source_run_id, artifact_role, capture_key, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 filename.strip(),
                 stored_path,
                 content_type,
                 int(size),
+                artifact_sha256.lower() if artifact_sha256 else None,
+                source_path,
+                source_run_id,
+                artifact_role,
+                capture_key,
                 uploaded_by,
                 now,
             ),
@@ -4235,6 +4433,11 @@ def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]
             stored_path=r["stored_path"],
             content_type=r["content_type"],
             size=r["size"] or 0,
+            sha256=r["sha256"],
+            source_path=r["source_path"],
+            source_run_id=r["source_run_id"],
+            artifact_role=r["artifact_role"],
+            capture_key=r["capture_key"],
             uploaded_by=r["uploaded_by"],
             created_at=r["created_at"],
         )
@@ -4255,6 +4458,11 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
         stored_path=r["stored_path"],
         content_type=r["content_type"],
         size=r["size"] or 0,
+        sha256=r["sha256"],
+        source_path=r["source_path"],
+        source_run_id=r["source_run_id"],
+        artifact_role=r["artifact_role"],
+        capture_key=r["capture_key"],
         uploaded_by=r["uploaded_by"],
         created_at=r["created_at"],
     )
@@ -5439,6 +5647,17 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    # A later no-output completion must supersede custody from older runs even
+    # if its completed event is lost. Preserve public ``metadata is None`` while
+    # allocating a private completed-run manifest when stale custody exists.
+    if metadata is None:
+        has_prior_custody = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE task_id = ? "
+            "AND capture_key IS NOT NULL AND uploaded_by = 'kanban_complete' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if has_prior_custody is not None:
+            metadata = {"_artifact_manifest_public_none": True}
     with write_txn(conn):
         # Parent completion is a hard invariant even for direct human review
         # approval. A parent may have been reopened after this task entered
@@ -5487,24 +5706,88 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        preallocated_run_id: Optional[int] = None
+        if _current_run_id(conn, task_id) is None and (
+            summary or metadata or result or prior_status == "review"
+        ):
+            # Completion artifacts must carry run lineage even when a human
+            # completes an unclaimed ready/review task. Allocate the synthetic
+            # terminal run before capture, then backfill its final handoff once
+            # artifact metadata has been rewritten to durable custody paths.
+            preallocated_run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="completed",
+                summary=None,
+                metadata=None,
+            )
+        closing_run_id = _current_run_id(conn, task_id) or preallocated_run_id
+        artifact_manifest: list[dict[str, Any]] = []
         if isinstance(metadata, dict):
-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
-                path = Path(stored_path)
+            _persist_scratch_completion_artifacts(
+                conn,
+                task_id,
+                metadata,
+                source_run_id=closing_run_id,
+            )
+            staged_artifacts = metadata.pop("_staged_artifacts", [])
+            artifact_manifest = [
+                {
+                    "filename": staged_artifact["filename"],
+                    "size": staged_artifact["size"],
+                    "sha256": staged_artifact["sha256"],
+                    "source_run_id": staged_artifact["source_run_id"],
+                    "artifact_role": staged_artifact["artifact_role"],
+                    "capture_key": staged_artifact["capture_key"],
+                }
+                for staged_artifact in staged_artifacts
+            ]
+            # Internal, per-run expected-output statement. Persist the empty
+            # list too: it prevents a later no-output completion from falling
+            # back to stale custody rows if its completed event is unavailable.
+            # Run.from_row hides this implementation key from public metadata.
+            metadata["_artifact_manifest"] = artifact_manifest
+            for staged_artifact in staged_artifacts:
                 _insert_completion_attachment(
                     conn,
                     task_id,
-                    filename=path.name,
-                    stored_path=str(path),
-                    size=path.stat().st_size,
+                    filename=staged_artifact["filename"],
+                    stored_path=staged_artifact["stored_path"],
+                    size=staged_artifact["size"],
+                    sha256=staged_artifact["sha256"],
+                    source_path=staged_artifact["source_path"],
+                    source_run_id=staged_artifact["source_run_id"],
+                    artifact_role=staged_artifact["artifact_role"],
+                    capture_key=staged_artifact["capture_key"],
                     created_at=now,
                 )
-        run_id = _end_run(
-            conn, task_id,
-            outcome="completed", status="done",
-            summary=summary if summary is not None else result,
-            metadata=metadata,
-        )
+        if preallocated_run_id is None:
+            run_id = _end_run(
+                conn, task_id,
+                outcome="completed", status="done",
+                summary=summary if summary is not None else result,
+                metadata=metadata,
+            )
+        else:
+            run_id = preallocated_run_id
+            synth_summary = summary if summary is not None else result
+            synth_metadata = metadata
+            if prior_status == "review" and not synth_summary and not synth_metadata:
+                synth_summary = "Review approved without additional evidence."
+                synth_metadata = {
+                    "source_status": "review",
+                    "approval": "manual",
+                }
+            conn.execute(
+                "UPDATE task_runs SET summary = ?, metadata = ? WHERE id = ?",
+                (
+                    synth_summary,
+                    json.dumps(synth_metadata, ensure_ascii=False)
+                    if synth_metadata
+                    else None,
+                    run_id,
+                ),
+            )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -5538,6 +5821,7 @@ def complete_task(
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
+            "artifact_manifest": artifact_manifest,
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
@@ -5659,8 +5943,17 @@ def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection,
     task_id: str,
     metadata: dict,
+    *,
+    source_run_id: Optional[int] = None,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Capture scratch deliverables into content-addressed durable custody.
+
+    The worker supplies task-local source paths, but never chooses the durable
+    destination.  The completion hook streams each regular file into a staging
+    path, computes its digest, atomically seals it below the task attachment
+    root, and records the exact lineage for the closing run.  Scratch cleanup
+    may therefore run immediately after the transaction commits.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
@@ -5677,91 +5970,301 @@ def _persist_scratch_completion_artifacts(
     if not is_managed:
         return
 
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
-
-    attachment_dir = task_attachments_dir(task_id, board=board)
-    persisted: list[str] = []
-    used_destinations: set[Path] = set()
-    changed = False
-
-    def _discard_copies() -> None:
-        for copied in used_destinations:
-            try:
-                copied.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            attachment_dir.rmdir()
-        except OSError:
-            pass
-
+    workspace_root = Path(os.path.abspath(workspace))
+    has_managed_candidate = False
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
         if not artifact:
             continue
-        src = Path(artifact).expanduser()
+        source_path = Path(os.path.abspath(Path(artifact).expanduser()))
         try:
-            resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
+            relative = source_path.relative_to(workspace_root)
+        except ValueError:
             continue
+        if relative.parts:
+            has_managed_candidate = True
+            break
+    if not has_managed_candidate:
+        return
+    if has_managed_candidate and not _secure_dir_fd_custody_available():
+        raise ArtifactPreservationError(
+            "managed scratch artifact custody is unavailable on this platform "
+            "because descriptor-relative no-follow filesystem operations are "
+            "not supported; scratch workspace preserved"
+        )
 
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
+    attachment_root = attachments_root(board=board)
+    workspace_fd: Optional[int] = None
+    attachment_root_fd: Optional[int] = None
+    try:
+        workspace_fd = _open_nofollow(workspace_root, directory=True)
+        attachment_root, attachment_root_fd = _ensure_directory_tree_nofollow(
+            attachment_root
+        )
+    except OSError as exc:
+        if workspace_fd is not None:
+            os.close(workspace_fd)
+        if attachment_root_fd is not None:
+            os.close(attachment_root_fd)
+        raise ArtifactPreservationError(
+            f"could not establish no-follow artifact roots: {exc}"
+        ) from exc
 
-        if not src.is_file():
-            _discard_copies()
-            raise ArtifactPreservationError(
-                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-            )
+    persisted: list[str] = []
+    staged_records: list[dict[str, Any]] = []
+    changed = False
+    managed: list[tuple[str, Path, str, str]] = []
+    seen_sources: set[str] = set()
+    role_sources: dict[str, str] = {}
 
-        size = resolved_src.stat().st_size
-        if size > KANBAN_ATTACHMENT_MAX_BYTES:
-            _discard_copies()
-            raise ArtifactPreservationError(
-                f"declared scratch artifact exceeds the "
-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
-            )
+    try:
+        # Admission is deterministic before any bytes are copied. Distinct
+        # scratch paths with the same hydrate-time basename are rejected now,
+        # not after a parent has completed and lost its workspace.
+        for item in raw_artifacts:
+            artifact = str(item).strip() if isinstance(item, str) else ""
+            if not artifact:
+                continue
+            source_path = Path(os.path.abspath(Path(artifact).expanduser()))
+            try:
+                relative = source_path.relative_to(workspace_root)
+            except ValueError:
+                persisted.append(artifact)
+                continue
+            if not relative.parts:
+                raise ArtifactPreservationError(
+                    f"declared scratch artifact is not a file path: {artifact}"
+                )
+            source_role = relative.as_posix()
+            if source_role in seen_sources:
+                continue
+            filename = _safe_attachment_name(relative.name)
+            prior_source = role_sources.get(filename)
+            if prior_source is not None and prior_source != source_role:
+                raise ArtifactPreservationError(
+                    "declared scratch artifacts have ambiguous hydrate-time "
+                    f"name {filename!r}: {prior_source!r} and {source_role!r}"
+                )
+            seen_sources.add(source_role)
+            role_sources[filename] = source_role
+            managed.append((artifact, relative, filename, source_role))
 
-        dest: Optional[Path] = None
+        if _safe_attachment_name(task_id) != task_id:
+            raise ArtifactPreservationError(f"unsafe task id for artifact custody: {task_id}")
+        task_fd = _mkdir_open_nofollow(attachment_root_fd, task_id)
+        staging_fd: Optional[int] = None
+        sha_root_fd: Optional[int] = None
         try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
-                copied = 0
-                while chunk := source_file.read(1024 * 1024):
-                    copied += len(chunk)
-                    if copied > KANBAN_ATTACHMENT_MAX_BYTES:
-                        raise ArtifactPreservationError(
-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
-                        )
-                    destination_file.write(chunk)
-        except Exception as exc:
-            if dest is not None:
+            staging_fd = _mkdir_open_nofollow(task_fd, ".staging")
+            sha_root_fd = _mkdir_open_nofollow(task_fd, "sha256")
+        finally:
+            os.close(task_fd)
+
+        try:
+            # A process crash before DB commit may leave a staged temporary.
+            # Completion is serialized by SQLite's write transaction, so all
+            # task-local staging entries here are stale and can be reconciled.
+            staging_changed = False
+            for stale_name in os.listdir(staging_fd):
+                stale_stat = os.stat(
+                    stale_name,
+                    dir_fd=staging_fd,
+                    follow_symlinks=False,
+                )
+                if not (stat.S_ISREG(stale_stat.st_mode) or stat.S_ISLNK(stale_stat.st_mode)):
+                    raise ArtifactPreservationError(
+                        f"unexpected entry in artifact staging directory: {stale_name}"
+                    )
+                os.unlink(stale_name, dir_fd=staging_fd)
+                staging_changed = True
+            if staging_changed and os.name != "nt":
+                os.fsync(staging_fd)
+
+            for artifact, relative, filename, artifact_role in managed:
+                source_parent_fd = os.dup(workspace_fd)
+                source_fd: Optional[int] = None
+                temp_name: Optional[str] = None
+                prefix_fd: Optional[int] = None
+                digest_fd: Optional[int] = None
                 try:
-                    dest.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            _discard_copies()
-            if isinstance(exc, ArtifactPreservationError):
-                raise
-            raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
-            ) from exc
+                    for component in relative.parts[:-1]:
+                        next_fd = _open_nofollow(
+                            component,
+                            dir_fd=source_parent_fd,
+                            directory=True,
+                        )
+                        os.close(source_parent_fd)
+                        source_parent_fd = next_fd
+                    source_fd = _open_nofollow(
+                        relative.name,
+                        dir_fd=source_parent_fd,
+                        directory=False,
+                    )
+                    before = os.fstat(source_fd)
+                    if before.st_size > KANBAN_ATTACHMENT_MAX_BYTES:
+                        raise ArtifactPreservationError(
+                            f"declared scratch artifact exceeds the "
+                            f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
+                        )
 
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
-        changed = True
+                    temp_name = f"{secrets.token_hex(16)}.tmp"
+                    temp_flags = (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    temp_fd = os.open(
+                        temp_name,
+                        temp_flags,
+                        0o600,
+                        dir_fd=staging_fd,
+                    )
+                    digest = hashlib.sha256()
+                    copied = 0
+                    with os.fdopen(temp_fd, "wb", closefd=True) as destination_file:
+                        while chunk := os.read(source_fd, 1024 * 1024):
+                            copied += len(chunk)
+                            if copied > KANBAN_ATTACHMENT_MAX_BYTES:
+                                raise ArtifactPreservationError(
+                                    f"declared scratch artifact grew beyond the size limit: {artifact}"
+                                )
+                            destination_file.write(chunk)
+                            digest.update(chunk)
+                        destination_file.flush()
+                        os.fsync(destination_file.fileno())
+                    after = os.fstat(source_fd)
+                    entry_after = os.stat(
+                        relative.name,
+                        dir_fd=source_parent_fd,
+                        follow_symlinks=False,
+                    )
+                    identity_fields = (
+                        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"
+                    )
+                    if (
+                        tuple(getattr(before, field) for field in identity_fields)
+                        != tuple(getattr(after, field) for field in identity_fields)
+                        or not stat.S_ISREG(entry_after.st_mode)
+                        or (entry_after.st_dev, entry_after.st_ino)
+                        != (before.st_dev, before.st_ino)
+                        or copied != after.st_size
+                    ):
+                        raise ArtifactPreservationError(
+                            f"declared scratch artifact changed during capture: {artifact}"
+                        )
+
+                    artifact_sha256 = digest.hexdigest()
+                    prefix_fd = _mkdir_open_nofollow(
+                        sha_root_fd,
+                        artifact_sha256[:2],
+                    )
+                    digest_fd = _mkdir_open_nofollow(prefix_fd, artifact_sha256)
+                    try:
+                        existing_fd = _open_nofollow(
+                            filename,
+                            dir_fd=digest_fd,
+                            directory=False,
+                        )
+                    except FileNotFoundError:
+                        os.replace(
+                            temp_name,
+                            filename,
+                            src_dir_fd=staging_fd,
+                            dst_dir_fd=digest_fd,
+                        )
+                        temp_name = None
+                        if os.name != "nt":
+                            os.fsync(staging_fd)
+                            os.fsync(digest_fd)
+                    else:
+                        try:
+                            existing = os.fstat(existing_fd)
+                            if (
+                                existing.st_size != copied
+                                or _sha256_fd(existing_fd) != artifact_sha256
+                            ):
+                                raise ArtifactPreservationError(
+                                    f"content-addressed custody conflict for {artifact}"
+                                )
+                        finally:
+                            os.close(existing_fd)
+                        os.unlink(temp_name, dir_fd=staging_fd)
+                        temp_name = None
+                        if os.name != "nt":
+                            os.fsync(staging_fd)
+
+                    stored_path = (
+                        attachment_root
+                        / task_id
+                        / "sha256"
+                        / artifact_sha256[:2]
+                        / artifact_sha256
+                        / filename
+                    )
+                    persisted.append(str(stored_path))
+                    capture_key = hashlib.sha256(
+                        json.dumps(
+                            {
+                                "task_id": task_id,
+                                "source_run_id": source_run_id,
+                                "artifact_role": artifact_role,
+                                "source_path": str(workspace_root / relative),
+                                "sha256": artifact_sha256,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    staged_records.append(
+                        {
+                            "filename": filename,
+                            "stored_path": str(stored_path),
+                            "source_path": str(workspace_root / relative),
+                            "source_run_id": source_run_id,
+                            "artifact_role": artifact_role,
+                            "size": copied,
+                            "sha256": artifact_sha256,
+                            "capture_key": capture_key,
+                        }
+                    )
+                    changed = True
+                except Exception as exc:
+                    if isinstance(exc, ArtifactPreservationError):
+                        raise
+                    raise ArtifactPreservationError(
+                        f"could not preserve declared scratch artifact {artifact}: {exc}"
+                    ) from exc
+                finally:
+                    if temp_name is not None:
+                        try:
+                            os.unlink(temp_name, dir_fd=staging_fd)
+                            if os.name != "nt":
+                                os.fsync(staging_fd)
+                        except OSError:
+                            pass
+                    if source_fd is not None:
+                        os.close(source_fd)
+                    os.close(source_parent_fd)
+                    if digest_fd is not None:
+                        os.close(digest_fd)
+                    if prefix_fd is not None:
+                        os.close(prefix_fd)
+        finally:
+            if staging_fd is not None:
+                os.close(staging_fd)
+            if sha_root_fd is not None:
+                os.close(sha_root_fd)
+    finally:
+        if workspace_fd is not None:
+            os.close(workspace_fd)
+        if attachment_root_fd is not None:
+            os.close(attachment_root_fd)
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+        metadata["_staged_artifacts"] = staged_records
 
 
 def _insert_completion_attachment(
@@ -5771,38 +6274,38 @@ def _insert_completion_attachment(
     filename: str,
     stored_path: str,
     size: int,
+    sha256: str,
+    source_path: str,
+    source_run_id: Optional[int],
+    artifact_role: str,
+    capture_key: str,
     created_at: int,
 ) -> None:
-    """Record a worker-produced artifact in the existing attachment table."""
-    conn.execute(
-        "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+    """Record one immutable completion capture, idempotently by capture key."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO task_attachments "
+        "(task_id, filename, stored_path, content_type, size, sha256, source_path, "
+        " source_run_id, artifact_role, capture_key, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'kanban_complete', ?)",
+        (
+            task_id, filename, stored_path, size, sha256, source_path,
+            source_run_id, artifact_role, capture_key, created_at,
+        ),
     )
-    _append_event(
-        conn,
-        task_id,
-        "attached",
-        {"filename": filename, "size": size, "by": "kanban_complete"},
-    )
-
-
-def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
-    """Return a non-conflicting path under ``directory`` for ``filename``."""
-    safe_name = Path(filename).name or "artifact"
-    candidate = directory / safe_name
-    if candidate not in used and not candidate.exists():
-        return candidate
-
-    stem = Path(safe_name).stem or "artifact"
-    suffix = Path(safe_name).suffix
-    idx = 1
-    while True:
-        candidate = directory / f"{stem}_{idx}{suffix}"
-        if candidate not in used and not candidate.exists():
-            return candidate
-        idx += 1
+    if cur.rowcount:
+        _append_event(
+            conn,
+            task_id,
+            "attached",
+            {
+                "filename": filename,
+                "size": size,
+                "sha256": sha256,
+                "artifact_role": artifact_role,
+                "by": "kanban_complete",
+            },
+            run_id=source_run_id,
+        )
 
 
 def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
@@ -9354,6 +9857,378 @@ def _record_spawn_failure(
     )
 
 
+class ParentAttachmentHydrationError(RuntimeError):
+    """A successor's admitted parent-artifact package is missing or ambiguous."""
+
+
+def hydrate_parent_attachments(
+    conn: sqlite3.Connection,
+    task_id: str,
+    workspace: Path,
+    *,
+    board: Optional[str] = None,
+) -> list[tuple[str, str, str]]:
+    """Hydrate captured direct-parent outputs into an isolated workspace.
+
+    Only artifacts captured by ``kanban_complete`` participate. Ordinary task
+    attachments remain task-local and parents without declared completion
+    artifacts preserve existing dispatch behaviour. Every filesystem component
+    is opened descriptor-relatively without following symlinks; any provenance,
+    size, digest, or destination conflict stops before the worker starts.
+    """
+    parent_rows = conn.execute(
+        "SELECT p.id, p.status FROM tasks p "
+        "JOIN task_links l ON l.parent_id = p.id "
+        "WHERE l.child_id = ? ORDER BY p.id",
+        (task_id,),
+    ).fetchall()
+    planned: dict[str, dict[str, Any]] = {}
+    for parent in parent_rows:
+        if parent["status"] not in ("done", "archived"):
+            raise ParentAttachmentHydrationError(f"parent {parent['id']} is not complete")
+
+        completed_run = conn.execute(
+            "SELECT id, metadata FROM task_runs WHERE task_id = ? "
+            "AND outcome = 'completed' ORDER BY id DESC LIMIT 1",
+            (parent["id"],),
+        ).fetchone()
+        completion_run_id: Optional[int] = (
+            int(completed_run["id"]) if completed_run is not None else None
+        )
+        if completion_run_id is None:
+            completed_event = conn.execute(
+                "SELECT payload, run_id FROM task_events WHERE task_id = ? "
+                "AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+                (parent["id"],),
+            ).fetchone()
+        else:
+            completed_event = conn.execute(
+                "SELECT payload, run_id FROM task_events WHERE task_id = ? "
+                "AND kind = 'completed' AND run_id = ? ORDER BY id DESC LIMIT 1",
+                (parent["id"], completion_run_id),
+            ).fetchone()
+        manifest_present = False
+        manifest: list[dict[str, Any]] = []
+        event_manifest: Optional[list[dict[str, Any]]] = None
+        if completed_event is not None:
+            if completion_run_id is None and completed_event["run_id"] is not None:
+                completion_run_id = int(completed_event["run_id"])
+            try:
+                completion_payload = json.loads(completed_event["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} has malformed completion evidence"
+                ) from exc
+            if "artifact_manifest" in completion_payload:
+                manifest_present = True
+                raw_manifest = completion_payload["artifact_manifest"]
+                if not isinstance(raw_manifest, list):
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} has malformed artifact manifest"
+                    )
+                event_manifest = raw_manifest
+
+        run_manifest: Optional[list[dict[str, Any]]] = None
+        if completed_run is not None and completed_run["metadata"]:
+            try:
+                run_metadata = json.loads(completed_run["metadata"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} has malformed completed-run metadata"
+                ) from exc
+            if isinstance(run_metadata, dict) and "_artifact_manifest" in run_metadata:
+                raw_run_manifest = run_metadata["_artifact_manifest"]
+                if not isinstance(raw_run_manifest, list):
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} has malformed completed-run artifact manifest"
+                    )
+                run_manifest = raw_run_manifest
+
+        if event_manifest is not None and run_manifest is not None:
+            if event_manifest != run_manifest:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} completion artifact manifests disagree"
+                )
+            manifest = event_manifest
+            manifest_present = True
+        elif event_manifest is not None:
+            manifest = event_manifest
+            manifest_present = True
+        elif run_manifest is not None:
+            manifest = run_manifest
+            manifest_present = True
+
+        attachments = conn.execute(
+            "SELECT id, filename, stored_path, size, sha256, source_run_id, "
+            "artifact_role, capture_key FROM task_attachments "
+            "WHERE task_id = ? AND capture_key IS NOT NULL "
+            "AND uploaded_by = 'kanban_complete' "
+            + ("AND source_run_id = ? " if manifest_present else "")
+            + "ORDER BY created_at, id",
+            ((parent["id"], completion_run_id) if manifest_present else (parent["id"],)),
+        ).fetchall()
+
+        if manifest_present:
+            if completion_run_id is None:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} artifact manifest has no run lineage"
+                )
+            expected_by_key: dict[str, dict[str, Any]] = {}
+            for item in manifest:
+                if not isinstance(item, dict):
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} has malformed artifact manifest entry"
+                    )
+                capture_key = item.get("capture_key")
+                if not isinstance(capture_key, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", capture_key
+                ):
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} has malformed artifact manifest key"
+                    )
+                if capture_key in expected_by_key:
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} artifact manifest has duplicate entries"
+                    )
+                expected_by_key[capture_key] = item
+            actual_keys = [str(row["capture_key"] or "") for row in attachments]
+            if len(actual_keys) != len(set(actual_keys)):
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} custody has duplicate capture rows"
+                )
+            if set(actual_keys) != set(expected_by_key):
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} custody does not match its artifact manifest"
+                )
+
+        for attachment in attachments:
+            filename = str(attachment["filename"] or "")
+            digest = str(attachment["sha256"] or "")
+            artifact_role = str(attachment["artifact_role"] or "")
+            capture_key = str(attachment["capture_key"] or "")
+            if (
+                not filename
+                or Path(filename).name != filename
+                or filename in (".", "..")
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not re.fullmatch(r"[0-9a-f]{64}", capture_key)
+                or not artifact_role
+            ):
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename!r} has incomplete provenance"
+                )
+            try:
+                attachment_id = int(attachment["id"])
+                admitted_size = int(attachment["size"])
+                source_run_id = int(attachment["source_run_id"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename!r} has malformed metadata"
+                ) from exc
+            if (
+                attachment_id <= 0
+                or admitted_size < 0
+                or admitted_size > KANBAN_ATTACHMENT_MAX_BYTES
+                or source_run_id <= 0
+            ):
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename!r} has invalid metadata"
+                )
+            if manifest_present:
+                expected = expected_by_key[capture_key]
+                expected_fields = {
+                    "filename": filename,
+                    "size": admitted_size,
+                    "sha256": digest,
+                    "source_run_id": source_run_id,
+                    "artifact_role": artifact_role,
+                    "capture_key": capture_key,
+                }
+                if any(expected.get(key) != value for key, value in expected_fields.items()):
+                    raise ParentAttachmentHydrationError(
+                        f"parent {parent['id']} custody metadata does not match its artifact manifest"
+                    )
+            root = Path(os.path.abspath(task_attachments_dir(parent["id"], board=board)))
+            stored_path = attachment["stored_path"]
+            if not isinstance(stored_path, str) or not stored_path:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename!r} has malformed storage metadata"
+                )
+            source = Path(os.path.abspath(Path(stored_path)))
+            try:
+                source.relative_to(root)
+                source_fd = _open_existing_path_nofollow(source)
+            except (ValueError, OSError) as exc:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename} is outside custody or missing"
+                ) from exc
+            try:
+                source_stat = os.fstat(source_fd)
+                actual_digest = _sha256_fd(source_fd)
+            finally:
+                os.close(source_fd)
+            size = int(source_stat.st_size)
+            if size != admitted_size:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename} size drifted"
+                )
+            if actual_digest != digest:
+                raise ParentAttachmentHydrationError(
+                    f"parent {parent['id']} attachment {filename} digest drifted"
+                )
+            origin = {
+                "parent_task_id": parent["id"],
+                "attachment_id": attachment_id,
+                "source_run_id": source_run_id,
+                "artifact_role": artifact_role,
+            }
+            prior = planned.get(filename)
+            if prior is not None and (prior["size"], prior["sha256"]) != (size, digest):
+                raise ParentAttachmentHydrationError(
+                    f"parent attachments conflict for declared filename {filename}"
+                )
+            if prior is None:
+                planned[filename] = {
+                    "source": source,
+                    "size": size,
+                    "sha256": digest,
+                    "origins": [origin],
+                }
+            else:
+                prior["origins"].append(origin)
+
+    if not planned:
+        return []
+
+    if not _secure_parent_hydration_available():
+        raise ParentAttachmentHydrationError(
+            "secure descriptor-relative parent artifact hydration is unavailable"
+        )
+
+    workspace_path, workspace_fd = _ensure_directory_tree_nofollow(workspace)
+    created: list[str] = []
+    hydrated: list[tuple[str, str, str]] = []
+    try:
+        try:
+            for filename, package in sorted(planned.items()):
+                size = package["size"]
+                digest = package["sha256"]
+                try:
+                    destination_fd = _open_nofollow(filename, dir_fd=workspace_fd)
+                except FileNotFoundError:
+                    temporary = f".{filename}.{secrets.token_hex(8)}.tmp"
+                    source_fd = _open_existing_path_nofollow(package["source"])
+                    temp_fd: Optional[int] = None
+                    try:
+                        temp_fd = os.open(
+                            temporary,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                            | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                            0o600,
+                            dir_fd=workspace_fd,
+                        )
+                        copied = 0
+                        copied_digest = hashlib.sha256()
+                        with os.fdopen(temp_fd, "wb", closefd=True) as destination_file:
+                            temp_fd = None
+                            while chunk := os.read(source_fd, 1024 * 1024):
+                                copied += len(chunk)
+                                if copied > KANBAN_ATTACHMENT_MAX_BYTES:
+                                    raise ParentAttachmentHydrationError(
+                                        f"parent attachment {filename} exceeds the size limit"
+                                    )
+                                destination_file.write(chunk)
+                                copied_digest.update(chunk)
+                            destination_file.flush()
+                            os.fsync(destination_file.fileno())
+                        if copied != size or copied_digest.hexdigest() != digest:
+                            raise ParentAttachmentHydrationError(
+                                f"custody verification failed while hydrating {filename}"
+                            )
+                        try:
+                            os.link(
+                                temporary,
+                                filename,
+                                src_dir_fd=workspace_fd,
+                                dst_dir_fd=workspace_fd,
+                                follow_symlinks=False,
+                            )
+                        except FileExistsError as exc:
+                            raise ParentAttachmentHydrationError(
+                                f"destination {filename} appeared during hydration"
+                            ) from exc
+                        created.append(filename)
+                        os.fsync(workspace_fd)
+                        os.unlink(temporary, dir_fd=workspace_fd)
+                        os.fsync(workspace_fd)
+                    finally:
+                        os.close(source_fd)
+                        if temp_fd is not None:
+                            os.close(temp_fd)
+                        try:
+                            os.unlink(temporary, dir_fd=workspace_fd)
+                        except FileNotFoundError:
+                            pass
+                else:
+                    try:
+                        destination_stat = os.fstat(destination_fd)
+                        destination_digest = _sha256_fd(destination_fd)
+                    finally:
+                        os.close(destination_fd)
+                    if destination_stat.st_size != size or destination_digest != digest:
+                        raise ParentAttachmentHydrationError(
+                            f"destination {filename} conflicts with admitted parent bytes"
+                        )
+                hydrated.append((task_id, filename, digest))
+        except Exception:
+            for filename in created:
+                try:
+                    os.unlink(filename, dir_fd=workspace_fd)
+                except FileNotFoundError:
+                    pass
+            if created:
+                os.fsync(workspace_fd)
+            raise
+    finally:
+        os.close(workspace_fd)
+
+    event_payload = {
+        "workspace": str(workspace_path),
+        "artifacts": [
+            {
+                "filename": filename,
+                "destination": str(workspace_path / filename),
+                "sha256": package["sha256"],
+                "origins": package["origins"],
+            }
+            for filename, package in sorted(planned.items())
+        ],
+    }
+    with write_txn(conn):
+        hydration_run_id = _current_run_id(conn, task_id)
+        replayed = False
+        for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? "
+            "AND kind='parent_attachments_hydrated' AND run_id IS ? ORDER BY id",
+            (task_id, hydration_run_id),
+        ).fetchall():
+            try:
+                if json.loads(row["payload"] or "{}") == event_payload:
+                    replayed = True
+                    break
+            except (TypeError, json.JSONDecodeError):
+                continue
+        if not replayed:
+            _append_event(
+                conn,
+                task_id,
+                "parent_attachments_hydrated",
+                event_payload,
+                run_id=hydration_run_id,
+            )
+    return hydrated
+
+
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
@@ -10260,6 +11135,29 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if claimed.workspace_kind == "scratch":
+            try:
+                hydrate_parent_attachments(
+                    conn,
+                    claimed.id,
+                    Path(workspace),
+                    board=board,
+                )
+            except Exception as exc:
+                blocked = _record_task_failure(
+                    conn,
+                    claimed.id,
+                    f"parent_artifact_hydration: {type(exc).__name__}: {exc}",
+                    outcome="spawn_failed",
+                    failure_limit=failure_limit,
+                    force_trip=True,
+                    release_claim=True,
+                    end_run=True,
+                    event_payload_extra={"phase": "parent_artifact_hydration"},
+                )
+                if blocked:
+                    result.auto_blocked.append(claimed.id)
+                continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -11097,6 +11995,45 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             ctype = f", {att.content_type}" if att.content_type else ""
             lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
         lines.append("")
+
+    context_run_id = _current_run_id(conn, task_id)
+    hydration_row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'parent_attachments_hydrated' AND run_id IS ? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, context_run_id),
+    ).fetchone()
+    if hydration_row is not None:
+        try:
+            hydration_payload = json.loads(hydration_row["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            hydration_payload = {}
+        hydrated_artifacts = hydration_payload.get("artifacts")
+        if isinstance(hydrated_artifacts, list) and hydrated_artifacts:
+            lines.append("## Hydrated parent artifacts")
+            lines.append(
+                "Verified outputs from completed direct parents were copied into "
+                "this isolated workspace before worker start:"
+            )
+            for artifact in hydrated_artifacts:
+                if not isinstance(artifact, dict):
+                    continue
+                destination = str(artifact.get("destination") or "")
+                digest = str(artifact.get("sha256") or "")
+                origins = artifact.get("origins") or []
+                parent_ids = sorted(
+                    {
+                        str(origin.get("parent_task_id"))
+                        for origin in origins
+                        if isinstance(origin, dict) and origin.get("parent_task_id")
+                    }
+                )
+                if destination and digest:
+                    parent_text = ", ".join(parent_ids) or "unknown parent"
+                    lines.append(
+                        f"- `{destination}` — SHA-256 `{digest}` — source: {parent_text}"
+                    )
+            lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the
     # history. Skip the currently-active run (that's this worker).

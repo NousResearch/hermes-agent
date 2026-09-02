@@ -21183,7 +21183,17 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     if not goal_text:
         return
 
-    max_turns = task.goal_max_turns or _DEF_TURNS
+    # Charter §5 (2026-09-03): a goal card without its own goal_max_turns takes
+    # ``goals.max_turns`` from config (8 on this fleet), not the engine's 20 —
+    # the /goal slash path already honoured the config key; the kanban path did not.
+    max_turns = task.goal_max_turns
+    if not max_turns:
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            max_turns = int(((_load_cfg() or {}).get("goals") or {}).get("max_turns") or 0)
+        except Exception:
+            max_turns = 0
+    max_turns = max_turns or _DEF_TURNS
 
     def _run_turn(prompt: str) -> str:
         result = cli.agent.run_conversation(

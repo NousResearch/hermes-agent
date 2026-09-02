@@ -600,24 +600,34 @@ def test_tool_create_inherits_config_default(worker_env, monkeypatch):
 
 
 def test_tool_create_explicit_max_cost_wins(worker_env, monkeypatch):
-    """An explicit max_cost in the tool args always beats the config default."""
+    """An explicit max_cost in the tool args beats the config default — but the
+    WeRoll cost policy (2026-09-02) clamps every new card to
+    ``kanban.max_cost_ceiling``: a card needing more is split, never raised.
+    """
     import hermes_cli.config as cfg
 
     monkeypatch.setattr(
-        cfg, "load_config", lambda: {"kanban": {"default_max_cost": 0.60}}
+        cfg, "load_config",
+        lambda: {"kanban": {"default_max_cost": 0.60, "max_cost_ceiling": 1.0}},
     )
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "explicit cap", "assignee": "peer",
-        "parents": [worker_env], "max_cost": 2.5,
+        "parents": [worker_env], "max_cost": 0.85,
     })
     d = json.loads(out)
     assert d["ok"] is True
+    out2 = kt._handle_create({
+        "title": "over the ceiling", "assignee": "peer",
+        "parents": [worker_env], "max_cost": 2.5,
+    })
+    d2 = json.loads(out2)
+    assert d2["ok"] is True
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        child = kb.get_task(conn, d["task_id"])
-        assert child.max_cost == 2.5
+        assert kb.get_task(conn, d["task_id"]).max_cost == 0.85   # explicit beats default
+        assert kb.get_task(conn, d2["task_id"]).max_cost == 1.0   # clamped to the ceiling
     finally:
         conn.close()
 

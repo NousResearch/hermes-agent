@@ -41,11 +41,12 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
+  $cronSessions,
   $gatewayState,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   knownSessionOwner,
-  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -57,8 +58,7 @@ import {
   closeSessionTile,
   patchSessionTile,
   type SessionTile,
-  sessionTileDelegate,
-  sessionTileOwnerRoute
+  sessionTileDelegate
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -168,12 +168,24 @@ function TileChat({
   // row/hint rung is the only thing keeping this tile's model + composer RPCs
   // on the backend that owns the session instead of the ambient one.
   //
-  // Resolved on every render (cheap id lookups) so it cannot go stale against
-  // the tile store, the recents/cron/messaging rows, or the hint map. Only the
-  // resulting IDENTITY is memoised, on primitives, because knownSessionOwner
-  // mints a fresh object per call and requestTileGateway below is keyed on it.
-  const resolvedOwner =
-    sessionTileOwnerRoute(storedSessionId) ?? knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+  // Recomputed when the tile store or any owner-bearing session list changes,
+  // NOT on every render: this component re-renders per streamed token, and the
+  // lookup spreads three arrays before scanning them. Only the resulting
+  // IDENTITY is memoised downstream, on primitives, because knownSessionOwner
+  // mints a fresh object per call and requestTileGateway is keyed on it.
+  const tiles = useStore($sessionTiles)
+  const sessionRows = useStore($sessions)
+  const cronRows = useStore($cronSessions)
+  const messagingRows = useStore($messagingSessions)
+
+  const resolvedOwner = useMemo(() => {
+    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+
+    return (
+      tiles.find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute ??
+      knownSessionOwner(rows, storedSessionId)
+    )
+  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
 
   const ownerConnectionId = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.connectionId : ''
   const ownerProfile = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.profile : ''

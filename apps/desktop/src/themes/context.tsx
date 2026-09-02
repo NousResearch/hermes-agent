@@ -68,8 +68,32 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // it *is* the legacy global slot, so it reads/writes the global directly. Named
 // profiles get their own entry and fall back to that global until assigned, so
 // unassigned profiles and pre-per-profile installs stay on the global value.
+// Named assigns also mirror into the global slot so a Bot Mode gateway hop onto
+// a never-themed bot inherits the look the user just picked (#101216).
+const promoteUnanimousLegacy = (record: string, legacy: string): void => {
+  if (storedString(legacy) != null) {
+    return
+  }
+
+  const values = Object.values(storedStringRecord(record)).filter(Boolean)
+
+  if (values.length === 0) {
+    return
+  }
+
+  const unique = [...new Set(values)]
+
+  if (unique.length === 1) {
+    persistString(legacy, unique[0])
+  }
+}
+
 const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
-  const stored = (profile: string): string | null => storedStringRecord(record)[profile] ?? storedString(legacy)
+  const stored = (profile: string): string | null => {
+    promoteUnanimousLegacy(record, legacy)
+
+    return storedStringRecord(record)[profile] ?? storedString(legacy)
+  }
 
   return {
     /** The pick as written, un-normalized. */
@@ -80,6 +104,7 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
         persistString(legacy, value)
       } else {
         persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+        persistString(legacy, value)
       }
     }
   }

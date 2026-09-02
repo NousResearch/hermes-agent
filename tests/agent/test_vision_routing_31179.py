@@ -179,6 +179,16 @@ model:
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        text_only_caps = type("Caps", (), {"supports_vision": False})()
+        capability_lookups = []
+
+        def get_text_only_capabilities(*args, **kwargs):
+            capability_lookups.append((args, kwargs))
+            return text_only_caps
+
+        monkeypatch.setattr(
+            "agent.models_dev.get_model_capabilities", get_text_only_capabilities
+        )
 
         from agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
@@ -187,6 +197,7 @@ model:
             "no vision-capable aggregator is available, not return a client "
             "that will fail at API time"
         )
+        assert capability_lookups, "vision routing must consult model capabilities"
 
     def test_vision_capable_main_used(self, isolated_home, monkeypatch):
         """Vision-capable main provider should be returned by auto chain."""

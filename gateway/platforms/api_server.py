@@ -5097,6 +5097,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
+        await response.write_eof()
         return response
 
     async def _drain_session_stream_task_on_disconnect(
@@ -5699,6 +5700,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
             # stops making LLM API calls at the next loop iteration, then
@@ -5731,6 +5733,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
                 await response.write(_sse_frame(error_chunk))
                 await response.write(b"data: [DONE]\n\n")
+                await response.write_eof()
             except Exception:
                 pass
 
@@ -6341,6 +6344,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
+        await response.write_eof()
         return response
 
     @_admit_api_agent_request

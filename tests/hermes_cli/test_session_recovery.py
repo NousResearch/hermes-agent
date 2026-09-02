@@ -935,3 +935,53 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     assert result["range_queries"] < 200
     # Only the rows on the damaged leaf are lost; everything behind it is recovered.
     assert result["copied_rows"] >= 180 - 60
+
+def test_recovery_quarantines_malformed_session_model_config(tmp_path: Path) -> None:
+    """A physically sound output must also survive real session-list JSON reads."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    conn = sqlite3.connect(str(source))
+    try:
+        conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            ('{"broken"', "recovery-session-1"),
+        )
+        conn.commit()
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        conn.close()
+    source_hash = _sha256(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert _sha256(source) == source_hash
+    assert '{"broken"' not in json.dumps(report)
+    assert report["verified"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["semantic_cleanup"] == {
+        "malformed_json_values_quarantined": 1,
+        "columns": {"sessions.model_config": 1},
+    }
+    assert any(
+        "quarantined 1 malformed JSON value" in warning
+        for warning in report["verification"]["warnings"]
+    )
+
+    recovered = SessionDB(db_path=output)
+    try:
+        rows = recovered.list_sessions_rich(limit=10)
+        row = recovered.get_session("recovery-session-1")
+    finally:
+        recovered.close()
+
+    assert {item["id"] for item in rows} == {
+        "recovery-session-0",
+        "recovery-session-1",
+        "recovery-session-2",
+    }
+    assert row is not None
+    assert row["model_config"] == "{}"

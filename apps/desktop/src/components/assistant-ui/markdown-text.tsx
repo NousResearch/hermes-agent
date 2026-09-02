@@ -16,6 +16,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { remendPreservingTrailingDirective } from '@/lib/directive-remend-guard'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -99,9 +100,15 @@ function useCodePlugin(): CodePlugin | null {
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
 // identity is stable across renders.
+//
+// A COMPLETE trailing transcript directive is held out of the repair: its
+// attribute values are natural language, so an unpaired `*` / `_` / backtick
+// inside a prompt made the repair append a closer after the directive's `}`
+// — which breaks the whole-paragraph match in parseTranscriptDirective and
+// degrades a claimed directive (the Follow-up panel) to raw text.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return remendPreservingTrailingDirective(preprocessMarkdown(text), tailBoundedRemend)
   } catch {
     return text
   }

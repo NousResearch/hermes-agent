@@ -2700,6 +2700,33 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
         return cfg
 
 
+async def _discover_gateway_mcp_tools(config: object) -> None:
+    """Run startup MCP discovery for every profile this gateway serves.
+
+    ``discover_mcp_tools`` reads ``mcp_servers`` from ``get_hermes_home()``'s
+    config, so an unscoped call only ever connects the launch profile's
+    servers (#95518). Under multiplex, run it once per served profile inside
+    that profile's ``_profile_runtime_scope`` and carry the scope into the
+    executor thread with ``copy_context()`` (the same shape as
+    ``_run_in_executor_with_context``). Single-profile gateways keep the one
+    unscoped call.
+    """
+    from tools.mcp_tool import discover_mcp_tools
+
+    loop = asyncio.get_running_loop()
+    if not getattr(config, "multiplex_profiles", False):
+        await loop.run_in_executor(None, discover_mcp_tools)
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        try:
+            with _profile_runtime_scope(Path(profile_home)):
+                await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+        except Exception:
+            logger.warning(
+                "MCP tool discovery failed for profile '%s'", profile_name, exc_info=True,
+            )
+
+
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
     """Return True when a token-authenticated platform has a usable bot credential.
 
@@ -3089,6 +3116,7 @@ from gateway.session import (
     SessionSource,
     SessionContext,
     TranscriptReadError,
+    _session_key_namespace,
     build_session_context,
     build_session_context_prompt,
     build_channel_continuity_note,
@@ -26184,25 +26212,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Split out from ``_handle_reload_mcp_command`` so the confirmation
         wrapper can invoke the same path whether the user confirmed via
         button, text reply, or has the confirm gate disabled.
+
+        Under multiplex the reload runs inside the requesting profile's
+        runtime scope (entered here when the caller — e.g. a button-confirm
+        callback — did not), and only that profile's servers are torn down
+        and rediscovered (#95518).
         """
-        loop = asyncio.get_running_loop()
+        multiplex = bool(getattr(self.config, "multiplex_profiles", False))
+        if multiplex and not get_hermes_home_override():
+            profile_home = self._resolve_profile_home_for_source(event.source)
+            with _profile_runtime_scope(Path(profile_home)):
+                return await self._execute_mcp_reload(event)
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import _server_scope_keys
+            from tools.registry import registry
+
+            reload_scope = registry.current_scope_key() if multiplex else None
+
+            def _scoped_server_names() -> set:
+                with _lock:
+                    return {
+                        name for name in _servers
+                        if reload_scope is None or _server_scope_keys.get(name) == reload_scope
+                    }
 
             # Capture old server names before shutdown
-            with _lock:
-                old_servers = set(_servers.keys())
+            old_servers = _scoped_server_names()
 
             # Read new config before shutting down, so we know what will be added/removed
             # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
+            await self._run_in_executor_with_context(
+                lambda: shutdown_mcp_servers(scope=reload_scope)
+            )
 
             # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             # Compute what changed
-            with _lock:
-                connected_servers = set(_servers.keys())
+            connected_servers = _scoped_server_names()
+            if reload_scope is not None:
+                from tools.mcp_tool import _mcp_tool_server_names
+
+                with _lock:
+                    new_tools = [
+                        n for n in new_tools
+                        if _mcp_tool_server_names.get(n) in connected_servers
+                    ]
 
             added = connected_servers - old_servers
             removed = old_servers - connected_servers
@@ -26231,8 +26287,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cache = getattr(self, "_agent_cache", None)
                 _cache_lock = getattr(self, "_agent_cache_lock", None)
                 if _cache_lock is not None and _cache:
+                    # Multiplex: only this profile's sessions. Rebuilding
+                    # another profile's agent inside this scope would hand it
+                    # this profile's tool registry.
+                    _ns_prefix = (
+                        _session_key_namespace(event.source.profile) + ":"
+                        if multiplex else None
+                    )
                     with _cache_lock:
                         for _sess_key, _entry in list(_cache.items()):
+                            if _ns_prefix and not str(_sess_key).startswith(_ns_prefix):
+                                continue
                             try:
                                 _agent = _entry[0] if isinstance(_entry, tuple) else _entry
                             except Exception:
@@ -34034,9 +34099,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # heartbeats (Discord shard, Telegram polling) until it returned.
     # See #16856.
     try:
-        from tools.mcp_tool import discover_mcp_tools
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        await _discover_gateway_mcp_tools(runner.config)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

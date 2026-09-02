@@ -89,6 +89,7 @@ class FakeExecutor:
         target_commit,
         feedback,
         stage_task_id,
+        tester_report=None,
     ):
         expected_role, outcome = self.script.pop(0)
         assert role == expected_role

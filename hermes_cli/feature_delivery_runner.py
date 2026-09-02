@@ -73,11 +73,22 @@ class StageExecutor(Protocol):
         target_commit: str,
         feedback: tuple[str, ...],
         stage_task_id: str,
+        tester_report: TesterReport | None = None,
     ) -> object: ...
 
 
 class DeliveryRunnerError(RuntimeError):
     pass
+
+
+class StageExecutionError(DeliveryRunnerError):
+    """Infrastructure failure reported by a concrete stage executor."""
+
+    def __init__(self, code: str, message: str):
+        if code not in BLOCKED_CODES:
+            raise ValueError(f"unsupported stage execution error code: {code}")
+        super().__init__(message)
+        self.code = code
 
 
 class ReportIntegrityError(DeliveryRunnerError):
@@ -508,7 +519,15 @@ class FeatureDeliveryRunner:
                 return
             before = self._git(workspace, "status", "--porcelain", "--untracked-files=no")
             stored = self._execute_stage(
-                conn, root, stage, contract, "acceptance", target, workspace, ()
+                conn,
+                root,
+                stage,
+                contract,
+                "acceptance",
+                target,
+                workspace,
+                (),
+                tester_report=self._tester_report_for_commit(snapshot, target),
             )
             after = self._git(workspace, "status", "--porcelain", "--untracked-files=no")
             if before != after or after:
@@ -615,6 +634,7 @@ class FeatureDeliveryRunner:
         target_commit: str,
         workspace: Path,
         feedback: tuple[str, ...],
+        tester_report: TesterReport | None = None,
     ) -> StoredStageReport | None:
         if self.executor is None:
             self._block(
@@ -637,6 +657,7 @@ class FeatureDeliveryRunner:
                 target_commit=target_commit,
                 feedback=feedback,
                 stage_task_id=stage.id,
+                tester_report=tester_report,
             )
             report = self._coerce_report(role, raw)
             if report.task_id != contract.task_id:
@@ -644,11 +665,26 @@ class FeatureDeliveryRunner:
             return self._record_report(conn, root, stage, run_id, role, target_commit, report)
         except (KeyboardInterrupt, SystemExit):
             raise
+        except StageExecutionError as exc:
+            self._fail_run(conn, stage, run_id, str(exc))
+            self._block(conn, root, exc.code, str(exc))
+            return None
         except Exception as exc:
             self._fail_run(conn, stage, run_id, str(exc))
             code = "invalid_report" if isinstance(exc, (ValidationError, ValueError)) else "stage_execution_failed"
             self._block(conn, root, code, str(exc))
             return None
+
+    @staticmethod
+    def _tester_report_for_commit(
+        snapshot: DeliverySnapshot,
+        target_commit: str,
+    ) -> TesterReport | None:
+        for stored in reversed(snapshot.reports):
+            report = stored.report
+            if isinstance(report, TesterReport) and report.tested_commit == target_commit:
+                return report
+        return None
 
     def _ensure_stage(
         self,

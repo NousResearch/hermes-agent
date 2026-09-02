@@ -25,6 +25,12 @@ def build_delivery_parser(subparsers, *, cmd_delivery) -> None:
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("task_id", help="Feature Delivery root task id")
+        if name in {"run", "resume"}:
+            command.add_argument(
+                "--executor",
+                choices=("profiles",),
+                help="Use the fixed developer/tester/acceptance Hermes profiles",
+            )
     parser.set_defaults(func=cmd_delivery)
 
 
@@ -32,7 +38,12 @@ def delivery_command(args, *, runner: "FeatureDeliveryRunner | None" = None) -> 
     if runner is None:
         from hermes_cli.feature_delivery_runner import FeatureDeliveryRunner
 
-        runner = FeatureDeliveryRunner()
+        executor = None
+        if getattr(args, "executor", None) == "profiles":
+            from hermes_cli.profile_stage_executor import ProfileStageExecutor
+
+            executor = ProfileStageExecutor()
+        runner = FeatureDeliveryRunner(executor=executor)
     if args.delivery_command == "create":
         print(runner.create(args.contract))
         return 0

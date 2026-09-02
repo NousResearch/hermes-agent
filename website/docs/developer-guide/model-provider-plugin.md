@@ -18,7 +18,8 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in any directory; no restart required for subsequent sessions
-3. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
+3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
+4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
 **User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
 
@@ -141,7 +142,30 @@ class AcmeProfile(ProviderProfile):
         Bearer auth. Override for: custom auth (Anthropic), no REST endpoint
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
+    def create_client(self, **client_kwargs):
+        """Supply your own client object instead of the shared openai.OpenAI.
+        Default returns None (= use the standard client). Override when the
+        wire protocol is not OpenAI-over-HTTP — e.g. an ACP subprocess shim.
+        client_kwargs is what the core would have passed to openai.OpenAI
+        (api_key, base_url, command, args, timeouts, headers…); accept **kwargs
+        and pick what you need. A raise is logged and falls back to the
+        standard client."""
+        return None
 ```
+
+## External-process (ACP) providers
+
+An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external_process"`, describe how to launch the binary, and supply the client with `create_client`. No core edits are needed — `hermes -m <name>`, `/model`, credential resolution, runtime resolution and the auxiliary client (compression, vision) all key on `auth_type`, not on the provider name. `plugins/model-providers/copilot-acp/` is the in-tree example.
+
+| Field | Purpose |
+|---|---|
+| `process_command` | Default binary, e.g. `"copilot"` |
+| `process_args` | Default argv tail, e.g. `("--acp", "--stdio")` |
+| `process_command_env_vars` | Env vars that override the binary, checked in order |
+| `process_args_env_var` | Env var that overrides argv (shlex-split) |
+
+The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
 ## Hook reference examples
 
@@ -198,7 +222,7 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
-| `external_process` | Auth handled by a subprocess the agent spawns | `copilot-acp` plugin only |
+| `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
 `auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
 

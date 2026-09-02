@@ -178,7 +178,8 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
-    const sameShape = prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
+    const sameShape =
+      prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
     if (prev && sameShape && closeInTime && uniqueStep) {

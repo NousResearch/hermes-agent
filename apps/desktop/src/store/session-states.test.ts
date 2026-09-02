@@ -335,9 +335,7 @@ describe('SessionTile workspace scope', () => {
     // The tile was opened when seg-2 was the tip; the conversation has since
     // rotated to seg-3 (projected row carries the full chain). Opening the
     // new tip must front that tile, not open the same chat twice.
-    setSessions([
-      { _lineage_ids: ['seg-1', 'seg-2', 'seg-3'], _lineage_root_id: 'seg-1', id: 'seg-3' } as never
-    ])
+    setSessions([{ _lineage_ids: ['seg-1', 'seg-2', 'seg-3'], _lineage_root_id: 'seg-1', id: 'seg-3' } as never])
     openSessionTile('seg-2')
 
     expect(focusOpenSession('seg-3')).toBe('tile')

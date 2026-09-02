@@ -373,7 +373,12 @@ describe('active transcript refresh', () => {
     await reconcileTileTranscriptsForTest({
       tiles: [
         {
-          ownerRoute: { connectionId: 'connection-a', mode: 'remote', profile: 'shared-profile', targetProfile: 'target-a' },
+          ownerRoute: {
+            connectionId: 'connection-a',
+            mode: 'remote',
+            profile: 'shared-profile',
+            targetProfile: 'target-a'
+          },
           runtimeId: 'runtime-a',
           storedSessionId: 'stored-a'
         },
@@ -389,7 +394,10 @@ describe('active transcript refresh', () => {
       updateSessionState
     })
 
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-a', { connectionId: 'connection-a', profile: 'target-a' })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-a', {
+      connectionId: 'connection-a',
+      profile: 'target-a'
+    })
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-b', {
       connectionId: 'connection-b',
       profile: 'shared-profile'

@@ -559,7 +559,9 @@ function tileCaption(storedSessionId: string): string {
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
-  const title = stored ? sessionTitle(stored) : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+  const title = stored
+    ? sessionTitle(stored)
+    : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title: workspaceOwnerTitle(title, tile) }
 }

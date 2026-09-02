@@ -310,9 +310,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>
-          {b.bot.openBotChat}
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {

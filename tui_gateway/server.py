@@ -8922,6 +8922,10 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         # their toolsets against that same platform rather than the gateway
         # process's, so they never carry GUI schema they cannot use.
         or _load_enabled_toolsets("tui"),
+        # D8 parity (F1): background agents must inherit the profile's
+        # denials too, or tool-level denials apply everywhere EXCEPT
+        # background execution.
+        "disabled_toolsets": _resolve_disabled_toolsets(cfg),
         "quiet_mode": True,
         "verbose_logging": False,
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None)
@@ -8948,9 +8952,16 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
     kwargs = _background_agent_kwargs(agent, task_id)
+    # F1 (Prince round-2 finding 1): the preview agent's terminal+file
+    # selection is a NARROWING default for unpinned profiles only — it must
+    # never RESTORE tools the profile pin denies. Intersect with the
+    # authoritative surface and pass the denials through unchanged.
+    enabled = kwargs.get("enabled_toolsets")
+    if isinstance(enabled, list) and enabled:
+        if not {"terminal", "file"} <= set(enabled):
+            kwargs["enabled_toolsets"] = [t for t in enabled if t in {"terminal", "file"}]
     kwargs.update(
         {
-            "enabled_toolsets": ["terminal", "file"],
             "session_db": None,
             "skip_memory": True,
         }

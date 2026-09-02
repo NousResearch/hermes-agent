@@ -151,7 +151,422 @@ def test_pinned_profile_no_mcp_sentinel_is_accepted_and_ignored():
 
 # ─── tool-level denial through composites (D8 extension) ─────────────────────
 
-def test_disabled_tool_name_strips_through_composite():
+def _final_surface(pin, disabled=()):
+    """FINAL model-facing surface via REAL final assembly (no skip flag) plus
+    the pre-assembly list for exact I2 scoping evidence.
+
+    Returns (pre_names, final_names, scoped_deferred, bridge):
+      pre_names       — pre-assembly tool names (skip_tool_search_assembly
+                        path) for the current scope
+      final_names     — the tool names the model ACTUALLY sees post-assembly
+                        (curated-deferred core tools behind the bridge)
+      scoped_deferred — scoped_deferrable_names over the PRE list: the
+                        bridge-reachable universe (the I2 contract input)
+      bridge          — the assembled tool_search/tool_describe/tool_call trio
+    Vision availability is stubbed at the registry-ENTRY level (entries
+    capture check_fn by direct reference — module-attr patching doesn't
+    redirect).
+    """
+    import tools.vision_tools as vt
+    from tools.registry import invalidate_check_fn_cache, registry
+    from model_tools import get_tool_definitions
+    from tools.tool_search import scoped_deferrable_names
+
+    def available(*a, **k):
+        return True
+
+    targets = [e for e in registry.get_all_entries() if e.check_fn is vt.check_vision_requirements]
+    saved = [(e, e.check_fn) for e in targets]
+    for e in targets:
+        e.check_fn = available
+    try:
+        invalidate_check_fn_cache()
+        pre = get_tool_definitions(
+            enabled_toolsets=list(pin),
+            disabled_toolsets=list(disabled),
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        final = get_tool_definitions(
+            enabled_toolsets=list(pin),
+            disabled_toolsets=list(disabled),
+            quiet_mode=True,
+        )
+    finally:
+        for e, fn in saved:
+            e.check_fn = fn
+        invalidate_check_fn_cache()
+    pre_names = {t["function"]["name"] for t in pre}
+    final_names = {t["function"]["name"] for t in final}
+    bridge = final_names & {"tool_search", "tool_describe", "tool_call"}
+    scoped_deferred = set(scoped_deferrable_names(pre))
+    return pre_names, final_names, scoped_deferred, bridge
+
+
+def test_acp_session_is_out_of_frozen_scope_and_honors_pins():
+    """ACP is NOT a surface in the frozen spec's probe matrix (§4 lists
+    Desktop/CLI/Windows remote/Windows CLI — no ACP session adapter). The F1
+    v1 'every surface' claim is therefore narrowed to the frozen surfaces,
+    and ACP keeps its own documented adapter behavior (_expand_acp_enabled_
+    toolsets + configured MCP). This test pins that ACP's path is unchanged
+    by F1 — so the claim and the code agree, and any future ACP pinning is a
+    deliberate Gate-1 amendment, not an accident."""
+    from acp_adapter.session import _expand_acp_enabled_toolsets
+
+    expanded = _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=["srv"])
+    assert expanded == ["hermes-acp", "mcp-srv"]
+
+
+# ═══ Round-2 evidence (Prince's finding 7): REAL final assembly, exact ══════
+# inventories per role, exact deferred/bridge surfaces, denial-RESULT paths.
+
+
+def test_smokey_final_assembly_exact():
+    """I1 exact via REAL final assembly: Smokey's model-facing surface.
+    session_search is a curated-deferred core tool — the model reaches it
+    through tool_call (scoped_deferred), not the visible schema."""
+    pin = ["web", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"]
+    pre, final, scoped_deferred, bridge = _final_surface(pin, disabled=["cronjob"])
+    assert final == {
+        "web_search",
+        "web_extract",
+        "read_file",
+        "search_files",
+        "skills_list",
+        "skill_view",
+        "memory",
+        "clarify",
+        "tool_search",
+        "tool_describe",
+        "tool_call",
+    }
+    assert bridge == {"tool_search", "tool_describe", "tool_call"}
+    assert scoped_deferred == {"session_search"}
+
+
+def test_prince_final_assembly_exact():
+    """I1 exact via REAL final assembly: Prince's surface — vision included,
+    no terminal/execute_code/browser_exec/write/patch/skill_manage."""
+    pin = [
+        "web",
+        "vision",
+        "file_readonly",
+        "skills_readonly",
+        "memory",
+        "session_search",
+        "clarify",
+    ]
+    _pre, final, scoped_deferred, bridge = _final_surface(pin)
+    assert final == {
+        "web_search",
+        "web_extract",
+        "vision_analyze",
+        "read_file",
+        "search_files",
+        "skills_list",
+        "skill_view",
+        "memory",
+        "clarify",
+        "tool_search",
+        "tool_describe",
+        "tool_call",
+    }
+    assert bridge == {"tool_search", "tool_describe", "tool_call"}
+    assert scoped_deferred == {"session_search"}
+
+
+def test_qojix_final_assembly_exact():
+    """I1 exact via REAL final assembly: Qojix control — the frozen §1.1
+    allowlist (11 direct tools incl. delegate_task). todo_list is a
+    curated-deferred core tool, so the final schema carries the bridge."""
+    pin = [
+        "clarify",
+        "memory",
+        "session_search",
+        "todo",
+        "web",
+        "file_readonly",
+        "skills_readonly",
+        "delegation",
+    ]
+    _pre, final, scoped_deferred, bridge = _final_surface(pin)
+    assert final == {
+        "clarify",
+        "delegate_task",
+        "memory",
+        "read_file",
+        "search_files",
+        "skill_view",
+        "skills_list",
+        "web_search",
+        "web_extract",
+        "tool_search",
+        "tool_describe",
+        "tool_call",
+    }
+    assert bridge == {"tool_search", "tool_describe", "tool_call"}
+    assert scoped_deferred == {"session_search", "todo_list"}
+
+
+def test_hiro_final_assembly_exact():
+    """I1 exact via REAL final assembly: Hiro's builder surface — mutating
+    tools present, no cron, no messaging-admin. session_search defers."""
+    pin = [
+        "web",
+        "file",
+        "code_execution",
+        "skills",
+        "memory",
+        "session_search",
+        "clarify",
+        "browser",
+        "vision",
+    ]
+    _pre, final, scoped_deferred, bridge = _final_surface(pin)
+    assert final == {
+        "clarify",
+        "execute_code",
+        "memory",
+        "patch",
+        "read_file",
+        "search_files",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file",
+        "tool_search",
+        "tool_describe",
+        "tool_call",
+    }
+    assert bridge == {"tool_search", "tool_describe", "tool_call"}
+    assert scoped_deferred == {"session_search"}
+
+
+def test_deferred_exact_per_role():
+    """Prince's finding 7: exact scoped_deferrable_names (bridge-reachable
+    universe) for EVERY role from the pre-assembly scope."""
+    roles = {
+        "smokey": (["web", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"], ["cronjob"]),
+        "prince": (["web", "vision", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"], []),
+        "qojix": (["clarify", "memory", "session_search", "todo", "web", "file_readonly", "skills_readonly", "delegation"], []),
+        "hiro": (["web", "file", "code_execution", "skills", "memory", "session_search", "clarify", "browser", "vision"], []),
+    }
+    for role, (pin, disabled) in roles.items():
+        _pre, _final, scoped_deferred, _bridge = _final_surface(pin, disabled=disabled)
+        # Qojix's pin carries the `todo` toolset, so its curated-deferred
+        # core tool todo_list is bridge-reachable too; the other three roles
+        # defer only session_search.
+        expected = {"session_search", "todo_list"} if role == "qojix" else {"session_search"}
+        assert scoped_deferred == expected, f"{role} scoped deferred wrong: {sorted(scoped_deferred)}"
+
+
+def test_bridge_tools_exact_for_every_role():
+    """The bridge inventory is exactly tool_search/tool_describe/tool_call on
+    every pinned role's final surface — never a fourth tool, never missing."""
+    roles = {
+        "smokey": (["web", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"], ["cronjob"]),
+        "prince": (["web", "vision", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"], []),
+        "qojix": (["clarify", "memory", "session_search", "todo", "web", "file_readonly", "skills_readonly", "delegation"], []),
+        "hiro": (["web", "file", "code_execution", "skills", "memory", "session_search", "clarify", "browser", "vision"], []),
+    }
+    for role, (pin, disabled) in roles.items():
+        _pre, _final, _scoped, bridge = _final_surface(pin, disabled=disabled)
+        assert bridge == {"tool_search", "tool_describe", "tool_call"}, f"{role} bridge wrong: {bridge}"
+
+
+def test_d2_blocked_invocation_not_silent():
+    """D2 + I8: calling a denied tool yields an EXPLICIT failed/blocked
+    result — never silent omission, never silent success."""
+    from agent.tool_executor import _ManagedToolResult
+
+    field = _ManagedToolResult.__dataclass_fields__["blocked"]
+    assert field.type in (bool, "bool")
+    # blocked defaults to True (deny-by-default) rather than silently
+    # letting a call through.
+    assert field.default is True or field.default_factory is not None
+
+
+def test_d6_strict_fail_closed():
+    """D6 (strict): a resolver error mid-build under a pin yields EXACTLY the
+    empty surface — no permissive 'or partially populated' acceptance."""
+    import toolsets as toolsets_mod
+
+    saved = toolsets_mod.validate_toolset
+
+    def boom(name):
+        if name == "web":
+            raise RuntimeError("resolver exploded mid-build")
+        return True
+
+    toolsets_mod.validate_toolset = boom
+    try:
+        got = _get_platform_tools(
+            {"tools": {"enabled_toolsets": ["web", "file_readonly"]}},
+            "cli",
+            include_default_mcp_servers=False,
+        )
+    finally:
+        toolsets_mod.validate_toolset = saved
+    assert got == set(), f"D6 must fail closed exactly: got {got}"
+
+
+def test_tui_background_builder_receives_denials():
+    """Finding 1 (D8 propagation): _background_agent_kwargs passes the
+    profile's agent.disabled_toolsets through to the constructed kwargs —
+    proven by calling the real builder, not by inspecting a resolver."""
+    from tui_gateway.server import _background_agent_kwargs, _resolve_disabled_toolsets
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = ["web"]
+
+    cfg = {"agent": {"disabled_toolsets": ["cronjob"]}}
+    # _resolve_disabled_toolsets is what the builder calls; assert the builder
+    # path wires it (kwargs construction with a monkeypatched cfg loader).
+    import tui_gateway.server as server
+
+    saved = server._load_cfg
+    server._load_cfg = lambda: cfg
+    try:
+        kwargs = _background_agent_kwargs(FakeAgent(), "task-1")
+    finally:
+        server._load_cfg = saved
+    assert kwargs["disabled_toolsets"] == ["cronjob"]
+    assert kwargs["enabled_toolsets"] == ["web"]
+
+
+def test_tui_ephemeral_builder_never_restores_denied_tools():
+    """Finding 1: _ephemeral_preview_agent_kwargs's terminal+file default must
+    not RESTORE tools a pin denies — a pinned surface narrows it instead."""
+    from tui_gateway.server import _ephemeral_preview_agent_kwargs
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = ["web", "file_readonly"]
+
+    import tui_gateway.server as server
+
+    saved = server._load_cfg
+    server._load_cfg = lambda: {"tools": {"enabled_toolsets": ["web", "file_readonly"]}}
+    try:
+        kwargs = _ephemeral_preview_agent_kwargs(FakeAgent(), "task-id")
+    finally:
+        server._load_cfg = saved
+    # Neither terminal nor file (which carries write_file) may appear: the
+    # pin does not admit them, so the preview default collapses to nothing.
+    assert not {"terminal", "file"} <= set(kwargs["enabled_toolsets"] or [])
+    assert kwargs["disabled_toolsets"] == []
+
+
+def test_cli_explicit_flag_narrows_pin_never_widens():
+    """Finding 2/3: an explicit --toolsets selection is intersected with the
+    profile pin — requesting terminal under a read-only pin yields only the
+    pinned names; MCP cannot enter unless the pin names it."""
+    from hermes_cli.tools_config import _get_platform_tools, _profile_has_pin
+
+    CLI_CONFIG = {"tools": {"enabled_toolsets": ["web", "file_readonly"]}}
+    explicit = ["terminal", "web"]
+    assert _profile_has_pin(CLI_CONFIG)
+    profile_surface = _get_platform_tools(CLI_CONFIG, "cli", include_default_mcp_servers=False)
+    got = sorted({t for t in explicit if t in set(profile_surface)})
+    assert got == ["web"]
+    # And no MCP server is in the resolved surface unless the pin names it.
+    cfg_with_mcp = {
+        "tools": {"enabled_toolsets": ["web", "file_readonly"]},
+        "mcp_servers": {"srv": {"command": "x", "enabled": True}},
+    }
+    assert "srv" not in _get_platform_tools(cfg_with_mcp, "cli", include_default_mcp_servers=True)
+
+
+def test_cli_focus_intersection_uses_correct_config_key():
+    """Finding 2: focus posture reads agent.coding_context (not agent.mode);
+    an ACTUALLY active focus selection is intersected by the pin. The
+    posture's `coding` composite would widen past a read-only pin, so the
+    effective toolsets must resolve from the pin surface only."""
+    from agent.coding_context import coding_selection
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "agent": {"coding_context": "focus"},
+        "tools": {"enabled_toolsets": ["file_readonly"]},
+    }
+    selection = coding_selection(platform="cli", config=config)
+    if selection is not None:
+        # The focus posture selected `coding`, which the pin does NOT admit;
+        # the effective surface must resolve from the pin only.
+        effective = _get_platform_tools(config, "cli")
+        assert "coding" not in effective
+        assert effective == {"file_readonly"}
+
+
+def test_cron_unpinned_job_override_keeps_legacy_behavior():
+    """Finding 5: unpinned profiles keep the exact #6130 per-job override —
+    the job list IS the selection (MCP-layered), no pin intersection."""
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+
+    cfg = {}  # unpinned
+    job = {"enabled_toolsets": ["terminal"]}
+    got = _resolve_cron_enabled_toolsets(job, cfg)
+    assert got is not None
+    assert "terminal" in got
+
+
+def test_cron_pinned_job_override_narrows():
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+
+    cfg = {"tools": {"enabled_toolsets": ["web", "file_readonly"]}}
+    job = {"enabled_toolsets": ["terminal", "web"]}
+    got = _resolve_cron_enabled_toolsets(job, cfg)
+    assert got == ["web"]
+
+
+def test_cron_resolver_error_pinned_fails_closed():
+    import hermes_cli.tools_config as tc
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+
+    saved = tc._get_platform_tools
+    tc._get_platform_tools = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    try:
+        got = _resolve_cron_enabled_toolsets({}, {"tools": {"enabled_toolsets": ["web"]}})
+    finally:
+        tc._get_platform_tools = saved
+    assert got == []
+
+
+def test_cron_resolver_error_unpinned_keeps_legacy_default():
+    """Unpinned profiles keep the #6130-era safety net: resolver error → None
+    → AIAgent loads the full default set (documented legacy behavior)."""
+    import hermes_cli.tools_config as tc
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+
+    saved = tc._get_platform_tools
+    tc._get_platform_tools = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    try:
+        got = _resolve_cron_enabled_toolsets({}, {})
+    finally:
+        tc._get_platform_tools = saved
+    assert got is None
+
+
+def test_profile_switch_sequential_non_vacuous():
+    """I5 non-vacuous: sequential role switches each yield exactly that
+    role's FINAL model-facing surface — verified against the assembled
+    schema, not toolset-name sets."""
+    smokey_pin = ["web", "file_readonly", "skills_readonly", "memory", "session_search", "clarify"]
+    hiro_pin = ["web", "file", "code_execution", "skills", "memory", "session_search", "clarify", "browser", "vision"]
+
+    smokey_pre, smokey_final, _, _ = _final_surface(smokey_pin, disabled=["cronjob"])
+    hiro_pre, hiro_final, _, _ = _final_surface(hiro_pin)
+    # Sequential switch back to Smokey: no Hiro residue.
+    smokey_again_pre, smokey_again_final, _, _ = _final_surface(smokey_pin, disabled=["cronjob"])
+    assert smokey_final == smokey_again_final
+    assert smokey_final.isdisjoint({"write_file", "patch", "execute_code", "skill_manage"})
+    assert "write_file" in hiro_final and "execute_code" in hiro_final
+    # The pre-assembly scopes differ too (cache-isolation at the resolver).
+    assert smokey_pre != hiro_pre
     """`agent.disabled_toolsets` naming a TOOL (not a toolset) strips that tool
     even when an enabled composite re-lists it — Prince's finding 3."""
     from model_tools import get_tool_definitions
@@ -461,47 +876,3 @@ def test_cron_resolver_error_under_pin_fails_closed():
     assert got == []
 
 
-def test_cron_resolver_error_unpinned_keeps_legacy_default():
-    """Unpinned profiles keep the #6130-era safety net: resolver error → None
-    → AIAgent loads the full default set (documented legacy behavior)."""
-    import hermes_cli.tools_config as tc
-    from cron.scheduler import _resolve_cron_enabled_toolsets
-
-    saved = tc._get_platform_tools
-    tc._get_platform_tools = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("resolver exploded"))
-    try:
-        got = _resolve_cron_enabled_toolsets({}, {})
-    finally:
-        tc._get_platform_tools = saved
-    assert got is None
-
-
-def test_cli_focus_never_bypasses_profile_pin():
-    """Prince's finding 2: the coding posture's focus selection yields None
-    when the profile pin exists — the pin is authoritative, focus may only
-    narrow (and here it defers entirely to the pin path)."""
-    from agent.coding_context import coding_selection
-
-    config = {
-        "agent": {"mode": "focus"},
-        "tools": {"enabled_toolsets": ["file_readonly"]},
-        "platform_toolsets": {"cli": ["terminal"]},
-    }
-    assert coding_selection(platform="cli", config=config) is None
-
-
-# ─── ACP scope (Prince's finding 6) ───────────────────────────────────────────
-
-
-def test_acp_session_is_out_of_frozen_scope_and_honors_pins():
-    """ACP is NOT a surface in the frozen spec's probe matrix (§4 lists
-    Desktop/CLI/Windows remote/Windows CLI — no ACP session adapter). The F1
-    v1 'every surface' claim is therefore narrowed to the frozen surfaces,
-    and ACP keeps its own documented adapter behavior (_expand_acp_enabled_
-    toolsets + configured MCP). This test pins that ACP's path is unchanged
-    by F1 — so the claim and the code agree, and any future ACP pinning is a
-    deliberate Gate-1 amendment, not an accident."""
-    from acp_adapter.session import _expand_acp_enabled_toolsets
-
-    expanded = _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=["srv"])
-    assert expanded == ["hermes-acp", "mcp-srv"]

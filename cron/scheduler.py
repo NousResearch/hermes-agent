@@ -619,13 +619,14 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
+    from hermes_cli.tools_config import _profile_has_pin
+
+    pinned = _profile_has_pin(cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         profile_surface = sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
-        from hermes_cli.tools_config import _profile_has_pin
-
-        if _profile_has_pin(cfg or {}):
+        if pinned:
             logger.error(
                 "Cron toolset resolution failed under a pinned profile; failing "
                 "closed with NO toolsets (profile pin is authoritative): %s",
@@ -639,12 +640,20 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
         )
         return None
     if per_job:
-        allowed = set(profile_surface)
-        narrowed = [
-            name for name in _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
-            if name in allowed
-        ]
-        return sorted(set(narrowed) & allowed) if narrowed else []
+        if pinned:
+            # Pinned profile: the job override may NARROW the pin only. MCP
+            # layering still applies inside _merge_mcp_into_per_job_toolsets
+            # for the names the job keeps, then the result is intersected
+            # with the authoritative surface.
+            allowed = set(profile_surface)
+            narrowed = [
+                name for name in _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+                if name in allowed
+            ]
+            return sorted(set(narrowed) & allowed) if narrowed else []
+        # Unpinned profile: exact legacy #6130 behavior — the per-job list is
+        # the selection (MCP-layered), no intersection with platform defaults.
+        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     return profile_surface
 
 

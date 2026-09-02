@@ -21988,6 +21988,18 @@ def main(
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
+    # F1 (Prince round-2 finding 2/3): explicit --toolsets and the focus
+    # posture may NARROW the profile pin, never widen it. Intersect whatever
+    # was selected with the profile's authoritative surface when a pin
+    # exists. Unpinned profiles keep the historical behavior exactly.
+    if toolsets_list:
+        from hermes_cli.tools_config import _get_platform_tools, _profile_has_pin
+
+        if _profile_has_pin(CLI_CONFIG):
+            profile_surface = _get_platform_tools(CLI_CONFIG, "cli")
+            allowed = set(profile_surface)
+            toolsets_list = sorted({t for t in toolsets_list if t in allowed})
+
     parsed_skills = _parse_skills_argument(skills)
 
     # Create CLI instance

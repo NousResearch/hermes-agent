@@ -1738,6 +1738,11 @@ def _dispatch_tick_lock(db_path: Path):
                 nb_lock = getattr(msvcrt, "LK_NBLCK")
                 locking(handle.fileno(), nb_lock, 1)
                 acquired = True
+            except ImportError:
+                # No locking primitive on this build: degrade to a no-op, per
+                # the contract in the docstring. See the POSIX branch below for
+                # why this is deliberately NOT the same answer as a failed lock.
+                acquired = True
             except (OSError, AttributeError):
                 acquired = False
         else:
@@ -1745,6 +1750,21 @@ def _dispatch_tick_lock(db_path: Path):
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except ImportError:
+                # A platform with no fcntl cannot enforce single-writer at all,
+                # so the docstring's contract is that it still dispatches. That
+                # is the OPPOSITE call from every other failure here, and the
+                # difference is permanence: a missing module never resolves, so
+                # failing closed would disable dispatch on this platform
+                # forever, whereas a busy or unopenable lock is re-evaluated
+                # next tick and costs one deferred interval.
+                #
+                # Caught separately rather than folded into the tuple below
+                # because ImportError is not an OSError (nor is it caught by
+                # the enclosing `except OSError`), so before this the
+                # documented degradation was unreachable and the tick raised
+                # instead (#89653).
                 acquired = True
             except (BlockingIOError, OSError):
                 acquired = False
@@ -1770,7 +1790,14 @@ def _dispatch_tick_lock(db_path: Path):
                         import fcntl
 
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (OSError, AttributeError):
+            # ImportError belongs here for the same reason it does on the
+            # acquire path: on a platform with no locking primitive `acquired`
+            # is now True by design, so this block runs and re-imports the
+            # module that was never there. Without it the degradation would
+            # only move the crash from acquire to release, which is why the
+            # regression test exits the context manager rather than asserting
+            # inside it (#89653).
+            except (AttributeError, ImportError, OSError):
                 pass
             finally:
                 handle.close()

@@ -12,6 +12,8 @@ empty ``DispatchResult`` with ``skipped_locked=True`` and does no DB writes.
 
 from __future__ import annotations
 
+import builtins
+
 from pathlib import Path
 
 import pytest
@@ -77,3 +79,98 @@ def test_lock_is_board_scoped(conn):
             assert held_b is True, "a lock on a different board must be independent"
 
 
+def _hide_module(monkeypatch, missing: str) -> None:
+    """Make ``import <missing>`` raise, as it does on a platform without it.
+
+    Patches ``builtins.__import__`` rather than poking ``sys.modules``: the
+    locking primitives are imported *inside* ``_dispatch_tick_lock``, so the
+    import statement runs on every call and a ``sys.modules[missing] = None``
+    would raise ``ImportError`` only on some Python versions. Intercepting the
+    import hook reproduces ``ModuleNotFoundError`` exactly, on every version.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == missing:
+            raise ModuleNotFoundError(f"No module named {missing!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_missing_locking_primitive_degrades_to_a_no_op(conn, monkeypatch):
+    """A platform with no fcntl/msvcrt must still dispatch (#89653).
+
+    Regression: the handler around the import caught ``(BlockingIOError,
+    OSError)`` and the enclosing block caught ``OSError``, but a missing module
+    raises ``ModuleNotFoundError`` -> ``ImportError`` -> ``Exception``, which is
+    neither. The documented degradation to a no-op was therefore unreachable and
+    the tick raised instead, so a platform that merely *cannot enforce*
+    single-writer could not dispatch at all.
+
+    The lock's own docstring makes this the intended contract: single-writer
+    enforcement is best-effort, and the orphan-dispatcher scenario it defends
+    against (#35240) is specific to POSIX service managers.
+    """
+    db_path = kb.kanban_db_path(board="default")
+    _hide_module(monkeypatch, "msvcrt" if kb._IS_WINDOWS else "fcntl")
+
+    with kb._dispatch_tick_lock(db_path) as held:
+        assert held is True, (
+            "a platform with no locking primitive cannot enforce single-writer, "
+            "so the guard must degrade to a no-op and let the tick proceed "
+            "rather than raising"
+        )
+
+
+def test_missing_locking_primitive_also_survives_release(conn, monkeypatch):
+    """The no-op must survive *exiting* the context manager, not just entering.
+
+    The release path re-imports the same module under a handler that also
+    excluded ``ImportError``, so fixing only the acquire path moves the crash
+    from ``__enter__`` to ``__exit__`` instead of removing it.
+
+    The test above does also exercise the exit (leaving its ``with`` block runs
+    the same ``finally``), but it surfaces a release crash as a teardown error
+    on a test named for the acquire contract. This one names the release path
+    directly and asserts after the block has closed, so the failure says which
+    half regressed.
+    """
+    db_path = kb.kanban_db_path(board="default")
+    _hide_module(monkeypatch, "msvcrt" if kb._IS_WINDOWS else "fcntl")
+
+    seen = None
+
+    with kb._dispatch_tick_lock(db_path) as held:
+        seen = held
+
+    assert seen is True, "the degraded tick must report that it may proceed"
+
+
+def test_missing_primitive_is_not_confused_with_a_busy_lock(conn, monkeypatch):
+    """The two failure modes resolve OPPOSITE ways, so pin them together.
+
+    A *busy* lock (another dispatcher owns it) must yield ``False`` - that is
+    the whole point of the guard. A *missing primitive* must yield ``True``.
+    Collapsing ImportError into the busy tuple would silently disable dispatch
+    forever on such a platform, which is the failure this pairing guards
+    against.
+    """
+    db_path = kb.kanban_db_path(board="default")
+
+    with kb._dispatch_tick_lock(db_path) as first:
+        assert first is True, "an uncontended lock must be acquired"
+
+        with kb._dispatch_tick_lock(db_path) as second:
+            assert second is False, (
+                "a lock already held by this process must NOT be reported as "
+                "acquired - a busy lock skips the tick"
+            )
+
+    _hide_module(monkeypatch, "msvcrt" if kb._IS_WINDOWS else "fcntl")
+
+    with kb._dispatch_tick_lock(db_path) as degraded:
+        assert degraded is True, (
+            "a missing primitive is permanent, so it must resolve the opposite "
+            "way from a busy lock"
+        )

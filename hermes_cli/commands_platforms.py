@@ -380,9 +380,12 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # canonical command tips past the cap, demote a rarer one-off lookup (version, whoami, diff, ...)
 # rather than a recurring interactive surface (context, loop, save, approvals). Keep TIGHT — the
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
+#   - prefix: rare display toggle (model/provider tag on the first reply); reached via
+#     /hermes prefix [on|off|status] on Slack. Added at the cap — a native slot would clamp
+#     a recurring command, breaking Telegram parity.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login", "prefix"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

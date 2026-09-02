@@ -118,11 +118,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
-        run_still_current: Optional[Callable[[], bool]] = None):
+        run_still_current: Optional[Callable[[], bool]] = None,
+        prefix: Optional[str] = None):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        # Opt-in response prefix (gateway/response_prefix.py).  Folded into the FIRST visible
+        # text of the turn exactly once — see ``_append_accumulated`` — so every preview edit,
+        # the final seal and the delivered-payload reconciliation carry it.  ``_prefix_applied``
+        # is turn-wide (never re-armed on a segment break: later segments are not the first
+        # message); ``_prefix_in_segment`` tracks whether the LIVE buffer currently starts with
+        # it, so an adopted authoritative final only gets it re-added while the prefixed
+        # segment is still open.
+        self._prefix = (prefix or "").strip()
+        self._prefix_applied = False
+        self._prefix_in_segment = False
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
         self._on_new_message = on_new_message
@@ -201,6 +212,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids: "set[str]" = set()
+        self._prefix_in_segment = False
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
@@ -290,6 +302,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        if getattr(self, "_prefix", "") and not getattr(self, "_prefix_applied", False) and not self._accumulated:
+            # First visible text of the turn: this runs AFTER think-block filtering, so a
+            # leading <think> never hides behind the tag.
+            from gateway.response_prefix import apply_prefix
+            text = apply_prefix(self._prefix, text)
+            self._prefix_applied = True
+            self._prefix_in_segment = True
         self._accumulated += text
         self._stream_ledger += text
 
@@ -333,12 +352,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         must not confirm delivery).  True: recorded payload (or an earlier segment /
         commentary) matches.  False: payload differs, or payload-less split.  None: nothing
         recorded on a legacy/ambiguous path (caller trusts flags)."""
-        target = self._display_payload(final_text)
+        target = self._without_prefix(self._display_payload(final_text))
         if not target:
             return None
         if self._delivered_final_text is not None:
             # A segment break / commentary may have delivered it under another record.
-            return (self._delivered_final_text.strip() == target
+            return (self._without_prefix(self._delivered_final_text.strip()) == target
                     or self.has_delivered_text(final_text))
         if self._turn_split_delivery:
             return False
@@ -359,10 +378,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
+        target = self._without_prefix(self._clean_for_display(text or "").strip())
         seen = (self._visible_prefix(), *self._delivered_commentary_texts,
                 *self._delivered_segment_texts)
-        return bool(target) and any(sent.strip() == target for sent in seen)
+        return bool(target) and any(self._without_prefix(sent.strip()) == target for sent in seen)
+
+    def _without_prefix(self, text: str) -> str:
+        """Drop the applied response prefix so delivered text reconciles against the
+        gateway's un-prefixed ``final_response`` (#71643 path)."""
+        # Tests build consumers via __new__ without __init__: default off.
+        if not getattr(self, "_prefix_applied", False) or not text:
+            return text
+        from gateway.response_prefix import strip_prefix
+        return strip_prefix(getattr(self, "_prefix", ""), text)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -676,6 +704,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not (self._accumulated or self._message_id or self._last_sent_text):
             return
         if not self._turn_split_delivery:
+            if getattr(self, "_prefix_in_segment", False):
+                # The prefixed first message is still the live buffer: keep the tag on the seal.
+                from gateway.response_prefix import apply_prefix
+                final_raw = apply_prefix(self._prefix, final_raw)
             final_payload = self._clean_for_display(final_raw)
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw

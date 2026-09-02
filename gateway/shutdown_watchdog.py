@@ -431,9 +431,16 @@ async def loop_heartbeat_forever(
                 logger.debug(
                     "stale loop-tick socket sweep failed", exc_info=True
                 )
-        tick_server = await asyncio.start_unix_server(
-            _tick_socket_handler, path=str(tick_socket_path)
-        )
+            tick_server = await asyncio.start_unix_server(
+                _tick_socket_handler, path=str(tick_socket_path)
+            )
+        else:
+            logger.debug(
+                "loop-tick witness intentionally not armed on non-POSIX "
+                "platform (os.name=%r): asyncio AF_UNIX support is POSIX-only; "
+                "heartbeat payload records loop_tick_socket=False",
+                os.name,
+            )
     except Exception:
         tick_server = None
         logger.warning(

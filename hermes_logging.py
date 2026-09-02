@@ -91,8 +91,20 @@ def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
-    "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
-    "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets", "charset_normalizer",
+    "openai",
+    "openai._base_client",
+    "httpx",
+    "httpx2",
+    "httpcore",
+    "asyncio",
+    "hpack",
+    "hpack.hpack",
+    "grpc",
+    "modal",
+    "urllib3",
+    "urllib3.connectionpool",
+    "websockets",
+    "charset_normalizer",
     "markdown_it",
 )
 
@@ -155,7 +167,29 @@ class _ComponentFilter(logging.Filter):
         return record.name.startswith(self._prefixes)
 
 
-# Logger name prefixes per component; used by _ComponentFilter and ``hermes logs --component``.
+class _RoutineTransportNoiseFilter(logging.Filter):
+    """Drop routine MCP transport chatter while preserving real failures."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "httpx2" and record.levelno <= logging.INFO:
+            return False
+
+        if record.name == "mcp.client.streamable_http":
+            message = record.getMessage()
+            if record.levelno <= logging.INFO and message.startswith(
+                "Received session ID:"
+            ):
+                return False
+            if record.levelno <= logging.WARNING and message.startswith(
+                "Session termination failed: 404"
+            ):
+                return False
+
+        return True
+
+
+# Logger name prefixes that belong to each component.
+# Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
     # ``plugins.platforms``: messaging adapters that migrated out of
     # ``gateway/platforms/`` into bundled plugins (#41112) are still gateway
@@ -270,6 +304,7 @@ def setup_verbose_logging() -> None:
     handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
+    handler.addFilter(_RoutineTransportNoiseFilter())
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
@@ -535,6 +570,7 @@ def _register_queued_handler(handler: logging.Handler) -> None:
         if _log_queue is None:
             _log_queue = queue.SimpleQueue()
             qh = _NonFormattingQueueHandler(_log_queue)
+            qh.addFilter(_RoutineTransportNoiseFilter())
             qh._hermes_queue = True  # type: ignore[attr-defined]
             # Always on the root logger so records from any logger reach the queue.
             logging.getLogger().addHandler(qh)

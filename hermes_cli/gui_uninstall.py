@@ -156,10 +156,9 @@ def packaged_gui_app_paths() -> "list[Path]":
             data_base / "applications" / "Hermes.desktop",
             data_base / "icons" / "hicolor" / "scalable" / "apps" / "hermes.png",
         ]
-        # Fixed-size hicolor dirs: the icon is copied at its native size
-        # (read from the PNG header), so sweep the standard ones plus the
-        # 1024x1024 dir the shipped asset lands in.
-        for size in ("256x256", "512x512", "1024x1024"):
+        # Fixed-size hicolor dirs the installer may have written (resized
+        # panel sizes plus leftover native-size copies from older builds).
+        for size in ("24x24", "32x32", "48x48", "256x256", "512x512", "1024x1024"):
             paths.append(data_base / "icons" / "hicolor" / size / "apps" / "hermes.png")
     return paths
 

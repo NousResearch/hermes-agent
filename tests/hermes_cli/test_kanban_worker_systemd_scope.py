@@ -3122,6 +3122,43 @@ def test_scope_stop_intents_are_connection_local_not_thread_local(
         kb.reset_scope_stop_service_for_tests()
 
 
+def test_committed_txn_flushes_stops_when_invariant_raises(conn, monkeypatch):
+    """Z: the outermost intent level is popped and flushed BEFORE the
+    post-commit file-length invariant check. An invariant exception used
+    to leave committed DB state with no queued stop (the check raised
+    first); the flush now runs first, so a committed transaction always
+    queues its stops."""
+    import sqlite3
+
+    def boom(_conn):
+        raise sqlite3.DatabaseError("torn-extend detected (test)")
+
+    tid = kb.create_task(conn, title="invariant probe", assignee="w")
+    monkeypatch.setattr(kb, "_check_file_length_invariant", boom)
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
+    kb.reset_scope_stop_service_for_tests()
+    unit = kb._kanban_worker_scope_unit("t_inv", 3)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET title='flushed anyway' WHERE id=?",
+                    (tid,),
+                )
+                assert not kb.request_worker_scope_stop(unit, conn=conn)
+                assert unit not in kb._scope_stop_pending
+        # The transaction COMMITTED (the raise came after COMMIT) and its
+        # stop reached the queue despite the invariant exception.
+        assert conn.execute(
+            "SELECT title FROM tasks WHERE id=?", (tid,),
+        ).fetchone()["title"] == "flushed anyway"
+        assert unit in kb._scope_stop_pending
+    finally:
+        kb.reset_scope_stop_service_for_tests()
+
+
 def test_queue_coalescing_never_reenables_skipping(monkeypatch):
     """AB: two queued requests for one unit coalesce into one entry and
     ``skip_if_registered`` composes with AND. A terminal request (False —

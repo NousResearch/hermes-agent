@@ -3303,11 +3303,16 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 pass
             raise
         intents = _pop_scope_stop_level(conn, commit=True)
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
-        # Only after a healthy COMMIT do deferred stops reach the queue.
-        _flush_deferred_scope_stops(intents)
+        # Post-commit file-length check: header page_count must match actual
+        # file pages. A discrepancy means a torn-extend — raise now rather
+        # than silently corrupt. The deferred-stop flush runs FIRST (pass 8,
+        # finding Z): COMMIT already made the mutations durable, so an
+        # invariant exception must not leave committed rows without their
+        # queued stop. The check still raises after the flush.
+        try:
+            _flush_deferred_scope_stops(intents)
+        finally:
+            _check_file_length_invariant(conn)
 
 
 # ---------------------------------------------------------------------------

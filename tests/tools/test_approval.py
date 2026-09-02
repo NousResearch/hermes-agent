@@ -323,6 +323,49 @@ class TestTeePattern:
             assert key is None
 
 
+class TestRedundantPathSeparators:
+    """Redundant `/` runs and `/./` segments must not slip the sensitive-path rules.
+
+    POSIX resolves `~//.hermes/config.yaml` to the same file as
+    `~/.hermes/config.yaml`, but the sensitive-path fragments anchor on a single
+    separator. Since ~/.hermes/config.yaml holds approvals.mode and the config
+    cache is mtime-keyed, an unflagged write there disables the gate mid-session.
+    """
+
+    def test_doubled_separator_still_flagged(self):
+        for command in (
+            "echo 'approvals: {mode: off}' > ~//.hermes/config.yaml",
+            "echo 'approvals: {mode: off}' > ~/.hermes//config.yaml",
+            "echo x > ~//.hermes/.env",
+            "echo k >> ~//.ssh/authorized_keys",
+            "echo x >> ~//.bashrc",
+            "cat f | tee ~//.ssh/authorized_keys",
+        ):
+            dangerous, key, _desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_dot_segment_still_flagged(self):
+        for command in (
+            "echo k >> ~/./.ssh/authorized_keys",
+            "echo k >> ~/././.ssh/authorized_keys",
+            "echo 'approvals: {mode: off}' > ~/./.hermes/config.yaml",
+        ):
+            dangerous, key, _desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_urls_and_arithmetic_not_false_flagged(self):
+        for command in (
+            "curl https://example.com//api/v1",
+            "git clone https://github.com/a/b.git",
+            "echo $((10 // 3))",
+            "ls ~/projects",
+        ):
+            dangerous, _key, _desc = detect_dangerous_command(command)
+            assert dangerous is False, command
+
+
 class TestHermesConfigWriteProtection:
     """Terminal-side pairing for the file_tools write_file/patch deny on
     ~/.hermes/config.yaml (#14639). config.yaml IS the security policy

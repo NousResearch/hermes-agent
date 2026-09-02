@@ -29,8 +29,10 @@ param(
     [int]$BotWriteStaleMinutes       = 120,
     [int]$ContainerRestartThreshold  = 3,
     [int]$AlertCooldownMinutes       = 60,
-    [string]$DashCoordPath = "C:\Users\jsboi\.hermes\dashboards\workspace-cluster-coordination.md",
-    [string]$DashGlobalPath = "C:\Users\jsboi\.hermes\dashboards\global.md"
+    # Fix roo-extensions #3379 : chemins canoniques RooSync (GDrive) — les anciens
+    # défauts pointaient vers un miroir local C:\Users\jsboi\.hermes\dashboards\.
+    [string]$DashCoordPath = "G:\Mon Drive\Synchronisation\RooSync\.shared-state\dashboards\workspace-cluster-coordination.md",
+    [string]$DashGlobalPath = "G:\Mon Drive\Synchronisation\RooSync\.shared-state\dashboards\global.md"
 )
 
 $ErrorActionPreference = "Continue"
@@ -42,7 +44,9 @@ if (-not (Test-Path $LogDir))   { New-Item -ItemType Directory -Path $LogDir -Fo
 if (-not (Test-Path $StatusDir)){ New-Item -ItemType Directory -Path $StatusDir -Force | Out-Null }
 
 function Log([string]$msg, [string]$lvl = "INFO") {
-    $ts = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+    # Fix roo-extensions #3379 : heure LOCALE + suffixe Z littéral = horodatage
+    # mensonger dans les logs. On formate l'heure UTC réelle.
+    $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $line = "[$ts] [$lvl] $msg"
     Write-Output $line
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
@@ -181,12 +185,25 @@ if (Test-Path $rstatePath) {
 }
 
 # 5. Watchdogs host (schtasks)
+# Fix roo-extensions #3379 : codes LastTaskResult qui ne sont PAS des échecs
+# (même liste mesurée que roo-extensions report-failed-scheduled-tasks.ps1) :
+#   267009 (0x41301)  SCHED_S_TASK_RUNNING — la tâche tourne à l'instant de la
+#                     requête. Le collector et les watchdogs tirent aux mêmes
+#                     minutes (:07/:37), donc le snapshot attrape la tâche en
+#                     cours à CHAQUE cycle (Hermes-Review-Watchdog = 267009
+#                     constant depuis 01/09 alors que son statefile avance).
+#   267011 (0x41303)  SCHED_S_TASK_HAS_NOT_RUN — enregistrée, jamais tirée.
+#   2147946720 (0x800710E0) instance refusée car déjà en cours (listener sain).
+# Lire ces codes comme ok:false = faux négatif permanent (le piège documenté
+# flotte-wide : "un sweep ignoré en une semaine est pire que pas de sweep").
+$BenignTaskResults = @(0, 267009, 267011, 2147946720)
+
 function Watch-Result([string]$Name) {
     $flt = '"' + $Name + '"'
     $line = & schtasks /query /tn $flt /fo list /v 2>&1 | Select-String -Pattern 'Dernier r[ée]sultat\s*:\s*(\S+)' | Select-Object -First 1
     if ($line -and $line.Matches.Groups[1].Value -match "^\d+$") {
         $v = [int]$line.Matches.Groups[1].Value
-        return @{ name = $Name; result = $v; ok = ($v -eq 0) } | ConvertTo-Json -Compress
+        return @{ name = $Name; result = $v; ok = ($v -in $BenignTaskResults) } | ConvertTo-Json -Compress
     }
     @{ name = $Name; result = $null; ok = $false; error = "schtasks failed" } | ConvertTo-Json -Compress
 }
@@ -199,12 +216,13 @@ $watchdogs_arr = @(
 $watchdogs_json = "[$($watchdogs_arr -join ',')]"
 
 # 6. Bus : probe G: côté host (le host win voit G: si GoogleDriveFS monté)
+# Fix roo-extensions #3379 : l'ancien probe `cmd /c "... & echo OK or echo BAD"`
+# était structurellement faux — cmd echo le TEXTE LITTÉRAL "OK or echo BAD",
+# qui contient à la fois "OK" et "BAD", donc la condition
+# (-match "OK" -and -notmatch "BAD") était TOUJOURS fausse. g_drive_ok=false
+# sur 144/144 snapshots, coupant les sections bus + cluster_tour.
 $g_ok = $false
-try {
-    $probe = & cmd /c "dir G:\ /b 1>nul 2>nul & echo OK or echo BAD" 2>&1
-    $probeTxt = ($probe -join "`n").Trim()
-    if ($probeTxt -match "OK" -and $probeTxt -notmatch "BAD") { $g_ok = $true }
-} catch {}
+try { $g_ok = Test-Path "G:\" } catch {}
 
 # 7. Latest bot write — extraction regex du dernier message signé (po-2026 ou ai-01) sur coord
 $latest_bot_json = "null"
@@ -234,14 +252,24 @@ $bus_json = @{
 } | ConvertTo-Json -Compress
 
 # 8. Cluster-tour T#N
+# Fix roo-extensions #3379 : l'ancien regex '## \[CLUSTER-HEALTH\] T#(\d+) —
+# (<ISO>)' ne collait JAMAIS au format réel des Tours mesuré sur global.md :
+#   "### [2026-09-02T00:18:36.018Z] po-2026|hermes-agent" (header de bloc)
+#   "[CLUSTER-HEALTH] T#72 — Hermes (po-2026), 02/09 00:20Z" (titre du Tour)
+# — pas de préfixe ##, date dd/MM HH:mmZ. On détecte par BLOC (même approche
+# que hermes-cluster-tour-watchdog.ps1) : dernier bloc "### [ts] machine|ws"
+# dont le corps porte un titre [CLUSTER-HEALTH] T#N ; le ts ISO exact vient du
+# header du bloc, pas du texte dd/MM.
 $tour_json = '{"known":false}'
 if ($g_ok -and (Test-Path $DashGlobalPath)) {
     try {
-        $lines = Get-Content $DashGlobalPath -Encoding UTF8 -ErrorAction Stop
-        $pat = '## \[CLUSTER-HEALTH\] T#(\d+) — (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z)'
+        $text = Get-Content $DashGlobalPath -Raw -Encoding UTF8 -ErrorAction Stop
+        $blockPattern = '(?m)^### \[([0-9T:\.\-]+Z)\][^\r\n]*\r?\n([\s\S]*?)(?=^### \[|\z)'
         $lastT = $null
-        foreach ($ln in $lines) {
-            if ($ln -match $pat) { $lastT = @{ t = [int]$matches[1]; ts = $matches[2] } }
+        foreach ($m in [regex]::Matches($text, $blockPattern)) {
+            if ($m.Groups[2].Value -match '(?m)^#{0,2}\s*\[CLUSTER-HEALTH\]\s+T#(\d+)') {
+                $lastT = @{ t = [int]$Matches[1]; ts = $m.Groups[1].Value }
+            }
         }
         if ($lastT) {
             $dt = [datetime]$lastT.ts
@@ -324,7 +352,10 @@ try {
 }
 
 # === Rotation hôte : garder 144 snapshots (72h × 30min) ===
-$rotation = Join-Path $StatusDir "host-status-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+# Fix roo-extensions #3379 : nom de rotation en UTC — l'ancien nom portait
+# l'heure LOCALE, lue comme UTC par le container (snapshots "du futur" de ~2h
+# en été CEST ; tout calcul d'âge fait depuis ces noms était faussé).
+$rotation = Join-Path $StatusDir ("host-status-{0}.json" -f (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))
 Copy-Item (Join-Path $StatusDir "host-status.json") $rotation -Force
 Get-ChildItem $StatusDir -Filter "host-status-*.json" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 144 | Remove-Item -Force
 
@@ -396,8 +427,10 @@ if ($status.bus.g_drive_ok -and $null -ne $status.bus.latest_bot_write -and $sta
     }
 }
 # Watchdogs Failed
+# Fix roo-extensions #3379 : codes bénins exclus — sinon alerte Telegram
+# "watchdog result=267009" en boucle (une par cooldown) sur une tâche saine.
 foreach ($w in $status.watchdogs) {
-    if ($null -ne $w.result -and $w.result -ne 0) {
+    if ($null -ne $w.result -and $w.result -notin $BenignTaskResults) {
         $k = "watchdog-$($w.name)-$($w.result)"
         if (Should-Alert $k) {
             Send-Tg "⚠️ [Hermes] watchdog $($w.name) result=$($w.result)"

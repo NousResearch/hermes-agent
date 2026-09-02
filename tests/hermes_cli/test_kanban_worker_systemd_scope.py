@@ -223,6 +223,29 @@ def killproof(unit):
     return os.path.exists(os.path.join(STATE, "killproof", unit))
 
 
+def slow_secs(unit, op):
+    # A wedged helper CLIENT (pass 9, AH): the systemctl invocation
+    # itself hangs this many seconds before doing anything — the exact
+    # window a blocking subprocess.run(timeout=15) could not cancel
+    # out of. Its pid is noted so tests can prove it was killed.
+    try:
+        with open(os.path.join(STATE, "slowop", unit + "." + op)) as f:
+            return float(f.read().strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def note_slow_pid(unit, op):
+    try:
+        os.makedirs(os.path.join(STATE, "slowop"), exist_ok=True)
+        with open(
+            os.path.join(STATE, "slowop", unit + "." + op + ".pid"), "w"
+        ) as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
 def deactivating(unit):
     return os.path.exists(os.path.join(STATE, "deactivating", unit))
 
@@ -294,6 +317,10 @@ if op == "show":
 if op == "stop":
     unit = argv[1]
     log_action("stop", unit)
+    slow = slow_secs(unit, "stop")
+    if slow:
+        note_slow_pid(unit, "stop")
+        time.sleep(slow)
     data = load(unit)
     if killproof(unit):
         # Stop job accepted but never completes server-side: unit stays
@@ -337,6 +364,10 @@ if op == "reset-failed":
 if op == "kill":
     unit = argv[-1]
     log_action("kill", unit)
+    slow = slow_secs(unit, "kill")
+    if slow:
+        note_slow_pid(unit, "kill")
+        time.sleep(slow)
     data = load(unit)
     if killproof(unit):
         sys.exit(0)
@@ -475,6 +506,20 @@ class Shims:
 
     def clear_deactivating(self, unit: str) -> None:
         (self.root / "deactivating" / unit).unlink(missing_ok=True)
+
+    def arm_slow_op(self, unit: str, op: str = "stop",
+                    seconds: float = 30.0) -> None:
+        """Make the shim's systemctl <op> client hang *seconds* before
+        acting (a wedged helper — the uncancellable window of AH)."""
+        d = self.root / "slowop"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{unit}.{op}").write_text(str(seconds))
+
+    def slow_op_pid(self, unit: str, op: str = "stop") -> int | None:
+        try:
+            return int((self.root / "slowop" / f"{unit}.{op}.pid").read_text())
+        except (OSError, ValueError):
+            return None
 
     def arm_sticky(self, unit: str, pid: int) -> None:
         d = self.root / "sticky"
@@ -1411,7 +1456,7 @@ def test_queued_stop_skips_when_worker_registers_first(
     gate = threading.Event()
     stops: list[str] = []
 
-    def gated_stop(unit_name):
+    def gated_stop(unit_name, **kwargs):
         stops.append(unit_name)
         gate.wait(timeout=5.0)
         return True
@@ -1480,7 +1525,7 @@ def test_queued_stop_cas_wins_registration_self_aborts(
     registration: dict = {}
     stops: list[str] = []
 
-    def register_then_confirm(unit_name):
+    def register_then_confirm(unit_name, **kwargs):
         # The heartbeat lands at the exact instant between the drain's
         # re-check and the signal. It runs on the service thread, so it
         # takes its own connection (sqlite connections are per-thread).
@@ -1549,7 +1594,7 @@ def test_queued_stop_stands_down_when_registration_wins_cas(
 
     stops: list[str] = []
 
-    def never_stop(unit_name):
+    def never_stop(unit_name, **kwargs):
         stops.append(unit_name)
         return True
 
@@ -1760,8 +1805,10 @@ def test_verified_stop_cancel_event_aborts_mid_stop(shims, monkeypatch):
     shims.write_unit(unit, [pid])
     cancel = threading.Event()
 
-    def slow_term(u):
+    def slow_term(u, **kwargs):
         # The stop job is slow; the caller's budget dies mid-wait.
+        # (**kwargs: the verified stop threads its cancel plumbing
+        # into the stop call itself since pass 9, AH.)
         cancel.set()
         return True
 
@@ -1803,19 +1850,21 @@ def test_verified_stop_cancel_event_aborts_mid_stop(shims, monkeypatch):
     unit3 = kb._kanban_worker_scope_unit("t_cxl3", 1)
     shims.write_unit(unit3, [stubborn2])
     cancel3 = threading.Event()
-    real_run = pr.subprocess.run
+    real_popen = pr.subprocess.Popen
 
-    def run_then_cancel(*args, **kwargs):
-        out = real_run(*args, **kwargs)
+    def popen_then_cancel(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
         cmd = args[0] if args else kwargs.get("args")
         if cmd and "kill" in cmd:
             # Budget dies the instant the SIGKILL is on the wire: the
             # next verify probe belongs to a caller that moved on.
+            # (Pass 9, AH: the escalation now runs through the
+            # cancellable Popen helper, not subprocess.run.)
             cancel3.set()
-        return out
+        return proc
 
     mp3 = pytest.MonkeyPatch()
-    mp3.setattr(pr.subprocess, "run", run_then_cancel)
+    mp3.setattr(pr.subprocess, "Popen", popen_then_cancel)
     assert pr._stop_systemd_unit_verified(unit3, cancel_event=cancel3) is False
     # The escalation DID run (cancel came too late to spare it), but the
     # verdict is still "still stopping": a cancelled caller must re-read
@@ -1835,7 +1884,7 @@ def test_verified_stop_deadline_aborts_like_cancel_event(shims, monkeypatch):
     shims.write_unit(unit, [pid])
     fired: list[str] = []
 
-    def no_term(u):
+    def no_term(u, **kwargs):
         fired.append("term")
         return True
 
@@ -1851,6 +1900,142 @@ def test_verified_stop_deadline_aborts_like_cancel_event(shims, monkeypatch):
     assert kb._pid_alive(pid)
 
 
+
+
+def test_verified_stop_cancel_kills_slow_stop_helper(shims, monkeypatch):
+    """Pass 9 (AH): the cancel event must reach INSIDE the blocking
+    systemctl stop client itself. ``subprocess.run(..., timeout=15)``
+    could not observe cancellation, so a shutdown past its budget kept
+    the wedged stop client (and then the SIGKILL client) signalling
+    after the dispatcher lock was released. The Popen+poll helper is
+    killed mid-flight instead, and the stop reports still-stopping
+    without paying the client timeout or escalating."""
+    import threading
+
+    from tools import process_registry as pr
+
+    stubborn = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_slowcxl", 1)
+    shims.write_unit(unit, [stubborn])
+    shims.arm_slow_op(unit, "stop", seconds=30)
+    cancel = threading.Event()
+
+    # Cancel from another thread only once the helper is PROVABLY
+    # mid-hang (its pidfile exists) — the exact window the old blocking
+    # call could not escape, without racing the shim's interpreter boot.
+    def cancel_when_deep():
+        if shims.wait_for(
+            lambda: shims.slow_op_pid(unit, "stop") is not None,
+            timeout=8.0,
+        ):
+            time.sleep(0.1)  # squarely inside the 30 s hang
+            cancel.set()
+
+    watcher = threading.Thread(target=cancel_when_deep, daemon=True)
+    watcher.start()
+    started = time.monotonic()
+    assert pr._stop_systemd_unit_verified(
+        unit, cancel_event=cancel,
+    ) is False
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0, "cancelled stop must not pay the 15 s timeout"
+    helper_pid = shims.slow_op_pid(unit, "stop")
+    assert helper_pid is not None
+    assert shims.wait_for(lambda: not kb._pid_alive(helper_pid)), (
+        "the in-flight systemctl stop helper must be killed on cancel"
+    )
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions == ["stop"], "no SIGKILL escalation after a cancelled stop"
+    assert kb._pid_alive(stubborn), "nothing was signalled past the cancel"
+
+
+def test_verified_stop_cancel_kills_slow_sigkill_helper(shims, monkeypatch):
+    """Pass 9 (AH): the same cancellation covers the SIGKILL escalation
+    client — the second uncancellable subprocess the finding named."""
+    import threading
+
+    from tools import process_registry as pr
+
+    stubborn = shims.stubborn_sleeper()  # survives TERM, forces escalation
+    unit = kb._kanban_worker_scope_unit("t_slowkill", 1)
+    shims.write_unit(unit, [stubborn])
+    shims.arm_slow_op(unit, "kill", seconds=30)
+    cancel = threading.Event()
+
+    # The TERM wait completes (stubborn ignores it), liveness says
+    # alive, the SIGKILL helper hangs — budget dies inside it. A
+    # watcher thread cancels only once the kill helper is PROVABLY
+    # mid-hang (its pidfile exists), without racing interpreter boot.
+    def cancel_when_deep():
+        if shims.wait_for(
+            lambda: shims.slow_op_pid(unit, "kill") is not None,
+            timeout=8.0,
+        ):
+            time.sleep(0.1)  # squarely inside the 30 s hang
+            cancel.set()
+
+    watcher = threading.Thread(target=cancel_when_deep, daemon=True)
+    watcher.start()
+    started = time.monotonic()
+    assert pr._stop_systemd_unit_verified(unit, cancel_event=cancel) is False
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0, "cancelled escalation must not pay its timeout"
+    helper_pid = shims.slow_op_pid(unit, "kill")
+    assert helper_pid is not None
+    assert shims.wait_for(lambda: not kb._pid_alive(helper_pid)), (
+        "the in-flight systemctl kill helper must be killed on cancel"
+    )
+    assert kb._pid_alive(stubborn), "the cgroup was never drained"
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions == ["stop", "kill"]
+
+
+def test_join_scope_stop_service_cancels_inflight_stop(shims, monkeypatch):
+    """Pass 9 (AH): a service-thread stop already inside a slow systemctl
+    could not observe shutdown cancellation — join_scope_stop_service
+    only waited, so the old gateway kept signalling after its budget and
+    after the dispatcher lock release. The join must now CANCEL the
+    in-flight unit within its budget: the helper subprocess is killed,
+    the unit is reported as leftover and requeued for re-adoption."""
+    import threading
+
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)  # real service thread
+
+    stubborn = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_joincxl", 1)
+    shims.write_unit(unit, [stubborn])
+    shims.arm_slow_op(unit, "stop", seconds=30)
+
+    with kb._scope_stop_lock:
+        kb._scope_stop_pending[unit] = kb._ScopeStopRequest(unit=unit)
+    kb._ensure_scope_stop_thread()
+    kb._scope_stop_wake.set()
+    assert shims.wait_for(lambda: kb._scope_stop_inflight == unit)
+
+    shutdown_cancel = threading.Event()
+    started = time.monotonic()
+    leftover = kb.join_scope_stop_service(
+        timeout=1.0, cancel_event=shutdown_cancel,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10.0, "join must return within its budget"
+    assert unit in leftover, "the cancelled unit is listed as leftover"
+    assert shutdown_cancel.is_set(), "the caller's cancel event fired too"
+    helper_pid = shims.slow_op_pid(unit, "stop")
+    assert helper_pid is not None
+    assert shims.wait_for(lambda: not kb._pid_alive(helper_pid)), (
+        "the join's cancel must kill the in-flight stop helper"
+    )
+    # The service stood down and handed the unit back to the queue.
+    assert shims.wait_for(
+        lambda: kb._scope_stop_pending.get(unit) is not None
+        and kb._scope_stop_inflight is None
+    )
+    # Nothing was signalled past the cancel: no SIGKILL escalation.
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert actions == ["stop"]
+    assert kb._pid_alive(stubborn)
 
 
 def test_release_stale_claims_stops_worker_scope(shims, conn):
@@ -2816,7 +3001,7 @@ def test_spawn_failure_with_uncleanable_unit_refuses_fallback(
     shims.arm_fail_next(1)
     cleanup_calls: list[str] = []
 
-    def unverifiable_stop(unit):
+    def unverifiable_stop(unit, **kwargs):
         cleanup_calls.append(unit)
         return False  # cleanup could not be verified (wedged stop job)
 
@@ -3443,7 +3628,9 @@ def test_join_scope_stop_service_reports_inflight_unit(
     gate = threading.Event()
     real_stop = kb._stop_kanban_worker_scope
 
-    def wedged_stop(unit):
+    def wedged_stop(unit, **kwargs):
+        # **kwargs: the service threads its cancel event into every
+        # stop since pass 9 (AH).
         gate.wait(timeout=10.0)
         return real_stop(unit)
 

@@ -9403,6 +9403,13 @@ _scope_stop_attempts: dict[str, int] = {}
 _scope_stop_warned: set[str] = set()
 _scope_stop_wake = threading.Event()
 _scope_stop_thread: Optional[threading.Thread] = None
+# Set by join_scope_stop_service when its shutdown budget expires (pass
+# 9, AH): the service thread threads this into every _stop_kanban_worker
+# scope call, so an in-flight verified stop — including its systemctl
+# stop/SIGKILL helper subprocesses — is abandoned the moment the caller
+# gives up, instead of signalling on past the budget and the dispatcher
+# lock release. Cleared at the start of each join and by the test reset.
+_scope_stop_service_cancel = threading.Event()
 # Set only by reset_scope_stop_service_for_tests: the service loop
 # exits at its next wake instead of draining, so a reset kills the
 # thread rather than leaving a daemon that later tests' flushes would
@@ -9433,9 +9440,17 @@ def _scope_stop_service_loop() -> None:
 
 
 def _drain_scope_stop_requests() -> None:
-    """Run every queued verified stop (service thread; inline in tests)."""
+    """Run every queued verified stop (service thread; inline in tests).
+
+    A cancelled drain (pass 9, AH — a join whose shutdown budget expired
+    set the cancel event) stops before the next unit and requeues the
+    one it was working on, so nothing is signalled after the caller has
+    moved on and the queue survives for re-adoption.
+    """
     global _scope_stop_inflight
     while True:
+        if _scope_stop_service_cancel.is_set():
+            return
         with _scope_stop_lock:
             if not _scope_stop_pending:
                 return
@@ -9481,7 +9496,9 @@ def _drain_scope_stop_requests() -> None:
                     unit, request.task_id,
                 )
                 continue
-            verified = _stop_kanban_worker_scope(unit)
+            verified = _stop_kanban_worker_scope(
+                unit, cancel_event=_scope_stop_service_cancel,
+            )
         finally:
             with _scope_stop_lock:
                 _scope_stop_inflight = None
@@ -9500,6 +9517,23 @@ def _drain_scope_stop_requests() -> None:
                         unit, request.task_id, request.attempts + 1,
                     )
                 # Left unconfirmed: the next request re-enqueues it.
+        if not verified and _scope_stop_service_cancel.is_set():
+            # Pass 9 (AH): the stop was cancelled mid-flight — put the
+            # unit back so the queue reflects what is still stopping
+            # (the join that cancelled reports it), and stand the drain
+            # down rather than starting another unit the caller cannot
+            # wait for.
+            with _scope_stop_lock:
+                if unit not in _scope_stop_pending:
+                    _scope_stop_pending[unit] = _ScopeStopRequest(
+                        unit=unit,
+                        task_id=request.task_id,
+                        attempts=_scope_stop_attempts.get(
+                            unit, request.attempts + 1,
+                        ),
+                        skip_if_registered=request.skip_if_registered,
+                    )
+            return
         if verified and request.skip_if_registered and request.task_id:
             # Pass 8 (AC): this drain CAS-marked the run stop-pending right
             # before signalling; the cgroup is now verified empty, so the
@@ -9635,7 +9669,11 @@ def request_worker_scope_stop(
     return False
 
 
-def join_scope_stop_service(timeout: float) -> list[str]:
+def join_scope_stop_service(
+    timeout: float,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+) -> list[str]:
     """Wait for the background service to DRAIN (shutdown path). Returns
     the units still pending or in flight once the budget expires, so the
     caller can log exactly what it leaves to the next gateway's adoption
@@ -9645,8 +9683,20 @@ def join_scope_stop_service(timeout: float) -> list[str]:
     means DRAINED, not thread-exit: a plain ``Thread.join`` would always
     burn the full timeout even with nothing left to stop. The wait ends
     the moment the queue is empty AND no stop is mid-flight.
+
+    On budget expiry the join CANCELS the in-flight stop (pass 9, AH):
+    ``_scope_stop_service_cancel`` fires, the service's verified stop
+    abandons — its systemctl helper subprocesses are killed, the unit is
+    requeued — so the old gateway stops signalling the moment its budget
+    is gone instead of a full stop/SIGKILL/verify sequence past the
+    dispatcher lock release. ``cancel_event`` is the caller's own
+    shutdown event (the same one the direct cleanup propagates); it is
+    set alongside so both paths share one cancel signal.
     """
     deadline = time.monotonic() + max(0.0, timeout)
+    # A fresh join must drain for real: clear any cancel a previous
+    # (expired) join left behind.
+    _scope_stop_service_cancel.clear()
     while True:
         with _scope_stop_lock:
             pending = list(_scope_stop_pending)
@@ -9654,6 +9704,15 @@ def join_scope_stop_service(timeout: float) -> list[str]:
         if not pending and inflight is None:
             return []
         if time.monotonic() >= deadline:
+            _scope_stop_service_cancel.set()
+            if cancel_event is not None:
+                cancel_event.set()
+            # Re-snapshot AFTER cancelling so the report lists the unit
+            # the service was inside of (it may have requeued itself by
+            # now — either way it appears exactly once).
+            with _scope_stop_lock:
+                pending = list(_scope_stop_pending)
+                inflight = _scope_stop_inflight
             if inflight and inflight not in pending:
                 pending.append(inflight)
             return pending
@@ -9678,6 +9737,7 @@ def reset_scope_stop_service_for_tests() -> None:
         _scope_stop_warned.clear()
         _scope_stop_inflight = None
     _scope_audit_first_seen.clear()
+    _scope_stop_service_cancel.clear()
     thread = _scope_stop_thread
     _scope_stop_thread = None
     if thread is not None and thread.is_alive() and thread is not threading.current_thread():

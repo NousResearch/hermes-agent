@@ -1874,7 +1874,12 @@ class GatewayKanbanWatchersMixin:
             # drain the background service within the SAME deadline
             # before the caller releases the dispatcher lock.
             leftover = _kb.join_scope_stop_service(
-                timeout=max(0.0, deadline - time.monotonic())
+                timeout=max(0.0, deadline - time.monotonic()),
+                # The same cancel signal the direct cleanup propagates
+                # (pass 9, AH): on expiry the join cancels the service's
+                # in-flight stop too, so no systemctl signalling outlives
+                # the budget or the lock release.
+                cancel_event=cleanup_cancelled,
             )
             if worker.is_alive() or leftover:
                 stopped_units = set(state.get("stopped") or [])

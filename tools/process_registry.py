@@ -383,7 +383,69 @@ def _build_systemd_scope_argv(
     return argv
 
 
-def _stop_systemd_unit(unit_name: str) -> bool:
+def _run_systemctl_cancellable(
+    argv: List[str],
+    *,
+    timeout: float,
+    cancel_event=None,
+    deadline=None,
+    poll_interval: float = 0.1,
+):
+    """Run a systemctl helper with mid-flight cancellation (pass 9, AH).
+
+    ``subprocess.run(..., timeout=N)`` cannot observe a cancel event: it
+    blocks for the full client timeout even when the caller — a gateway
+    shutdown whose budget is gone, a dispatcher lock already released —
+    has moved on, so the old process kept signalling (stop, SIGKILL)
+    after its output could no longer matter. This polls the helper and
+    KILLS it the moment either cancel signal fires.
+
+    Returns ``(returncode, stdout, stderr)`` on completion (the shape
+    callers used to read off ``subprocess.run``), or ``None`` when
+    cancelled — callers treat ``None`` exactly like an unconfirmed
+    outcome. On the plain client timeout it mirrors ``subprocess.run``:
+    kill, reap, raise ``TimeoutExpired``.
+    """
+
+    def _cancelled() -> bool:
+        if cancel_event is not None and cancel_event.is_set():
+            return True
+        return deadline is not None and time.monotonic() >= deadline
+
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    wall = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            out, err = proc.communicate(timeout=poll_interval)
+            return (proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            # Repeated communicate-after-timeout is the documented
+            # pattern (subprocess.run is built on it); no output is lost.
+            pass
+        if _cancelled():
+            logger.info(
+                "systemctl helper for %s cancelled mid-flight — killing "
+                "the helper; the unit keeps whatever state it is in for "
+                "re-adoption", argv[-1],
+            )
+            proc.kill()
+            try:
+                proc.communicate(timeout=5.0)
+            except Exception:
+                pass
+            return None
+        if time.monotonic() >= wall:
+            proc.kill()
+            try:
+                proc.communicate(timeout=5.0)
+            except Exception:
+                pass
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+
+def _stop_systemd_unit(unit_name: str, *, cancel_event=None, deadline=None) -> bool:
     """Stop a transient systemd user scope by unit name.
 
     This reaps the *entire* cgroup — catching double-forked descendants that
@@ -392,8 +454,15 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     SIGTERM to every process in the unit's cgroup and escalates to SIGKILL
     after the unit's ``TimeoutStopSec``.
 
+    ``cancel_event``/``deadline`` (pass 9, AH) make the client call itself
+    cancellable: the helper subprocess is killed the moment either fires
+    instead of blocking for its full 15 s client timeout, and the unit is
+    left in whatever state it is in (a cancelled stop is reported like an
+    unconfirmed one — False).
+
     Returns True if the unit was successfully stopped (or was already gone),
-    False if ``systemctl`` is unavailable or the stop command failed.
+    False if ``systemctl`` is unavailable, the stop command failed, or the
+    call was cancelled.
     """
     import shutil
 
@@ -401,13 +470,21 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     if binary is None:
         return False
     try:
-        result = subprocess.run(
+        result = _run_systemctl_cancellable(
             [binary, "--user", "stop", unit_name],
-            capture_output=True,
             timeout=15,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
-        if result.returncode != 0:
-            stderr = (result.stderr or b"").decode(errors="replace").strip()
+        if result is None:
+            logger.info(
+                "systemctl --user stop %s cancelled mid-flight — treating "
+                "it as still stopping", unit_name,
+            )
+            return False
+        returncode, _stdout, stderr_bytes = result
+        if returncode != 0:
+            stderr = (stderr_bytes or b"").decode(errors="replace").strip()
             stderr_lower = stderr.lower()
             if any(
                 marker in stderr_lower
@@ -416,7 +493,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
                 return True
             logger.debug(
                 "systemctl --user stop %s exited %d: %s",
-                unit_name, result.returncode,
+                unit_name, returncode,
                 stderr,
             )
             return False
@@ -900,8 +977,12 @@ def _stop_systemd_unit_verified(
     # Fire the stop; its return value is only a hint.  A non-zero exit
     # with "not loaded" means already gone, and liveness below confirms
     # that; anything else (including a client timeout) leaves the real
-    # verdict to the liveness checks that follow.
-    _stop_systemd_unit(unit_name)
+    # verdict to the liveness checks that follow.  The cancel plumbing
+    # reaches INTO the client call (pass 9, AH): a cancelled caller's
+    # systemctl helper is killed instead of blocking out its timeout.
+    _stop_systemd_unit(
+        unit_name, cancel_event=cancel_event, deadline=deadline,
+    )
     if _cancelled():
         logger.info(
             "stop of systemd unit %s cancelled after the TERM wait; "
@@ -921,11 +1002,19 @@ def _stop_systemd_unit_verified(
         )
         return False
     try:
-        subprocess.run(
+        kill_result = _run_systemctl_cancellable(
             [binary, "--user", "kill", "--signal=SIGKILL", unit_name],
-            capture_output=True,
             timeout=10,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
+        if kill_result is None:
+            logger.info(
+                "stop of systemd unit %s cancelled during the SIGKILL "
+                "escalation — killing the helper and treating the unit "
+                "as still stopping", unit_name,
+            )
+            return False
     except Exception as exc:
         logger.debug("systemctl --user kill %s failed: %s", unit_name, exc)
         return False

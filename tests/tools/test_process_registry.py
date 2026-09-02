@@ -1238,10 +1238,13 @@ class TestCheckpoint:
             pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
         )
         show_props: dict[str, bytes] = {"now": b"LoadState=loaded\nActiveState=active\n"}
+        # **kwargs: the verified stop threads its cancel plumbing into
+        # the stop call (pass 9, AH).
         monkeypatch.setattr(
-            pr, "_stop_systemd_unit", lambda unit: show_props.__setitem__(
+            pr, "_stop_systemd_unit",
+            lambda unit, **kwargs: show_props.__setitem__(
                 "now", b"LoadState=loaded\nActiveState=inactive\n"
-            )
+            ),
         )
 
         def fake_run(*a, **k):
@@ -1252,6 +1255,10 @@ class TestCheckpoint:
             )
 
         monkeypatch.setattr("subprocess.run", fake_run)
+        # The SIGKILL escalation client is the cancellable helper now.
+        monkeypatch.setattr(
+            pr, "_run_systemctl_cancellable", lambda *a, **k: (0, b"", b"")
+        )
         monkeypatch.setattr(pr, "_collect_dead_systemd_unit", lambda unit: None)
 
         assert pr._stop_systemd_unit_verified("w.scope") is True
@@ -2549,12 +2556,12 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        # Pass 9 (AH): the stop client runs through the cancellable
+        # Popen+poll helper, not subprocess.run — mock that seam.
         monkeypatch.setattr(
-            "subprocess.run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args=args[0],
-                returncode=5,
-                stderr=b"Unit hermes-worker-gone.scope not loaded.\n",
+            pr, "_run_systemctl_cancellable",
+            lambda *args, **kwargs: (
+                5, b"", b"Unit hermes-worker-gone.scope not loaded.\n"
             ),
         )
 

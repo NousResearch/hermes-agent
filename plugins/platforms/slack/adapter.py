@@ -7078,7 +7078,9 @@ class SlackAdapter(BasePlatformAdapter):
             # subtype=bot_message with user=None; flag them so the
             # gateway SLACK_ALLOW_BOTS bypass can authorize them
             # (they carry no user_id to match against the allowlist).
-            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
+            # Same predicate as the drop gate above, so an api_human_users
+            # post is a plain human here too.
+            is_bot=self._event_declares_bot_sender(event),
         )
 
         # Per-channel ephemeral prompt
@@ -8213,7 +8215,7 @@ class SlackAdapter(BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
-            is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+            is_bot = self._event_declares_bot_sender(msg)
             msg_user = msg.get("user", "")
 
             # Identify "our own" bot for this workspace (multi-workspace safe).

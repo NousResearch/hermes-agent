@@ -1,4 +1,5 @@
 export { type AnnotateFlushPorts, type AnnotateFlushResult, flushAnnotateStack } from './flush'
+export { type AnnotateGroup, annotateSplitDepth, groupAnnotations } from './group'
 export { compactIdentity, type CompactIdentity, type ElementSnapshot, formatIdentityLine } from './identity'
 export {
   ANNOTATE_HOST_TAG,

@@ -192,3 +192,79 @@ describe('flushAnnotateStack', () => {
     expect(annotateFlushPrompt(stacked)).toContain('2 comments')
   })
 })
+
+describe('annotateFlushPrompt batching', () => {
+  function at(number: number, selector: string): AnnotatePin {
+    return pin({
+      id: `annotate-${number}`,
+      number,
+      identity: { css: {}, html: '', selector, tag: 'div', text: '' }
+    })
+  }
+
+  const batch = packageAnnotateStack([
+    at(1, 'body>main>section.hero>h1'),
+    at(2, 'body>main>section.hero>p'),
+    at(3, 'body>main>section.pricing>button'),
+    at(4, 'body>main>section.pricing>span'),
+    at(5, 'body>main>section.faq>li')
+  ])
+
+  it('heads each region so a long batch is fewer pieces of work than comments', () => {
+    const prompt = annotateFlushPrompt(batch, 'http://localhost:5173/')
+
+    expect(prompt).toContain('Group 1 — `section.hero` (2 comments)')
+    expect(prompt).toContain('Group 2 — `section.pricing` (2 comments)')
+    expect(prompt).toContain('Group 3 — `section.faq` (1 comment)')
+    expect(prompt).toContain('Work them as 3 pieces of work, not 5.')
+  })
+
+  it('warns against the theme split that would put workers in the same files', () => {
+    const prompt = annotateFlushPrompt(batch)
+
+    expect(prompt).toContain('delegate whole groups')
+    expect(prompt).toContain('never form new groups by theme')
+    expect(prompt).toContain('Regroup if the code disagrees')
+  })
+
+  it('still lists every comment exactly once', () => {
+    const prompt = annotateFlushPrompt(batch)
+
+    for (const item of batch) {
+      expect(prompt.split(`Comment ${item.number}\n`)).toHaveLength(2)
+    }
+  })
+
+  it('leaves a short batch flat — grouping two comments is noise', () => {
+    const prompt = annotateFlushPrompt(batch.slice(0, 2))
+
+    expect(prompt).not.toContain('Group 1')
+    expect(prompt).not.toContain('pieces of work')
+  })
+
+  it('leaves a batch flat when every comment is in one region', () => {
+    const prompt = annotateFlushPrompt(
+      packageAnnotateStack([
+        at(1, 'body>div.card>h1'),
+        at(2, 'body>div.card>p'),
+        at(3, 'body>div.card>a'),
+        at(4, 'body>div.card>span')
+      ])
+    )
+
+    expect(prompt).not.toContain('Group 1')
+  })
+
+  it('gives dragged areas their own section instead of a guessed region', () => {
+    const prompt = annotateFlushPrompt(
+      packageAnnotateStack([
+        at(1, 'body>main>section.hero>h1'),
+        at(2, 'body>main>section.pricing>button'),
+        pin({ id: 'annotate-3', identity: undefined, kind: 'area', number: 3 }),
+        at(4, 'body>main>section.faq>li')
+      ])
+    )
+
+    expect(prompt).toContain('Unanchored (dragged areas) (1 comment)')
+  })
+})

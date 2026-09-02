@@ -1034,6 +1034,43 @@ class TestSecondaryProfileConfigHandling:
         assert "reviewer" in str(exc_info.value)
         assert "reviewer" not in runner._profile_adapters
 
+    @pytest.mark.asyncio
+    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):
+        """WhatsApp is shared process-level ingress like Relay: the bridge is
+        one authenticated session tied to a single phone number, so a
+        credential-less secondary profile must be skipped (not stall startup
+        in a connect/retry loop) while its other platforms start normally."""
+        runner = _secondary_recovery_runner()
+        direct = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, direct)
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.WHATSAPP: PlatformConfig(enabled=True),
+                    Platform.DISCORD: PlatformConfig(enabled=True, token="profile-token"),
+                },
+            ),
+        )
+        factory_calls = []
+
+        def _create_adapter(platform, config):
+            factory_calls.append(platform)
+            return direct
+
+        async def _connect(adapter, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters("clientbot", "/tmp/x", {})
+
+        assert connected == 1
+        assert factory_calls == [Platform.DISCORD]
+        assert runner._profile_adapters["clientbot"] == {Platform.DISCORD: direct}
+
 
 class TestSecondaryProfileHookRegistration:
     """A secondary profile's own `hooks:` block must register on ITS

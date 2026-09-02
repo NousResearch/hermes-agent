@@ -196,6 +196,58 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     )
 
 
+def test_max_iterations_with_real_final_response_is_completed():
+    """A max-iterations fallback that produced a real answer completes.
+
+    Regression: iteration-limit summaries used to persist with
+    completed=False / finish_reason=NULL, which made desktop render the
+    turn's final answer as an unfinished interim bubble. A successful
+    summary IS the turn's final response, so the turn is completed.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response="summary from extra call",
+        exit_reason="max_iterations_reached(60/60)",
+    )
+
+    assert result["completed"] is True
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+
+
+def test_max_iterations_without_final_response_not_completed():
+    """No response at all keeps completed=False (resume/recovery signal)."""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="max_iterations_reached(60/60)",
+    )
+
+    assert result["completed"] is False
+
+
+def test_max_iterations_empty_placeholder_not_completed():
+    """An empty placeholder string is not a real response."""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response="   ",
+        exit_reason="max_iterations_reached(60/60)",
+    )
+
+    assert result["completed"] is False
+
+
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
     """When budget exhaustion preserves a verification candidate that is
     already the tail assistant message, the finalizer must NOT append a

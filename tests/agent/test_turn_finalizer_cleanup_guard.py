@@ -160,7 +160,10 @@ def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
-    assert result["completed"] is False
+    # A max-iterations turn that still produced a real final answer is a
+    # completed turn (fix for iteration-limit summaries surfacing as
+    # unfinished/interim rows): the user saw an actual final response.
+    assert result["completed"] is True
     assert "cleanup_errors" not in result
 
 

@@ -10,6 +10,7 @@ Verifies that:
 import ast
 import json
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -178,3 +179,89 @@ class TestPersistRoundTrip:
         assert row["model"] == "stored-model", (
             "COALESCE must preserve the existing model when new value is NULL"
         )
+
+
+# ---------------------------------------------------------------------------
+# archive_and_compact — compression-loop dedup guard
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveAndCompactDedup:
+    """Repeated compression passes must not re-insert rows they just archived.
+
+    Root cause (8/8-8/9 reports): preflight + post-response + next-turn
+    preflight compression passes each soft-archive the live set and insert
+    the rebuilt tail again, so the archived (active=0, compacted=1) layer
+    accumulates duplicate copies of the same (role, content, timestamp)
+    rows — ballooning the DB and polluting FTS search. The dedup probe
+    skips rows whose key was archived within the last 60s and turns a
+    fully-duplicate pass into a no-op.
+    """
+
+    @staticmethod
+    def _rebuilt_tail():
+        now = time.time()
+        return [
+            {"role": "user", "content": "执行第 1–4 步", "timestamp": now},
+            {"role": "assistant", "content": "开始执行", "timestamp": now + 1},
+        ]
+
+    def test_repeated_compaction_does_not_duplicate_archived_tail(self, tmp_path):
+        db = _tmp_db(tmp_path)
+        db.create_session("s-dedup", source="acp", model="test")
+        tail = self._rebuilt_tail()
+        db.append_messages_batch("s-dedup", list(tail))
+
+        db.archive_and_compact("s-dedup", list(tail))
+        db.archive_and_compact("s-dedup", list(tail))
+
+        # Second pass is a pure re-insert: nothing new may land.
+        rows = db.get_messages("s-dedup", include_inactive=True)
+        assert len(rows) == 4, f"expected 2 archived + 2 active, got {len(rows)}"
+        active = [r for r in rows if r["active"] == 1]
+        assert len(active) == 2
+
+    def test_fully_duplicate_pass_is_a_noop_returning_active_count(self, tmp_path):
+        db = _tmp_db(tmp_path)
+        db.create_session("s-noop", source="acp", model="test")
+        tail = self._rebuilt_tail()
+        db.append_messages_batch("s-noop", list(tail))
+        db.archive_and_compact("s-noop", list(tail))
+
+        before = db.get_messages("s-noop", include_inactive=True)
+        returned = db.archive_and_compact("s-noop", list(tail))
+
+        after = db.get_messages("s-noop", include_inactive=True)
+        assert len(after) == len(before), "fully duplicate pass must not add rows"
+        assert returned == 2, f"no-op must return the current active count, got {returned}"
+
+    def test_new_rows_still_inserted_beside_duplicates(self, tmp_path):
+        db = _tmp_db(tmp_path)
+        db.create_session("s-partial", source="acp", model="test")
+        tail = self._rebuilt_tail()
+        db.append_messages_batch("s-partial", list(tail))
+        db.archive_and_compact("s-partial", list(tail))
+
+        # Next pass re-inserts the same tail PLUS a genuinely new row.
+        now = time.time()
+        next_pass = list(tail) + [
+            {"role": "user", "content": "新的一轮提问", "timestamp": now + 10}
+        ]
+        db.archive_and_compact("s-partial", next_pass)
+
+        rows = db.get_messages("s-partial", include_inactive=True)
+        active = [r for r in rows if r["active"] == 1]
+        # Archived seed (2) + archived first tail (2) + active: only the NEW row.
+        assert len(active) == 1, f"expected only the new row active, got {len(active)}"
+        assert active[0]["content"] == "新的一轮提问"
+
+    def test_rows_without_timestamp_are_never_deduped(self, tmp_path):
+        db = _tmp_db(tmp_path)
+        db.create_session("s-nots", source="acp", model="test")
+        no_ts = [{"role": "user", "content": "无时间戳行"}]
+        db.archive_and_compact("s-nots", list(no_ts))
+        db.archive_and_compact("s-nots", list(no_ts))
+
+        rows = db.get_messages("s-nots", include_inactive=True)
+        # Conservative: no timestamp -> never deduped, both passes insert.
+        assert len(rows) == 2, f"expected 2 rows (no dedup), got {len(rows)}"

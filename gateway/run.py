@@ -9483,9 +9483,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:  # noqa: BLE001 - unreadable source => assume busy
             logger.debug("scale-to-zero: api work count unreadable — staying awake", exc_info=True)
             api_count = 1
+        # An attached dashboard/desktop/TUI client is inbound activity too. It
+        # lives in the DASHBOARD process, so it reaches us as a file mtime that
+        # process refreshes on every WS frame (gateway/scale_to_zero.py). Fold
+        # it into the inbound clock rather than adding a conjunct: the client
+        # then gets the same idle_timeout grace after it disconnects as a chat
+        # message does, and a lingering marker cannot pin the box (stale -> None).
+        last_inbound = self._last_inbound_at
+        try:
+            from gateway.scale_to_zero import dashboard_client_last_seen
+
+            seen = dashboard_client_last_seen()
+        except Exception:  # noqa: BLE001 - unreadable source => assume busy
+            logger.debug("scale-to-zero: dashboard heartbeat unreadable — staying awake", exc_info=True)
+            seen = time.time()
+        if seen is not None and seen > last_inbound:
+            last_inbound = seen
         return is_idle(
             active_work_count=self._running_agent_count() + cron_count + api_count,
-            seconds_since_last_inbound=time.time() - self._last_inbound_at,
+            seconds_since_last_inbound=time.time() - last_inbound,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
             has_live_background_work=self._scale_to_zero_has_live_background_work(),
         )

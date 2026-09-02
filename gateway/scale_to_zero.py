@@ -164,6 +164,74 @@ def is_idle(
     return seconds_since_last_inbound >= idle_timeout_seconds
 
 
+# Dashboard-client liveness marker. The dashboard process (tui_gateway/ws.py,
+# a DIFFERENT process from the gateway on hosted instances) touches this file
+# on every /api/ws connect and inbound frame — the desktop app, web dashboard
+# and TUI all send `gateway.ping` every 15s and treat 45s of silence as dead
+# (apps/shared/src/json-rpc-gateway.ts, ui-tui/src/gatewayClient.ts). The
+# gateway reads the mtime and counts a fresh marker as inbound activity, so an
+# open client holds the box awake exactly like a chat message does. Without
+# this the box suspends under the open client, the client's reconnect loop
+# re-pokes the Fly-proxied hostname, autostart resumes it, and the instance
+# flaps every ~60s (13 of 72 active opted-in prod instances, 2026-09-02).
+DASHBOARD_CLIENT_HEARTBEAT_REL = os.path.join("state", "dashboard_clients.heartbeat")
+DASHBOARD_CLIENT_STALE_SECONDS = 45.0
+
+
+def dashboard_client_heartbeat_path(hermes_home: Optional[os.PathLike | str] = None):
+    """Path of the dashboard-client liveness marker under HERMES_HOME."""
+    from pathlib import Path
+
+    if hermes_home is None:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+    return Path(hermes_home) / DASHBOARD_CLIENT_HEARTBEAT_REL
+
+
+def touch_dashboard_client_heartbeat(path: Optional[os.PathLike | str] = None) -> bool:
+    """Mark "a dashboard client is attached right now". Best-effort, never raises."""
+    try:
+        p = dashboard_client_heartbeat_path() if path is None else path
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8"):
+            pass
+        os.utime(p, None)
+        return True
+    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+        logger.debug("scale-to-zero: dashboard heartbeat touch failed", exc_info=True)
+        return False
+
+
+def dashboard_client_last_seen(
+    path: Optional[os.PathLike | str] = None,
+    *,
+    now: Optional[float] = None,
+    stale_seconds: float = DASHBOARD_CLIENT_STALE_SECONDS,
+) -> Optional[float]:
+    """Epoch seconds a dashboard client was last seen, or None when no live client.
+
+    Missing marker -> None (the steady state on a box nobody has the dashboard
+    open on — NOT fail-awake, or every instance would never sleep). A marker
+    older than ``stale_seconds`` -> None (client gone; the file just lingers).
+    An unreadable marker -> ``now`` (fail-awake: an unreadable source counts as
+    activity, same rule as the work counters in ``is_idle``).
+    """
+    import time
+
+    current = time.time() if now is None else now
+    p = dashboard_client_heartbeat_path() if path is None else path
+    try:
+        mtime = os.stat(p).st_mtime
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return current
+    if current - mtime >= stale_seconds:
+        return None
+    return mtime
+
+
 def self_suspend_available(environ: Optional[dict] = None) -> bool:
     """Whether this process can suspend its own machine via the flaps socket.
 

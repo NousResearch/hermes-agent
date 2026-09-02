@@ -356,8 +356,12 @@ async def test_loop_wakeup_watcher_runs_every_sessiondb_call_off_loop_thread(loo
 
     loop_thread = threading.current_thread()
     on_loop_calls = []
+    seen_calls = []
 
     def _record(name):
+        # Positive count guards against a future import hoist in run.py that
+        # would bypass these wrappers and leave the off-loop assertion vacuous.
+        seen_calls.append(name)
         if threading.current_thread() is loop_thread:
             on_loop_calls.append(name)
 
@@ -394,6 +398,7 @@ async def test_loop_wakeup_watcher_runs_every_sessiondb_call_off_loop_thread(loo
         await GatewayRunner._loop_wakeup_watcher(runner, interval=0)
 
     assert _Adapter.handled == ["/status"], _Adapter.handled
+    assert seen_calls == ["list_active_loops", "fire_tick", "complete_tick"], seen_calls
     assert on_loop_calls == [], f"SessionDB calls ran on the event-loop thread: {on_loop_calls}"
     # complete_tick ran (slash-command loops complete immediately).
     assert loops.load_loop("sid-gateway-loop").ticks_fired == 1

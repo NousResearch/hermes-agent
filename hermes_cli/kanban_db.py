@@ -71,6 +71,8 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import importlib
+import inspect
 import hashlib
 import json
 import os
@@ -93,6 +95,49 @@ from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missi
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+
+
+class SpawnAdmissionError(RuntimeError):
+    """A configured autonomous-worker admission gate rejected a spawn."""
+
+
+def _load_configured_spawn_guard():
+    """Return the optional configured guard, rejecting broken configuration."""
+    from hermes_cli.config import load_config
+    spec = (load_config().get("kanban", {}).get("spawn_guard") or "").strip()
+    if not spec:
+        return None
+    module_name, separator, attribute = spec.partition(":")
+    if not separator or not module_name or not attribute:
+        raise SpawnAdmissionError("kanban.spawn_guard must be module:callable")
+    try:
+        guard = getattr(importlib.import_module(module_name), attribute)
+    except Exception as exc:
+        raise SpawnAdmissionError("configured Kanban spawn guard unavailable") from exc
+    if not callable(guard):
+        raise SpawnAdmissionError("configured Kanban spawn guard is not callable")
+    return guard
+
+
+def _spawn_with_guard(task, workspace: str, board: str | None, native_spawn):
+    """Invoke the configured admission gate before every dispatcher spawn."""
+    def call_native(current_task, current_workspace, *, board=None):
+        try:
+            if "board" in inspect.signature(native_spawn).parameters:
+                return native_spawn(current_task, current_workspace, board=board)
+        except (TypeError, ValueError):
+            pass
+        return native_spawn(current_task, current_workspace)
+
+    guard = _load_configured_spawn_guard()
+    if guard is None:
+        return call_native(task, workspace, board=board)
+    try:
+        return guard(task, workspace, board, call_native)
+    except SpawnAdmissionError:
+        raise
+    except Exception as exc:
+        raise SpawnAdmissionError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -10262,18 +10307,7 @@ def _dispatch_once_locked(
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            # Back-compat: older spawn_fn signatures accept only
-            # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
+            pid = _spawn_with_guard(claimed, str(workspace), board, _spawn)
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn

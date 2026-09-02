@@ -1925,12 +1925,14 @@ def test_enforce_max_runtime_legacy_row_matching_start_still_killed(
     assert "pid_reused" not in payload
 
 
-def test_enforce_max_runtime_legacy_row_unreadable_start_still_killed(
+def test_enforce_max_runtime_legacy_row_unreadable_start_not_signalled(
     shims, conn, monkeypatch
 ):
-    """B: when the epoch-start check cannot run at all (psutil missing,
-    exotic process), the gate steps aside — refusing to time out legacy
-    rows would be worse than the bare-pid kill it replaced."""
+    """B, fail-safe half (Gate B pass 4 finding P): when the epoch-start
+    check cannot run at all (psutil missing, exotic process), the
+    membership of the pid is UNKNOWN — a signal we cannot attribute
+    might hit an unrelated process, so the run times out and reclaims
+    WITHOUT signalling, exactly like a predating pid."""
     pid = shims.stubborn_sleeper()
     tid = _max_runtime_row(conn, pid, None, pid_started_at=None)
     monkeypatch.setattr(kb, "_worker_pid_epoch_start", lambda _pid: None)
@@ -1941,9 +1943,42 @@ def test_enforce_max_runtime_legacy_row_unreadable_start_still_killed(
         os.kill(p, s)
 
     assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
-    assert (pid, signal.SIGTERM) in signals
-    assert (pid, signal.SIGKILL) in signals  # stubborn: escalation fired
-    assert not kb._pid_alive(pid)  # teardown verified, not assumed
+    assert signals == []
+    assert kb._pid_alive(pid)  # never touched
+    payload = _timed_out_payload(conn, tid)
+    assert payload.get("pid_reused") is True
+    assert payload.get("signal_skipped") == "pid_membership_unknown"
+    # The stand-down is logged once per (task, run, pid, verdict); the
+    # key captured the run id before the reclaim cleared it.
+    assert any(
+        k[0] == tid and k[2] == pid and k[3] == "pid_membership_unknown"
+        for k in kb._bare_pid_gate_warned
+    )
+
+
+def test_enforce_max_runtime_identity_unreadable_not_signalled(
+    shims, conn, monkeypatch
+):
+    """P, fingerprint half: a row WITH a start fingerprint whose live
+    process start time cannot be read is an unknown identity — no
+    bare-pid signal, the run still times out."""
+    import gateway.status as gateway_status
+
+    pid = shims.sleeper()
+    tid = _max_runtime_row(conn, pid, None, pid_started_at=111111)
+    monkeypatch.setattr(
+        gateway_status, "get_process_start_time", lambda _pid: None,
+    )
+    signals: list[tuple[int, int]] = []
+
+    def recording_kill(p, s):
+        signals.append((p, s))
+
+    assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
+    assert signals == []
+    assert kb._pid_alive(pid)
+    payload = _timed_out_payload(conn, tid)
+    assert payload.get("signal_skipped") == "pid_identity_unknown"
 
 
 def test_reclaim_task_stops_worker_scope(shims, conn):

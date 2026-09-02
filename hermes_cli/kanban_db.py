@@ -9608,24 +9608,85 @@ def _worker_pid_epoch_start(pid: int) -> Optional[float]:
 
 def _legacy_pid_belongs_to_run(
     pid: int, run_started_at: Optional[int]
-) -> bool:
+) -> Optional[bool]:
     """Membership gate for legacy rows without a start-time fingerprint.
 
     A worker is spawned at or after its run row's ``started_at``; a live
     process that was already running before that (outside the tolerance
     above) therefore cannot be the run's worker — it is an unrelated
-    process that merely carries a recycled pid number.  True when the
-    pid plausibly belongs to the run, INCLUDING when the check cannot
-    run at all (psutil unavailable, process already gone): the gate
-    refines legacy handling, it must never regress it below what the
-    bare-pid kill already guaranteed.
+    process that merely carries a recycled pid number.
+
+    Tri-state (Gate B pass 4, finding P): ``True`` when the pid
+    plausibly belongs to the run (the bare-pid kill may proceed);
+    ``False`` when it predates the run (never signal it); ``None`` when
+    membership could not be determined (no run start, psutil/process
+    data unreadable). ``None`` fails SAFE at the call site — no
+    bare-pid signal, reclaim without signalling — because a signal we
+    cannot attribute might hit an unrelated process.
     """
     if run_started_at is None:
-        return True
+        return None
     started = _worker_pid_epoch_start(pid)
     if started is None:
-        return True
+        return None
     return started >= int(run_started_at) - _LEGACY_PID_START_TOLERANCE_SECONDS
+
+
+# Bare-pid signal gates that stood down, deduped per (task, run, pid,
+# verdict) so a long-lived unreadable state cannot flood the log (the
+# gate itself is idempotent; the warning fires once per run id).
+_bare_pid_gate_warned: set[tuple[str, Optional[int], int, str]] = set()
+
+
+def _warn_bare_pid_gate_stood_down(
+    task_id: str,
+    run_id: Optional[int],
+    pid: int,
+    verdict: str,
+) -> None:
+    key = (task_id, run_id, pid, verdict)
+    if key in _bare_pid_gate_warned:
+        return
+    _bare_pid_gate_warned.add(key)
+    reason = {
+        "pid_reused": "no longer matches the recorded start fingerprint "
+                      "(recycled pid)",
+        "pid_predates_run": "was running before the run began "
+                            "(unrelated recycled pid)",
+        "pid_identity_unknown": "could not be verified against the "
+                                "recorded start fingerprint (process data "
+                                "unreadable)",
+        "pid_membership_unknown": "could not be verified as belonging to "
+                                  "this run (process data unreadable)",
+    }.get(verdict, verdict)
+    _log.warning(
+        "kanban: task %s run %s pid %s %s — not signalling; reclaiming",
+        task_id, run_id, pid, reason,
+    )
+
+
+def _pid_identity_state(pid: int, started_at: Optional[int]) -> str:
+    """Compare a live pid against its recorded start fingerprint.
+
+    Returns ``"gone"`` (not alive), ``"match"`` (same process we
+    spawned), ``"different"`` (alive but the fingerprint differs — a
+    recycled pid), or ``"unknown"`` (alive, but no fingerprint was
+    recorded or the live one could not be read). ``"unknown"`` is
+    distinct so signal gates can fail safe on it (finding P) while
+    liveness checks keep treating it as alive (no regression).
+    """
+    if not _pid_alive(pid):
+        return "gone"
+    if started_at is None:
+        return "unknown"
+    try:
+        from gateway.status import get_process_start_time
+    except Exception:
+        return "unknown"
+    live = get_process_start_time(int(pid))
+    if live is None:
+        return "unknown"
+    return "match" if live == int(started_at) else "different"
 
 
 def _worker_pid_identity_alive(pid: int, started_at: Optional[int]) -> bool:
@@ -9639,18 +9700,7 @@ def _worker_pid_identity_alive(pid: int, started_at: Optional[int]) -> bool:
     column, or a fingerprint read failure), fall back to plain liveness —
     this guard refines detection, it must never make it worse than today.
     """
-    if not _pid_alive(pid):
-        return False
-    if started_at is None:
-        return True
-    try:
-        from gateway.status import get_process_start_time
-    except Exception:
-        return True
-    live = get_process_start_time(int(pid))
-    if live is None:
-        return True
-    return live == int(started_at)
+    return _pid_identity_state(pid, started_at) not in ("gone", "different")
 
 
 def _worker_termination_tuple(row: Any) -> tuple[
@@ -9927,7 +9977,7 @@ def enforce_max_runtime(
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_pid_started_at, t.worker_scope, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.current_run_id "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -9965,40 +10015,48 @@ def enforce_max_runtime(
                 )
                 continue
             scope_verified = True
-        # PID-identity gate before ANY signal (review finding 3): a
-        # recycled pid must never be signalled, and a scope just verified
-        # empty means nothing of this run survives — the recorded pid is
-        # dead or recycled, and signalling it hits an unrelated process.
+        # PID-identity gate before ANY signal (review finding 3; fail-safe
+        # unknown handling from pass 4 finding P): a recycled pid must
+        # never be signalled, a scope just verified empty means nothing of
+        # this run survives — and a pid whose identity or run membership
+        # CANNOT be determined (unreadable process data) is not signalled
+        # either: a signal we cannot attribute might hit an unrelated
+        # process, so the run is reclaimed without signalling. Rows whose
+        # identity verifiably matches keep the bare-pid kill.
         skip_signals = False
         pid_reused = False
+        gate_verdict: Optional[str] = None
         if scope_verified:
             skip_signals = True
             pid_reused = _pid_alive(pid)
-        elif pid_started is not None and not _worker_pid_identity_alive(
-            pid, pid_started,
-        ):
-            skip_signals = True
-            pid_reused = _pid_alive(pid)
-            if pid_reused:
-                _log.warning(
-                    "kanban: task %s max-runtime pid %s was reused by an "
-                    "unrelated process — not signalling; reclaiming",
-                    tid, pid,
+        elif pid_started is not None:
+            identity = _pid_identity_state(pid, pid_started)
+            if identity in ("different", "unknown"):
+                skip_signals = True
+                pid_reused = _pid_alive(pid)
+                gate_verdict = (
+                    "pid_reused" if identity == "different"
+                    else "pid_identity_unknown"
                 )
-        elif pid_started is None and not _legacy_pid_belongs_to_run(
-            pid, row["active_started_at"],
-        ):
-            # Legacy row with no spawn fingerprint: the live pid was
-            # running BEFORE this run existed, so it cannot be this
-            # run's worker — an unrelated process inherited the pid
-            # number.  Reclaim without signalling it.
-            skip_signals = True
-            pid_reused = _pid_alive(pid)
-            if pid_reused:
-                _log.warning(
-                    "kanban: task %s max-runtime pid %s predates the run "
-                    "— unrelated process; not signalling; reclaiming",
-                    tid, pid,
+                _warn_bare_pid_gate_stood_down(
+                    tid, row["current_run_id"], pid, gate_verdict,
+                )
+        else:
+            # Legacy row with no spawn fingerprint: membership by
+            # wall-clock start time. Predates => unrelated recycled pid;
+            # unverifiable => fail safe the same way (finding P).
+            belongs = _legacy_pid_belongs_to_run(
+                pid, row["active_started_at"],
+            )
+            if belongs is not True:
+                skip_signals = True
+                pid_reused = _pid_alive(pid)
+                gate_verdict = (
+                    "pid_predates_run" if belongs is False
+                    else "pid_membership_unknown"
+                )
+                _warn_bare_pid_gate_stood_down(
+                    tid, row["current_run_id"], pid, gate_verdict,
                 )
         # Legacy rows whose pid plausibly belongs to the run (and rows
         # with a matching fingerprint) keep the bare-pid kill — no
@@ -10051,6 +10109,8 @@ def enforce_max_runtime(
                 }
                 if pid_reused:
                     payload["pid_reused"] = True
+                if gate_verdict:
+                    payload["signal_skipped"] = gate_verdict
                 if scope_verified:
                     payload["scope_stopped"] = row["worker_scope"]
                 run_id = _end_run(

@@ -6331,6 +6331,7 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
         explicit_base_url=base_url,
         explicit_api_key=api_key,
         api_mode=api_mode,
+        explicit_extra_headers=entry.get("extra_headers"),
     )
     if client is not None:
         try:
@@ -6339,6 +6340,18 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
             )
         except Exception:
             pass
+        # Merge entry-specific extra_headers into the client so they
+        # survive in fallback requests (#87098).
+        entry_headers = entry.get("extra_headers")
+        if entry_headers and isinstance(entry_headers, dict):
+            try:
+                existing = getattr(client, "default_headers", None) or {}
+                if isinstance(existing, dict):
+                    merged = dict(existing)
+                    merged.update(entry_headers)
+                    client.default_headers = merged
+            except Exception:
+                pass
     return client, resolved_model
 
 
@@ -6788,6 +6801,7 @@ def resolve_provider_client(
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
     task: Optional[str] = None,
+    explicit_extra_headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.

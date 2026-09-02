@@ -434,6 +434,7 @@ class CodexAppServerSession:
         exc: Any = "",
         *,
         tail_lines: int = _STDERR_TAIL_LINES,
+        client: Optional[CodexAppServerClient] = None,
     ) -> str:
         """Build a user-facing error string for codex failures.
 
@@ -448,13 +449,18 @@ class CodexAppServerSession:
         Use this for the generic / catch-all branches. Specific
         classifications (OAuth via _classify_oauth_failure, post-tool wedge
         watchdog) already produce a clean hint and should be used instead.
+
+        ``client`` lets callers pass the client reference they already hold
+        (e.g. run_turn's local snapshot) instead of re-reading
+        ``self._client``, which a concurrent close() can null out mid-turn.
         """
         exc_str = str(exc) if exc != "" and exc is not None else ""
         base = f"{prefix}: {exc_str}" if exc_str else prefix
-        if self._client is None:
+        active_client = client if client is not None else self._client
+        if active_client is None:
             return base
         try:
-            tail = self._client.stderr_tail(tail_lines)
+            tail = active_client.stderr_tail(tail_lines)
         except Exception:  # pragma: no cover - diagnostic best-effort
             return base
         if not tail:
@@ -504,6 +510,16 @@ class CodexAppServerSession:
             return result
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
+        # Snapshot the client once for the rest of this turn. self._client
+        # is not lock-protected against a concurrent close() (e.g. the
+        # gateway session-expiry watcher tearing this session down mid-turn)
+        # — re-reading the attribute inside the poll loop below would raise
+        # AttributeError the instant close() nulls it out from under us.
+        # The snapshot stays a valid (if closed) object for the rest of
+        # this call, so is_alive()/take_notification()/etc. degrade
+        # gracefully into the existing "subprocess exited" handling instead
+        # of crashing.
+        client = self._client
 
         # Do not clear here: a hard stop can arrive while ensure_started() is
         # spawning/initializing the subprocess. Honor it before launching a
@@ -519,7 +535,7 @@ class CodexAppServerSession:
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
-            ts = self._client.request(
+            ts = client.request(
                 "turn/start",
                 {
                     "threadId": self._thread_id,
@@ -530,7 +546,7 @@ class CodexAppServerSession:
         except CodexAppServerError as exc:
             # Classify auth/refresh failures so the user gets a clear
             # `codex login` pointer instead of a raw RPC error string.
-            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            stderr_blob = "\n".join(client.stderr_tail(40))
             hint = _classify_oauth_failure(exc.message, stderr_blob)
             if hint is not None:
                 result.error = hint
@@ -541,16 +557,16 @@ class CodexAppServerSession:
                 result.should_retire = True
             else:
                 result.error = self._format_error_with_stderr(
-                    "turn/start failed", exc
+                    "turn/start failed", exc, client=client
                 )
             self._interrupt_event.clear()
             return result
         except TimeoutError as exc:
             # turn/start hanging is a strong signal the subprocess is wedged.
-            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            stderr_blob = "\n".join(client.stderr_tail(40))
             hint = _classify_oauth_failure(stderr_blob)
             result.error = hint or self._format_error_with_stderr(
-                "turn/start timed out", exc
+                "turn/start timed out", exc, client=client
             )
             result.should_retire = True
             self._interrupt_event.clear()
@@ -569,16 +585,17 @@ class CodexAppServerSession:
 
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
-                self._issue_interrupt(result.turn_id)
+                self._issue_interrupt(result.turn_id, client=client)
                 result.interrupted = True
                 break
 
             # Detect a dead subprocess between iterations. If codex exited
             # (e.g. crashed, segfaulted, or its auth refresh thread killed
-            # the process), we won't get any more notifications — bail out
+            # the process — including a concurrent close() from another
+            # thread), we won't get any more notifications — bail out
             # rather than waiting for the full turn deadline.
-            if not self._client.is_alive():
-                stderr_blob = "\n".join(self._client.stderr_tail(60))
+            if not client.is_alive():
+                stderr_blob = "\n".join(client.stderr_tail(60))
                 hint = _classify_oauth_failure(stderr_blob)
                 if hint is not None:
                     result.error = hint
@@ -586,6 +603,7 @@ class CodexAppServerSession:
                     result.error = self._format_error_with_stderr(
                         "codex app-server subprocess exited unexpectedly",
                         tail_lines=20,
+                        client=client,
                     )
                 result.should_retire = True
                 break
@@ -598,7 +616,7 @@ class CodexAppServerSession:
                 and (time.monotonic() - last_tool_completion_at)
                     > post_tool_quiet_timeout
             ):
-                self._issue_interrupt(result.turn_id)
+                self._issue_interrupt(result.turn_id, client=client)
                 result.interrupted = True
                 result.error = (
                     f"codex went silent for "
@@ -610,14 +628,14 @@ class CodexAppServerSession:
 
             # Drain any server-initiated requests (approvals) before
             # reading notifications, so the codex side isn't blocked.
-            sreq = self._client.take_server_request(timeout=0)
+            sreq = client.take_server_request(timeout=0)
             if sreq is not None:
                 # Drain any pending notifications first so per-turn state
                 # (e.g. _pending_file_changes for fileChange approvals) is
                 # up to date when we make the approval decision. Bounded
                 # to avoid starving the server-request response.
                 for _ in range(8):
-                    pending = self._client.take_notification(timeout=0)
+                    pending = client.take_notification(timeout=0)
                     if pending is None:
                         break
                     if not _notification_belongs_to_turn(
@@ -663,13 +681,13 @@ class CodexAppServerSession:
                                 result.error
                                 or "codex reported turn_aborted"
                             )
-                self._handle_server_request(sreq)
+                self._handle_server_request(sreq, client=client)
                 # Activity counts as live signal — reset the post-tool
                 # quiet timer so an approval round-trip doesn't trip it.
                 last_tool_completion_at = None
                 continue
 
-            note = self._client.take_notification(
+            note = client.take_notification(
                 timeout=notification_poll_timeout
             )
             if note is None:
@@ -746,7 +764,7 @@ class CodexAppServerSession:
                         # rewrite the error into a re-auth hint AND mark
                         # the session for retirement.
                         stderr_blob = "\n".join(
-                            self._client.stderr_tail(40)
+                            client.stderr_tail(40)
                         )
                         hint = _classify_oauth_failure(err_msg, stderr_blob)
                         if hint is not None:
@@ -754,7 +772,9 @@ class CodexAppServerSession:
                             result.should_retire = True
                         else:
                             result.error = self._format_error_with_stderr(
-                                f"turn ended status={turn_status}", err_msg
+                                f"turn ended status={turn_status}",
+                                err_msg,
+                                client=client,
                             )
 
         if (
@@ -775,11 +795,11 @@ class CodexAppServerSession:
             # tell the caller to retire the session — a turn that never
             # finished is a strong sign codex is wedged in a way the next
             # turn shouldn't inherit.
-            self._issue_interrupt(result.turn_id)
+            self._issue_interrupt(result.turn_id, client=client)
             result.interrupted = True
             if not result.error:
                 result.error = self._format_error_with_stderr(
-                    f"turn timed out after {turn_timeout}s"
+                    f"turn timed out after {turn_timeout}s", client=client
                 )
             result.should_retire = True
 
@@ -812,18 +832,21 @@ class CodexAppServerSession:
             return result
 
         assert self._client is not None and self._thread_id is not None
+        # Snapshot the client once for the rest of this call — see the
+        # matching comment in run_turn() for why (concurrent close() race).
+        client = self._client
         result.thread_id = self._thread_id
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
         try:
-            self._client.request(
+            client.request(
                 "thread/compact/start",
                 {"threadId": self._thread_id},
                 timeout=10,
             )
         except CodexAppServerError as exc:
-            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            stderr_blob = "\n".join(client.stderr_tail(40))
             hint = _classify_oauth_failure(exc.message, stderr_blob)
             if hint is not None:
                 result.error = hint
@@ -834,7 +857,7 @@ class CodexAppServerSession:
                 )
             return result
         except TimeoutError as exc:
-            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            stderr_blob = "\n".join(client.stderr_tail(40))
             hint = _classify_oauth_failure(stderr_blob)
             result.error = hint or self._format_error_with_stderr(
                 "thread/compact/start timed out", exc
@@ -847,12 +870,12 @@ class CodexAppServerSession:
 
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
-                self._issue_interrupt(result.turn_id)
+                self._issue_interrupt(result.turn_id, client=client)
                 result.interrupted = True
                 break
 
-            if not self._client.is_alive():
-                stderr_blob = "\n".join(self._client.stderr_tail(60))
+            if not client.is_alive():
+                stderr_blob = "\n".join(client.stderr_tail(60))
                 hint = _classify_oauth_failure(stderr_blob)
                 if hint is not None:
                     result.error = hint
@@ -864,12 +887,12 @@ class CodexAppServerSession:
                 result.should_retire = True
                 break
 
-            sreq = self._client.take_server_request(timeout=0)
+            sreq = client.take_server_request(timeout=0)
             if sreq is not None:
-                self._handle_server_request(sreq)
+                self._handle_server_request(sreq, client=client)
                 continue
 
-            note = self._client.take_notification(
+            note = client.take_notification(
                 timeout=notification_poll_timeout
             )
             if note is None:
@@ -956,7 +979,7 @@ class CodexAppServerSession:
                 elif turn_status and turn_status != "completed":
                     err_obj = turn_obj.get("error")
                     err_msg = _format_responses_error(err_obj, str(turn_status))
-                    stderr_blob = "\n".join(self._client.stderr_tail(40))
+                    stderr_blob = "\n".join(client.stderr_tail(40))
                     hint = _classify_oauth_failure(err_msg, stderr_blob)
                     if hint is not None:
                         result.error = hint
@@ -968,7 +991,7 @@ class CodexAppServerSession:
                         )
 
         if not turn_complete and not result.interrupted:
-            self._issue_interrupt(result.turn_id)
+            self._issue_interrupt(result.turn_id, client=client)
             result.interrupted = True
             if not result.error:
                 result.error = self._format_error_with_stderr(
@@ -980,11 +1003,17 @@ class CodexAppServerSession:
 
     # ---------- internals ----------
 
-    def _issue_interrupt(self, turn_id: Optional[str]) -> None:
-        if self._client is None or self._thread_id is None or turn_id is None:
+    def _issue_interrupt(
+        self,
+        turn_id: Optional[str],
+        *,
+        client: Optional[CodexAppServerClient] = None,
+    ) -> None:
+        active_client = client if client is not None else self._client
+        if active_client is None or self._thread_id is None or turn_id is None:
             return
         try:
-            self._client.request(
+            active_client.request(
                 "turn/interrupt",
                 {"threadId": self._thread_id, "turnId": turn_id},
                 timeout=5,
@@ -995,7 +1024,9 @@ class CodexAppServerSession:
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 
-    def _handle_server_request(self, req: dict) -> None:
+    def _handle_server_request(
+        self, req: dict, *, client: Optional[CodexAppServerClient] = None
+    ) -> None:
         """Translate a codex server request (approval) into Hermes' approval
         flow, then send the response.
 
@@ -1006,8 +1037,13 @@ class CodexAppServerSession:
                                                   (we decline; user controls
                                                   permission profile in
                                                   ~/.codex/config.toml).
+
+        ``client`` lets run_turn/compact_thread pass their local snapshot
+        instead of re-reading ``self._client`` (see _format_error_with_stderr
+        for why that matters under a concurrent close()).
         """
-        if self._client is None:
+        active_client = client if client is not None else self._client
+        if active_client is None:
             return
         method = req.get("method", "")
         rid = req.get("id")
@@ -1015,16 +1051,16 @@ class CodexAppServerSession:
 
         if method == "item/commandExecution/requestApproval":
             decision = self._decide_exec_approval(params)
-            self._client.respond(rid, {"decision": decision})
+            active_client.respond(rid, {"decision": decision})
         elif method == "item/fileChange/requestApproval":
             decision = self._decide_apply_patch_approval(params)
-            self._client.respond(rid, {"decision": decision})
+            active_client.respond(rid, {"decision": decision})
         elif method == "item/permissions/requestApproval":
             # Codex sometimes asks to escalate permissions mid-turn. We
             # always decline — the user already chose their permission
             # profile in ~/.codex/config.toml and surprise escalations
             # shouldn't be silently accepted.
-            self._client.respond(rid, {"decision": "decline"})
+            active_client.respond(rid, {"decision": "decline"})
         elif method == "mcpServer/elicitation/request":
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,
@@ -1036,12 +1072,12 @@ class CodexAppServerSession:
             # codex's own auth flow.
             server_name = params.get("serverName") or ""
             if server_name == "hermes-tools":
-                self._client.respond(
+                active_client.respond(
                     rid,
                     {"action": "accept", "content": None, "_meta": None},
                 )
             else:
-                self._client.respond(
+                active_client.respond(
                     rid,
                     {"action": "decline", "content": None, "_meta": None},
                 )
@@ -1049,7 +1085,7 @@ class CodexAppServerSession:
             # Unknown server request — codex can extend this surface. Reject
             # cleanly so codex doesn't hang waiting for us.
             logger.warning("Unknown codex server request: %s", method)
-            self._client.respond_error(
+            active_client.respond_error(
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
 

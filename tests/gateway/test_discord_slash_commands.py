@@ -602,3 +602,43 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     )
 
 
+
+
+# ------------------------------------------------------------------
+# _build_slash_event — guild/parent ids reach profile_routes (#69178, #91633)
+# ------------------------------------------------------------------
+
+
+def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypatch):
+    """A guild-keyed profile route must match a native slash command exactly
+    as it matches a regular message: build_source needs guild_id (and the
+    thread's parent_chat_id) or the route never fires and /new resets the
+    default profile's session instead of the routed one."""
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+    from gateway.profile_routing import ProfileRoute
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        profile_routes=[ProfileRoute(name="work", profile="work", platform="discord", guild_id="1")],
+    )
+    monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda _cfg: [("work", None)])
+    adapter.gateway_runner = runner
+    user = SimpleNamespace(display_name="Jezza", id=42)
+
+    channel_event = adapter._build_slash_event(
+        SimpleNamespace(channel=SimpleNamespace(id=200, name="general", guild=SimpleNamespace(id=1, name="G"), topic=None),
+                        channel_id=200, guild_id=1, user=user),
+        "/new",
+    )
+    thread_event = adapter._build_slash_event(
+        SimpleNamespace(channel=_FakeThreadChannel(channel_id=555), channel_id=555, guild_id=None, user=user),
+        "/status",
+    )
+
+    assert channel_event.source.guild_id == "1"
+    assert channel_event.source.profile == "work"
+    assert thread_event.source.guild_id == "1"
+    assert thread_event.source.parent_chat_id == "100"
+    assert thread_event.source.profile == "work"

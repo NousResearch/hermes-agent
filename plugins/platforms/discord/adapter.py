@@ -6456,6 +6456,14 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
+    def _interaction_guild_id(self, interaction: discord.Interaction) -> Optional[str]:
+        """Resolve the guild id of a slash interaction (mirrors the message path)."""
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            guild = getattr(getattr(interaction, "channel", None), "guild", None)
+            guild_id = getattr(guild, "id", None)
+        return str(guild_id) if guild_id else None
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -6480,6 +6488,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        # guild_id/parent_chat_id feed profile_routes matching in build_source,
+        # exactly as on_message passes them — without them a guild- or
+        # channel-routed profile never matches a native slash command (#69178).
+        parent_id = (
+            self._get_parent_channel_id(interaction.channel) if is_thread else None
+        ) or ""
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -6488,11 +6502,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=parent_id or None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -6574,6 +6589,8 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -6582,10 +6599,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(

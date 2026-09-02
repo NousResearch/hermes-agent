@@ -199,7 +199,7 @@ export function AboutSettings() {
                 <Button onClick={() => startActiveUpdate()} size="sm">
                   {a.updateNow}
                 </Button>
-                <Button onClick={() => openUpdatesWindow()} size="sm" variant="textStrong">
+                <Button onClick={() => openUpdatesWindow('client')} size="sm" variant="textStrong">
                   {a.seeWhatsNew}
                 </Button>
               </>

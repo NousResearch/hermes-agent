@@ -205,8 +205,12 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * Closing the toast — dismissing it or opening the updates window from it —
  * (re)starts the cooldown, so a busy upstream branch doesn't re-spam the user
  * on every new commit. The snooze is persisted, so it survives relaunches too.
+ *
+ * `target` is the target whose status produced this toast. The overlay has no
+ * target switcher, so a client-status toast that opened the backend overlay
+ * showed the user a machine they weren't told about, with no way back.
  */
-export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
+export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
@@ -232,7 +236,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
       label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
-        openUpdatesWindow()
+        openUpdateOverlayFor(target)
       }
     },
     durationMs: 0,
@@ -248,8 +252,24 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   })
 }
 
-export function openUpdatesWindow(): void {
-  openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+/** The target a generic, surface-less update command acts on: the machine the
+ *  user is connected to. Surfaces that display one target's status must pass
+ *  that target explicitly instead of inheriting this. */
+function activeUpdateTarget(): UpdateTarget {
+  return isRemoteMode() ? 'backend' : 'client'
+}
+
+/**
+ * Open the updates overlay and kick off its check.
+ *
+ * Callers tied to a specific status surface pass its target; only genuinely
+ * generic entry points take the connection-mode default. The macOS "Check for
+ * Updates…" menu item is the former — it is the OS-standard affordance for
+ * updating *this app*, so in remote mode it checked the wrong machine and the
+ * Mac client silently drifted behind (#70266).
+ */
+export function openUpdatesWindow(target: UpdateTarget = activeUpdateTarget()): void {
+  openUpdateOverlayFor(target)
 }
 
 /**
@@ -263,19 +283,22 @@ export function openUpdatesWindow(): void {
  * through the everything-flow so "update" means every machine, not just the
  * active target — the single-target ternary is what left remote-mode users
  * updating the backend forever while the GUI itself went stale.
+ *
+ * An explicit `target` opts out of both: the caller is acting on one named
+ * machine's status and must not fan out to the others.
  */
-export function startActiveUpdate(): void {
-  if (hasMultipleUpdateTargets()) {
+export function startActiveUpdate(target?: UpdateTarget): void {
+  if (!target && hasMultipleUpdateTargets()) {
     $updateOverlayOpen.set(true)
     void applyEverythingUpdate()
 
     return
   }
 
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+  const effective = target ?? activeUpdateTarget()
+  $updateOverlayTarget.set(effective)
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void (effective === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
 /**
@@ -304,11 +327,11 @@ export function requestActiveUpdate(): void {
     }
   }
 
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  const target = activeUpdateTarget()
   const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
 
   if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
-    startActiveUpdate()
+    startActiveUpdate(target)
 
     return
   }
@@ -373,7 +396,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
   try {
     const status = mapBackendCheck(await checkHermesUpdate(true))
     $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    maybeNotifyUpdateAvailable(status, 'backend')
 
     return status
   } catch (error) {
@@ -404,7 +427,7 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   try {
     const status = await bridge.check()
     $updateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
 
     return status

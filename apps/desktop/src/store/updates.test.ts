@@ -89,6 +89,8 @@ const {
   applyUpdates,
   applyEverythingUpdate,
   hasMultipleUpdateTargets,
+  openUpdatesWindow,
+  startActiveUpdate,
   $updateApply,
   $updateEverything,
   $updateOverlayOpen,
@@ -117,7 +119,7 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
   ...over
 })
 
-const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
+const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { action: { onClick: () => void }; onDismiss: () => void }
 
 const setRemote = (on: boolean) =>
   setConnection({
@@ -407,6 +409,102 @@ describe('requestActiveUpdate', () => {
 
     requestActiveUpdate()
     await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+  })
+})
+
+// Surface-bound update entry points. A surface that displays ONE target's
+// status must act on that target: the overlay has no target switcher, so
+// inheriting the connection-mode default silently pointed the user at the
+// other machine. This is what left a Mac desktop on a months-old build while
+// its remote Linux backend updated fine, with no error anywhere (#70266).
+describe('explicit update targets', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 4, updateAvailable: true }))
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    $updateOverlayTarget.set('backend')
+    $mockConnectionsRegistry.set(null)
+    setRemote(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => expect($updateEverything.get().running).toBe(false), { timeout: 5000 })
+    await vi.waitFor(() => expect($backendUpdateApply.get().applying).toBe(false), { timeout: 5000 })
+    setRemote(false)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  // The macOS "Check for Updates…" app-menu item — the OS-standard affordance
+  // for updating THIS app — routes here via `hermes:open-updates`.
+  it('opens the client overlay on an explicit client target, even in remote mode', async () => {
+    openUpdatesWindow('client')
+
+    expect($updateOverlayTarget.get()).toBe('client')
+    await vi.waitFor(() => expect(checkClientMock).toHaveBeenCalledTimes(1))
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  it('still defaults to the connected machine when no target is named', async () => {
+    openUpdatesWindow()
+
+    expect($updateOverlayTarget.get()).toBe('backend')
+    await vi.waitFor(() => expect(checkHermesUpdateSpy).toHaveBeenCalled())
+    expect(checkClientMock).not.toHaveBeenCalled()
+  })
+
+  it('applies the client update on an explicit client target, without fanning out', async () => {
+    startActiveUpdate('client')
+
+    expect($updateOverlayTarget.get()).toBe('client')
+    await vi.waitFor(() => expect(applyClientMock).toHaveBeenCalledTimes(1))
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect($updateEverything.get().running).toBe(false)
+  })
+
+  it('keeps the everything-flow for the generic, target-less apply', async () => {
+    $backendUpdateStatus.set(status({ behind: 3 }))
+
+    startActiveUpdate()
+
+    await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled(), { timeout: 5000 })
+  })
+
+  // A toast raised by the CLIENT check must open the client overlay: the user
+  // was told the app is behind, so landing them on the backend's (current)
+  // status reads as the update having vanished.
+  it('opens the overlay for the target whose status raised the toast', () => {
+    maybeNotifyUpdateAvailable(status(), 'client')
+    lastToast().action.onClick()
+    expect($updateOverlayTarget.get()).toBe('client')
+
+    storage.clear() // clear the snooze the click just set
+    maybeNotifyUpdateAvailable(status({ targetSha: 'sha-b' }), 'backend')
+    lastToast().action.onClick()
+    expect($updateOverlayTarget.get()).toBe('backend')
   })
 })
 

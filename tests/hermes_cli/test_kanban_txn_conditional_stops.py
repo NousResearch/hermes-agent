@@ -45,10 +45,22 @@ def _queued() -> set[str]:
 
 def test_stop_requested_inside_txn_flushes_after_commit(conn):
     with kb.write_txn(conn):
-        assert kb.request_worker_scope_stop("u1.scope", task_id="t1") is False
+        assert kb.request_worker_scope_stop(
+            "u1.scope", task_id="t1", conn=conn,
+        ) is False
         # Deferred: not on the queue while the transaction is open.
         assert _queued() == set()
     assert _queued() == {"u1.scope"}
+
+
+def test_stop_requested_without_conn_queues_immediately(conn):
+    """Post-AA contract: the intent stack is keyed by CONNECTION, so a
+    request that does not name its connection cannot be folded into any
+    transaction — it queues immediately. The legacy no-conn call sites
+    run outside any transaction by construction."""
+    with kb.write_txn(conn):
+        assert kb.request_worker_scope_stop("noconn.scope") is False
+        assert _queued() == {"noconn.scope"}
 
 
 def test_stop_requested_inside_txn_discarded_on_rollback(conn):
@@ -57,17 +69,19 @@ def test_stop_requested_inside_txn_discarded_on_rollback(conn):
 
     with pytest.raises(Boom):
         with kb.write_txn(conn):
-            assert kb.request_worker_scope_stop("u2.scope", task_id="t2") is False
+            assert kb.request_worker_scope_stop(
+                "u2.scope", task_id="t2", conn=conn,
+            ) is False
             raise Boom
     assert _queued() == set()
 
 
 def test_nested_savepoint_rollback_discards_only_its_own_intents(conn):
     with kb.write_txn(conn):
-        kb.request_worker_scope_stop("outer.scope")
+        kb.request_worker_scope_stop("outer.scope", conn=conn)
         with pytest.raises(RuntimeError):
             with kb.write_txn(conn, allow_nested=True):
-                kb.request_worker_scope_stop("inner.scope")
+                kb.request_worker_scope_stop("inner.scope", conn=conn)
                 raise RuntimeError("inner level aborts")
         # The inner savepoint's intent died with its rollback; the outer
         # one is still pending its commit.
@@ -78,7 +92,7 @@ def test_nested_savepoint_rollback_discards_only_its_own_intents(conn):
 def test_nested_savepoint_release_folds_intents_into_outer_commit(conn):
     with kb.write_txn(conn):
         with kb.write_txn(conn, allow_nested=True):
-            kb.request_worker_scope_stop("folded.scope")
+            kb.request_worker_scope_stop("folded.scope", conn=conn)
         # RELEASE promoted the intent to the outer level — still deferred
         # until the OUTERMOST commit, not just the savepoint's.
         assert _queued() == set()

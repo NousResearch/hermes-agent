@@ -111,6 +111,13 @@ model:
   #
   # context_length: 131072
   #
+  # ollama_num_ctx: Ollama only — the num_ctx sent on every chat request.
+  #   Hermes auto-detects the model's window and sends it (Ollama otherwise
+  #   defaults to 2048); set this to cap VRAM use. context_length, if set,
+  #   caps it further.
+  #
+  # ollama_num_ctx: 32768
+  #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
   #   Unrelated to how long your conversation history can be.
   #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native
@@ -509,6 +516,11 @@ terminal:
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
+#   # Refuse agent writes to instruction files that steer the agent itself
+#   # (AGENTS.md, CLAUDE.md, SOUL.md, ...). Set false to allow them; add
+#   # fnmatch patterns on the basename to protect more files.
+#   protected_instruction_files: true
+#   protected_instruction_extra_patterns: []
 
 # =============================================================================
 # Browser Tool Configuration
@@ -528,6 +540,14 @@ browser:
   # or decrease to reduce context usage. Minimum: 1000; default: 15000
   # (same per-page budget as web_extract).
   # snapshot_threshold: 15000
+
+  # JavaScript evaluation guardrails (both default false). restrict_evaluate
+  # opts into a denylist that blocks sensitive primitives (cookies, storage,
+  # clipboard, network, form values) in browser_console(expression=...) — use
+  # it when the agent drives a logged-in profile. allow_unsafe_evaluate is the
+  # legacy override that switches the denylist back off even when restrict is on.
+  # restrict_evaluate: false
+  # allow_unsafe_evaluate: false
 
 # =============================================================================
 # Tool Loop Guardrails
@@ -1145,6 +1165,14 @@ agent:
   # restart_drain_timeout like before.
   # cron_drain_timeout: 30
 
+  # In-band restart wait (seconds) for active turns to finish BEFORE stop()
+  # begins. /restart and SIGUSR1 refuse new work, then wait up to this cap for
+  # in-flight agent, cron and API runs to complete so the requesting turn is
+  # not cut off by restart_drain_timeout. 0 = enter stop()/drain immediately.
+  # The default (30 min) is a safety valve for wedged agents, not a target
+  # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
+  # restart_after_turn_timeout: 1800
+
   # Upper bound (seconds) a submitted prompt waits for the deferred agent
   # build (MCP discovery, model metadata, skills scan) before failing with a
   # visible error. The wait is patient — the message is delivered as soon as
@@ -1161,12 +1189,13 @@ agent:
   # api_max_retries: 3
 
   # After the agent edits code without fresh passing verification, nudge it to
-  # verify before finishing. The default "auto" enables it on interactive
-  # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
-  # it on conversational messaging surfaces (Telegram, Discord, etc.) where the
-  # verification summary would reach a human as chat noise. Set true or false to
-  # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
-  # verify_on_stop: auto
+  # verify before finishing. Off by default (false). Set true to force it on
+  # everywhere, or "auto" for the surface-aware mode: on for interactive
+  # coding surfaces (CLI, TUI, desktop) and programmatic callers, off on
+  # conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # verification summary would reach a human as chat noise. The
+  # HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
+  # verify_on_stop: false
 
   # Standing operator instructions for the coding posture (when Hermes is in a
   # code workspace). Appended to the coding brief as an extra system block, so
@@ -1495,6 +1524,13 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   # Per-platform audio upload limits. Built-in defaults: discord 10 MiB,
+#   # telegram 50 MiB, everything else 10 MiB, each with safety_ratio 0.85
+#   # (the fraction of max_file_bytes actually targeted). Override per platform:
+#   delivery_profiles:
+#     telegram:
+#       max_file_bytes: 52428800
+#       safety_ratio: 0.85
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"
@@ -1804,9 +1840,9 @@ display:
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
-  #   true:  Show the reasoning box
-  #   false: Hide reasoning (default)
-  show_reasoning: false
+  #   true:  Show the reasoning box (default)
+  #   false: Hide reasoning
+  show_reasoning: true
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears

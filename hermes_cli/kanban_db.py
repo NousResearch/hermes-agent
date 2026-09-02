@@ -9416,7 +9416,7 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_scope, "
+        "SELECT t.id, t.worker_pid, t.worker_pid_started_at, t.worker_scope, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -9437,15 +9437,16 @@ def enforce_max_runtime(
             continue
 
         pid = int(row["worker_pid"])
+        pid_started = row["worker_pid_started_at"]
         tid = row["id"]
         # Scoped workers: stop the whole unit first, VERIFIED. ``systemctl
         # --user stop`` SIGTERMs every process in the worker's cgroup (dev
         # servers, browsers, DB engines it spawned) and escalates to
-        # SIGKILL itself, so the pid loop below is a backstop, not the
-        # primary mechanism, for isolated runs. If the stop cannot be
-        # confirmed this tick, hold the claim and retry next tick —
-        # releasing a claim while a max-runtime worker still lives would
-        # let the dispatcher spawn a duplicate beside it.
+        # SIGKILL itself. If the stop cannot be confirmed this tick, hold
+        # the claim and retry next tick — releasing a claim while a
+        # max-runtime worker still lives would let the dispatcher spawn a
+        # duplicate beside it.
+        scope_verified = False
         if row["worker_scope"]:
             if not request_worker_scope_stop(row["worker_scope"], task_id=tid):
                 _log.warning(
@@ -9454,6 +9455,29 @@ def enforce_max_runtime(
                     row["worker_scope"], tid,
                 )
                 continue
+            scope_verified = True
+        # PID-identity gate before ANY signal (review finding 3): a
+        # recycled pid must never be signalled, and a scope just verified
+        # empty means nothing of this run survives — the recorded pid is
+        # dead or recycled, and signalling it hits an unrelated process.
+        skip_signals = False
+        pid_reused = False
+        if scope_verified:
+            skip_signals = True
+            pid_reused = _pid_alive(pid)
+        elif pid_started is not None and not _worker_pid_identity_alive(
+            pid, pid_started,
+        ):
+            skip_signals = True
+            pid_reused = _pid_alive(pid)
+            if pid_reused:
+                _log.warning(
+                    "kanban: task %s max-runtime pid %s was reused by an "
+                    "unrelated process — not signalling; reclaiming",
+                    tid, pid,
+                )
+        # Legacy rows without a fingerprint keep the bare-pid kill (no
+        # better signal exists for them).
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
@@ -9461,7 +9485,7 @@ def enforce_max_runtime(
         kill = signal_fn if signal_fn is not None else (
             os.kill if hasattr(os, "kill") else None
         )
-        if kill is not None:
+        if kill is not None and not skip_signals:
             try:
                 kill(pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
@@ -9500,6 +9524,10 @@ def enforce_max_runtime(
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                if pid_reused:
+                    payload["pid_reused"] = True
+                if scope_verified:
+                    payload["scope_stopped"] = row["worker_scope"]
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",

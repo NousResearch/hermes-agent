@@ -1450,6 +1450,79 @@ def test_enforce_max_runtime_defers_then_completes(shims, conn):
     assert row["worker_scope"] is None
 
 
+def _max_runtime_row(conn, pid, scope, *, pid_started_at=None,
+                     registered=True):
+    """A running row past its max_runtime, owned by this host's claimer."""
+    tid = kb.create_task(conn, title="max runtime", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_scope=?, worker_registered_at=?, "
+        "max_runtime_seconds=1, started_at=? WHERE id=?",
+        (
+            pid, pid_started_at, scope,
+            now if registered else None, now - 100, tid,
+        ),
+    )
+    conn.execute(
+        "UPDATE task_runs SET started_at = started_at - 9999 "
+        "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)", (tid,),
+    )
+    conn.commit()
+    return tid
+
+
+def _timed_out_payload(conn, tid) -> dict:
+    event = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'timed_out'",
+        (tid,),
+    ).fetchone()
+    return json.loads(event["payload"]) if event else {}
+
+
+def test_enforce_max_runtime_scoped_never_signals_the_pid(shims, conn):
+    """E (finding 3, scoped half): a scoped max-runtime run is ended by a
+    VERIFIED scope stop and the recorded pid is never signalled — once
+    the cgroup is confirmed empty nothing of the run survives, and the
+    pid number may already have been handed to an unrelated process."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_maxrt_scoped", 1)
+    shims.write_unit(unit, [pid])
+    tid = _max_runtime_row(
+        conn, pid, unit, pid_started_at=kb._worker_pid_start_time(pid),
+    )
+    signals: list[tuple[int, int]] = []
+
+    def recording_kill(p, s):
+        signals.append((p, s))
+
+    assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
+    assert signals == []  # the unit was stopped; the pid itself untouched
+    assert not kb._pid_alive(pid)  # teardown verified, not assumed
+    assert _timed_out_payload(conn, tid)["scope_stopped"] == unit
+
+
+def test_enforce_max_runtime_never_signals_a_recycled_pid(shims, conn):
+    """E (finding 3, unscoped half): when the recorded start fingerprint no
+    longer matches the live pid (the worker died and the kernel reused its
+    number), the run times out WITHOUT signalling — a bare liveness kill
+    would murder an unrelated process that inherited the pid."""
+    pid = shims.sleeper()  # stands in for the unrelated impostor process
+    tid = _max_runtime_row(conn, pid, None, pid_started_at=111111)
+    signals: list[tuple[int, int]] = []
+
+    def recording_kill(p, s):
+        signals.append((p, s))
+
+    assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
+    assert signals == []
+    assert kb._pid_alive(pid)  # the impostor was never touched
+    payload = _timed_out_payload(conn, tid)
+    assert payload.get("pid_reused") is True
+
+
 def test_reclaim_task_stops_worker_scope(shims, conn):
     """Operator reclaim of a scoped worker stops its scope too."""
     pid = shims.sleeper()

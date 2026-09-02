@@ -93,6 +93,34 @@ def test_rank_slash_completions_uses_score_before_usage():
     assert [item["text"] for item in ranked_plain] == ["/notes", "/summarize"]
 
 
+def test_rank_slash_completions_does_not_truncate_commands_when_browsing():
+    # A bare `/` must surface every registry command (issue: /goal, /loop,
+    # /queue sat past position 30 and never reached the client) while the
+    # user-growable skill block keeps its cap.
+    commands = [_item(f"/cmd{i}") for i in range(40)]
+
+    ranked = _rank_slash_completions(
+        commands,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=True,
+    )
+    assert len(ranked) == 40
+    assert ranked[-1]["text"] == "/cmd39"
+
+
+def test_rank_slash_completions_still_caps_commands_when_searching():
+    commands = [_item(f"/cmd{i}") for i in range(40)]
+
+    ranked = _rank_slash_completions(
+        commands,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=False,
+    )
+    assert len(ranked) == 30
+
+
 def test_rank_slash_completions_ties_break_on_usage_then_name():
     a = _item("/beta", kind="skill")
     b = _item("/alpha", kind="skill")

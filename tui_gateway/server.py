@@ -3434,7 +3434,10 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         skills = [item for item in skills if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0]
     skills.sort(key=lambda item: (
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
-    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+    # Commands come from the bounded, curated registry (~150 entries), not from user-installed skills, which is
+    # what the cap exists to bound. Truncating the command block hid /goal, /loop and /queue from a bare `/`.
+    ranked_commands = commands if browsing else commands[:_SLASH_COMPLETION_LIMIT]
+    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 # argv shapes that must not run headless in the gateway process → user hint.

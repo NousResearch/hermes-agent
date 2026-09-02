@@ -8,10 +8,11 @@ the OpenAI Python SDK pointed at Meta's base URL and authenticate with
 Output is base64 JSON (WebP) -> saved under ``$HERMES_HOME/cache/images/``.
 
 Selection precedence (first hit wins):
-  1. ``META_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
-  2. ``image_gen.meta-ai.model`` in ``config.yaml``
-  3. ``image_gen.model`` in ``config.yaml`` (when it's one of our IDs)
-  4. :data:`DEFAULT_MODEL`
+  1. ``model`` kwarg forwarded by the dispatcher (the ``hermes tools`` pick)
+  2. ``META_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
+  3. ``image_gen.meta-ai.model`` in ``config.yaml``
+  4. ``image_gen.model`` in ``config.yaml`` (when it's one of our IDs)
+  5. :data:`DEFAULT_MODEL`
 """
 
 from __future__ import annotations
@@ -81,8 +82,17 @@ _SIZES: Dict[str, str] = {
 }
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Return (model_id, metadata) using the documented precedence chain."""
+def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Return (model_id, metadata) using the documented precedence chain.
+
+    ``caller_model`` is the ``model`` kwarg the dispatcher forwards from the
+    top-level ``image_gen.model`` config key (what ``hermes tools`` writes).
+    It wins when it names one of our models, mirroring the xai/krea/openrouter
+    providers, so a user's picker choice is never silently dropped.
+    """
+    if caller_model and caller_model in _MODELS:
+        return caller_model, _MODELS[caller_model]
+
     env_model = os.environ.get("META_IMAGE_MODEL")
     if env_model and env_model in _MODELS:
         return env_model, _MODELS[env_model]
@@ -142,7 +152,7 @@ class MetaImageGenProvider(ImageGenProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Meta Model API",
-            "badge": "internal",
+            "badge": "paid",
             "tag": "Muse Image via Meta Model API (api.meta.ai)",
             "env_vars": [
                 {
@@ -200,7 +210,7 @@ class MetaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        model_id, _meta = _resolve_model()
+        model_id, _meta = _resolve_model(kwargs.get("model"))
         size = _SIZES.get(aspect, _SIZES["square"])
 
         client = openai.OpenAI(api_key=api_key, base_url=_resolve_base_url())

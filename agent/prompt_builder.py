@@ -1258,7 +1258,6 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if cached is not None:
         return cached or None
 
-    env = None
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.

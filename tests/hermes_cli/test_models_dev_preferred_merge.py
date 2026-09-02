@@ -105,14 +105,17 @@ class TestProviderModelIdsPreferred:
             ):
                 custom_models = provider_model_ids("kimi-coding")
 
-        # The live bare wire id ``k3`` folds into the curated public slug
-        # ``kimi-k3`` (picker alias dedup) — one row, curated slug leads.
-        assert coding_models[0] == "kimi-k3"
-        assert all(model.lower() != "k3" for model in coding_models)
-        assert all(model.lower() != "k3" for model in legacy_models)
-        assert all(model.lower() != "k3" for model in custom_models)
-        # Legacy / custom endpoints never advertise the k3 family at all
-        # via live discovery (their curated floor may still carry kimi-k3).
+        # Live wire id ``k3`` is first-class on the coding endpoint catalog
+        # (retired public slug ``kimi-k3`` is no longer the picker lead).
+        assert coding_models[0] == "k3"
+        assert "k3" in {m.lower() for m in coding_models}
+        # Coding-plan live SoT must not reintroduce retired k2.* public slugs.
+        assert all("k2" not in m.lower() for m in coding_models)
+        assert all(m.lower() != "kimi-k3" for m in coding_models)
+        # Non-coding base URLs still inherit the curated floor (includes bare
+        # k3) but the retired public slug must not reappear as a picker row.
+        assert all(m.lower() != "kimi-k3" for m in legacy_models)
+        assert all(m.lower() != "kimi-k3" for m in custom_models)
 
     def test_kimi_setup_flow_uses_same_coding_plan_catalog(self):
         """The setup wizard must not carry a stale duplicate Kimi model list."""
@@ -133,7 +136,7 @@ class TestProviderModelIdsPreferred:
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "kimi-k3"
+        assert captured["models"][0] == "k3"
 
 
 class TestOpenRouterAndNousUnchanged:

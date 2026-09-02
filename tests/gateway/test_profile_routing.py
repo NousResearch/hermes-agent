@@ -53,52 +53,38 @@ class TestParseProfileRoutes:
         assert parse_profile_routes([]) == []
 
     def test_coerces_yaml_native_int_ids_to_str(self):
-        # PyYAML loads unquoted snowflakes as int; inbound SessionSource IDs are str.
-        raw = [
-            {
-                "name": "server",
-                "platform": "discord",
-                "profile": "p",
-                "guild_id": 111,
-                "chat_id": 222,
-                "thread_id": 333,
-            },
-        ]
-        routes = parse_profile_routes(raw)
-        assert routes[0].guild_id == "111"
-        assert routes[0].chat_id == "222"
-        assert routes[0].thread_id == "333"
-        assert all(isinstance(v, str) for v in (
-            routes[0].guild_id, routes[0].chat_id, routes[0].thread_id,
-        ))
-        matched = match_profile_route(
-            routes, "discord", guild_id="111", chat_id="222", thread_id="333",
-        )
-        assert matched is not None
-        assert matched.name == "server"
-
-    def test_coerces_negative_telegram_chat_id(self):
-        raw = [
-            {
-                "name": "tg",
-                "platform": "telegram",
-                "profile": "p",
-                "chat_id": -1001234567890,
-            },
-        ]
-        routes = parse_profile_routes(raw)
-        assert routes[0].chat_id == "-1001234567890"
-        matched = match_profile_route(routes, "telegram", chat_id="-1001234567890")
-        assert matched is not None
-        assert matched.name == "tg"
-
-    def test_omitted_ids_remain_none(self):
+        # PyYAML loads unquoted snowflakes / negative Telegram ids as int;
+        # inbound SessionSource ids are str, so un-coerced routes never match.
         routes = parse_profile_routes([
+            {"name": "server", "platform": "discord", "profile": "p",
+             "guild_id": 111, "chat_id": 222, "thread_id": 333},
+            {"name": "tg", "platform": "telegram", "profile": "p",
+             "chat_id": -1001234567890},
             {"name": "platform-only", "platform": "discord", "profile": "p"},
         ])
-        assert routes[0].guild_id is None
-        assert routes[0].chat_id is None
-        assert routes[0].thread_id is None
+        by_name = {r.name: r for r in routes}
+        assert (by_name["server"].guild_id, by_name["server"].chat_id,
+                by_name["server"].thread_id) == ("111", "222", "333")
+        assert match_profile_route(
+            routes, "discord", guild_id="111", chat_id="222", thread_id="333",
+        ).name == "server"
+        assert match_profile_route(
+            routes, "telegram", chat_id="-1001234567890",
+        ).name == "tg"
+        assert (by_name["platform-only"].guild_id, by_name["platform-only"].chat_id,
+                by_name["platform-only"].thread_id) == (None, None, None)
+
+    def test_non_int_numeric_ids_warn_instead_of_silently_coercing(self, caplog):
+        # #86470 nuance: float/bool stringify to values that can never match
+        # an inbound id, so surface the misconfiguration at load time.
+        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {"name": "f", "platform": "discord", "profile": "p", "chat_id": 123.0},
+                {"name": "b", "platform": "discord", "profile": "p", "guild_id": True},
+            ])
+        assert {r.name for r in routes} == {"f", "b"}
+        assert match_profile_route(routes, "discord", chat_id="123") is None
+        assert sum("can never match" in rec.message for rec in caplog.records) == 2
 
 
 class TestMatchProfileRoute:

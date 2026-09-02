@@ -163,9 +163,22 @@ def _coerce_route_id(value: Any) -> Optional[str]:
     PyYAML loads unquoted numeric IDs (Discord snowflakes, Telegram negative
     chat ids) as ``int``. Inbound ``SessionSource`` fields are always ``str``
     via ``build_source``, so leaving ints here makes ``matches()`` fail silently.
+
+    Only ``int`` is coerced (the legitimate YAML-numeric case). ``bool`` is an
+    ``int`` subclass but never a valid id; floats and other types stringify to
+    something (``"123.0"``) that can never equal an inbound id — recreating the
+    silent no-match this exists to fix — so they are passed through with a
+    load-time warning instead of being silently "fixed" (#86470).
     """
-    if value is None:
-        return None
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    logger.warning(
+        "Profile route discriminator %r (type %s) can never match an inbound "
+        "id — quote it in config.yaml (e.g. chat_id: \"%s\").",
+        value, type(value).__name__, value,
+    )
     return str(value)
 
 

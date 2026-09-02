@@ -5056,11 +5056,17 @@ def check_all_command_guards(command: str, env_type: str,
     # inspect the explanation and approve if they understand the risk.
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        tirith_desc = _format_tirith_description(tirith_result)
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, tirith_desc, True))
+        _skip_low_warn = False
+        if tirith_result["action"] == "warn" and findings:
+            _severities = {str(f.get("severity", "")).upper() for f in findings}
+            if _severities and all(s in {"LOW", "INFO", ""} for s in _severities):
+                _skip_low_warn = True
+        if not _skip_low_warn:
+            rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+            tirith_key = f"tirith:{rule_id}"
+            tirith_desc = _format_tirith_description(tirith_result)
+            if not is_approved(session_key, tirith_key):
+                warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
         if not is_approved(session_key, pattern_key):

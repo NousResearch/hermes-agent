@@ -5713,6 +5713,7 @@ def _known_top_level_keys() -> set[str]:
     known shape.
     """
     keys = set(DEFAULT_CONFIG.keys())
+    keys.update(_EXTRA_KNOWN_ROOT_KEYS)
     keys.update(_OPEN_DICT_TOP_LEVEL_KEYS)
     keys.update(_DYNAMIC_TOP_LEVEL_KEYS)
     keys.update(_SCHEMA_DEFINED_DICT_KEYS)

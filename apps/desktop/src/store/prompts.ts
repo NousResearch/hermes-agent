@@ -184,7 +184,7 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
 }
 
 export async function replayPendingApproval(gateway: ApprovalGateway | null, sessionId: string | null): Promise<void> {
-  if (!gateway || !sessionId || isSessionGone(sessionId)) {
+  if (!gateway || !canAttemptScopedRpc(sessionId)) {
     return
   }
 
@@ -198,6 +198,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   } catch (error) {
     if (isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)
+      if (liveId) markSessionGone(liveId)
 
       return
     }

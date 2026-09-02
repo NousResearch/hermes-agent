@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { resetRuntimeGoneHealing } from '@/store/runtime-gone'
-import { $activeSessionId, $sessionResumeRequest } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessionResumeRequest } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -42,6 +42,7 @@ beforeEach(() => {
   $sessionStates.set({})
   $sessionTiles.set([])
   $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
   $sessionResumeRequest.set(null)
 })
 
@@ -51,6 +52,7 @@ afterEach(() => {
   $sessionStates.set({})
   $sessionTiles.set([])
   $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
   $sessionResumeRequest.set(null)
   vi.restoreAllMocks()
 })
@@ -157,5 +159,23 @@ describe('session.reclaimed', () => {
     reclaim('live-gone')
 
     expect($sessionResumeRequest.get()).toBeNull()
+  })
+
+  it('resumes from payload stored_session_id when the runtime has no cached mapping', () => {
+    mountStream()
+    $activeSessionId.set('live-gone')
+
+    reclaim('live-gone')
+
+    expect($sessionResumeRequest.get()?.sessionId).toBe('stored-1')
+  })
+
+  it('resumes the selected stored session when envelope and payload runtime ids are empty', () => {
+    mountStream()
+    $selectedStoredSessionId.set('stored-1')
+
+    reclaim('')
+
+    expect($sessionResumeRequest.get()?.sessionId).toBe('stored-1')
   })
 })

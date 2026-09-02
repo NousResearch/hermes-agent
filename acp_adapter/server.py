@@ -2216,6 +2216,28 @@ class HermesACPAgent(acp.Agent):
         await self._send_usage_update(state)
 
         stop_reason = "cancelled" if cancelled else "end_turn"
+        if result.get("failed"):
+            # A non-retryable provider error (model retired, missing key, billing)
+            # already lands in ``result`` as failed/error — see
+            # ``agent.conversation_loop``. Without surfacing it, the only thing the
+            # client receives is ``final_response`` (the error summary) delivered as
+            # an ordinary assistant message plus stop_reason=end_turn, i.e. the
+            # failure is indistinguishable from a real answer.
+            #
+            # ``_meta`` rather than stop_reason="refusal": refusal means the model
+            # refused, and it is already used above for "session not found", so
+            # reusing it would conflate two very different outcomes. ``_meta`` is
+            # additive and ignored by clients that do not know about it.
+            return PromptResponse(
+                stop_reason=stop_reason,
+                usage=usage,
+                field_meta={
+                    "hermes": {
+                        "failed": True,
+                        "error": str(result.get("error") or "")[:500],
+                    }
+                },
+            )
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------

@@ -446,6 +446,71 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_prompt_surfaces_failed_turn_in_meta(self, agent, mock_manager):
+        """A failed turn must be distinguishable from a real answer.
+
+        ``agent.conversation_loop`` already reports non-retryable provider errors
+        (model retired, missing key, billing) as ``failed``/``error`` in the result.
+        Before this, ``prompt()`` read neither: the error summary went out as an
+        ordinary assistant message and stop_reason stayed ``end_turn``, so a client
+        had no way to tell the turn had failed — it looked exactly like a reply
+        whose text happened to be ``HTTP 400: ...``.
+        """
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+
+        summary = 'HTTP 400: {"error":{"message":"model not found"}}'
+        state.agent.run_conversation = lambda *a, **k: {
+            "final_response": summary,
+            "messages": [],
+            "completed": False,
+            "failed": True,
+            "error": summary,
+        }
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        out = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
+
+        assert isinstance(out, PromptResponse)
+        meta = (out.field_meta or {}).get("hermes") or {}
+        assert meta.get("failed") is True
+        assert "model not found" in (meta.get("error") or "")
+        # stop_reason stays end_turn on purpose: "refusal" means the model refused
+        # and is already used for unknown sessions, so it must not be overloaded.
+        assert out.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_prompt_leaves_meta_unset_on_success(self, agent, mock_manager):
+        """A normal turn must not grow a failure marker."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.run_conversation = lambda *a, **k: {
+            "final_response": "ok",
+            "messages": [],
+        }
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        out = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
+
+        assert ((out.field_meta or {}).get("hermes") or {}).get("failed") is not True
+
 
 
 

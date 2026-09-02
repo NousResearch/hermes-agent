@@ -574,7 +574,7 @@ class MemoryManager:
                     raise ValueError("provider name is too long")
 
                 frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
-                    candidate.payload, budget=traversal_budget
+                    candidate.payload, operation_budget=traversal_budget
                 )
                 encoded = json.dumps(
                     {

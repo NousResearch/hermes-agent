@@ -137,6 +137,7 @@ class TestStartRun:
                 data = await resp.json()
                 assert data["status"] == "started"
                 assert data["run_id"].startswith("run_")
+                assert "X-Hermes-Session-Id" not in resp.headers
 
                 status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
                 assert status_resp.status == 200

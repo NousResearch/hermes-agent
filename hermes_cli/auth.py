@@ -2058,6 +2058,14 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         if real_home_env and _same_path(root_path, Path(real_home_env) / ".hermes" / "auth.json"):
             return None
     profile_path = _auth_file_path()
+    if _same_path(profile_path, root_path):
+        # Symlinked profile store (profile auth.json -> root auth.json, same
+        # file): nothing is forked.  Running the consolidation would load the
+        # same store twice, find every profile OAuth row "already at root",
+        # strip it from the profile view and save the shared file WITHOUT the
+        # row — deleting the live grant on every load_pool() after an mtime
+        # bump (re-auth).  Exit before any read-modify-write.
+        return None
     profile_home = profile_path.parent
     root_home = root_path.parent
     profile_singleton = profile_home / ".anthropic_oauth.json" if provider_id == "anthropic" else None

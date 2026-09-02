@@ -60,6 +60,57 @@ def test_auth_lock_path_follows_symlink(tmp_path, monkeypatch):
     assert _canonical_auth_path(profile / "auth.json") == (root / "auth.json").resolve()
 
 
+@pytest.mark.require_symlinks
+def test_heal_forked_oauth_grants_skips_symlinked_profile_store(tmp_path, monkeypatch):
+    """Regression: heal must not run when the profile store IS the root store.
+
+    ``load_pool()`` calls ``heal_forked_single_use_oauth_grants`` on every
+    load.  With a symlinked profile auth.json the heal loaded the same file
+    twice, matched every profile OAuth row as its own "root counterpart",
+    stripped it from the profile view and saved the shared inode WITHOUT the
+    row — deleting a live xAI grant right after a re-auth bumped the mtime.
+    """
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = tmp_path / "root"
+    _seed(root)
+    profile = tmp_path / "profiles" / "jn-design"
+    profile.mkdir(parents=True)
+    (profile / "auth.json").symlink_to(root / "auth.json")
+
+    # Pool row mirroring the singleton, as `hermes auth add xai-oauth` seeds it.
+    raw = json.loads((root / "auth.json").read_text())
+    raw["credential_pool"] = {
+        "xai-oauth": [
+            {
+                "id": "9d195e",
+                "source": "manual:device_code",
+                "auth_type": "oauth",
+                "access_token": "dead-access",
+                "refresh_token": "dead-refresh",
+                "priority": 0,
+                "base_url": "https://api.x.ai",
+            }
+        ]
+    }
+    (root / "auth.json").write_text(json.dumps(raw, indent=2))
+
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HERMES_PROFILE_HOME", str(profile))
+    assert heal_forked_single_use_oauth_grants("xai-oauth") is None
+
+    pool = load_pool("xai-oauth")
+    ids = [entry.id for entry in pool.entries()]
+    assert "9d195e" in ids
+
+    raw = json.loads((root / "auth.json").read_text())
+    assert any(
+        row.get("id") == "9d195e"
+        for row in raw.get("credential_pool", {}).get("xai-oauth", [])
+    )
+
+
 def test_quarantine_adopts_peer_rotation_instead_of_wiping(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     auth_file = _seed(hermes_home, refresh="rt-old")

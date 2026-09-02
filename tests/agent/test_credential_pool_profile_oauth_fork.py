@@ -450,3 +450,71 @@ def test_heal_is_a_noop_in_classic_mode(fleet):
     before = (fleet["root"] / "auth.json").read_text()
     assert heal_forked_single_use_oauth_grants("anthropic") is None
     assert (fleet["root"] / "auth.json").read_text() == before
+
+
+# ── C. a SHARED root store is not a fork (#101356) ───────────────────────
+
+def _seed_codex_grant(root):
+    """Give the root store an openai-codex pool row AND a providers block."""
+    fresh = int((time.time() + 3600) * 1000)
+    store = json.loads((root / "auth.json").read_text())
+    store["credential_pool"]["openai-codex"] = [{
+        "id": "cdx001", "label": "codex", "auth_type": "oauth", "priority": 0,
+        "source": "manual:device_code", "access_token": "cdx-AT0",
+        "refresh_token": "cdx-RT0", "expires_at_ms": fresh,
+    }]
+    store["providers"]["openai-codex"] = {
+        "tokens": {"access_token": "cdx-AT0", "refresh_token": "cdx-RT0", "expires_at_ms": fresh},
+        "last_refresh": fresh / 1000.0,
+    }
+    (root / "auth.json").write_text(json.dumps(store))
+
+
+def _shared_profile(fleet, name, *, link):
+    """Profile whose auth.json IS the root store (``link`` makes the alias)."""
+    pdir = _profile(fleet, name)
+    pdir.mkdir(parents=True, exist_ok=True)
+    alias = pdir / "auth.json"
+    if alias.is_symlink() or alias.exists():
+        alias.unlink()
+    link(fleet["root"] / "auth.json", alias)
+    return pdir
+
+
+def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
+    """#101356: `ln -s ~/.hermes/auth.json <profile>/auth.json` shares ONE store.
+    Both sides of the consolidation read the same file, so every row looks like
+    a fork of itself — healing would strip the shared grant through the link."""
+    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+
+    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    fleet["use"](shared)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root / "auth.json").read_text() == before
+    assert (shared / "auth.json").is_symlink()
+    assert consume_oauth_heal_notices() == []
+    store = json.loads((root / "auth.json").read_text())
+    assert [r["id"] for r in store["credential_pool"]["openai-codex"]] == ["cdx001"]
+    assert store["providers"]["openai-codex"]["tokens"]["refresh_token"] == "cdx-RT0"
+
+
+def test_heal_skips_profile_auth_json_hardlinked_to_the_root_store(fleet):
+    """Same class as the symlink: a hardlink resolves to a different name but
+    is the same inode, so it is still one store, not a forked copy."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+
+    shared = _shared_profile(fleet, "twin", link=lambda target, alias: os.link(target, alias))
+    fleet["use"](shared)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root / "auth.json").read_text() == before
+    assert (shared / "auth.json").samefile(root / "auth.json")

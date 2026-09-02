@@ -1431,6 +1431,66 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     return result
 
 
+# Floor for a plausible unix-epoch timestamp (2001-09-09). Salvage rows
+# uniformly below it were mis-mapped, not merely unlucky (#101409).
+_PLAUSIBLE_TIMESTAMP_FLOOR = 1_000_000_000.0
+
+
+def _lost_and_found_plausibility_errors(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Flag systematic timestamp mis-mapping in a salvaged database.
+
+    Structural checks (integrity, FK, FTS, row counts) pass on mis-mapped
+    salvage because every row still inserts. Only semantics give it away:
+    the physical column order of a source upgraded via ALTER TABLE differs
+    from the destination template's declared order, so positional cell
+    mapping lands counters/strings where ``started_at``/``timestamp``
+    belong — and the NOT NULL substitutes turn gaps into 0.0. When every
+    row violates the epoch floor, the mapping was wrong.
+    """
+
+    errors: list[str] = []
+
+    (session_total,) = conn.execute(
+        "SELECT COUNT(*) FROM sessions"
+    ).fetchone()
+    if session_total:
+        (implausible,) = conn.execute(
+            "SELECT COUNT(*) FROM sessions "
+            "WHERE started_at IS NULL OR started_at < ?",
+            (_PLAUSIBLE_TIMESTAMP_FLOOR,),
+        ).fetchone()
+        if implausible == session_total:
+            errors.append(
+                f"sessions.started_at is implausible in all "
+                f"{session_total} salvaged row(s) (NULL or before 2001-09): "
+                "the source's physical column order did not match the "
+                "destination template, so cells were mapped onto the "
+                "wrong columns"
+            )
+
+    (message_total,) = conn.execute(
+        "SELECT COUNT(*) FROM messages"
+    ).fetchone()
+    if message_total:
+        (implausible,) = conn.execute(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE timestamp IS NULL OR timestamp < ?",
+            (_PLAUSIBLE_TIMESTAMP_FLOOR,),
+        ).fetchone()
+        if implausible == message_total:
+            errors.append(
+                f"messages.timestamp is implausible in all "
+                f"{message_total} salvaged row(s) (NULL or before 2001-09): "
+                "the source's physical column order did not match the "
+                "destination template, so cells were mapped onto the "
+                "wrong columns"
+            )
+
+    return errors
+
+
 def _recover_via_lost_and_found(
     *,
     source: Path,
@@ -1529,6 +1589,21 @@ def _recover_via_lost_and_found(
         "heuristically. Review every count before trusting this output."
     )
     verification["complete"] = False
+
+    # Structural checks cannot see a positional mis-mapping (#101409):
+    # every row still inserts, so integrity/FK/FTS stay green. A
+    # systematic timestamp violation is the semantic tell — surface it
+    # so a mis-mapped salvage is never reported as verified.
+    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        plausibility_errors = _lost_and_found_plausibility_errors(
+            plausibility_conn
+        )
+    finally:
+        plausibility_conn.close()
+    if plausibility_errors:
+        verification["errors"].extend(plausibility_errors)
+        verification["healthy"] = False
 
     source_unchanged = (
         _source_fingerprint(source) == inspection["source_fingerprint"]

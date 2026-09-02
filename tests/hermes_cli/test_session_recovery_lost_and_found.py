@@ -569,3 +569,170 @@ def test_fingerprint_error_enumerates_parent_cli_session(
     assert "CLI session" in message
     assert "fresh shell" in message
     assert "snapshot" in message
+
+
+# ── issue #101409: mis-mapped salvage must not be reported verified ─────────
+
+
+def _map_salvage_rows(
+    tmp_path: Path,
+    *,
+    blank_session_started_at: bool,
+    blank_message_timestamp: bool,
+) -> sqlite3.Connection:
+    """Map synthetic lost_and_found cells into a fresh template DB.
+
+    With either ``blank_*`` flag the cells mimic an upgraded source's
+    *physical* column order (#101409): whatever lands on the declared
+    ``started_at``/``timestamp`` position is not an epoch timestamp, so
+    the NOT NULL substitute turns it into 0.0 on every row.
+    """
+
+    schema_ref = tmp_path / "schema-ref.db"
+    SessionDB(db_path=schema_ref).close()
+    schema = sqlite3.connect(str(schema_ref))
+    try:
+        sessions_columns = [
+            str(row[1]) for row in schema.execute("PRAGMA table_info(sessions)")
+        ]
+        messages_columns = [
+            str(row[1]) for row in schema.execute("PRAGMA table_info(messages)")
+        ]
+    finally:
+        schema.close()
+    current_width = len(sessions_columns)
+
+    lf_path = tmp_path / "lost_and_found.db"
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    try:
+        lf_cells = ", ".join(f"c{i}" for i in range(current_width))
+        lf_conn.execute(
+            "CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, "
+            "nfield INTEGER, id INTEGER, " + lf_cells + ")"
+        )
+
+        def insert(nfield: int, rowid: int, values: list) -> None:
+            padded = list(values) + [None] * (current_width - len(values))
+            placeholders = ", ".join("?" for _ in range(4 + current_width))
+            lf_conn.execute(
+                "INSERT INTO lost_and_found VALUES (" + placeholders + ")",
+                [2, 5, nfield, rowid, *padded],
+            )
+
+        def session_row(session_id: str) -> list:
+            # title is UNIQUE (idx_sessions_title_unique) — keep it distinct
+            # per row so the probe isolates timestamp mis-mapping.
+            row = {
+                "id": session_id,
+                "source": "telegram",
+                "started_at": None
+                if blank_session_started_at
+                else 1_754_000_000.0,
+                "message_count": 2,
+                "title": f"mis-mapped probe {session_id}",
+            }
+            return [row.get(column) for column in sessions_columns]
+
+        for index in range(3):
+            insert(
+                current_width,
+                index + 1,
+                session_row(f"20260101_01010{index}_aaa00{index}"),
+            )
+
+        for index in range(2):
+            message = {
+                "id": None,
+                "session_id": "20260101_010100_aaa000",
+                "role": "user",
+                "content": "payload",
+                "timestamp": None
+                if blank_message_timestamp
+                else 1_754_000_100.0 + index,
+            }
+            insert(
+                23,
+                100 + index,
+                [message.get(column) for column in messages_columns[:23]],
+            )
+    finally:
+        lf_conn.close()
+
+    output = tmp_path / "mapped.db"
+    SessionDB(db_path=output).close()
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        dest.execute("PRAGMA foreign_keys=OFF")
+        map_lost_and_found_rows(lf_conn, dest)
+    finally:
+        lf_conn.close()
+        dest.close()
+    return sqlite3.connect(str(output), isolation_level=None)
+
+
+def test_plausibility_gate_flags_positional_mis_mapping(
+    tmp_path: Path,
+) -> None:
+    """A salvage whose timestamps all landed below the epoch floor was
+    mapped onto the wrong columns and must be flagged, not verified
+    (#101409)."""
+
+    conn = _map_salvage_rows(
+        tmp_path,
+        blank_session_started_at=True,
+        blank_message_timestamp=False,
+    )
+    try:
+        # The mapper happily inserted every row; structural checks pass.
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE started_at = 0.0"
+        ).fetchone()[0] == 3
+
+        errors = session_recovery._lost_and_found_plausibility_errors(conn)
+        assert len(errors) == 1
+        assert "sessions.started_at" in errors[0]
+    finally:
+        conn.close()
+
+
+def test_plausibility_gate_flags_mis_mapped_message_timestamps(
+    tmp_path: Path,
+) -> None:
+    conn = _map_salvage_rows(
+        tmp_path,
+        blank_session_started_at=False,
+        blank_message_timestamp=True,
+    )
+    try:
+        errors = session_recovery._lost_and_found_plausibility_errors(conn)
+        assert len(errors) == 1
+        assert "messages.timestamp" in errors[0]
+    finally:
+        conn.close()
+
+
+def test_plausibility_gate_passes_correctly_mapped_salvage(
+    tmp_path: Path,
+) -> None:
+    """Well-mapped rows — and partially damaged ones (a torn cell on some
+    rows is expected salvage noise) — must not trip the gate: it fires
+    only on a *systematic* violation."""
+
+    conn = _map_salvage_rows(
+        tmp_path,
+        blank_session_started_at=False,
+        blank_message_timestamp=False,
+    )
+    try:
+        # Damage one of three sessions the way a torn cell would.
+        conn.execute(
+            "UPDATE sessions SET started_at = 0.0 WHERE id = ?",
+            ("20260101_010101_aaa001",),
+        )
+        conn.commit()
+
+        assert session_recovery._lost_and_found_plausibility_errors(conn) == []
+    finally:
+        conn.close()

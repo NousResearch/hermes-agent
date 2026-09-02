@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.parse
+import unicodedata
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,9 +21,14 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
+from hermes_cli import plugin_install_state as _install_state
 from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
-from utils import atomic_write_text
+from utils import (
+    secure_replace,
+    secure_rmtree,
+    secure_unlink,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +53,7 @@ def _resolve_git_executable() -> Optional[str]:
     return next((c for c in candidates if c and os.path.isfile(c)), None)
 
 
-class PluginOperationError(Exception):
-    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+PluginOperationError = _install_state.PluginOperationError
 
 
 class PluginScanBlocked(PluginOperationError):
@@ -117,7 +123,10 @@ def _write_config_value(section: str, key: str, value: Any) -> None:
     from hermes_cli.config import load_config, save_config
     config = load_config()
     config.setdefault(section, {})[key] = value
-    save_config(config)
+    save_config(
+        config,
+        preserve_plugin_state=section != "plugins",
+    )
 
 
 def _scan_on_install_enabled() -> bool:
@@ -170,27 +179,50 @@ def _plugins_dir() -> Path:
 
 
 def _sanitize_plugin_name(name: str, plugins_dir: Path, *, allow_subdir: bool = False) -> Path:
-    """Validate a plugin name and return the safe target path inside *plugins_dir*.
-
-    Raises ``ValueError`` on traversal or a target outside the plugins directory. ``allow_subdir``
-    permits forward slashes so category keys like ``observability/langfuse`` can be looked up
-    (``..`` and backslashes stay rejected); install paths keep ``False`` — a clone lands top-level.
-    """
+    """Validate a plugin name and return its non-aliased path below *plugins_dir*."""
     if allow_subdir and name:
         name = name.strip("/")
     if not name:
         raise ValueError("Plugin name must not be empty.")
     if name in {".", ".."}:
         raise ValueError(f"Invalid plugin name '{name}': must not reference the plugins directory itself.")
-    for bad in ("\\", "..") if allow_subdir else ("/", "\\", ".."):
+    if name.split("/", 1)[0].casefold().startswith(".install-"):
+        raise ValueError(f"Invalid plugin name '{name}': reserved for installer state.")
+    for bad in (("\\", "..") if allow_subdir else ("/", "\\", "..")):
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")
 
-    target = (plugins_dir / name).resolve()
-    plugins_resolved = plugins_dir.resolve()
-    if target == plugins_resolved:
-        raise ValueError(f"Invalid plugin name '{name}': resolves to the plugins directory itself.")
-    if plugins_resolved not in target.parents:
+    reserved = {"con", "prn", "aux", "nul", "clock$", "conin$", "conout$"} | {
+        f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
+    }
+    parts = name.split("/")
+    for part in parts:
+        if part.endswith((".", " ")):
+            raise ValueError(f"Invalid plugin name '{name}': path components must not end in a dot or space.")
+        stem = unicodedata.normalize("NFKC", part.split(".", 1)[0]).casefold()
+        if stem in reserved:
+            raise ValueError(f"Invalid plugin name '{name}': contains a reserved filesystem name.")
+        if any(char in part for char in '<>:"|?*'):
+            raise ValueError(f"Invalid plugin name '{name}': contains a reserved filesystem character.")
+
+    root = plugins_dir.resolve()
+    current = root
+    for part in parts:
+        if current.is_dir():
+            alias = next((
+                child for child in current.iterdir()
+                if unicodedata.normalize("NFC", child.name).casefold()
+                == unicodedata.normalize("NFC", part).casefold()
+                and child.name != part
+            ), None)
+            if alias is not None:
+                raise ValueError(f"Invalid plugin name '{name}': aliases existing path '{alias.name}'.")
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"Invalid plugin name '{name}': symlink destinations are not allowed.")
+
+    target = root.joinpath(*parts).resolve()
+    if target == root or root not in target.parents:
         raise ValueError(f"Invalid plugin name '{name}': resolves outside the plugins directory.")
     return target
 
@@ -421,29 +453,50 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 _EXACT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
+def _install_metadata_lock():
+    return _install_state._install_metadata_lock()
+
+
 def _install_metadata_path() -> Path:
-    return get_hermes_home() / "plugins" / ".install-metadata.json"
+    return _install_state._install_metadata_path()
+
+
+def _install_transaction_path() -> Path:
+    return _install_state._install_transaction_path()
 
 
 def _read_install_metadata() -> dict[str, dict[str, object]]:
-    """Read profile-local, non-secret plugin source metadata from disk."""
-    path = _install_metadata_path()
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PluginOperationError(f"Could not read plugin install metadata: {exc}") from exc
-    if not isinstance(value, dict):
-        raise PluginOperationError("Plugin install metadata must be a JSON object.")
-    return value
+    return _install_state._read_install_metadata()
 
 
 def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
-    """Atomically replace the profile-local plugin install metadata sidecar."""
-    path = _install_metadata_path()
-    atomic_write_text(
-        path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
+    _install_state._write_install_metadata(metadata)
+
+
+def _plugin_membership(name: str) -> tuple[bool, bool]:
+    return _install_state._plugin_membership(name)
+
+
+def _restore_plugin_membership(
+    name: str, was_enabled: bool, was_disabled: bool
+) -> None:
+    _install_state._restore_plugin_membership(name, was_enabled, was_disabled)
+
+
+def _write_install_transaction(value: dict[str, object]) -> None:
+    _install_state._write_install_transaction(value)
+
+
+def _recover_install_transaction() -> None:
+    _install_state._recover_install_transaction()
+
+
+def _marketplace_metadata(entry) -> dict[str, object]:
+    return _install_state._marketplace_metadata(entry)
+
+
+def _marketplace_install(plugin_name: str) -> Optional[dict[str, object]]:
+    return _install_state._marketplace_install(plugin_name)
 
 
 def _normalize_exact_revision(ref: str) -> str:
@@ -610,55 +663,133 @@ def _install_plugin_core(
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
+    skip_removed_check: bool = False,
+    metadata_extra: Optional[dict[str, object]] = None,
+    catalog_entry=None,
+    enable_on_commit: bool = False,
 ) -> tuple[Path, dict, str]:
-    """Clone a Git plugin and atomically record its source and exact revision."""
+    """Clone, validate, and transactionally install one Git plugin."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
-    except ValueError as e:
-        raise PluginOperationError(str(e)) from e
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
+
+    marketplace_id = str((metadata_extra or {}).get("marketplace_id") or "")
+    if not skip_removed_check:
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed
+
+        raise_if_removed(identifier, git_url)
 
     plugins_dir = _plugins_dir()
     source = _canonical_source(git_url, subdir)
-    old_metadata = _read_install_metadata()
+    with _install_metadata_lock():
+        old_metadata = _read_install_metadata()
+        if requested_revision is None:
+            pins = [
+                entry
+                for entry in old_metadata.values()
+                if entry.get("source") == source and entry.get("pinned") is True
+            ]
+            if len(pins) == 1 and isinstance(pins[0].get("revision"), str):
+                requested_revision = _normalize_exact_revision(str(pins[0]["revision"]))
 
-    # Reinstalling the same pinned source retains its pin, even if its plugin
-    # directory was manually removed. Moving a pin requires an explicit --ref.
-    if requested_revision is None:
-        pins = [e for e in old_metadata.values() if e.get("source") == source and e.get("pinned") is True]
-        if len(pins) == 1 and isinstance(pins[0].get("revision"), str):
-            requested_revision = _normalize_exact_revision(pins[0]["revision"])
-
-    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix=".install-", dir=plugins_dir, ignore_cleanup_errors=True
+    ) as tmp:
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
         tmp_target = _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
-            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url))
+            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
+        )
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
-        except ValueError as e:
-            raise PluginOperationError(str(e)) from e
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
         _check_manifest_version(manifest, plugin_name)
-        # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
         _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb)
 
-        if target.exists() and not force:
-            raise PluginOperationError(
-                f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                f"or run `hermes plugins update {plugin_name}`.")
-        prior = old_metadata.get(plugin_name)
-        if target.exists() and requested_revision is None and isinstance(prior, dict) and prior.get("pinned") is True:
-            raise PluginOperationError(
-                f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
-                "--ref <40-character commit SHA> to change its source or revision.")
+        if catalog_entry is not None:
+            from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar
 
-        new_metadata = {
-            **old_metadata,
-            plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
-        }
-        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
+            write_catalog_sidecar(tmp_target, catalog_entry, strict=True)
+
+        marketplace_url = str((metadata_extra or {}).get("source") or "")
+        authority = nullcontext(True)
+        if marketplace_id:
+            from hermes_cli.plugin_marketplaces import marketplace_authority
+
+            authority = marketplace_authority(marketplace_id, marketplace_url)
+
+        with authority as authorized:
+            if not authorized:
+                raise PluginOperationError(
+                    "The plugin marketplace was removed before installation completed."
+                )
+            with _install_metadata_lock():
+                current_metadata = _read_install_metadata()
+                prior = current_metadata.get(plugin_name)
+                if target.exists() and not force:
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                        f"or run `hermes plugins update {plugin_name}`."
+                    )
+                if marketplace_id and target.exists() and (
+                    not isinstance(prior, dict)
+                    or prior.get("marketplace_id") != marketplace_id
+                ):
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' is already installed from another source; "
+                        "remove it explicitly before installing this marketplace entry."
+                    )
+                if (
+                    target.exists()
+                    and requested_revision is None
+                    and isinstance(prior, dict)
+                    and prior.get("pinned") is True
+                ):
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
+                        "--ref <40-character commit SHA> to change its source or revision."
+                    )
+
+                new_metadata = dict(current_metadata)
+                new_metadata[plugin_name] = {
+                    "pinned": requested_revision is not None,
+                    "revision": installed_revision,
+                    "source": source,
+                    **(metadata_extra or {}),
+                }
+                backup = Path(tmp) / "previous-plugin"
+                replaced_existing = target.exists()
+                from hermes_cli.config import config_write_lock
+
+                with config_write_lock():
+                    was_enabled, was_disabled = _plugin_membership(plugin_name)
+                    _write_install_transaction({
+                        "version": 1,
+                        "plugin_name": plugin_name,
+                        "transaction_dir": Path(tmp).name,
+                        "replaced_existing": replaced_existing,
+                        "old_metadata": current_metadata,
+                        "was_enabled": was_enabled,
+                        "was_disabled": was_disabled,
+                    })
+                    try:
+                        if replaced_existing:
+                            secure_replace(target, backup, plugins_dir)
+                        secure_replace(tmp_target, target, plugins_dir)
+                        _write_install_metadata(new_metadata)
+                        if enable_on_commit:
+                            _mutate_plugin_state_locked(enable={plugin_name})
+                        secure_unlink(
+                            _install_transaction_path(), get_hermes_home(), missing_ok=True
+                        )
+                    except BaseException:
+                        _recover_install_transaction()
+                        raise
 
     if not _looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
@@ -851,28 +982,41 @@ def _post_pull_housekeeping(target: Path, console) -> None:
 
 
 def _remove_plugin_core(target: Path) -> None:
-    """Remove one plugin and its metadata without splitting their state."""
-    metadata = _read_install_metadata()
-    if target.name not in metadata:
-        shutil.rmtree(target)
-        return
-    updated = {k: v for k, v in metadata.items() if k != target.name}
-    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
-    backup = staging / "plugin"
-    os.replace(target, backup)
-    try:
-        _write_install_metadata(updated)
-    except Exception:
-        try:
-            os.replace(backup, target)
-        except OSError as restore_exc:
-            raise PluginOperationError(
-                f"Plugin metadata update failed and '{target.name}' could not be "
-                f"restored automatically; recovery copy remains at {backup}."
-            ) from restore_exc
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    shutil.rmtree(staging)
+    """Remove one plugin, its provenance, and enabled state transactionally."""
+    with _install_metadata_lock():
+        from hermes_cli.config import config_write_lock
+
+        with config_write_lock():
+            metadata = _read_install_metadata()
+            updated = dict(metadata)
+            tracked = updated.pop(target.name, None) is not None
+            staging = Path(tempfile.mkdtemp(prefix=".install-remove-", dir=target.parent))
+            backup = staging / "previous-plugin"
+            was_enabled, was_disabled = _plugin_membership(target.name)
+            _write_install_transaction({
+                "version": 1,
+                "plugin_name": target.name,
+                "transaction_dir": staging.name,
+                "replaced_existing": True,
+                "old_metadata": metadata,
+                "was_enabled": was_enabled,
+                "was_disabled": was_disabled,
+            })
+            try:
+                secure_replace(target, backup, target.parent)
+                if tracked:
+                    _write_install_metadata(updated)
+                _mutate_plugin_state_locked(
+                    enabled_remove={target.name}, disabled_remove={target.name}
+                )
+                secure_unlink(_install_transaction_path(), get_hermes_home(), missing_ok=True)
+            except BaseException:
+                _recover_install_transaction()
+                raise
+            try:
+                secure_rmtree(staging, target.parent)
+            except OSError as exc:
+                logger.warning("Plugin removal committed; cleanup deferred for %s: %s", staging, exc)
 
 
 def cmd_remove(name: str) -> None:
@@ -932,13 +1076,56 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
+def _mutate_plugin_state_locked(
+    *,
+    enable: set[str] | None = None,
+    disable: set[str] | None = None,
+    enabled_remove: set[str] | None = None,
+    disabled_remove: set[str] | None = None,
+    toolset_name: str | None = None,
+    toolset_enable: bool = False,
+) -> bool:
+    """Apply one plugin-state delta while the install lock is held."""
+    from hermes_cli.config import config_write_lock, load_config, save_config
+
+    with config_write_lock():
+        config = load_config()
+        plugins = config.setdefault("plugins", {})
+        if not isinstance(plugins, dict):
+            plugins = {}
+            config["plugins"] = plugins
+        old_enabled = set(plugins.get("enabled") or [])
+        old_disabled = set(plugins.get("disabled") or [])
+        new_enabled = (old_enabled | (enable or set())) - (disable or set()) - (enabled_remove or set())
+        new_disabled = (old_disabled | (disable or set())) - (enable or set()) - (disabled_remove or set())
+        toolsets_changed = bool(
+            toolset_name
+            and _toggle_plugin_toolset(config, toolset_name, enable=toolset_enable)
+        )
+        if new_enabled == old_enabled and new_disabled == old_disabled and not toolsets_changed:
+            return False
+        plugins["enabled"] = sorted(new_enabled)
+        plugins["disabled"] = sorted(new_disabled)
+        save_config(
+            config,
+            preserve_plugin_state=False,
+            preserve_platform_toolsets=False,
+            merge_existing=True,
+        )
+        return True
+
+
+def _mutate_plugin_state(**changes) -> bool:
+    with _install_metadata_lock():
+        return _mutate_plugin_state_locked(**changes)
+
+
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
-    """Move *name* between the enabled allow-list and the disabled deny-list and persist both."""
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    (enabled.add if enable else enabled.discard)(name)
-    (disabled.discard if enable else disabled.add)(name)
-    _save_plugin_sets(enabled, disabled)
+    """Move *name* between the enabled allow-list and disabled deny-list."""
+    _mutate_plugin_state(
+        enable={name} if enable else None,
+        disable={name} if not enable else None,
+    )
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:
@@ -997,21 +1184,14 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     key, source = resolved
     _refuse_legacy_relay(key)
 
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key in enabled and key not in disabled:
-        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
-    else:
-        enabled.add(key)
-        # The loader's disable check matches BOTH the canonical key (``web/firecrawl``) and the
-        # manifest name (``web-firecrawl``); a stale entry under either form would silently veto
-        # this enable ("explicit disable wins"), so drop the key, its bare leaf, and the name.
-        _discard_key_and_leaf(disabled, key)
-        manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
-        if manifest_name is not None:
-            disabled.discard(manifest_name)
-        _save_plugin_sets(enabled, disabled)
+    disabled_aliases = {key, key.split("/")[-1]}
+    manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
+    if manifest_name is not None:
+        disabled_aliases.add(manifest_name)
+    if _mutate_plugin_state(enable={key}, disabled_remove=disabled_aliases):
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+    else:
+        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
     if source == "bundled":
@@ -1176,15 +1356,13 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key not in enabled and key in disabled:
+    assert key is not None
+    bare = key.split("/")[-1]
+    if not _mutate_plugin_state(
+        disable={key}, enabled_remove={bare} if bare != key else set()
+    ):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
-    # Also drop a stale legacy bare-name entry so it can't keep a nested plugin loading.
-    _discard_key_and_leaf(enabled, key)
-    disabled.add(key)
-    _save_plugin_sets(enabled, disabled)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -1502,19 +1680,17 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]
     # See #40190.
     # Persist by canonical key only — never the bare manifest name — so the disabled-list stays aligned with
     # cmd_enable / PluginManager (#40190).
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, key in enumerate(plugin_keys):
-        if i in chosen:
-            new_enabled.add(key)
-            _discard_key_and_leaf(new_disabled, key)
-        else:
-            new_disabled.add(key)
-
-    changed = new_enabled != _get_enabled_set() or new_disabled != disabled
-    if changed:
-        _save_plugin_sets(new_enabled, new_disabled)
-    return changed, new_enabled
+    selected_keys = {plugin_keys[i] for i in chosen}
+    disabled_keys = set(plugin_keys) - selected_keys
+    stale_aliases = {
+        key.split("/")[-1] for key in selected_keys if key.split("/")[-1] != key
+    }
+    changed = _mutate_plugin_state(
+        enable=selected_keys,
+        disable=disabled_keys,
+        disabled_remove=stale_aliases,
+    )
+    return changed, selected_keys
 
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console):
@@ -1685,20 +1861,50 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
 
 
 def dashboard_install_plugin(
-    identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
+    identifier: str,
+    *,
+    force: bool,
+    enable: bool,
+    catalog_name: Optional[str] = None,
+    catalog_source: str = "official",
 ) -> dict[str, Any]:
-    """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
-    pinned SHA (identifier may be empty); every path enforces the kill list (no GUI bypass)."""
+    """Non-interactive install for the dashboard/TUI."""
     from hermes_cli import plugins_cmd_catalog as catalog
+
     warnings: list[str] = []
     entry = None
+    metadata_extra = None
     if catalog_name:
-        entry = catalog.get_live_catalog_entry(catalog_name)
+        try:
+            catalog.raise_if_removed(catalog_name)
+        except PluginOperationError as exc:
+            return {"ok": False, "error": str(exc)}
+        if catalog_source == "official":
+            entry = catalog.get_live_catalog_entry(catalog_name)
+        else:
+            from hermes_cli.plugin_marketplaces import as_catalog_entry, get_marketplace_entry
+
+            raw_entry = get_marketplace_entry(catalog_source, catalog_name, force=True)
+            entry = as_catalog_entry(raw_entry) if raw_entry else None
+            if entry is not None and not entry.compatible:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"'{catalog_name}' has no root plugin.yaml or portable plugin.json "
+                        "and cannot be installed by Hermes."
+                    ),
+                }
+            if entry is not None:
+                metadata_extra = _marketplace_metadata(entry)
         if entry is None:
-            return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
-        identifier = entry.install_identifier
+            return {
+                "ok": False,
+                "error": f"'{catalog_name}' is not in the selected plugin marketplace.",
+            }
+        identifier = f"{entry.repo}#{entry.subdir}" if entry.subdir else entry.repo
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")
+
     try:
         git_url = _resolve_git_url(identifier)[0]
         if git_url.startswith(("http://", "file://")):
@@ -1708,31 +1914,37 @@ def dashboard_install_plugin(
         pass
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
+
     try:
-        if entry is not None:
-            target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=True)
-        else:
-            target, installed_manifest, installed_name = _install_plugin_core(identifier, force=force)
+        install_options: dict[str, Any] = {
+            "metadata_extra": metadata_extra,
+        } if metadata_extra is not None else {}
+        if entry is not None and catalog_source == "official":
+            install_options["catalog_entry"] = entry
+        target, installed_manifest, installed_name = _install_plugin_core(
+            identifier,
+            force=force,
+            ref=entry.sha if entry is not None else None,
+            enable_on_commit=enable,
+            **install_options,
+        )
     except PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {
             "ok": False, "error": str(exc), "scan_blocked": True,
             "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
             "scan_findings": [
-                {k: getattr(f, k) for k in fields}
-                for f in (exc.scan_result.findings if exc.scan_result is not None else ())
+                {key: getattr(finding, key) for key in fields}
+                for finding in (exc.scan_result.findings if exc.scan_result is not None else ())
             ],
         }
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
-    if enable:
-        _set_plugin_enabled(installed_name, enable=True)
     ap = target / "after-install.md"
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
-        "missing_env": [s["name"] for s in _missing_env_specs(installed_manifest)],
+        "missing_env": [spec["name"] for spec in _missing_env_specs(installed_manifest)],
         "after_install_path": str(ap) if ap.exists() else None, "enabled": enable,
     }
 
@@ -1773,39 +1985,34 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
-def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
-    """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
-    plugin provides no tools)."""
+def _toggle_plugin_toolset(config: dict, name: str, *, enable: bool) -> bool:
+    """Update one plugin toolset inside an already-loaded config."""
     toolset_key = _get_plugin_toolset_key(name)
     if not toolset_key:
-        return
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
+        return False
     platform_toolsets = _child_dict(config, "platform_toolsets")
     changed = False
     for ts_list in platform_toolsets.values():
         if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
             changed = True
-    # Enabling with no platform lists yet: seed "cli" at minimum.
     if enable and not changed and not platform_toolsets:
         platform_toolsets["cli"] = [toolset_key]
         changed = True
-    if changed:
-        save_config(config)
+    return changed
 
 
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
+    """Enable or disable a plugin and its toolset in one config transaction."""
     if _resolve_plugin_key(name) is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
-    en = _get_enabled_set()
-    dis = _get_disabled_set()
-    if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
-        return {"ok": True, "name": name, "unchanged": True}
-    _set_plugin_enabled(name, enable=enabled)
-    _toggle_plugin_toolset(name, enable=enabled)
-    return {"ok": True, "name": name, "unchanged": False}
+    changed = _mutate_plugin_state(
+        enable={name} if enabled else None,
+        disable={name} if not enabled else None,
+        toolset_name=name,
+        toolset_enable=enabled,
+    )
+    return {"ok": True, "name": name, "unchanged": not changed}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:

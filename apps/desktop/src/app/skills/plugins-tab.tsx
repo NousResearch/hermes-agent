@@ -8,11 +8,10 @@ import { Tip } from '@/components/ui/tooltip'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2, Package } from '@/lib/icons'
-
 import {
   $agentPluginBusy,
-  $agentPluginScope,
   $agentPlugins,
+  $agentPluginScope,
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
@@ -24,7 +23,6 @@ import {
 } from '@/store/agent-plugins'
 import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
 import { notify } from '@/store/notifications'
-
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -33,6 +31,7 @@ import {
 import { $connection } from '@/store/session'
 
 import { PanelEmpty } from '../overlays/panel'
+
 import { PrivateMarketplaces } from './private-marketplaces'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
@@ -165,13 +164,17 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
 
   const scope = profileParam(profile)
   const explicitScope = Boolean(profile && typeof profile === 'object')
+
   const ambientConnectionId =
     String(activeConnection?.connectionId || (activeConnection?.mode === 'local' ? 'local' : '')).trim() ||
     activeGatewayConnectionId()
+
   const connectionId = explicitScope
     ? ((profile as { connectionId?: null | string }).connectionId ?? null)
     : ambientConnectionId
+
   const scopeKey = `${connectionId ?? 'local'}::${scope ?? 'default'}`
+
   const request = useMemo<GatewayRequest>(() => {
     if (!explicitScope) {
       return requestGateway
@@ -198,6 +201,7 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
     () => (agentScope === scopeKey ? rows.filter(isDesktopRelevantPlugin) : []),
     [agentScope, rows, scopeKey]
   )
+
   const visibleStatus = agentScope === scopeKey ? status : 'loading'
   const visibleError = agentScope === scopeKey ? error : null
 

@@ -17,7 +17,6 @@ export interface MarketplacePlugin {
 export interface PluginMarketplace {
   id: string
   name: string
-  url: string
   available: boolean
   stale: boolean
   entries: MarketplacePlugin[]
@@ -41,13 +40,16 @@ export async function loadPluginMarketplaces(
   scopeKey = profile ?? 'default'
 ): Promise<void> {
   const generation = ++loadGeneration
+
   if ($pluginMarketplaceScope.get() !== scopeKey) {
     $pluginMarketplaceBusy.set(null)
     $pluginMarketplaces.set([])
     $pluginMarketplacesError.set(null)
     $pluginMarketplacesStatus.set('loading')
   }
+
   $pluginMarketplaceScope.set(scopeKey)
+
   if ($pluginMarketplacesStatus.get() !== 'ready') {
     $pluginMarketplacesStatus.set('loading')
   }
@@ -57,9 +59,11 @@ export async function loadPluginMarketplaces(
       'plugins.manage',
       scoped({ action: force ? 'marketplace_refresh' : 'marketplaces' }, profile)
     )
+
     if (generation !== loadGeneration || $pluginMarketplaceScope.get() !== scopeKey) {
       return
     }
+
     $pluginMarketplaces.set(result.marketplaces ?? [])
     $pluginMarketplacesError.set(null)
     $pluginMarketplacesStatus.set('ready')
@@ -67,6 +71,7 @@ export async function loadPluginMarketplaces(
     if (generation !== loadGeneration || $pluginMarketplaceScope.get() !== scopeKey) {
       return
     }
+
     $pluginMarketplacesError.set(error instanceof Error ? error.message : String(error))
     $pluginMarketplacesStatus.set('error')
   }
@@ -82,14 +87,17 @@ export async function addPluginMarketplace(
 
   try {
     await request('plugins.manage', scoped({ action: 'marketplace_add', url }, profile))
+
     if ($pluginMarketplaceScope.get() === scopeKey) {
       await loadPluginMarketplaces(request, profile, false, scopeKey)
     }
+
     return true
   } catch (error) {
     if ($pluginMarketplaceScope.get() === scopeKey) {
       $pluginMarketplacesError.set(error instanceof Error ? error.message : String(error))
     }
+
     return false
   } finally {
     if ($pluginMarketplaceScope.get() === scopeKey) {
@@ -108,14 +116,17 @@ export async function removePluginMarketplace(
 
   try {
     await request('plugins.manage', scoped({ action: 'marketplace_remove', source_id: sourceId }, profile))
+
     if ($pluginMarketplaceScope.get() === scopeKey) {
       await loadPluginMarketplaces(request, profile, false, scopeKey)
     }
+
     return true
   } catch (error) {
     if ($pluginMarketplaceScope.get() === scopeKey) {
       $pluginMarketplacesError.set(error instanceof Error ? error.message : String(error))
     }
+
     return false
   } finally {
     if ($pluginMarketplaceScope.get() === scopeKey) {

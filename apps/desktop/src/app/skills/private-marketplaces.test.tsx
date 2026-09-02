@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $agentPlugins, type GatewayRequest } from '@/store/agent-plugins'
 import {
   $pluginMarketplaceBusy,
-  $pluginMarketplaceScope,
   $pluginMarketplaces,
+  $pluginMarketplaceScope,
   $pluginMarketplacesStatus,
   type PluginMarketplace
 } from '@/store/plugin-marketplaces'
@@ -29,26 +29,29 @@ const marketplace: PluginMarketplace = {
   id: 'market-1',
   name: 'Private Market',
   available: true,
-  stale: false,
-  url: 'https://github.com/example/private-marketplace'
+  stale: false
 }
 
 const requestMock = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
   if (params?.action === 'marketplaces') {
     return { marketplaces: [marketplace] }
   }
+
   if (params?.action === 'marketplace_add') {
     return { marketplace, ok: true }
   }
+
   if (params?.action === 'update') {
     return { ok: true, unchanged: false }
   }
+
   if (params?.action === 'install') {
     return { ok: true, plugin_name: 'private-plugin' }
   }
 
   return { marketplaces: [marketplace], plugins: [] }
 })
+
 const request = requestMock as unknown as GatewayRequest
 
 describe('PrivateMarketplaces', () => {
@@ -66,8 +69,8 @@ describe('PrivateMarketplaces', () => {
   it('installs through the selected backend without exposing clone coordinates', async () => {
     render(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="workbot"
         request={request}
         scopeKey="workbot"
@@ -112,8 +115,8 @@ describe('PrivateMarketplaces', () => {
 
     render(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={installed}
+        officialCatalog={<div>Official Catalog</div>}
         profile={null}
         request={request}
         scopeKey="default"
@@ -135,8 +138,8 @@ describe('PrivateMarketplaces', () => {
   it('closes an install confirmation when the profile changes', async () => {
     const view = render(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="first"
         request={request}
         scopeKey="one::first"
@@ -150,8 +153,8 @@ describe('PrivateMarketplaces', () => {
 
     view.rerender(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="second"
         request={request}
         scopeKey="two::second"
@@ -162,17 +165,21 @@ describe('PrivateMarketplaces', () => {
 
   it('does not publish an install continuation after the backend changes', async () => {
     let resolveInstall: ((value: unknown) => void) | undefined
+
     const delayedRequestMock = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
       if (params?.action === 'install') {
         return await new Promise(resolve => (resolveInstall = resolve))
       }
+
       return { marketplaces: [marketplace], plugins: [] }
     })
+
     const delayedRequest = delayedRequestMock as unknown as GatewayRequest
+
     const view = render(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="same"
         request={delayedRequest}
         scopeKey="one::same"
@@ -188,8 +195,8 @@ describe('PrivateMarketplaces', () => {
 
     view.rerender(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="same"
         request={delayedRequest}
         scopeKey="two::same"
@@ -204,8 +211,8 @@ describe('PrivateMarketplaces', () => {
   it('adds a marketplace URL through the profile-scoped backend', async () => {
     render(
       <PrivateMarketplaces
-        officialCatalog={<div>Official Catalog</div>}
         installed={[]}
+        officialCatalog={<div>Official Catalog</div>}
         profile="workbot"
         request={request}
         scopeKey="workbot"
@@ -238,6 +245,7 @@ describe('PrivateMarketplaces', () => {
       name: 'Automation Lab',
       entries: [{ ...marketplace.entries[0], display_name: 'Automation Plugin', name: 'automation-plugin' }]
     }
+
     const tabsRequest = vi.fn(async () => ({
       marketplaces: [marketplace, second],
       plugins: []

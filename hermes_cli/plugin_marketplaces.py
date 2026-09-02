@@ -91,7 +91,7 @@ def _ensure_cache_dir() -> Path:
 
 
 def _open_marketplace_lock(path: Path):
-    from hermes_cli.plugins_cmd import PluginOperationError, _open_lock_path
+    from hermes_cli.plugin_install_state import PluginOperationError, _open_lock_path
 
     try:
         return _open_lock_path(path)
@@ -104,7 +104,7 @@ def _registry_lock():
     """Serialize profile-local registry read-modify-write transactions."""
     path = _registry_path().with_suffix(".lock")
     with _PROCESS_REGISTRY_LOCK, _open_marketplace_lock(path) as handle:
-        from hermes_cli.plugins_cmd import _lock_file, _unlock_file
+        from hermes_cli.plugin_install_state import _lock_file, _unlock_file
 
         _lock_file(handle)
         try:
@@ -121,7 +121,7 @@ def _refresh_lock(source_id: str):
     path = cache / f".{source_id}.refresh.lock"
     # ponytail: process-global lock; split per source if refresh throughput matters.
     with _PROCESS_REFRESH_LOCK, _open_marketplace_lock(path) as handle:
-        from hermes_cli.plugins_cmd import _lock_file, _unlock_file
+        from hermes_cli.plugin_install_state import _lock_file, _unlock_file
 
         _lock_file(handle)
         try:
@@ -709,7 +709,7 @@ def public_marketplace(value: dict[str, Any]) -> dict[str, Any]:
     }
     return {
         key: value[key]
-        for key in ("available", "entries", "error", "id", "name", "stale", "url")
+        for key in ("available", "entries", "error", "id", "name", "stale")
         if key in value
     } | {
         "entries": [

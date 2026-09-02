@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -14,25 +14,25 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { Loader2, Package, Plus, RefreshCw, Trash2 } from '@/lib/icons'
 import {
+  type AgentPluginRow,
+  type GatewayRequest,
   installAgentPlugin,
   loadAgentPlugins,
-  updateAgentPlugin,
-  type AgentPluginRow,
-  type GatewayRequest
+  updateAgentPlugin
 } from '@/store/agent-plugins'
+import { notify } from '@/store/notifications'
 import {
   $pluginMarketplaceBusy,
-  $pluginMarketplaceScope,
   $pluginMarketplaces,
+  $pluginMarketplaceScope,
   $pluginMarketplacesError,
   $pluginMarketplacesStatus,
   addPluginMarketplace,
   loadPluginMarketplaces,
-  removePluginMarketplace,
   type MarketplacePlugin,
-  type PluginMarketplace
+  type PluginMarketplace,
+  removePluginMarketplace
 } from '@/store/plugin-marketplaces'
-import { notify } from '@/store/notifications'
 
 interface PendingInstall {
   entry: MarketplacePlugin
@@ -61,7 +61,7 @@ export function PrivateMarketplaces({
   const savedStatus = useStore($pluginMarketplacesStatus)
   const savedError = useStore($pluginMarketplacesError)
   const sameScope = marketplaceScope === scopeKey
-  const marketplaces = sameScope ? savedMarketplaces : []
+  const marketplaces = useMemo(() => (sameScope ? savedMarketplaces : []), [sameScope, savedMarketplaces])
   const status = sameScope ? savedStatus : 'loading'
   const error = sameScope ? savedError : null
   const busy = useStore($pluginMarketplaceBusy)
@@ -95,7 +95,9 @@ export function PrivateMarketplaces({
     if (!url.trim()) {
       return
     }
+
     const added = await addPluginMarketplace(request, url.trim(), profile, scopeKey)
+
     if (added && $pluginMarketplaceScope.get() === scopeKey) {
       setAdding(false)
       setUrl('')
@@ -107,27 +109,36 @@ export function PrivateMarketplaces({
     if (!pendingInstall || pendingInstall.scopeKey !== scopeKey) {
       return
     }
+
     const pending = pendingInstall
     setInstalling(true)
     setInstallError(null)
+
     const result = await installAgentPlugin(request, {
       identifier: '',
       marketplaceId: pending.marketplace.id,
       marketplacePluginName: pending.entry.name,
       profile: pending.profile
     })
+
     if ($pluginMarketplaceScope.get() !== scopeKey) {
       return
     }
+
     setInstalling(false)
+
     if (!result.ok) {
       setInstallError(result.error || copy.installFailed(pending.entry.display_name))
+
       return
     }
+
     await loadAgentPlugins(request, profile, scopeKey)
+
     if ($pluginMarketplaceScope.get() !== scopeKey) {
       return
     }
+
     notify({ kind: 'success', message: copy.installedSuccess(pending.entry.display_name) })
     setPendingInstall(null)
   }
@@ -203,7 +214,6 @@ export function PrivateMarketplaces({
                     <span className="truncate">{marketplace.name}</span>
                     {marketplace.stale && <span className="text-(--ui-text-quaternary)">{copy.stale}</span>}
                   </div>
-                  <div className="truncate text-[0.65rem] text-(--ui-text-quaternary)">{marketplace.url}</div>
                   {marketplace.error && <div className="mt-1 text-[0.65rem] text-destructive">{marketplace.error}</div>}
                 </div>
                 <Button
@@ -229,6 +239,7 @@ export function PrivateMarketplaces({
                 const current = installed.find(
                   row => row.marketplace_id === marketplace.id && row.marketplace_plugin_name === entry.name
                 )
+
                 const action =
                   current?.update_available && current.key ? (
                     <Button

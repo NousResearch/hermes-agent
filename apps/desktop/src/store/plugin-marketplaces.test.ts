@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $agentPluginBusy,
-  $agentPluginScope,
   $agentPlugins,
+  $agentPluginScope,
+  type GatewayRequest,
   loadAgentPlugins,
-  updateAgentPlugin,
-  type GatewayRequest
+  updateAgentPlugin
 } from '@/store/agent-plugins'
 import {
   $pluginMarketplaces,
@@ -21,8 +21,7 @@ const source = (name: string): PluginMarketplace => ({
   entries: [],
   id: name,
   name,
-  stale: false,
-  url: `https://github.com/example/${name}`
+  stale: false
 })
 
 describe('plugin marketplace store', () => {
@@ -34,6 +33,7 @@ describe('plugin marketplace store', () => {
 
   it('ignores a slow response from the previous profile', async () => {
     const resolvers = new Map<string, (value: unknown) => void>()
+
     const request = vi.fn(
       async (_method: string, params?: Record<string, unknown>) =>
         await new Promise(resolve => resolvers.set(String(params?.profile), resolve))
@@ -58,9 +58,11 @@ describe('plugin marketplace store', () => {
 
   it('isolates same-named profiles on different connections', async () => {
     let resolveOld: ((value: unknown) => void) | undefined
+
     const oldRequest = vi.fn(
       async () => await new Promise(resolve => (resolveOld = resolve))
     ) as unknown as GatewayRequest
+
     const newRequest = vi.fn(async () => ({ marketplaces: [source('new')] })) as unknown as GatewayRequest
 
     const oldLoad = loadPluginMarketplaces(oldRequest, 'same', false, 'old::same')
@@ -74,9 +76,11 @@ describe('plugin marketplace store', () => {
 
   it('does not publish an update continuation after the selected backend changes', async () => {
     let resolveUpdate: ((value: unknown) => void) | undefined
+
     const request = vi.fn(
       async () => await new Promise(resolve => (resolveUpdate = resolve))
     ) as unknown as GatewayRequest
+
     const current = {
       description: '',
       key: 'demo',
@@ -85,6 +89,7 @@ describe('plugin marketplace store', () => {
       status: 'enabled' as const,
       version: '2.0.0'
     }
+
     $agentPluginScope.set('connection-a::same')
 
     const update = updateAgentPlugin(request, 'demo', 'failed', 'same', 'connection-a::same')
@@ -100,13 +105,17 @@ describe('plugin marketplace store', () => {
   it('does not report update success when scope changes during refresh', async () => {
     let resolveRefresh: ((value: unknown) => void) | undefined
     let calls = 0
+
     const request = vi.fn(async () => {
       calls += 1
+
       if (calls === 1) {
         return { ok: true, unchanged: false }
       }
+
       return await new Promise(resolve => (resolveRefresh = resolve))
     }) as unknown as GatewayRequest
+
     $agentPluginScope.set('connection-a::same')
 
     const update = updateAgentPlugin(request, 'demo', 'failed', 'same', 'connection-a::same')

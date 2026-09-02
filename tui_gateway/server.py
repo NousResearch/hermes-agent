@@ -1187,9 +1187,9 @@ def _save_cfg(cfg: dict):
     path = _active_config_path()
     # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
     # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    saved = atomic_roundtrip_yaml_save(path, cfg)
     with _cfg_lock:
-        _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
+        _cfg_cache, _cfg_path = copy.deepcopy(saved), path
         try:
             _cfg_mtime = path.stat().st_mtime
         except Exception:

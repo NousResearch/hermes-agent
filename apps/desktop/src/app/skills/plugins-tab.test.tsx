@@ -1,13 +1,14 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $agentPluginScope, $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginScope, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
 import { PluginsTab } from './plugins-tab'
 
 const requestGateway = vi.fn(async () => ({ plugins: [] }))
+
 const { activeGatewayConnectionId, requestGatewayForAgent } = vi.hoisted(() => ({
   activeGatewayConnectionId: vi.fn<() => null | string>(() => null),
   requestGatewayForAgent: vi.fn(async () => ({ marketplaces: [], plugins: [] }))

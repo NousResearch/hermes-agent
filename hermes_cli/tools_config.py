@@ -711,7 +711,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         remaining = [ts for ts in parsed_disabled if ts not in newly_enabled]
         if remaining != parsed_disabled:
             agent_cfg["disabled_toolsets"] = remaining
-    save_config(config)
+    save_config(config, preserve_platform_toolsets=False)
 
 
 def _provider_env_ready(provider: dict) -> bool:

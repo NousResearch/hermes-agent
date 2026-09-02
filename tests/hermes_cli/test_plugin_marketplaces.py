@@ -16,6 +16,7 @@ from hermes_cli.plugin_marketplaces import (
     MarketplaceError,
     add_marketplace,
     list_marketplaces,
+    public_marketplace,
     remove_marketplace,
 )
 
@@ -130,6 +131,10 @@ def test_add_lists_and_persists_private_marketplace(tmp_path: Path) -> None:
         ],
         "version": 1,
     }
+
+    public = public_marketplace(added)
+    assert "url" not in public
+    assert "repo" not in public["entries"][0]
 
 
 def test_add_rejects_embedded_credentials() -> None:
@@ -344,7 +349,7 @@ def test_refresh_lock_serializes_independent_processes(tmp_path: Path) -> None:
 
 
 def test_windows_lock_retries_past_msvcrt_ten_second_limit(monkeypatch) -> None:
-    import hermes_cli.plugins_cmd as plugins_cmd
+    import hermes_cli.plugin_install_state as install_state
 
     calls = 0
 
@@ -360,10 +365,10 @@ def test_windows_lock_retries_past_msvcrt_ten_second_limit(monkeypatch) -> None:
         locking=locking,
     )
     with tempfile.TemporaryFile() as handle, monkeypatch.context() as patcher:
-        patcher.setattr(plugins_cmd.os, "name", "nt")
-        patcher.setattr(plugins_cmd.time, "sleep", lambda _seconds: None)
+        patcher.setattr(install_state.os, "name", "nt")
+        patcher.setattr(install_state.time, "sleep", lambda _seconds: None)
         patcher.setitem(sys.modules, "msvcrt", fake_msvcrt)
-        plugins_cmd._lock_file(handle)
+        install_state._lock_file(handle)
 
     assert calls == 13
 
@@ -469,8 +474,9 @@ def test_concurrent_adds_do_not_lose_registry_entries(tmp_path: Path) -> None:
 def test_dashboard_install_resolves_private_entry_server_side(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import hermes_cli.plugin_catalog as plugin_catalog
+    import hermes_cli.plugin_marketplaces as plugin_marketplaces
     import hermes_cli.plugins_cmd as plugins_cmd
+    import hermes_cli.plugins_cmd_catalog as catalog_module
     from hermes_cli.plugin_marketplaces import as_catalog_entry
 
     target = tmp_path / "installed" / "demo"
@@ -491,16 +497,17 @@ def test_dashboard_install_resolves_private_entry_server_side(
     calls: list[dict] = []
 
     monkeypatch.setattr(
-        plugins_cmd,
-        "_get_live_catalog_entry",
-        lambda name, source_id="official", **_kwargs: (
-            entry if (name, source_id) == ("demo", "private-source") else None
+        plugin_marketplaces,
+        "get_marketplace_entry",
+        lambda source_id, name, **_kwargs: (
+            entry.__dict__ if (name, source_id) == ("demo", "private-source") else None
         ),
     )
+    removed_checks: list[str] = []
     monkeypatch.setattr(
-        plugin_catalog,
+        catalog_module,
         "find_removed",
-        lambda _name: pytest.fail("private marketplace consulted official removals"),
+        lambda name: removed_checks.append(name),
     )
 
     def fake_install(identifier, **kwargs):
@@ -521,6 +528,8 @@ def test_dashboard_install_resolves_private_entry_server_side(
     )
 
     assert result["ok"] is True
+    assert "demo" in removed_checks
+    assert "https://github.com/example/private-marketplace" in removed_checks
     assert calls == [
         {
             "enable_on_commit": False,
@@ -538,6 +547,57 @@ def test_dashboard_install_resolves_private_entry_server_side(
             "ref": "a" * 40,
         }
     ]
+
+
+def test_dashboard_install_blocks_removed_private_marketplace_entry(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import hermes_cli.plugins_cmd as plugins_cmd
+    import hermes_cli.plugins_cmd_catalog as catalog_module
+
+    removed = SimpleNamespace(
+        name="demo",
+        reason="security issue",
+        date="2026-09-10",
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "find_removed",
+        lambda candidate: removed if candidate == "demo" else None,
+    )
+
+    result = plugins_cmd.dashboard_install_plugin(
+        "ignored",
+        force=False,
+        enable=False,
+        catalog_name="demo",
+        catalog_source="private-source",
+    )
+
+    assert result["ok"] is False
+    assert "removed from the Hermes plugin catalog" in result["error"]
+
+
+def test_private_marketplace_install_cannot_bypass_removed_repo(monkeypatch) -> None:
+    import hermes_cli.plugins_cmd as plugins_cmd
+    import hermes_cli.plugins_cmd_catalog as catalog_module
+
+    identifier = "https://github.com/example/private-marketplace#plugins/demo"
+
+    def block_removed(*candidates: str) -> None:
+        assert identifier in candidates
+        assert "https://github.com/example/private-marketplace" in candidates
+        raise plugins_cmd.PluginOperationError("removed private repository")
+
+    monkeypatch.setattr(catalog_module, "raise_if_removed", block_removed)
+
+    with pytest.raises(plugins_cmd.PluginOperationError, match="removed private repository"):
+        plugins_cmd._install_plugin_core(
+            identifier,
+            force=False,
+            ref="a" * 40,
+            metadata_extra={"marketplace_id": "private-source"},
+        )
 
 
 def test_native_manifest_name_cannot_force_overwrite_another_source(
@@ -1248,6 +1308,7 @@ def test_concurrent_official_and_custom_installs_keep_provenance_with_artifact(
     from types import SimpleNamespace
 
     import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli.plugins_cmd_catalog import read_catalog_sidecar
 
     official = _marketplace_repo(tmp_path / "official")
     custom = _marketplace_repo(tmp_path / "custom")
@@ -1301,7 +1362,7 @@ def test_concurrent_official_and_custom_installs_keep_provenance_with_artifact(
         json.loads((target / "plugin.json").read_text(encoding="utf-8"))["description"]
         == "custom-unreviewed"
     )
-    assert plugins_cmd._read_catalog_sidecar(target) is None
+    assert read_catalog_sidecar(target) is None
 
 
 def test_real_private_marketplace_install_and_subtree_update(tmp_path: Path) -> None:
@@ -1346,12 +1407,13 @@ def test_real_private_marketplace_install_and_subtree_update(tmp_path: Path) -> 
 
 def test_catalog_sidecar_symlink_does_not_write_external_file(tmp_path: Path) -> None:
     import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli.plugins_cmd_catalog import CATALOG_SIDECAR, write_catalog_sidecar
 
     target = tmp_path / "plugin"
     target.mkdir()
     external = tmp_path / "external.json"
     external.write_text("unchanged", encoding="utf-8")
-    (target / plugins_cmd._CATALOG_SIDECAR).symlink_to(external)
+    (target / CATALOG_SIDECAR).symlink_to(external)
     entry = types.SimpleNamespace(
         name="demo",
         repo="https://example.com/demo.git",
@@ -1360,7 +1422,7 @@ def test_catalog_sidecar_symlink_does_not_write_external_file(tmp_path: Path) ->
     )
 
     with pytest.raises(plugins_cmd.PluginOperationError, match="must not be a symlink"):
-        plugins_cmd._write_catalog_sidecar(target, entry, strict=True)
+        write_catalog_sidecar(target, entry, strict=True)
     assert external.read_text(encoding="utf-8") == "unchanged"
 
 

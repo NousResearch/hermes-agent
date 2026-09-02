@@ -102,6 +102,7 @@ export function loadAgentPlugins(
     $agentPluginBusy.set(null)
     $agentPluginsStatus.set('loading')
   }
+
   $agentPluginScope.set(scope)
 
   if (inflight && inflightProfile === scope) {

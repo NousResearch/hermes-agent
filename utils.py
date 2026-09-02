@@ -804,13 +804,24 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 _YAML11_AMBIGUOUS_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"})
 
 
-def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
-    """Persist a full config-state dict while preserving comments and ordering.
+def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> dict:
+    """Comment-preserving config save under the shared config transaction."""
+    from hermes_cli.config import (
+        config_write_lock,
+        preserve_plugin_runtime_state,
+        require_readable_config_before_write,
+    )
 
-    Comment-safe replacement for ``yaml.safe_dump(cfg, f)``: writes the whole file from
-    ``new_state`` through ruamel round-trip mode so existing comments, key order, quotes and
-    readable Unicode survive.
-    """
+    path = Path(path)
+    with config_write_lock():
+        current = require_readable_config_before_write(path)
+        state = copy.deepcopy(new_state)
+        preserve_plugin_runtime_state(current, state)
+        _atomic_roundtrip_yaml_save_locked(path, state)
+        return state
+
+
+def _atomic_roundtrip_yaml_save_locked(path: Path, new_state: dict) -> None:
     from ruamel.yaml.comments import CommentedMap
     from ruamel.yaml.scalarstring import DoubleQuotedScalarString
     from hermes_cli.config import require_readable_config_before_write

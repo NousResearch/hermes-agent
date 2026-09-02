@@ -11,6 +11,7 @@ import pytest
 
 import tools.approval as approval_module
 from tools import approval_context
+from tools import approval_prompt as approval_prompt_module
 from tools import approval_smart
 from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
@@ -580,6 +581,57 @@ class TestFullCommandAlwaysShown:
             with mock_patch("builtins.input", return_value=keystroke):
                 result = prompt_dangerous_approval(long_cmd, "recursive delete")
             assert result == expected, keystroke
+
+
+def test_one_time_consent_hides_session_and_permanent_choices():
+    with (
+        mock_patch.object(
+            approval_prompt_module._ctx, "_is_gateway_approval_context", return_value=False
+        ),
+        mock_patch.object(
+            approval_prompt_module, "prompt_dangerous_approval", return_value="once"
+        ) as prompt,
+    ):
+        result = approval_prompt_module.request_one_time_consent(
+            "react to message", "one exact outbound reaction"
+        )
+
+    assert result == "accept"
+    prompt.assert_called_once_with(
+        "react to message",
+        "one exact outbound reaction",
+        timeout_seconds=None,
+        allow_permanent=False,
+        allow_session=False,
+    )
+
+
+def test_one_time_consent_gateway_payload_hides_session_and_permanent_choices(monkeypatch):
+    session_key = "test-one-time-consent"
+    notified = []
+
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+
+    def notify(approval_data):
+        notified.append(approval_data)
+        approval_module.resolve_gateway_approval(
+            session_key, "once", request_id=approval_data["request_id"]
+        )
+
+    approval_module.register_gateway_notify(session_key, notify)
+    try:
+        result = approval_prompt_module.request_one_time_consent(
+            "react to message", "one exact outbound reaction"
+        )
+    finally:
+        approval_module.unregister_gateway_notify(session_key)
+
+    assert result == "accept"
+    assert notified[0]["allow_permanent"] is False
+    assert notified[0]["allow_session"] is False
+    assert notified[0]["choices"] == ["once", "deny"]
 
 
 class TestSmartDeniedPrompt:

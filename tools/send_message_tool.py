@@ -19,6 +19,18 @@ _reaction_operations: dict[tuple[str, str, str, str, bool], dict] = {}
 _reaction_operations_lock = threading.Lock()
 _REACTION_OPERATION_LIMIT = 2048
 
+
+def _prune_reaction_operations_locked() -> None:
+    """Bound terminal history without dropping work that can still commit."""
+    if len(_reaction_operations) <= _REACTION_OPERATION_LIMIT:
+        return
+    for key, operation in list(_reaction_operations.items()):
+        if operation.get("status") in {"pending", "processing"}:
+            continue
+        _reaction_operations.pop(key, None)
+        if len(_reaction_operations) <= _REACTION_OPERATION_LIMIT:
+            return
+
 from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
@@ -105,7 +117,7 @@ def _handle_react(args, remove=False):
     operation_key = (platform_name, str(chat_id), message_id, emoji, bool(remove))
     with _reaction_operations_lock:
         prior = _reaction_operations.get(operation_key)
-        if prior and prior.get("status") in {"pending", "processing", "applied", "rejected"}:
+        if prior and prior.get("status") in {"pending", "processing", "applied"}:
             return json.dumps({**prior, "duplicate": True})
         _reaction_operations[operation_key] = {
             "success": False,
@@ -116,8 +128,7 @@ def _handle_react(args, remove=False):
             "emoji": emoji,
             "action": "remove" if remove else "add",
         }
-        while len(_reaction_operations) > _REACTION_OPERATION_LIMIT:
-            _reaction_operations.pop(next(iter(_reaction_operations)))
+        _prune_reaction_operations_locked()
 
     verb = "Remove" if remove else "Add"
     prompt = (
@@ -134,17 +145,18 @@ def _handle_react(args, remove=False):
     )
     if consent != "accept":
         status = "rejected" if consent == "decline" else "failed"
-        result = {
-            **_reaction_operations[operation_key],
-            "status": status,
-            "error": (
-                "Tapback rejected; nothing was sent."
-                if status == "rejected"
-                else "Tapback approval expired; nothing was sent."
-            ),
-        }
         with _reaction_operations_lock:
+            result = {
+                **_reaction_operations[operation_key],
+                "status": status,
+                "error": (
+                    "Tapback rejected; nothing was sent."
+                    if status == "rejected"
+                    else "Tapback approval expired; nothing was sent."
+                ),
+            }
             _reaction_operations[operation_key] = result
+            _prune_reaction_operations_locked()
         return json.dumps(result)
 
     with _reaction_operations_lock:
@@ -159,13 +171,19 @@ def _handle_react(args, remove=False):
         result = {"success": False, "error": f"Reaction failed: {e}"}
     provider_result = result if isinstance(result, dict) else {"success": bool(result)}
     applied = bool(provider_result.get("success"))
-    final = {
-        **_reaction_operations[operation_key],
-        **provider_result,
-        "status": "applied" if applied else "failed",
-    }
     with _reaction_operations_lock:
+        final = {
+            **_reaction_operations[operation_key],
+            **provider_result,
+            "status": "applied" if applied else "failed",
+        }
         _reaction_operations[operation_key] = final
+        if applied:
+            inverse_key = (*operation_key[:-1], not operation_key[-1])
+            inverse = _reaction_operations.get(inverse_key)
+            if inverse and inverse.get("status") not in {"pending", "processing"}:
+                _reaction_operations.pop(inverse_key, None)
+        _prune_reaction_operations_locked()
     return json.dumps(final)
 
 

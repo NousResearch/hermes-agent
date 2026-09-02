@@ -8,6 +8,11 @@ from gateway.config import PlatformConfig
 from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
 
+class _SuccessfulResponse:
+    def raise_for_status(self):
+        return None
+
+
 def _adapter(**extra):
     return BlueBubblesAdapter(
         PlatformConfig(
@@ -32,6 +37,7 @@ async def test_queued_receipt_survives_helper_cold_boot(monkeypatch):
         async def post(self, url, timeout):
             posts.append((url, timeout))
             delivered.set()
+            return _SuccessfulResponse()
 
     async def refresh_helper():
         nonlocal refreshes
@@ -58,6 +64,59 @@ async def test_queued_receipt_survives_helper_cold_boot(monkeypatch):
 
     assert refreshes >= 2
     assert len(posts) == 1
+    await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_http_error_receipt_is_retried_before_acknowledgement(monkeypatch):
+    adapter = _adapter()
+    delivered = asyncio.Event()
+    posts = 0
+
+    class FakeResponse:
+        def __init__(self, successful):
+            self.successful = successful
+
+        def raise_for_status(self):
+            if not self.successful:
+                raise RuntimeError("server error")
+
+    class FakeClient:
+        async def post(self, _url, timeout):
+            nonlocal posts
+            assert timeout == 5
+            posts += 1
+            response = FakeResponse(successful=posts > 1)
+            if response.successful:
+                delivered.set()
+            return response
+
+    async def helper_ready():
+        return True
+
+    async def resolve_chat(chat_id):
+        return chat_id
+
+    adapter.client = FakeClient()
+    monkeypatch.setattr(adapter, "_refresh_helper_state", helper_ready)
+    monkeypatch.setattr(adapter, "_resolve_chat_guid", resolve_chat)
+    monkeypatch.setattr(
+        "gateway.platforms.bluebubbles._READ_RECEIPT_RETRY_SECONDS", 0
+    )
+
+    assert await adapter._queue_read_receipt(
+        "iMessage;-;user@example.com",
+        "message-1",
+        is_group=False,
+        admitted=True,
+    )
+    await asyncio.wait_for(delivered.wait(), timeout=0.2)
+    await asyncio.sleep(0)
+
+    assert posts == 2
+    assert ("iMessage;-;user@example.com", "message-1") in (
+        adapter._sent_read_receipts
+    )
     await adapter.cancel_background_tasks()
 
 
@@ -104,6 +163,7 @@ async def test_admitted_group_receipt_is_delivered(monkeypatch):
         async def post(self, url, timeout):
             posts.append((url, timeout))
             delivered.set()
+            return _SuccessfulResponse()
 
     async def helper_ready():
         return True
@@ -137,6 +197,7 @@ async def test_duplicate_receipt_lifecycle_events_send_once(monkeypatch):
         async def post(self, url, timeout):
             posts.append((url, timeout))
             delivered.set()
+            return _SuccessfulResponse()
 
     async def helper_ready():
         return True

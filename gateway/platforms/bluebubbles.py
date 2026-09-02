@@ -1223,9 +1223,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if self._read_receipts_closed:
                     return False
                 encoded = quote(guid, safe="")
-                await self.client.post(
+                response = await self.client.post(
                     self._api_url(f"/api/v1/chat/{encoded}/read"), timeout=5
                 )
+                response.raise_for_status()
                 return True
         except Exception:
             pass
@@ -2013,8 +2014,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             state_serial = self._tapback_event_serial
             self._tapback_event_states[state_key] = (operation, state_serial)
             self._tapback_event_states.move_to_end(state_key)
-            while len(self._tapback_event_states) > _MESSAGE_DEDUP_SIZE:
-                self._tapback_event_states.popitem(last=False)
+            self._prune_tapback_event_states_locked()
         event_payload = {
             "platform": "bluebubbles",
             "event_type": "reaction",
@@ -2033,6 +2033,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         state_serial,
                     )
                     self._tapback_event_states.move_to_end(state_key)
+                    self._prune_tapback_event_states_locked()
         except Exception:
             async with self._inbound_dedup_lock:
                 current_state = self._tapback_event_states.get(state_key)
@@ -2042,10 +2043,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     else:
                         self._tapback_event_states[state_key] = prior_state
                         self._tapback_event_states.move_to_end(state_key)
+                    self._prune_tapback_event_states_locked()
             logger.debug(
                 "[bluebubbles] platform event dispatch failed",
                 exc_info=True,
             )
+
+    def _prune_tapback_event_states_locked(self) -> None:
+        """Bound terminal Tapback history without evicting in-flight work."""
+        if len(self._tapback_event_states) <= _MESSAGE_DEDUP_SIZE:
+            return
+        for state_key, (operation, _serial) in list(
+            self._tapback_event_states.items()
+        ):
+            if operation.status is TapbackStatus.PROCESSING:
+                continue
+            self._tapback_event_states.pop(state_key, None)
+            if len(self._tapback_event_states) <= _MESSAGE_DEDUP_SIZE:
+                return
 
     @staticmethod
     def _is_retryable_inbound_error(exc: BaseException) -> bool:

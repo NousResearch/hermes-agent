@@ -128,6 +128,21 @@ async def test_remove_reaction_posts_unreact(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
+async def test_agent_remove_reaction_requires_exact_message_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    adapter._last_inbound_by_chat[adapter._normalize_chat_key("+15551234567")] = "recent-message"
+
+    result = await adapter.remove_reaction("+15551234567", emoji="👍")
+
+    assert result["success"] is False
+    assert "message_id" in result["error"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_reaction_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
 
@@ -191,5 +206,4 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.reply_to_message_id == "bot-msg-1"
     assert event.reply_to_text == "the bot's earlier reply"
     assert event.reply_to_is_own_message is True
-
 

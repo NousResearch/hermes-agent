@@ -1260,9 +1260,14 @@ class TestBlueBubblesHelperState:
         adapter._helper_connected = False
         posts = []
 
+        class SuccessfulResponse:
+            def raise_for_status(self):
+                return None
+
         class FakeClient:
             async def post(self, url, timeout):
                 posts.append((url, timeout))
+                return SuccessfulResponse()
 
         async def fake_api_get(path):
             assert path == "/api/v1/server/info"
@@ -5041,4 +5046,3 @@ class TestBlueBubblesTimeoutErrorNormalization:
 
         assert not result.success
         assert "500 Internal Server Error" in (result.error or "")
-

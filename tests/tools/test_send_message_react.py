@@ -113,6 +113,98 @@ def test_repeated_approved_operation_is_idempotent():
     consent.assert_called_once()
 
 
+def test_applied_reaction_can_be_reapplied_after_opposite_state_transition():
+    adapter = _FakePhotonAdapter()
+    common = {
+        "target": "photon:+155****4567",
+        "emoji": "😂",
+        "message_id": "message-guid",
+    }
+    with (
+        patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)),
+        patch(
+            "tools.approval_prompt.request_one_time_consent", return_value="accept"
+        ) as consent,
+    ):
+        added = _call({**common, "action": "react"})
+        removed = _call({**common, "action": "unreact"})
+        readded = _call({**common, "action": "react"})
+
+    assert added["status"] == removed["status"] == readded["status"] == "applied"
+    assert adapter.calls == [
+        ("add", "+155****4567", "😂", "message-guid"),
+        ("remove", "+155****4567", "😂", "message-guid"),
+        ("add", "+155****4567", "😂", "message-guid"),
+    ]
+    assert consent.call_count == 3
+
+
+def test_rejected_reaction_can_be_approved_on_a_later_attempt():
+    adapter = _FakePhotonAdapter()
+    args = {
+        "action": "react",
+        "target": "photon:+155****4567",
+        "emoji": "👍",
+        "message_id": "message-guid",
+    }
+    with (
+        patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)),
+        patch(
+            "tools.approval_prompt.request_one_time_consent",
+            side_effect=["decline", "accept"],
+        ) as consent,
+    ):
+        rejected = _call(args)
+        retried = _call(args)
+
+    assert rejected["status"] == "rejected"
+    assert retried["status"] == "applied"
+    assert adapter.calls == [("add", "+155****4567", "👍", "message-guid")]
+    assert consent.call_count == 2
+
+
+def test_in_flight_reaction_is_not_evicted_by_capacity_pruning():
+    adapter = _FakePhotonAdapter()
+    first_args = {
+        "action": "react",
+        "target": "photon:first-chat",
+        "emoji": "👍",
+        "message_id": "first-message",
+    }
+    second_args = {
+        "action": "react",
+        "target": "photon:second-chat",
+        "emoji": "❤️",
+        "message_id": "second-message",
+    }
+    nested = None
+    prompting_first = True
+
+    def approve_with_nested_operation(_prompt, _description, **_kwargs):
+        nonlocal nested, prompting_first
+        if prompting_first:
+            prompting_first = False
+            nested = _call(second_args)
+        return "accept"
+
+    with (
+        patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)),
+        patch("tools.send_message_tool._REACTION_OPERATION_LIMIT", 1),
+        patch(
+            "tools.approval_prompt.request_one_time_consent",
+            side_effect=approve_with_nested_operation,
+        ),
+    ):
+        first = _call(first_args)
+
+    assert nested is not None and nested["status"] == "applied"
+    assert first["status"] == "applied"
+    assert adapter.calls == [
+        ("add", "second-chat", "❤️", "second-message"),
+        ("add", "first-chat", "👍", "first-message"),
+    ]
+
+
 def test_rapid_repeat_while_approval_is_pending_sends_nothing_early():
     adapter = _FakePhotonAdapter()
     args = {

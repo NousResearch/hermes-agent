@@ -1,5 +1,7 @@
 """BlueBubbles integration contracts for the shared Tapback model."""
 
+import asyncio
+
 import pytest
 
 from gateway.config import PlatformConfig
@@ -141,6 +143,74 @@ async def test_inbound_add_remove_add_are_distinct_current_state_transitions(mon
         "added",
         "removed",
         "added",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_inbound_tapback_pruning_preserves_in_flight_state(monkeypatch):
+    adapter = _adapter(monkeypatch)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    events = []
+
+    async def capture(event, _source):
+        events.append(event)
+        if (
+            event["payload"]["message_id"] == "first-target"
+            and sum(
+                item["payload"]["message_id"] == "first-target"
+                for item in events
+            )
+            == 1
+        ):
+            first_started.set()
+            await release_first.wait()
+
+    adapter.set_platform_event_handler(capture)
+    monkeypatch.setattr("gateway.platforms.bluebubbles._MESSAGE_DEDUP_SIZE", 1)
+    common = {
+        "payload": {},
+        "tapback": ("added", "like"),
+        "part_index": 0,
+        "session_chat_id": "iMessage;+;exact-chat",
+        "chat_identifier": "family",
+        "sender": "sender@example.com",
+        "is_group": True,
+    }
+
+    first = asyncio.create_task(
+        adapter._dispatch_inbound_tapback(
+            **common,
+            target_guid="first-target",
+            message_guid="first-event",
+        )
+    )
+    await asyncio.sleep(0)
+    if first.done():
+        await first
+    await asyncio.wait_for(first_started.wait(), timeout=2)
+    await asyncio.wait_for(
+        adapter._dispatch_inbound_tapback(
+            **common,
+            target_guid="second-target",
+            message_guid="second-event",
+        ),
+        timeout=2,
+    )
+    await asyncio.wait_for(
+        adapter._dispatch_inbound_tapback(
+            **common,
+            target_guid="first-target",
+            message_guid="first-event",
+        ),
+        timeout=2,
+    )
+    release_first.set()
+    await asyncio.wait_for(first, timeout=2)
+
+    assert [event["payload"]["message_id"] for event in events] == [
+        "first-target",
+        "second-target",
     ]
 
 

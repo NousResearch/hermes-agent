@@ -326,6 +326,7 @@ def request_one_time_consent(
             "pattern_key": surface,
             "pattern_keys": [surface],
             "allow_permanent": False,
+            "allow_session": False,
             "choices": ["once", "deny"],
         }
         try:

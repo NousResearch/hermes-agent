@@ -1284,9 +1284,9 @@ class PhotonAdapter(BasePlatformAdapter):
         identity/audit context while the provider removal primitive addresses
         that single slot by message id.
         """
-        target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
+        target = (message_id or "").strip()
         if not target:
-            return {"success": False, "error": "no message to unreact — pass message_id"}
+            return {"success": False, "error": "exact message_id is required to unreact"}
         if not await self._remove_reaction(chat_id, target):
             return {"success": False, "error": "unreact failed (see gateway debug log)"}
         return {"success": True, "message_id": target}

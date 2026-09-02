@@ -536,6 +536,46 @@ class TestSweepOrphanedSessions:
     def test_returns_empty_on_empty_db(self, db):
         assert db.sweep_orphaned_sessions(max_idle_seconds=IDLE_S) == []
 
+    def test_auto_prune_reports_closed_count_and_deletes_after_second_window(
+        self, db
+    ):
+        """#54189 end-to-end: leaky producers (cron/kanban/subagent) never set
+        ``ended_at``; pass 1 closes them (reported via ``closed``), pass 2 —
+        after a further retention window — deletes them, and a messaging row
+        is never touched by either pass."""
+        stale = time.time() - 200 * 86400
+        for sid, source in (
+            ("cron-0", "cron"),
+            ("kanban-1", "kanban"),
+            ("subagent-2", "subagent"),
+            ("telegram-3", "telegram"),
+        ):
+            _make_session(db, sid, source=source, started_at=stale, message_at=stale)
+            _set_last_activity(db, sid, stale)
+
+        first = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=0, vacuum=False
+        )
+        assert first["closed"] == 3
+        assert first["pruned"] == 0
+        for sid in ("cron-0", "kanban-1", "subagent-2"):
+            assert db.get_session(sid)["end_reason"] == "startup_orphan_reap"
+        assert db.get_session("telegram-3")["ended_at"] is None
+
+        # Simulate the next maintenance pass after another retention window.
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ended_at - 91 * 86400 "
+            "WHERE end_reason = 'startup_orphan_reap'"
+        )
+        db._conn.commit()
+        second = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=0, vacuum=False
+        )
+        assert second["closed"] == 0
+        assert second["pruned"] == 3
+        remaining = [r["id"] for r in db._conn.execute("SELECT id FROM sessions")]
+        assert remaining == ["telegram-3"]
+
     def test_zero_ttl_is_noop(self, db):
         stale = time.time() - 8 * 3600
         _make_session(db, "stale-tui", source="tui", started_at=stale, message_at=stale)

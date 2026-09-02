@@ -59,12 +59,21 @@ def test_a_forgets_a_poisoned_approval_callback():
     # no reset — the autouse fixture must clean this up
 
 
-def test_b_still_dispatches_with_default_allow():
+def test_b_still_dispatches_with_bypass_allow(monkeypatch):
     """Without the isolation fixture this fails: the stale callback raises
     (arity), ``_request_approval`` converts that into a deny, and the
-    backend never sees the click."""
+    backend never sees the click.
+
+    No callback is wired here (the isolation fixture cleared it), so this
+    relies on an explicit approval bypass rather than the removed no-callback
+    default-allow (#87724) — the isolation property under test (a leaked
+    callback from test A must not poison this test) is orthogonal to that.
+    """
     from tools.computer_use import tool as cu_tool
 
+    monkeypatch.setattr(
+        "tools.approval.is_approval_bypass_active_for_session", lambda key: True
+    )
     backend = _install_backend(cu_tool)
     result = cu_tool.handle_computer_use({"action": "click", "element": 3})
     call_names = [c[0] for c in backend.calls]

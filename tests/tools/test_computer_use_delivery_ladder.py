@@ -223,7 +223,8 @@ def test_bad_delivery_mode_rejected():
 def test_dispatcher_threads_delivery_mode_to_backend():
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False), \
+         patch("tools.approval.is_approval_bypass_active_for_session", return_value=True):
         cu.reset_backend_for_tests()
         be = cu._get_backend()
         cu.handle_computer_use({"action": "click", "element": 5,

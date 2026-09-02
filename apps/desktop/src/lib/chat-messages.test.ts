@@ -435,6 +435,20 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('projects an untyped legacy auto-continue row instead of flashing its internal note as a user bubble', () => {
+    const messages = toChatMessages([
+      {
+        role: 'user',
+        content:
+          '[System note: Your previous turn was interrupted mid-run — the app or its backend process stopped before the turn could finish.]\n\nkeep going',
+        timestamp: 1
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['system'])
+    expect(messages.map(chatMessageText)).toEqual(['resumed interrupted turn'])
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([

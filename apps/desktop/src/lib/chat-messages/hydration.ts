@@ -18,6 +18,7 @@ import type { ChatMessage, ChatMessagePart } from './types'
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const LEGACY_AUTO_CONTINUE_PREFIX = '[System note: Your previous turn was interrupted mid-run'
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
   const textContent = textFromUnknown(content)
@@ -91,21 +92,33 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
   )
 }
 
-function timelineDisplayContent(message: SessionMessage, content: string): string {
-  if (message.display_kind === 'model_switch') {
+function legacyDisplayKind(role: SessionMessage['role'], content: string): SessionMessage['display_kind'] {
+  if (role === 'user' && content.trimStart().startsWith(LEGACY_AUTO_CONTINUE_PREFIX)) {
+    return 'auto_continue'
+  }
+
+  return undefined
+}
+
+function timelineDisplayContent(
+  displayKind: SessionMessage['display_kind'],
+  displayMetadata: SessionMessage['display_metadata'],
+  content: string
+): string {
+  if (displayKind === 'model_switch') {
     return 'model changed'
   }
 
-  if (message.display_kind === 'auto_continue') {
+  if (displayKind === 'auto_continue') {
     return 'resumed interrupted turn'
   }
 
-  if (message.display_kind === 'personality_switch') {
+  if (displayKind === 'personality_switch') {
     return 'personality changed'
   }
 
-  if (message.display_kind === 'async_delegation_complete') {
-    const count = timelineTaskCount(message.display_metadata)
+  if (displayKind === 'async_delegation_complete') {
+    const count = timelineTaskCount(displayMetadata)
 
     return count === undefined
       ? 'background agent work finished'
@@ -194,16 +207,19 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? message.display_content
         : message.content || message.text || message.context || message.name
 
+    const visibleContent = displayContentForMessage(message.role, content)
+    const displayKind = message.display_kind ?? legacyDisplayKind(message.role, visibleContent)
+
     const rawDisplayContent = transcriptContent(
-      message.display_kind,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      displayKind,
+      timelineDisplayContent(displayKind, message.display_metadata, visibleContent)
     )
 
     const displayRole =
-      message.display_kind === 'model_switch' ||
-      message.display_kind === 'async_delegation_complete' ||
-      message.display_kind === 'auto_continue' ||
-      message.display_kind === 'personality_switch'
+      displayKind === 'model_switch' ||
+      displayKind === 'async_delegation_complete' ||
+      displayKind === 'auto_continue' ||
+      displayKind === 'personality_switch'
         ? 'system'
         : message.role
 

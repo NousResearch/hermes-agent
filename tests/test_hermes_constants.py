@@ -271,6 +271,43 @@ class TestNodeToolRunnable:
 
         assert find_node_executable("npm") is None
 
+    def test_dangling_npm_symlink_triggers_heal(self, tmp_path, monkeypatch):
+        """A dangling bin/npm symlink (target dir removed) is broken, not absent:
+        is_file() follows the link and lies, so the heal must still fire."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "node", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+        # Dangling: points at a node_modules/npm that no longer exists.
+        (managed_bin / "npm").symlink_to(profile_home / "node" / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        heal_called = {"value": False}
+
+        def _heal():
+            heal_called["value"] = True
+            # Heal restores the real npm tree; re-create the target so the
+            # resolved npm becomes runnable.
+            (profile_home / "node" / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
+            (profile_home / "node" / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js").write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n")
+            (profile_home / "node" / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js").chmod(0o755)
+            return True
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        resolved = find_node_executable("npm")
+        assert heal_called["value"] is True
+        # After the heal the managed bin/npm shim resolves and runs — that is
+        # the path returned, not the system npm on PATH.
+        assert resolved == str(profile_home / "node" / "bin" / "npm")
+        assert resolved != str(system_bin / "npm")
+
     def test_outdated_managed_node_heals_to_target_major(self, tmp_path, monkeypatch):
         """A healthy managed tree below the target major upgrades on next resolve."""
         target = hermes_constants._HERMES_NODE_TARGET_MAJOR

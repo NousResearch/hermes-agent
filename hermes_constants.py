@@ -972,8 +972,15 @@ def find_hermes_node_executable(command: str) -> str | None:
         for directory in iter_hermes_node_dirs():
             for name in names:
                 candidate = directory / name
-                if candidate.is_file() and (
-                    sys.platform == "win32" or os.access(candidate, os.X_OK)
+                # A dangling symlink (target removed, e.g. bin/npm ->
+                # lib/node_modules/npm/... after a partial update) is a BROKEN
+                # shim, not an absent one: is_file() follows the link and
+                # reports False, which would silently skip the heal below and
+                # leave the desktop/web rebuild gated on a missing npm. Detect
+                # the link itself so node_tool_runnable() can mark it broken.
+                if candidate.is_symlink() or (
+                    candidate.is_file()
+                    and (sys.platform == "win32" or os.access(candidate, os.X_OK))
                 ):
                     resolved = str(candidate)
                     if node_tool_runnable(resolved):

@@ -497,19 +497,8 @@ def recover_if_needed(
         # Single-flight: share main.py's recovery lock so an early repair
         # never races a concurrent full recovery into the same shared venv.
         lock_path = root / ".update-incomplete.lock"
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"{os.getpid()}\n".encode())
-            os.close(fd)
-        except FileExistsError:
-            try:
-                if time.time() - lock_path.stat().st_mtime > 3600:
-                    lock_path.unlink()
-            except OSError:
-                pass
+        if not _claim_recovery_lock(root):
             return
-        except OSError:
-            pass  # read-only fs / perms — proceed unlocked, install surfaces it
 
         try:
             specs = _pinned_specs(broken, root)
@@ -549,25 +538,72 @@ def recover_if_needed(
 _EARLY_CORE_INSTALL_MAX_ATTEMPTS = 3
 
 
+# Age fallback for a lock whose body this cannot reason about (empty,
+# truncated, or written by an older layout).  PID liveness is the primary
+# staleness test; this only backstops the unparseable cases and a wedged
+# but still-running owner.
+_RECOVERY_LOCK_MAX_AGE_SECONDS = 3600
+
+
+def _lock_owner_is_live(lock_path: Path) -> bool:
+    """True when the recovery lock names a process that is still running.
+
+    The body is a bare PID (see the claim below).  Conservative: anything
+    unreadable or non-numeric counts as live, leaving the age fallback in
+    charge rather than stealing a lock this cannot identify.
+    """
+    try:
+        body = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return True
+    try:
+        pid = int(body.splitlines()[0].strip())
+    except (IndexError, ValueError):
+        return True
+    return _pid_is_running(pid)
+
+
+def _discard_stale_recovery_lock(lock_path: Path) -> bool:
+    """Remove a recovery lock nobody owns.  True when a retry should follow.
+
+    A crashed or killed owner leaves its lock behind, which is the exact
+    state the marker system exists to recover from.  Waiting out the age
+    fallback there means every launch's recovery silently no-ops for an hour
+    (nothing is printed, the claim just fails), so a pending install stalls
+    long after the process holding it died.  Probe the recorded PID and
+    reclaim immediately when it is gone.
+    """
+    try:
+        if _lock_owner_is_live(lock_path):
+            age = time.time() - lock_path.stat().st_mtime
+            if age <= _RECOVERY_LOCK_MAX_AGE_SECONDS:
+                return False
+        lock_path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def _claim_recovery_lock(root: Path) -> bool:
     """Single-flight claim on the shared recovery lock.  Never raises."""
     lock_path = root / ".update-incomplete.lock"
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, f"{os.getpid()}\n".encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
+    for retry in (False, True):
         try:
-            if time.time() - lock_path.stat().st_mtime > 3600:
-                lock_path.unlink()
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()}\n".encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            # Only the first miss may reclaim.  A lock that reappears
+            # between the discard and the retry belongs to a live racer
+            # that won the same reclaim, so yield to it.
+            if retry or not _discard_stale_recovery_lock(lock_path):
+                return False
         except OSError:
-            pass
-        return False
-    except OSError:
-        # Read-only fs / perms — proceed unlocked; the install itself
-        # surfaces the real problem.  Recoverable.
-        return True
+            # Read-only fs / perms — proceed unlocked; the install itself
+            # surfaces the real problem.  Recoverable.
+            return True
+    return False
 
 
 def _release_recovery_lock(root: Path) -> None:

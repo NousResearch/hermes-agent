@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -545,3 +546,120 @@ def test_bump_marker_attempts_handles_missing_and_corrupt_bodies(tmp_path):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Recovery-lock staleness: a dead owner must not hold recovery hostage
+# ---------------------------------------------------------------------------
+
+LOCK = ".update-incomplete.lock"
+
+
+def _write_lock(root: Path, body: str, *, age_seconds: float = 0.0) -> Path:
+    lock = root / LOCK
+    lock.write_text(body, encoding="utf-8")
+    if age_seconds:
+        stamp = time.time() - age_seconds
+        os.utime(lock, (stamp, stamp))
+    return lock
+
+
+def _dead_pid() -> int:
+    """A PID that is genuinely gone: spawn a no-op child and reap it."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid
+
+
+def test_recovery_lock_reclaimed_when_owner_pid_is_dead(tmp_path, monkeypatch):
+    """The regression: a crashed owner used to block recovery for an hour."""
+    root = _project(tmp_path)
+    lock = _write_lock(root, "4242\n")
+    monkeypatch.setattr(er, "_pid_is_running", lambda _pid: False)
+
+    assert er._claim_recovery_lock(root) is True
+    assert lock.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+def test_recovery_lock_reclaimed_from_a_real_dead_pid(tmp_path):
+    """Same path without monkeypatching, proving _pid_is_running integrates."""
+    root = _project(tmp_path)
+    _write_lock(root, f"{_dead_pid()}\n")
+
+    assert er._claim_recovery_lock(root) is True
+
+
+def test_recovery_lock_yields_to_a_live_owner(tmp_path):
+    """A running owner keeps its lock: single-flight must still hold."""
+    root = _project(tmp_path)
+    lock = _write_lock(root, f"{os.getpid()}\n")
+
+    assert er._claim_recovery_lock(root) is False
+    assert lock.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+def test_recovery_lock_age_fallback_breaks_a_wedged_live_owner(tmp_path):
+    """The old age escape hatch survives for an owner that is alive but stuck."""
+    root = _project(tmp_path)
+    _write_lock(
+        root,
+        f"{os.getpid()}\n",
+        age_seconds=er._RECOVERY_LOCK_MAX_AGE_SECONDS + 60,
+    )
+
+    assert er._claim_recovery_lock(root) is True
+
+
+@pytest.mark.parametrize("body", ["", "   ", "not-a-pid", "\n\n"])
+def test_recovery_lock_unparseable_body_waits_for_the_age_fallback(
+    tmp_path, body
+):
+    """A body this cannot identify is never stolen on liveness grounds."""
+    root = _project(tmp_path)
+    _write_lock(root, body)
+    assert er._claim_recovery_lock(root) is False
+
+    _write_lock(root, body, age_seconds=er._RECOVERY_LOCK_MAX_AGE_SECONDS + 60)
+    assert er._claim_recovery_lock(root) is True
+
+
+def test_recovery_lock_does_not_loop_when_a_racer_recreates_it(
+    tmp_path, monkeypatch
+):
+    """Losing the retry to a racer returns False instead of spinning."""
+    root = _project(tmp_path)
+    _write_lock(root, "4242\n")
+
+    def _discard_then_lose(lock_path):
+        lock_path.unlink()
+        lock_path.write_text("999999\n", encoding="utf-8")  # racer got there
+        return True
+
+    monkeypatch.setattr(er, "_discard_stale_recovery_lock", _discard_then_lose)
+
+    assert er._claim_recovery_lock(root) is False
+
+
+def test_stale_lock_no_longer_blocks_the_early_repair(tmp_path, monkeypatch):
+    """End to end: the user-visible bug.
+
+    Before this fix a lock left by a dead process made every launch's early
+    recovery a silent no-op until the lock aged out, so a pending repair
+    stalled for an hour with nothing printed.
+    """
+    root = _project(tmp_path)
+    marker = root / ".lazy-refresh-incomplete"
+    marker.write_text("x", encoding="utf-8")
+    _write_lock(root, f"{_dead_pid()}\n")
+
+    probe_results = iter([["PyYAML", "python-dotenv"], []])
+    monkeypatch.setattr(er, "_probe_broken_packages", lambda: next(probe_results))
+    installs = []
+    monkeypatch.setattr(
+        er, "_run_repair_install", lambda specs, r: installs.append(specs) or True
+    )
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    assert installs == [["PyYAML==6.0.2", "python-dotenv==1.2.2"]]
+    assert not (root / LOCK).exists(), "lock released after the repair"

@@ -245,6 +245,42 @@ def test_codex_api_preflight_defangs_every_outbound_text_carrier():
     assert "<|im_start|>" in serialized
 
 
+def test_normalize_codex_response_surfaces_reasoning_summary_on_tool_call_turn():
+    """Regression: a tool-call turn with no assistant content but an explicit
+    Responses ``reasoning.summary`` used to discard that summary entirely, so
+    callers had nothing but generic tool activity to show as interim
+    progress. The explicit summary text should be preserved separately so it
+    can be surfaced as commentary."""
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_789",
+                encrypted_content="opaque-stable",
+                summary=[SimpleNamespace(text="Checking the config file next")],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="read_file",
+                arguments="{}",
+                status="completed",
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == ""
+    assert (
+        assistant_message.codex_reasoning_summary
+        == "Checking the config file next"
+    )
+
+
 def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     """Summary-only reasoning keeps the continuation path for Codex backends.
 

@@ -1455,8 +1455,8 @@ def _extract_responses_message_text(item: Any) -> str:
     return "".join(chunks).strip()
 
 
-def _extract_responses_reasoning_text(item: Any) -> str:
-    """Extract a compact reasoning text from a Responses reasoning item."""
+def _extract_responses_reasoning_summary(item: Any) -> str:
+    """Extract only explicit, provider-authored reasoning summary text."""
     summary = getattr(item, "summary", None)
     if isinstance(summary, list):
         chunks: List[str] = []
@@ -1466,6 +1466,14 @@ def _extract_responses_reasoning_text(item: Any) -> str:
                 chunks.append(text)
         if chunks:
             return "\n".join(chunks).strip()
+    return ""
+
+
+def _extract_responses_reasoning_text(item: Any) -> str:
+    """Extract a compact reasoning text from a Responses reasoning item."""
+    summary_text = _extract_responses_reasoning_summary(item)
+    if summary_text:
+        return summary_text
     text = getattr(item, "text", None)
     if isinstance(text, str) and text:
         return text.strip()
@@ -1581,6 +1589,7 @@ def _normalize_codex_response(
 
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
+    reasoning_summary_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
@@ -1671,6 +1680,9 @@ def _normalize_codex_response(
                 message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
             saw_reasoning_item = True
+            reasoning_summary = _extract_responses_reasoning_summary(item)
+            if reasoning_summary:
+                reasoning_summary_parts.append(reasoning_summary)
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
@@ -1853,6 +1865,11 @@ def _normalize_codex_response(
         reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,
         reasoning_content=None,
         reasoning_details=None,
+        codex_reasoning_summary=(
+            "\n\n".join(reasoning_summary_parts).strip()
+            if reasoning_summary_parts
+            else None
+        ),
         codex_reasoning_items=reasoning_items_raw or None,
         codex_message_items=message_items_raw or None,
     )

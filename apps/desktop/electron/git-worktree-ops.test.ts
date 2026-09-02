@@ -94,6 +94,20 @@ test('switchBranch: switches a normal checkout branch', async () => {
   }
 })
 
+test('switchBranch: no-ops on a non-repo path so non-Git projects are not blocked', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-nonrepo-'))
+
+  try {
+    const result = await switchBranch(dir, 'main', 'git')
+
+    // Resolves (does not throw) with a skipped marker, mirroring how the
+    // sidebar's fallback `main` lane must not block "New session".
+    assert.deepEqual(result, { branch: 'main', skipped: true })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 

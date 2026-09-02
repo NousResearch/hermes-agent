@@ -9,6 +9,7 @@ The status-update path must:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from types import SimpleNamespace
@@ -104,5 +105,58 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     adapter.edit_message.assert_not_awaited()
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_status_message_cache_stays_bounded_and_keeps_newest_entry(adapter):
+    """Distinct chats cannot grow the cache past its configured bound."""
+    adapter._STATUS_MESSAGE_IDS_MAX = 4
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id=str(message_id))
+        for message_id in range(10)
+    ]
+
+    for chat_id in range(10):
+        await adapter.send_or_update_status(str(chat_id), "lifecycle", "starting")
+
+    assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    assert adapter._status_message_ids[("9", "lifecycle")] == "9"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cached_edits_do_not_reinsert_evicted_status_keys(adapter):
+    adapter._STATUS_MESSAGE_IDS_MAX = 4
+    old_keys = [(str(chat_id), "lifecycle") for chat_id in range(4)]
+    adapter._status_message_ids.update(
+        {key: str(message_id) for message_id, key in enumerate(old_keys)}
+    )
+    edit_started = {"0": asyncio.Event(), "1": asyncio.Event()}
+    release_edits = asyncio.Event()
+
+    async def blocked_successful_edit(chat_id, message_id, content, **kwargs):
+        edit_started[message_id].set()
+        await release_edits.wait()
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.edit_message.side_effect = blocked_successful_edit
+    adapter.send.return_value = SendResult(success=True, message_id="4")
+
+    pending_edits = [
+        asyncio.create_task(
+            adapter.send_or_update_status(str(chat_id), "lifecycle", "updating")
+        )
+        for chat_id in range(2)
+    ]
+    await asyncio.gather(*(event.wait() for event in edit_started.values()))
+
+    fresh_key = ("4", "lifecycle")
+    await adapter.send_or_update_status(*fresh_key, "starting")
+    release_edits.set()
+    await asyncio.gather(*pending_edits)
+
+    assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    assert adapter._status_message_ids[fresh_key] == "4"
+    assert old_keys[0] not in adapter._status_message_ids
+    assert old_keys[1] not in adapter._status_message_ids
 
 

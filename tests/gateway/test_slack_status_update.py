@@ -9,6 +9,7 @@ The status-update path must:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -47,6 +48,7 @@ import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.config import PlatformConfig  # noqa: E402
+from gateway.platforms.base import SendResult  # noqa: E402
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
@@ -92,5 +94,48 @@ async def test_distinct_keys_do_not_crosstalk(adapter):
     client = adapter._get_client.return_value
     assert client.chat_postMessage.call_count == 2
     assert client.chat_update.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cached_edits_do_not_reinsert_evicted_status_keys(adapter):
+    adapter._STATUS_MESSAGE_IDS_MAX = 4
+    thread_id = METADATA["thread_id"]
+    old_keys = [
+        (f"C_{channel_id}", thread_id, "lifecycle") for channel_id in range(4)
+    ]
+    adapter._status_message_ids.update(
+        {key: str(message_id) for message_id, key in enumerate(old_keys)}
+    )
+    edit_started = {"0": asyncio.Event(), "1": asyncio.Event()}
+    release_edits = asyncio.Event()
+
+    async def blocked_successful_edit(chat_id, message_id, content, **kwargs):
+        edit_started[message_id].set()
+        await release_edits.wait()
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.edit_message = AsyncMock(side_effect=blocked_successful_edit)
+
+    pending_edits = [
+        asyncio.create_task(
+            adapter.send_or_update_status(
+                f"C_{channel_id}", "lifecycle", "updating", metadata=METADATA
+            )
+        )
+        for channel_id in range(2)
+    ]
+    await asyncio.gather(*(event.wait() for event in edit_started.values()))
+
+    fresh_key = ("C_4", thread_id, "lifecycle")
+    fresh_result = await adapter.send_or_update_status(
+        "C_4", "lifecycle", "starting", metadata=METADATA
+    )
+    release_edits.set()
+    await asyncio.gather(*pending_edits)
+
+    assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    assert adapter._status_message_ids[fresh_key] == fresh_result.message_id
+    assert old_keys[0] not in adapter._status_message_ids
+    assert old_keys[1] not in adapter._status_message_ids
 
 

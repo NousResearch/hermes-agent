@@ -4497,7 +4497,7 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
-    if evt_type == "async_delegation":
+    if evt_type in {"async_delegation", "profile_delegation"}:
         # Reuse the shared rich formatter (self-contained task-source block).
         from tools.process_registry import format_process_notification
         return format_process_notification(evt)
@@ -28945,48 +28945,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return delivered
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
-        """Drain async-delegation completions and inject them as new turns.
+        """Drain internal delegation completions and inject them as new turns.
 
-        Background subagents (``delegate_task(background=true)``) run on the
-        async-delegation daemon executor — they have no per-process watcher
-        task, so their completion events would only be seen by the post-turn
-        queue drain. This watcher covers the IDLE case: when a background
-        subagent finishes while no agent turn is running, its result still
-        re-enters the originating session promptly.
-
-        Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
-        queue has nothing for us; ignores non-async event types (those are
-        handled by ``_run_process_watcher`` / the post-turn drain).
+        Background subagents and profile delegations complete outside a live
+        agent loop. Their results must re-enter as fresh internal turns, grouped
+        by originating session so same-tick fan-outs do not flood the user.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
         while self._running:
             try:
-                # Peek the queue for async-delegation events. We must NOT
+                # Peek the queue for internal delegation events. We must NOT
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.
                 requeue = []
-                async_events = []
+                internal_events = []
                 while not _pr.completion_queue.empty():
                     try:
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    if evt.get("type") == "async_delegation":
-                        async_events.append(evt)
+                    if evt.get("type") in {"async_delegation", "profile_delegation"}:
+                        internal_events.append(evt)
                     else:
                         requeue.append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
+
                 # A same-tick drain often carries several completions for the
-                # SAME originating session (a fan-out of background subagents
-                # finishing together).  Delivering each one individually floods
-                # the session with N synthetic turns (#70300) — group by full
-                # gateway route + parent session and inject one consolidated
-                # turn per group.  Events for different sessions never coalesce.
+                # SAME originating session. Delivering each one individually
+                # floods the session with N synthetic turns (#70300) — group by
+                # full gateway route + parent session and inject one consolidated
+                # turn per group. Events for different sessions never coalesce.
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 group_order: list[tuple[str, ...]] = []
-                for evt in async_events:
+                for evt in internal_events:
                     self._enrich_async_delegation_routing(evt)
                     key = self._async_delegation_group_key(evt)
                     if key not in groups:
@@ -29003,9 +28996,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception as e:
                         for evt in group:
                             _pr.completion_queue.put(evt)
-                        logger.error("Async delegation injection error: %s", e)
+                        logger.error("Internal delegation injection error: %s", e)
             except Exception as e:
-                logger.debug("Async delegation watcher error: %s", e)
+                logger.debug("Internal delegation watcher error: %s", e)
             await asyncio.sleep(interval)
 
     async def _run_process_watcher(self, watcher: dict) -> None:

@@ -3279,6 +3279,42 @@ def _delegation_attribution_line(evt: dict) -> "str | None":
     return line
 
 
+def _format_profile_delegation(evt: dict) -> str:
+    """Format profile-delegation completion for same-session re-entry."""
+    import json as _json
+
+    deleg_id = evt.get("delegation_id", "unknown")
+    executor = evt.get("executor_profile") or "unknown"
+    capability = evt.get("capability") or "unknown"
+    risk = evt.get("risk") or "READ"
+    status = evt.get("status") or "completed"
+    summary = evt.get("summary") or ""
+    result = evt.get("result") or {}
+    error = evt.get("error")
+    lines = [
+        f"[INTERNAL PROFILE DELEGATION RESULT — {deleg_id}]",
+        f"executor_profile: {executor}",
+        f"capability: {capability}",
+        f"risk: {risk}",
+        f"status: {status}",
+    ]
+    if summary:
+        lines.append(f"summary: {summary}")
+    if error:
+        lines.append(f"error: {error}")
+    lines.extend([
+        "",
+        "Structured result:",
+        _json.dumps(result, ensure_ascii=False, indent=2, default=str),
+        "[/INTERNAL PROFILE DELEGATION RESULT]",
+        "",
+        "Continue the original task using this delegated result. Do not ask Michael "
+        "to coordinate this handoff. Do not reveal or request executor credentials.",
+    ])
+    return "\n".join(lines)
+
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -3320,6 +3356,9 @@ def format_process_notification(evt: dict) -> "str | None":
 
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
+
+    if evt_type == "profile_delegation":
+        return _format_profile_delegation(evt)
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")

@@ -1647,3 +1647,32 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_existing_db_missing_profile_delegations_gets_migrated(kanban_home):
+    """Opening an existing board from before profile delegation creates audit tables."""
+    db_path = kanban_home / "kanban" / "default" / "kanban.db"
+    with kb.connect(db_path) as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_profile_delegations_task")
+        conn.execute("DROP INDEX IF EXISTS idx_profile_delegations_requester_session")
+        conn.execute("DROP INDEX IF EXISTS idx_profile_delegations_executor_status")
+        conn.execute("DROP TABLE IF EXISTS profile_delegations")
+        conn.commit()
+
+    with kb._INIT_LOCK:
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path) as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        indexes = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+
+    assert "profile_delegations" in tables
+    assert "idx_profile_delegations_task" in indexes
+    assert "idx_profile_delegations_requester_session" in indexes
+    assert "idx_profile_delegations_executor_status" in indexes

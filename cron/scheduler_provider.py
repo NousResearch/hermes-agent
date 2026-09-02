@@ -689,7 +689,12 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.scheduler import CronTickYielded, _is_fd_exhaustion
+        from cron.scheduler import (
+            CronTickYielded,
+            SharedRouteAdapters,
+            _is_fd_exhaustion,
+            _primary_profile_routes_for_current_home,
+        )
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -775,6 +780,20 @@ class InProcessCronScheduler(CronScheduler):
                                     _tick_adapters = adapters
                                 else:
                                     _tick_adapters = (profile_adapters or {}).get(_pname) or {}
+                                    if not _tick_adapters and adapters:
+                                        # Credentialless satellite under
+                                        # gateway.profile_routes: no bot of its
+                                        # own, so its output may ride the
+                                        # PRIMARY adapter — but only for
+                                        # targets an exact enabled primary
+                                        # route maps to this profile
+                                        # (#101113). Unmatched targets still
+                                        # fail closed; this is not a default
+                                        # fallback.
+                                        _tick_adapters = SharedRouteAdapters(
+                                            adapters,
+                                            _primary_profile_routes_for_current_home(),
+                                        )
                                 cron_tick(
                                     verbose=False,
                                     adapters=_tick_adapters,

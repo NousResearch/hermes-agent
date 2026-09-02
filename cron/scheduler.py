@@ -3353,7 +3353,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         from gateway.delivery import resolve_delivery_transport
 
-        transport = resolve_delivery_transport(platform, config, adapters)
+        target_adapters = adapters
+        if isinstance(adapters, SharedRouteAdapters):
+            # Credentialless satellite: the primary adapter is a valid
+            # transport for THIS target only when an exact primary route maps
+            # it to this profile (#101113). Miss → fail closed below.
+            shared = adapters.get(platform, target)
+            target_adapters = {platform: shared} if shared is not None else {}
+        transport = resolve_delivery_transport(platform, config, target_adapters)
         if transport is not None:
             pconfig = transport.config
             runtime_adapter = transport.adapter
@@ -3644,7 +3651,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 elif text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
+                    router = DeliveryRouter(config, target_adapters)
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
@@ -5303,21 +5310,20 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
-def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
-    """True when the primary gateway routes this platform to the profile the
-    scheduler is currently serving.
+def _primary_profile_routes_for_current_home() -> list:
+    """Primary gateway ``profile_routes`` that target the profile currently
+    being served, or ``[]`` (also when this IS the primary home).
 
     Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are
     ticked by the primary gateway's in-process ticker (#69377) and delivered
     through the primary gateway's live adapters — the satellite home never
     holds the platform credentials itself (giving it a token of its own is a
-    ``duplicate_credential`` fatal). ``_preflight_check_delivery`` loads the
-    gateway config of the job's OWN home, where such a platform correctly
-    reads as unconnected; consulting the primary home's ``profile_routes``
-    keeps routed satellite jobs from being permanently false-blocked (#97476).
-    Reads the primary config.yaml directly (both the top-level and nested
-    ``gateway.`` forms) instead of ``load_gateway_config()`` so no primary
-    platform config leaks into this process's environment.
+    ``duplicate_credential`` fatal). Reads the primary config.yaml directly
+    (both the top-level and nested ``gateway.`` forms) instead of
+    ``load_gateway_config()`` so no primary platform config leaks into this
+    process's environment. Shared by the preflight rescue (#97476) and the
+    delivery-time shared-transport resolver (#101113) so route semantics
+    cannot drift between the two halves.
     """
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
@@ -5328,10 +5334,10 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
             primary_home.expanduser().resolve(strict=False)
             == current_home.expanduser().resolve(strict=False)
         ):
-            return False  # this IS the primary home — nothing to consult
+            return []  # this IS the primary home — nothing to consult
         config_path = primary_home.expanduser() / "config.yaml"
         if not config_path.exists():
-            return False
+            return []
 
         import yaml
 
@@ -5341,25 +5347,75 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
         if routes_raw is None and isinstance(raw.get("gateway"), dict):
             routes_raw = raw["gateway"].get("profile_routes")
         if not isinstance(routes_raw, list):
-            return False
+            return []
 
         from gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
 
-        platform_key = platform_name.lower()
-        for route in parse_profile_routes(routes_raw):
-            if (
-                route.enabled
-                and str(route.platform).lower() == platform_key
-                and profile_matches_home(route.profile)
-            ):
-                return True
-        return False
+        return [
+            route
+            for route in parse_profile_routes(routes_raw)
+            if route.enabled and profile_matches_home(route.profile)
+        ]
     except Exception:
         logger.debug(
-            "preflight: primary-gateway profile-route lookup unavailable",
+            "primary-gateway profile-route lookup unavailable",
             exc_info=True,
         )
+        return []
+
+
+def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
+    """True when the primary gateway routes this platform to the profile the
+    scheduler is currently serving (preflight rescue, #97476)."""
+    platform_key = platform_name.lower()
+    return any(
+        str(route.platform).lower() == platform_key
+        for route in _primary_profile_routes_for_current_home()
+    )
+
+
+class SharedRouteAdapters:
+    """Read-only adapter map for a credentialless satellite profile (#101113).
+
+    A satellite under ``gateway.profile_routes`` owns no bot credential and so
+    has no adapter map of its own; its inbound traffic arrives on the PRIMARY
+    adapter and is routed to it by an exact route. Its cron output must go
+    back out the same transport — but ONLY for targets an enabled primary
+    route maps to this profile. ``get(platform, target)`` resolves the primary
+    adapter iff the route matcher used by inbound routing
+    (``ProfileRoute.matches``) accepts the target's ``chat_id``/``thread_id``;
+    every other lookup is a miss, so an unmatched target, a disabled route, or
+    a route naming another profile still fails closed (never the default bot).
+    A plain ``get(platform)`` (no target) is always a miss: routing is
+    per-target, not per-platform.
+    """
+
+    def __init__(self, primary_adapters, routes) -> None:
+        self._primary = dict(primary_adapters or {})
+        self._routes = list(routes or [])
+
+    def __bool__(self) -> bool:
+        return bool(self._primary) and bool(self._routes)
+
+    def get(self, platform, target=None, default=None):
+        if not target:
+            return default
+        adapter = self._primary.get(platform)
+        if adapter is None:
+            return default
+        platform_key = str(getattr(platform, "value", platform)).lower()
+        chat_id = str(target.get("chat_id") or "") or None
+        thread_id = target.get("thread_id")
+        thread_id = str(thread_id) if thread_id else None
+        for route in self._routes:
+            if str(route.platform).lower() != platform_key:
+                continue
+            if not (route.chat_id or route.thread_id):
+                continue  # guild-only routes are not target-exact
+            if route.matches(str(route.platform), chat_id=chat_id, thread_id=thread_id):
+                return adapter
+        return default
         return False
 
 

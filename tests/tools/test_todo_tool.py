@@ -44,6 +44,48 @@ class TestWriteAndRead:
             {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
+    def test_write_keeps_items_without_explicit_ids(self):
+        """Regression (#83389): items lacking an 'id' key were silently
+        dropped by deduplication because they all collapsed onto the '?'
+        placeholder key. Every no-id item must survive in position."""
+        store = TodoStore()
+        result = store.write([
+            {"content": "Task 1", "status": "pending"},
+            {"content": "Task 2", "status": "pending"},
+        ])
+        assert len(result) == 2
+        assert [item["content"] for item in result] == ["Task 1", "Task 2"]
+
+    def test_write_keeps_whitespace_only_ids(self):
+        """Regression (#83389): empty or whitespace-only 'id' values are the
+        same as missing ids — none of them may be dropped."""
+        store = TodoStore()
+        result = store.write([
+            {"id": "", "content": "Alpha", "status": "pending"},
+            {"id": "   ", "content": "Beta", "status": "pending"},
+            {"id": "1", "content": "Has real id", "status": "pending"},
+        ])
+        assert len(result) == 3
+        assert [item["content"] for item in result] == ["Alpha", "Beta", "Has real id"]
+        assert result[0]["id"] == "?"
+        assert result[1]["id"] == "?"
+
+    def test_write_mixed_ids_preserve_dedupe_of_real_ids(self):
+        """Regression guard (#83389): real duplicate ids still collapse to the
+        last occurrence while every no-id item is kept."""
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "First", "status": "pending"},
+            {"content": "No id A", "status": "pending"},
+            {"id": "1", "content": "Updated", "status": "in_progress"},
+            {"content": "No id B", "status": "pending"},
+        ])
+        assert result == [
+            {"id": "1", "content": "Updated", "status": "in_progress"},
+            {"id": "?", "content": "No id A", "status": "pending"},
+            {"id": "?", "content": "No id B", "status": "pending"},
+        ]
+
 
 class TestHasItems:
     def test_empty_store(self):

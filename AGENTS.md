@@ -1451,6 +1451,18 @@ automatically scope to the active profile.
      do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
      fallback-after-miss shape.
 
+8. **A profile's explicit capability pin is runtime-authoritative.**
+   `profiles.configure` stores a non-empty selection at
+   `tools.enabled_toolsets` inside that profile's `config.yaml`. The
+   TUI/Desktop gateway must resolve this from the active profile's
+   `HERMES_HOME` before applying coding-context posture; otherwise a Bot Chat
+   opened in a repository can show one capability set in its editor while the
+   runtime silently receives `coding` instead. Resolution precedence is:
+   `HERMES_TUI_TOOLSETS` operator override → profile capability pin → coding
+   posture → platform defaults. Enabled MCP servers and client-surface
+   toolsets still ride alongside the profile pin. An absent pin (including an
+   editor-cleared empty list) keeps the existing posture/platform behavior.
+
 ## Known Pitfalls
 
 ### DO NOT infer process identity from argv substrings

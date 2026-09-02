@@ -897,9 +897,14 @@ def test_malformed_observation_tail_shares_operation_traversal_budget(
     calls = [0]
     original_freeze = memory_provider_module._freeze_json_value
 
-    def counting_freeze(value, *, depth=0, budget=None):
+    def counting_freeze(value, *, depth=0, budget=None, operation_budget=None):
         calls[0] += 1
-        return original_freeze(value, depth=depth, budget=budget)
+        return original_freeze(
+            value,
+            depth=depth,
+            budget=budget,
+            operation_budget=operation_budget,
+        )
 
     monkeypatch.setattr(
         memory_provider_module, "_freeze_json_value", counting_freeze
@@ -938,3 +943,82 @@ def test_malformed_observation_tail_shares_operation_traversal_budget(
     # Concrete headroom: shared budget + one decrement per tail candidate +
     # a handful of frames for the valid prefix and container bookkeeping.
     assert calls[0] <= MAX_MEMORY_OBSERVATION_OPERATION_NODES + n_malformed + 64
+
+
+def test_operation_budget_does_not_relax_per_payload_node_cap():
+    """A single payload is still capped at MAX_MEMORY_OBSERVATION_NODES.
+
+    Regression: threading the operation budget through as ``budget=`` used
+    to replace the per-payload counter, letting one payload traverse up to
+    MAX_MEMORY_OBSERVATION_OPERATION_NODES (16 × the intended cap) before
+    the encoded-byte check could reject it. The two counters must be
+    additive — supplying an operation budget must not raise the per-payload
+    ceiling.
+    """
+    # Same shape as test_payload_node_budget_boundary_exact_and_over's
+    # ``over`` case (1 + 64 + 64*64 = 4161 nodes) — 65 past the per-payload
+    # budget but far under the 65536-node operation budget.
+    over = [list(range(64)) for _ in range(64)]
+    operation_budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+    with pytest.raises(ValueError, match="too many nodes"):
+        _freeze_memory_observation_payload(over, operation_budget=operation_budget)
+    # The per-payload cap fired first, so only ~MAX_MEMORY_OBSERVATION_NODES
+    # nodes of the operation budget were spent — the operation counter still
+    # has almost all of its allowance for subsequent payloads.
+    spent = MAX_MEMORY_OBSERVATION_OPERATION_NODES - operation_budget[0]
+    assert spent <= MAX_MEMORY_OBSERVATION_NODES + 2
+
+
+def test_operation_budget_exhausted_across_many_valid_payloads():
+    """A shared operation budget caps traversal across many valid payloads.
+
+    Freezing enough max-node payloads with the same operation counter must
+    exhaust it and raise ``ValueError`` on subsequent freezes — proving the
+    operation cap really is enforced across candidates, not merely per one.
+    """
+    # 1 + 63 + 63*64 = 4096 nodes: the exact per-payload budget.
+    max_payload = [list(range(64)) for _ in range(63)]
+    operation_budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+    # Exactly MAX_MEMORY_OBSERVATIONS (16) full payloads fit under the
+    # operation budget of 16 × MAX_MEMORY_OBSERVATION_NODES.
+    for _ in range(MAX_MEMORY_OBSERVATIONS):
+        _freeze_memory_observation_payload(
+            max_payload, operation_budget=operation_budget
+        )
+    assert operation_budget[0] == 0
+    # The very next node decrement drives the operation budget negative.
+    with pytest.raises(ValueError, match="operation exhausted node budget"):
+        _freeze_memory_observation_payload(
+            {"anything": 1}, operation_budget=operation_budget
+        )
+
+
+def test_ordered_valid_observations_unaffected_by_shared_operation_budget(
+    monkeypatch,
+):
+    """Ordered valid observations from one provider still freeze normally.
+
+    Sanity check that the shared operation budget threaded through the
+    manager does not perturb the accepted-prefix contract for a well-behaved
+    provider returning small, valid payloads.
+    """
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+    manager = MemoryManager()
+    payloads = [{"index": i, "note": f"item-{i}"} for i in range(5)]
+    observations = tuple(_observation(payload) for payload in payloads)
+    provider = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="ctx",
+            observations=observations,
+        ),
+    )
+    manager.add_provider(provider)
+    result = manager.prefetch_all_result("question")
+    assert result.context == "ctx"
+    # Ordered prefix, all admitted, unchanged shape.
+    assert [item.payload["index"] for item in result.observations] == list(range(5))
+    assert [item.payload["note"] for item in result.observations] == [
+        f"item-{i}" for i in range(5)
+    ]

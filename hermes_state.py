@@ -3780,6 +3780,14 @@ def _restore_journal_mode_after_repair(
     inside the repair path, not at open (the open-time flip #89393 warns
     about is a different door).
 
+    ``conn`` must be the exclusive repair guard connection when called from
+    the repair path (#101064): opening a fresh connection AFTER the guard
+    released let a writer still holding the unlinked old ``-wal`` inode
+    coexist with a brand-new ``state.db-wal`` this connection created — two
+    generations of one store. The transactional promotion already leaves the
+    destination in its pre-repair mode, so on that path this is mostly the
+    WAL-companion re-assertion; the reopen is the hazard, not the mode.
+
     The restore runs through :func:`apply_wal_with_fallback` — the canonical
     journal-mode path — rather than issuing a switch pragma directly, so it
     inherits the vulnerable-SQLite WAL-reset gate (a rebuilt file IS a new

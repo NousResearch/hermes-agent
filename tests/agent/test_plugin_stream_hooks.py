@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -162,6 +163,76 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     shutdown_plugin_stream_hook_dispatcher()
 
     assert slow_delivered == ["first", "third"]
+
+
+def test_stream_observers_keep_context_and_dispatcher_scope_per_profile(
+    monkeypatch, tmp_path
+):
+    """Concurrent profile events use each profile's home and callback."""
+    from hermes_cli import plugins
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    manager_a = plugins.PluginManager(scope_key=str(home_a))
+    manager_b = plugins.PluginManager(scope_key=str(home_b))
+    manager_a._discovered = True
+    manager_b._discovered = True
+    delivered = []
+    delivered_lock = threading.Lock()
+    delivered_event = threading.Event()
+
+    def callback_a(**kwargs):
+        with delivered_lock:
+            delivered.append(("a", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    def callback_b(**kwargs):
+        with delivered_lock:
+            delivered.append(("b", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-a-plugin"), manager_a
+    ).register_hook("memory_prefetch", callback_a)
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-b-plugin"), manager_b
+    ).register_hook("memory_prefetch", callback_b)
+
+    def manager_for_active_home():
+        return manager_a if get_hermes_home() == home_a else manager_b
+
+    monkeypatch.setattr(plugins, "get_plugin_manager", manager_for_active_home)
+
+    def emit(home, event_id):
+        token = set_hermes_home_override(home)
+        try:
+            return enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert set(pool.map(emit, (home_a, home_b), ("event-a", "event-b"))) == {True}
+
+    assert delivered_event.wait(timeout=1.0)
+    shutdown_plugin_observer_dispatcher()
+    assert sorted(delivered) == sorted(
+        [
+            ("a", str(home_a), "event-a"),
+            ("b", str(home_b), "event-b"),
+        ]
+    )
 
 
 def test_observer_dispatcher_shutdown_has_bounded_join(monkeypatch):

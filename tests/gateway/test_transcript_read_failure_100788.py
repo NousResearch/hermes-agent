@@ -14,9 +14,9 @@ model happily answered as if nothing had ever been discussed.
 Two guarantees under test:
   A. ``load_transcript`` raises ``TranscriptReadError`` on a read failure,
      while a genuinely empty session still returns ``[]``.
-  B. The gateway restore path degrades loudly: history stays empty, and a
-     per-turn ephemeral notice is queued telling the model the history
-     exists but is unreadable.
+  B. Slash-command handlers that read the transcript reply with
+     ``HISTORY_UNREADABLE`` instead of raising into the dispatch wrapper
+     (which logs and sends nothing).
 
 Offline: SQLite on tmp_path only, no network.
 """
@@ -72,11 +72,6 @@ class TestLoadTranscriptReadFailure:
         # failure — that path must keep its [] contract.
         store._db = None
         assert store.load_transcript("nope") == []
-
-
-# --------------------------------------------------------------------------
-# B. restore path: empty history + a degraded-history notice
-# --------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------

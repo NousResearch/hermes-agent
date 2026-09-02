@@ -307,9 +307,9 @@ class TestEmittedCommandsSatisfyCliContract:
         return argparse.Namespace(**fields)
 
     def test_old_v1_shape_is_still_rejected(self, tmp_path):
-        """Guard the test's own premise: neither --inspect-only nor
-        --output (the shape the v1 banner printed) is rejected with rc 2
-        by the real dispatcher."""
+        """Guard the test's own premise: the bare `--source <db>` shape the
+        v1 banner printed (neither --inspect-only nor --output) is rejected
+        with rc 2 by the real dispatcher."""
         import hermes_cli.sessions_cmd as sc
 
         rc = sc.cmd_sessions(self._namespace(tmp_path / "state.db"))

@@ -32,7 +32,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)# Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
+logger = logging.getLogger(__name__)
+
+# Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
 # strongest sentinel available for classifying schema-less rows.
 SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 

@@ -462,6 +462,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time as _time_mod
 from pathlib import Path
 from typing import Optional
 
@@ -7010,7 +7011,15 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
-    release_dir = desktop_dir / "release"
+    return _desktop_packaged_executable_in(desktop_dir / "release")
+
+
+def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
+    """Return the unpacked Electron app executable under *release_dir*.
+
+    *release_dir* is electron-builder's ``directories.output`` — the live
+    ``apps/desktop/release`` or a stage-and-swap staging dir (#86443).
+    """
     if sys.platform == "darwin":
         candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
@@ -7042,6 +7051,91 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── Desktop stage-and-swap pack (#86443) ───────────────────────────────────
+#
+# electron-builder packs IN PLACE: before-pack.mjs wipes ``release/<platform>-
+# unpacked`` (or the mac ``Hermes.app``) and the Electron unpack + asar + rename
+# then rebuild it. Any failure after that wipe — corrupt cached zip, blocked
+# download, missing dep, disk full — leaves the user with NO app, and
+# ``hermes update`` used to report "partially complete" over an empty
+# release/. Fix the class, not the predicate: build into a STAGING output
+# dir next to release/, verify the staged result, and only then swap it over
+# the live tree with renames. On any failure the live app is untouched.
+
+_DESKTOP_STAGING_PREFIX = ".staging-"
+_DESKTOP_PREVIOUS_SUFFIX = ".previous"
+
+
+def _desktop_staging_dir(desktop_dir: Path) -> Path:
+    """Fresh, unique staging output dir: ``apps/desktop/.staging-<pid>-<ts>``.
+
+    A sibling of ``release/`` (same filesystem → the swap is a rename, not a
+    copy) but NOT inside it, so nothing globbing ``release/*-unpacked`` or
+    ``release/mac*`` can mistake the half-built tree for the live app.
+    Leftovers from a killed earlier build are swept first (best-effort).
+    """
+    for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
+
+
+def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
+    """The directory directly under *release_dir* that holds *exe*
+    (``linux-unpacked``, ``win-unpacked``, ``mac-arm64``…) — electron-builder's
+    ``appOutDir``, the unit that gets swapped as a whole."""
+    unpacked = exe
+    while unpacked.parent != release_dir:
+        if unpacked.parent == unpacked:
+            raise ValueError(f"{exe} is not under {release_dir}")
+        unpacked = unpacked.parent
+    return unpacked
+
+
+def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+    """Promote a VERIFIED staged pack over the live ``release/`` app.
+
+    ``release/<unpacked>`` → ``release/<unpacked>.previous``,
+    ``<staging>/<unpacked>`` → ``release/<unpacked>``, then drop ``.previous``.
+    Two renames; the only window with no live app is between them, and a
+    failure there rolls ``.previous`` back. Returns the live executable, or
+    ``None`` (live app untouched or restored) when the swap could not happen.
+    Best-effort cleanup of the staging dir; never raises.
+    """
+    staged_exe = _desktop_packaged_executable_in(staging_dir)
+    if staged_exe is None:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None
+    release_dir = desktop_dir / "release"
+    try:
+        staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
+        live_root = release_dir / staged_root.name
+        previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
+        release_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(previous, ignore_errors=True)
+        moved_aside = False
+        if live_root.exists():
+            os.rename(live_root, previous)
+            moved_aside = True
+        try:
+            os.rename(staged_root, live_root)
+        except OSError:
+            if moved_aside:
+                os.rename(previous, live_root)  # restore; live app back as it was
+            raise
+        if moved_aside:
+            shutil.rmtree(previous, ignore_errors=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        return None
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return live_root / staged_exe.relative_to(staged_root)
+
+
+def _discard_desktop_staging(staging_dir: Path) -> None:
+    shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
@@ -7360,8 +7454,10 @@ def _ensure_desktop_exe_launchable(
 
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
     # zip and the content stamp so the next rebuild is a genuine re-download +
-    # re-stage rather than a replay of the same broken extraction.
-    _purge_electron_build_cache(desktop_dir)
+    # re-stage rather than a replay of the same broken extraction. Only the
+    # exe's OWN output dir is purged (a stage-and-swap staging dir, #86443),
+    # never the live release/ tree that still holds the last working app.
+    _purge_electron_build_cache(desktop_dir, release_dir=packaged_executable.parent.parent)
     try:
         _desktop_stamp_path().unlink()
     except OSError:
@@ -7417,7 +7513,9 @@ def _electron_download_cache_dirs() -> list[Path]:
     return out
 
 
-def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+def _purge_electron_build_cache(
+    desktop_dir: Path, release_dir: Optional[Path] = None
+) -> list[Path]:
     """Clear the cached Electron download + half-written unpacked dir so the
     next ``pack`` re-downloads and re-stages from scratch.
 
@@ -7463,8 +7561,11 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     # Drop the half-written unpacked dir too: an interrupted prior pack leaves
     # a partial tree that poisons the rename even after the zip is fixed.
     # (before-pack.cjs also handles this, but clearing it here makes the retry
-    # robust even if the hook is somehow skipped.)
-    release_dir = desktop_dir / "release"
+    # robust even if the hook is somehow skipped.) ``release_dir`` lets a
+    # stage-and-swap caller point this at its STAGING output so a mid-retry
+    # purge never touches the live app under ``release/`` (#86443).
+    if release_dir is None:
+        release_dir = desktop_dir / "release"
     if release_dir.is_dir():
         for unpacked in release_dir.glob("*-unpacked"):
             try:
@@ -7843,6 +7944,7 @@ def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path,
     *,
     publisher_signing_configured: Optional[bool] = None,
+    release_dir: Optional[Path] = None,
 ) -> bool:
     """Make a locally-built macOS desktop app survive in-place self-update
     without resetting the user's TCC permission grants.
@@ -7874,7 +7976,9 @@ def _desktop_macos_relaunchable_fixup(
         )
     if publisher_signing_configured:
         return True
-    exe = _desktop_packaged_executable(desktop_dir)
+    # ``release_dir`` (stage-and-swap, #86443): sign the STAGED bundle before
+    # it is promoted, so the live app is never touched mid-sign.
+    exe = _desktop_packaged_executable_in(release_dir or (desktop_dir / "release"))
     if exe is None:
         return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
@@ -8556,7 +8660,16 @@ def cmd_gui(args: argparse.Namespace):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
             npm_build_env = _npm_lifecycle_env(env)
+            # Stage-and-swap (#86443): electron-builder packs IN PLACE and
+            # before-pack.mjs wipes release/<unpacked> first, so a pack that
+            # fails afterwards used to leave the user with NO app. Build into
+            # a fresh staging output dir instead; the live release/ tree is
+            # only replaced — by rename — after the staged result verifies.
+            staging_dir: Optional[Path] = None
+            build_cmd = [npm, "run", build_script]
             if not source_mode:
+                staging_dir = _desktop_staging_dir(desktop_dir)
+                build_cmd += ["--", f"-c.directories.output={staging_dir}"]
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
                 # it ("Access is denied" / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE).
@@ -8565,13 +8678,17 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+
+            def _staged_exe() -> Optional[Path]:
+                return _desktop_packaged_executable_in(staging_dir) if staging_dir else None
+
             build_result = subprocess.run(
-                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
             )
             if (
                 build_result.returncode != 0
                 and not source_mode
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
                 # stdlib zipfile won't catch the common concat-junk case, so purge
@@ -8585,7 +8702,7 @@ def cmd_gui(args: argparse.Namespace):
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
-                    purged = _purge_electron_build_cache(desktop_dir)
+                    purged = _purge_electron_build_cache(desktop_dir, release_dir=staging_dir)
                     restored = _redownload_electron_dist(PROJECT_ROOT, env)
                 if restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
@@ -8595,13 +8712,13 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run(
-                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                        build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
                     )
             if (
                 build_result.returncode != 0
                 and not source_mode
                 and not env.get("ELECTRON_MIRROR")
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
@@ -8612,9 +8729,13 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
+                if staging_dir is not None:
+                    _discard_desktop_staging(staging_dir)
+                    if _desktop_packaged_executable(desktop_dir) is not None:
+                        print("  ↩ The previous desktop app was left untouched and still works.")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
@@ -8622,28 +8743,37 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
-            packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
+                assert staging_dir is not None
+                staged_executable = _staged_exe()
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
-                _desktop_macos_relaunchable_fixup(desktop_dir)
+                # Signs the STAGED bundle so the live app is never half-signed.
+                _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
 
                 # Windows integrity gate (#69179): never declare the rebuild a
                 # success on a Hermes.exe Windows cannot load (truncated PE from
                 # a corrupt cached Electron zip, wrong-arch tree, interrupted
-                # rcedit rewrite). Roll back to the .bak tree preserved by
-                # before-pack.mjs when possible, then fail loudly so the
-                # updater's retry-once rebuilds from a fresh Electron download
-                # instead of silently shipping the broken exe.
+                # rcedit rewrite). Verified on the STAGED exe: a failure here
+                # simply discards the staging dir — the live app was never
+                # touched — and fails loudly so the updater's retry-once
+                # rebuilds from a fresh Electron download.
                 verified_executable, rolled_back = _ensure_desktop_exe_launchable(
-                    desktop_dir, packaged_executable
+                    desktop_dir, staged_executable
                 )
-                if packaged_executable is not None and (
-                    rolled_back or verified_executable is None
-                ):
+                if staged_executable is None or rolled_back or verified_executable is None:
+                    _discard_desktop_staging(staging_dir)
+                    if staged_executable is None:
+                        print(f"✗ Desktop build produced no launchable app in {staging_dir}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
                     sys.exit(1)
-                packaged_executable = verified_executable
+                # Verified: swap the staged tree over the live one (rename).
+                packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+                if packaged_executable is None:
+                    print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
+                    sys.exit(1)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

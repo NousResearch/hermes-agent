@@ -10691,6 +10691,138 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _expand_worker_command_env(parts: Any) -> Any:
+    """Expand ``${VAR}`` / ``${env:VAR}`` references in worker-command argv.
+
+    Self-contained on purpose (no import of the config loader's private
+    helper), but accepting both reference spellings the loader accepts so
+    neither silently passes through as a literal. Unresolved references
+    stay verbatim, which the argv checks below then surface as an
+    executable-not-found error naming the literal ``${VAR}`` text.
+    """
+    if isinstance(parts, list):
+        return [_expand_worker_command_env(part) for part in parts]
+    if isinstance(parts, str):
+        return re.sub(
+            r"\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}",
+            lambda match: os.environ.get(match.group(1), match.group(0)),
+            parts,
+        )
+    return parts
+
+
+def _resolve_worker_command(hermes_home: Optional[str]) -> Optional[list[str]]:
+    """Return the assignee profile's ``worker.command`` argv, if declared.
+
+    A profile whose ``config.yaml`` declares a top-level ``worker.command``
+    (a list of argv parts) runs that fixed command as its worker instead of
+    the Hermes agent. The command is host-side configuration: card authors
+    cannot influence it, so the task-creation surface never becomes a
+    command-injection surface. The dispatcher spawns the command through a
+    thin supervisor (``hermes_cli.kanban_command_worker``) that execs it,
+    waits, and reports its exit code through the canonical transitions
+    while the worker process is still alive: rc=0 becomes ``complete``,
+    any other exit becomes ``block`` (deliberately no retry — a
+    deterministic pipeline that failed is a fact for a human, and the
+    retry loop belongs to the pipeline itself; unblock re-runs it). A
+    command that already moved its task through a canonical channel is
+    left alone. Because the supervisor is the command's direct parent,
+    the exit code is observed in every dispatcher constitution — resident
+    gateway, ``kanban daemon`` and throwaway cron ticks alike. The child
+    still receives the full kanban worker environment
+    (``HERMES_KANBAN_TASK`` / ``_WORKSPACE`` / ``_DB`` / ``_BOARD`` /
+    ``_RUN_ID`` / ``_CLAIM_LOCK``), still writes the per-task log, and is
+    still subject to PID crash detection and ``max_runtime`` (it does NOT
+    emit heartbeats, so ``max_runtime_seconds`` is the only stall bound —
+    set it). A command that cannot even start (a wrong path, a missing
+    binary) is the supervisor's own failure: the card is retried as a
+    crash up to the failure limit, not blocked — the message lands in the
+    task log.
+
+    Scope rules:
+
+    * The key lives in a **named profile's** config, deliberately outside
+      the ``kanban:`` namespace — every ``kanban.*`` key is read in
+      dispatcher scope, while this one is assignee scope.
+    * Declaring it in the root config is an error: the root file is
+      dispatcher scope, and the ``default`` assignee resolves to it.
+
+    This reads the profile's ``config.yaml`` directly instead of going
+    through ``load_config()``: that loader swallows YAML parse errors and
+    returns a default/last-known-good config, which would turn a typo in
+    the declaration into a silent agent run — the exact failure this
+    feature must never have. A declared-but-invalid value (or an unparsable
+    config file) raises ``RuntimeError`` so the spawn fails loudly.
+    """
+    if not hermes_home:
+        return None
+    config_path = os.path.join(hermes_home, "config.yaml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            raw_text = config_file.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(
+            f"worker.command: profile config {config_path!r} is unreadable: {exc}"
+        )
+    from utils import fast_safe_load
+
+    try:
+        parsed = fast_safe_load(raw_text)
+    except Exception as exc:
+        raise RuntimeError(
+            f"worker.command: {config_path!r} does not parse as YAML ({exc}); "
+            "refusing to guess — a broken profile config must not silently "
+            "fall back to the agent"
+        )
+    if not isinstance(parsed, dict):
+        return None
+    worker_cfg = parsed.get("worker")
+    raw = worker_cfg.get("command") if isinstance(worker_cfg, dict) else None
+    if raw is None:
+        return None
+    # Only a *named* profile — a home of the shape ``.../profiles/<name>`` —
+    # may declare a worker command. Judged structurally from the home path
+    # itself, never from ``get_hermes_home()``: the dispatcher may itself be
+    # running with ``HERMES_HOME`` pointing at a profile directory (``hermes
+    # -p x kanban daemon`` does exactly that), which would make any
+    # comparison against the process's own home wrong in both directions.
+    # ``resolve_profile_env("default")`` returns the root home, so this
+    # check is also what keeps a root-level declaration from firing for the
+    # ``default`` assignee while silently not firing for everyone else.
+    home_real = os.path.realpath(hermes_home)
+    if os.path.basename(os.path.dirname(home_real)) != "profiles":
+        raise RuntimeError(
+            "worker.command must be declared in a named profile's config.yaml "
+            "(a home of the shape .../profiles/<name>), never the root config: "
+            "the root file is dispatcher scope and the `default` assignee "
+            "resolves to it"
+        )
+    raw = _expand_worker_command_env(raw)
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or not all(isinstance(part, str) and part for part in raw)
+    ):
+        raise RuntimeError(
+            "worker.command must be a non-empty list of non-empty argv "
+            "strings (a plain string would reintroduce shell-quoting ambiguity)"
+        )
+    head = raw[0]
+    if not os.path.isabs(head) and (
+        os.sep in head or (os.altsep and os.altsep in head)
+    ):
+        raise RuntimeError(
+            "worker.command argv[0] must be an absolute path or a bare name "
+            f"resolved via PATH, got relative path {head!r}: a relative path "
+            "would resolve against the per-task workspace, whose content the "
+            "task's own branch controls"
+        )
+    return list(raw)
+
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -10849,52 +10981,93 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        "--cli",
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    if task.skills:
-        for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too when the override names one, so the worker
-        # resolves the model against the intended backend instead of the
-        # profile's configured provider (mixing model X with provider Y is
-        # the classic mis-set that stalls a board).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
-    # Per-task thinking depth. Independent of the model override — a task can
-    # run the profile's own model at a different depth — so this is its own
-    # branch, not a nested one.
-    if task.reasoning_effort:
-        cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
+    worker_command = _resolve_worker_command(env.get("HERMES_HOME"))
+    if worker_command is not None:
+        # Direct-command worker (worker.command in the assignee profile's
+        # config): the declared argv runs under a thin supervisor
+        # (hermes_cli.kanban_command_worker) that execs it, waits, and
+        # reports the exit code through the canonical transitions while
+        # this worker process is still alive — so the report is observed
+        # in every dispatcher constitution and never races reclaim.
+        # Everything around it — env, workspace cwd, per-task log, PID
+        # tracking, max_runtime — stays identical. Agent-only concerns do
+        # not apply; the command reads its task from HERMES_KANBAN_* env.
+        # The resolved argv travels in the environment so it is decided
+        # exactly once, at spawn time, from host-side configuration.
+        ignored = [
+            name
+            for name, value in (
+                ("skills", task.skills),
+                ("model_override", task.model_override),
+                ("provider_override", task.provider_override),
+                ("reasoning_effort", task.reasoning_effort),
+                ("goal_mode", task.goal_mode),
+            )
+            if value
+        ]
+        if ignored:
+            _log.warning(
+                "kanban worker: task %s runs a direct command; agent-only "
+                "settings ignored: %s",
+                task.id,
+                ", ".join(ignored),
+            )
+        env["HERMES_KANBAN_WORKER_COMMAND"] = json.dumps(worker_command)
+        # -P (Python 3.11+): do NOT prepend the cwd to sys.path. The
+        # supervisor starts with the task's workspace as its cwd, and
+        # without the flag, workspace content — a git branch under
+        # `worktree`, a previous worker's leftovers under `scratch` —
+        # could shadow the supervisor module itself (or its stdlib
+        # imports) and run in its place.
+        cmd = [sys.executable, "-P", "-m", "hermes_cli.kanban_command_worker"]
+    else:
+        env.pop("HERMES_KANBAN_WORKER_COMMAND", None)
+        cmd = [
+            *_resolve_hermes_argv(),
+            "-p", profile_arg,
+            "--cli",
+            # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
+            # so they see that profile's shell-hook allowlist instead of the
+            # dispatcher's root allowlist. Pass --accept-hooks explicitly so
+            # profile-local worker sessions still register configured hooks.
+            "--accept-hooks",
+        ]
+        # Per-task force-loaded skills. Each name goes in its own
+        # `--skills X` pair rather than a single comma-joined arg: the CLI
+        # accepts both forms (action='append' + comma-split), but
+        # per-name pairs are easier to read in `ps` output and avoid any
+        # quoting ambiguity if a skill name ever contains unusual chars.
+        if task.skills:
+            for sk in task.skills:
+                if sk:
+                    cmd.extend(["--skills", sk])
+        if task.model_override:
+            cmd.extend(["-m", task.model_override])
+            # Pin the provider too when the override names one, so the worker
+            # resolves the model against the intended backend instead of the
+            # profile's configured provider (mixing model X with provider Y is
+            # the classic mis-set that stalls a board).
+            if task.provider_override:
+                cmd.extend(["--provider", task.provider_override])
+        # Per-task thinking depth. Independent of the model override — a task can
+        # run the profile's own model at a different depth — so this is its own
+        # branch, not a nested one.
+        if task.reasoning_effort:
+            cmd.extend(["--reasoning", task.reasoning_effort])
+        worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+        if worker_toolsets:
+            cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+        cmd.extend([
+            "chat",
+            "-q", prompt,
+        ])
+        if task.goal_mode:
+            # Goal-mode workers must take the fully-quiet single-query path:
+            # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
+            # cli.py's quiet branch. Without -Q the worker gets exactly one
+            # turn, prints text, exits rc=0, and the dispatcher records a
+            # protocol violation (incident 2026-06-09 t_d9cbe312).
+            cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

@@ -11388,7 +11388,16 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     key = session.get("session_key")
     if db is not None and key:
         try:
-            display = db.get_messages_as_conversation(key, include_ancestors=True, include_row_ids=True)
+            display = db.get_messages_as_conversation(
+                key,
+                include_ancestors=True,
+                include_row_ids=True,
+                # Display read: a compacted session's archived turns are still
+                # the user's conversation. Without them a warm switch repainted
+                # the chat as just the summary + tail while the REST transcript
+                # showed everything (#92080).
+                include_compacted=True,
+            )
             return _reconcile_display_with_live(display, in_memory_fallback)
         except Exception:
             logger.debug("live display projection read failed", exc_info=True)

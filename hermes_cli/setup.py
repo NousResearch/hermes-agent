@@ -1165,6 +1165,7 @@ def _setup_tts_provider(config: dict):
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
+        "cartesia": "Cartesia",
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
@@ -1189,12 +1190,13 @@ def _setup_tts_provider(config: dict):
             "xAI TTS (Grok voices — OAuth login or API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
+            "Cartesia (ultra-low latency, Sonic 2, emotion controls, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "cartesia", "gemini", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1341,6 +1343,19 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("MISTRAL_API_KEY", api_key)
                 print_success("Mistral TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "cartesia":
+        existing = get_env_value("CARTESIA_API_KEY")
+        if not existing:
+            print()
+            print_info("Get an API key at https://play.cartesia.ai/console")
+            api_key = prompt("Cartesia API key for TTS", password=True)
+            if api_key:
+                save_env_value("CARTESIA_API_KEY", api_key)
+                print_success("Cartesia API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"

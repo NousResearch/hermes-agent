@@ -74,18 +74,15 @@ def _reset_registry():
 
 class TestRegistration:
     def test_happy_path(self):
-        p = _FakeProvider(name="cartesia")
+        p = _FakeProvider(name="custom_tts_plugin")
         tts_registry.register_provider(p)
-        assert tts_registry.get_provider("cartesia") is p
-        assert [r.name for r in tts_registry.list_providers()] == ["cartesia"]
-
-
-
+        assert tts_registry.get_provider("custom_tts_plugin") is p
+        assert [r.name for r in tts_registry.list_providers()] == ["custom_tts_plugin"]
 
     @pytest.mark.parametrize(
         "builtin",
         ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
+         "mistral", "xai", "piper", "kittentts", "neutts", "deepinfra", "cartesia"],
     )
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         """Built-in names always win — plugin registration is silently ignored

@@ -337,8 +337,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'gemini',
     'neutts',
     'kittentts',
-    'piper'
+    'piper',
+    'cartesia'
   ],
+  'tts.cartesia.model': ['sonic-2', 'sonic-turbo', 'sonic-multilingual'],
+  'tts.cartesia.voice_id': ['25d7abcb-4d6d-4aca-adce-8a1c85620c8b'],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
@@ -370,7 +373,9 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'tts.cartesia.model',
+  'tts.cartesia.voice_id'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
@@ -511,6 +516,10 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     deepinfra: {
       model: 'DeepInfra TTS Model',
       voice: 'DeepInfra Voice'
+    },
+    cartesia: {
+      model: 'Cartesia Model',
+      voice_id: 'Cartesia Voice ID'
     }
   },
   memory: {
@@ -734,6 +743,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.piper.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
+      'tts.cartesia.model',
+      'tts.cartesia.voice_id',
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',

@@ -2431,6 +2431,26 @@ def cleanup_all_environments():
     return cleaned
 
 
+def _cleanup_env(env, *, force_remove: bool = False) -> None:
+    """Tear down one environment, passing ``force_remove`` only when accepted.
+
+    ``DockerEnvironment.cleanup(force_remove=...)`` (issue #20561) diverges
+    from the base ``cleanup(self)``; other backends expose ``stop`` /
+    ``terminate`` instead. Shared by ``cleanup_vm`` and the prompt-time
+    backend probe so the signature check lives in one place.
+    """
+    if hasattr(env, 'cleanup'):
+        import inspect
+        if "force_remove" in inspect.signature(env.cleanup).parameters:
+            env.cleanup(force_remove=force_remove)
+        else:
+            env.cleanup()
+    elif hasattr(env, 'stop'):
+        env.stop()
+    elif hasattr(env, 'terminate'):
+        env.terminate()
+
+
 def cleanup_vm(task_id: str, *, force_remove: bool = False):
     """Manually clean up a specific environment by task_id.
 
@@ -2475,19 +2495,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         return
 
     try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
-            else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
+        _cleanup_env(env, force_remove=force_remove)
 
         logger.info("Manually cleaned up environment for task: %s", task_id)
 

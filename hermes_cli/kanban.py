@@ -205,11 +205,11 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "init", "create", "swarm", "assign", "set-model", "reclaim", "reassign",
+    "link", "unlink", "claim", "comment", "attach", "attach-rm", "complete",
+    "edit", "block", "schedule", "unblock", "request-review", "request-changes",
+    "reopen-review", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
     "gc",
 })
 
@@ -226,9 +226,16 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    from agent.delegation_context import kanban_path_is_fenced
+    try:
+        from agent.delegation_context import is_delegated_child_mutation_context, kanban_path_is_fenced
 
-    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
+        return (
+            kanban_path_is_fenced(kb.kanban_home())
+            or kanban_path_is_fenced(kb.kanban_db_path())
+            or is_delegated_child_mutation_context()
+        )
+    except Exception:
+        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
 
 
 def _joined_words(words) -> Optional[str]:

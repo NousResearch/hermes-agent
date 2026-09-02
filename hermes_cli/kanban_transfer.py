@@ -293,8 +293,13 @@ def import_board(
     *,
     activate: bool = False,
 ) -> dict[str, Any]:
-    """Import an archive as a NEW board (``slug`` overrides the archive's;
-    either way it auto-suffixes if taken). Returns a summary dict."""
+    """Import a board archive as a new board. Returns a summary dict.
+
+    ``slug`` overrides the name from the archive. Either way the final
+    slug auto-suffixes if it is taken, so an import never merges into or
+    overwrites an existing board.
+    """
+    kb._assert_not_delegated_child_mutation()
     archive = Path(archive_path).expanduser()
     if not archive.exists():
         raise FileNotFoundError(f"archive not found: {archive}")

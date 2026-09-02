@@ -634,9 +634,12 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         death_r, kernel.death_pipe_w = os.pipe()
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
+    from agent.delegation_context import wrap_delegated_child_command
+
+    runner_argv = wrap_delegated_child_command([child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")])
     try:
         kernel.proc = subprocess.Popen(
-            [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
+            runner_argv,
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,

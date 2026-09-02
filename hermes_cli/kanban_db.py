@@ -141,9 +141,13 @@ def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> No
     *path* is the board DB / metadata root being mutated; ``None`` means the
     lineage's own board (``kanban_home()``).
     """
-    from agent.delegation_context import kanban_path_is_fenced
+    try:
+        from agent.delegation_context import is_delegated_child_mutation_context, kanban_path_is_fenced
 
-    if kanban_path_is_fenced(kanban_home() if path is None else path):
+        delegated = kanban_path_is_fenced(kanban_home() if path is None else path) or is_delegated_child_mutation_context()
+    except Exception:
+        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    if delegated:
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
 
 

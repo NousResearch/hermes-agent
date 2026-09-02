@@ -370,6 +370,9 @@ async def handle_ws(
         else:
             await ws.accept()
         disconnect_reason = "connected"
+        # A client is attached from the moment the upgrade is accepted — mark it
+        # before the (possibly slow) ready/skin setup so scale-to-zero sees it.
+        _note_dashboard_client_activity(force=True)
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
@@ -417,7 +420,6 @@ async def handle_ws(
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
-            _note_dashboard_client_activity(force=True)
         # Cross-backend liveness (#94895): register a heartbeat row so
         # the startup orphan sweep can distinguish "row owned by a live
         # but idle backend" from "row truly orphaned". The stdio TUI's

@@ -9488,7 +9488,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process refreshes on every WS frame (gateway/scale_to_zero.py). Fold
         # it into the inbound clock rather than adding a conjunct: the client
         # then gets the same idle_timeout grace after it disconnects as a chat
-        # message does, and a lingering marker cannot pin the box (stale -> None).
+        # message does, and a lingering marker cannot pin the box (an old mtime
+        # is outside idle_timeout just like an old _last_inbound_at).
         last_inbound = self._last_inbound_at
         try:
             from gateway.scale_to_zero import dashboard_client_last_seen

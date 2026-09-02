@@ -195,3 +195,25 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
     assert probe is not None
     assert probe["env"]["GIT_CONFIG_GLOBAL"] == os.devnull, (
         "the origin-URL probe must observe the URL the isolated fetch will dial")
+
+
+def test_prefetch_update_check_survives_exception():
+    """A raising check must not kill the daemon thread or leave waiters hanging.
+
+    ``check_for_updates`` shells out to git; a hung git raises TimeoutExpired.
+    Uncaught, that killed the thread before it set the done event, so every
+    waiter burned its full timeout.
+    """
+    from hermes_cli import banner
+
+    with (
+        # The prefetch is a no-op under pytest; exercise the real thread body.
+        patch.object(banner, "_skip_background_prefetch", return_value=False),
+        patch.object(banner, "check_for_updates", side_effect=RuntimeError("boom")),
+    ):
+        banner._update_result = "stale"
+        banner._update_check_done.clear()
+        banner.prefetch_update_check()
+        assert banner._update_check_done.wait(timeout=5)
+
+    assert banner._update_result is None

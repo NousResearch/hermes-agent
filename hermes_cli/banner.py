@@ -537,8 +537,12 @@ def prefetch_update_check():
 
     def _run():
         global _update_result
-        _update_result = check_for_updates(passive=True)
-        _update_check_done.set()
+        try:
+            _update_result = check_for_updates(passive=True)
+        except Exception:
+            _update_result = None  # inconclusive; never crash the daemon thread
+        finally:
+            _update_check_done.set()
     _daemon(None, _run)
 
 

@@ -2906,7 +2906,10 @@ def _persistent_repair_exhausted_error(db_path: Path) -> str:
         f"{_MAX_PERSISTENT_REPAIR_ATTEMPTS} times on this exact file — "
         "the corruption is beyond the schema/FTS repair strategies "
         "(likely b-tree page damage). Manual recovery required: restore "
-        f"a backup, or salvage with `sqlite3 {db_path} \".recover\"`. "
+        "a backup, or salvage with `hermes sessions recover --source "
+        f"{db_path}` (it snapshots the damaged file first, then runs the "
+        "page-level `.recover` lane on the copy; do NOT point a raw "
+        "`sqlite3` shell at the live database). "
         f"Delete {_repair_ledger_path(db_path).name} to force another "
         "automatic attempt."
     )
@@ -3105,8 +3108,8 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                     f"only {usage.free / 1e9:.2f}GB free on {db_path.parent}; "
                     f"copying the damaged DB needs {need / 1e9:.2f}GB and must "
                     f"leave {headroom / 1e9:.2f}GB headroom. Free disk space, "
-                    f"then retry (or recover manually with `sqlite3 {db_path} "
-                    '".recover"`).'
+                    "then retry (or recover manually with "
+                    f"`hermes sessions recover --source {db_path}`)."
                 )
                 logger.error("Refusing forensic backup of %s: %s", db_path, reason)
                 return None, reason
@@ -3120,7 +3123,7 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                 f"could not determine free space on {db_path.parent} ({exc}); "
                 "refusing the forensic copy rather than risk filling the "
                 f"volume. Free disk space, then retry (or recover manually "
-                f'with `sqlite3 {db_path} ".recover"`).'
+                f"with `hermes sessions recover --source {db_path}`)."
             )
             logger.error("Refusing forensic backup of %s: %s", db_path, reason)
             return None, reason

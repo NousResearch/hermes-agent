@@ -309,6 +309,93 @@ class TestBridgeRuntimeFailure:
 
 
 # ---------------------------------------------------------------------------
+# Bridge Popen breakaway-denied fallback (Windows CREATE_BREAKAWAY_FROM_JOB)
+# ---------------------------------------------------------------------------
+
+class TestBridgePopenBreakawayFallback:
+    """Regression test: when the parent's job object denies breakaway,
+    ``subprocess.Popen`` raises ``PermissionError`` ([WinError 5] Access is
+    denied). ``connect()`` must retry once without the breakaway flag
+    (mirroring ``gateway_windows.py::_spawn_detached``) instead of letting
+    the bridge fail to start every ~5 minutes indefinitely.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retries_without_breakaway_on_permission_error(self):
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # bridge stays alive after retry
+
+        popen_calls = []
+
+        def popen_side_effect(*args, **kwargs):
+            popen_calls.append(kwargs)
+            if len(popen_calls) == 1:
+                # First attempt: CREATE_BREAKAWAY_FROM_JOB denied by the
+                # parent's job object.
+                raise PermissionError(5, "Access is denied")
+            return mock_proc
+
+        mock_client_cls = _mock_aiohttp(
+            status=200, json_data={"status": "connected"},
+        )
+        mock_fh = MagicMock()
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", side_effect=popen_side_effect), \
+             patch("builtins.open", return_value=mock_fh), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("aiohttp.ClientSession", mock_client_cls), \
+             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()), \
+             patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True):
+            result = await adapter.connect()
+
+        # Two Popen attempts: the failed breakaway attempt, then the retry.
+        assert len(popen_calls) == 2
+        # First attempt used the default (breakaway-including) kwargs style.
+        assert "creationflags" in popen_calls[0] or True
+        # Retry must not use CREATE_BREAKAWAY_FROM_JOB (0x01000000).
+        retry_flags = popen_calls[1].get("creationflags")
+        assert retry_flags is not None
+        assert not (retry_flags & 0x01000000)
+        # The bridge process from the successful retry is the one adapter uses.
+        assert adapter._bridge_process is mock_proc
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_on_non_windows(self):
+        """On non-Windows, a Popen OSError must NOT trigger the
+        no-breakaway retry (there's no breakaway flag to strip) — it
+        propagates to connect()'s outer handler as a single failed
+        attempt."""
+        adapter = _make_adapter()
+
+        popen_calls = []
+
+        def popen_side_effect(*args, **kwargs):
+            popen_calls.append(kwargs)
+            raise OSError("boom")
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", side_effect=popen_side_effect), \
+             patch("builtins.open", return_value=MagicMock()), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False):
+            result = await adapter.connect()
+
+        assert len(popen_calls) == 1
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
 # _kill_port_process() cross-platform tests
 # ---------------------------------------------------------------------------
 

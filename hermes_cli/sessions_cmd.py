@@ -21,6 +21,7 @@ time — no import cycle).
 
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -37,6 +38,30 @@ def get_hermes_home():
 
 def _relative_time(ts):
     return _m()._relative_time(ts)
+
+
+def _duration_label(s):
+    """Wall-clock session duration from started_at to ended_at.
+
+    Active sessions (ended_at is None) count up to now. Returns a compact
+    label: '42s', '5m 09s', '1h 02m', '1d 04h', or '—' when started_at is
+    missing.
+    """
+    sa, ea = s.get("started_at"), s.get("ended_at")
+    if sa is None:
+        return "—"
+    dur = (ea if ea is not None else time.time()) - sa
+    secs = int(dur)
+    if secs < 60:
+        return f"{secs}s"
+    m, s_rem = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m {s_rem:02d}s"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h {m:02d}m"
+    d, h = divmod(h, 24)
+    return f"{d}d {h:02d}h"
 
 
 def _session_browse_picker(sessions, session_db=None):
@@ -361,30 +386,58 @@ def cmd_sessions(args, sessions_parser=None):
         has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
         has_titles = any(s.get("title") for s in sessions)
 
+        # Duration column: wall-clock from started_at to ended_at (or now if the
+        # session is still active). Opt-in via --duration so existing column
+        # layouts / scripts parsing the output are untouched.
+        _show_dur = bool(getattr(args, "duration", False))
+
         if has_ws:
             if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                if _show_dur:
+                    print(f"{'Duration':<9} {'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                    print("─" * 120)
+                else:
+                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                    print("─" * 110)
             else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 100)
+                if _show_dur:
+                    print(f"{'Duration':<9} {'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print("─" * 110)
+                else:
+                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print("─" * 100)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
+                dur = _duration_label(s)
                 if has_titles:
                     title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    if _show_dur:
+                        print(f"{dur:<9} {title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    else:
+                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
                 else:
                     preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    if _show_dur:
+                        print(f"{dur:<9} {preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    else:
+                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
             return
 
         if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-            print("─" * 110)
+            if _show_dur:
+                print(f"{'Duration':<9} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 120)
+            else:
+                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 110)
         else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-            print("─" * 95)
+            if _show_dur:
+                print(f"{'Duration':<9} {'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 105)
+            else:
+                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 95)
         for s in sessions:
             last_active = _relative_time(s.get("last_active"))
             preview = (
@@ -392,13 +445,20 @@ def cmd_sessions(args, sessions_parser=None):
                 if has_titles
                 else s.get("preview", "")[:48]
             )
+            dur = _duration_label(s)
             if has_titles:
                 title = (s.get("title") or "—")[:30]
                 sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                if _show_dur:
+                    print(f"{dur:<9} {title:<32} {preview:<40} {last_active:<13} {sid}")
+                else:
+                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
             else:
                 sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                if _show_dur:
+                    print(f"{dur:<9} {preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                else:
+                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
     elif action == "export":
         from hermes_cli.session_filters import (

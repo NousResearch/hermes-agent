@@ -224,6 +224,56 @@ describe('annotateInPage overlay', () => {
     api.teardown()
   })
 
+  it('shows the draft marker before a capture can photograph it', async () => {
+    const api = annotateInPage(document)
+    api.install()
+    api.showDraft({ height: 24, width: 80, x: 10, y: 10 }, 2)
+
+    const ready = await api.beginCapture()
+    const shadow = document.querySelector('hermes-annotate')!.shadowRoot!
+    const draft = shadow.querySelector('[data-annotate-outline="draft"]') as HTMLElement
+    const marker = draft.querySelector('[data-annotate-marker]')
+
+    expect(ready).toBe(true)
+    expect(draft.style.display).toBe('block')
+    expect(marker?.getAttribute('data-annotate-marker')).toBe('2')
+    api.teardown()
+  })
+
+  it('hides saved pins during a capture so a neighbour marker cannot land in the crop', async () => {
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([
+      { kind: 'element', number: 1, rect: { height: 24, width: 80, x: 10, y: 10 } },
+      { kind: 'element', number: 2, rect: { height: 24, width: 80, x: 10, y: 40 } }
+    ])
+    api.showDraft({ height: 24, width: 80, x: 10, y: 70 }, 3)
+
+    const shadow = document.querySelector('hermes-annotate')!.shadowRoot!
+    const pins = () => shadow.querySelector('[data-annotate-pin="1"]')!.parentElement as HTMLElement
+
+    expect(pins().style.display).not.toBe('none')
+
+    await api.beginCapture()
+
+    expect(pins().style.display).toBe('none')
+    // The draft's own marker must survive — it is the point of the crop.
+    expect(
+      (shadow.querySelector('[data-annotate-outline="draft"]') as HTMLElement).style.display
+    ).toBe('block')
+
+    api.endCapture()
+
+    expect(pins().style.display).toBe('block')
+    api.teardown()
+  })
+
+  it('refuses to dress a capture when the overlay is gone', async () => {
+    const api = annotateInPage(document)
+
+    expect(await api.beginCapture()).toBe(false)
+  })
+
   it('owns wheel scrolling instead of also allowing the native wheel action', () => {
     const scroller = document.createElement('div')
     scroller.style.overflowY = 'auto'

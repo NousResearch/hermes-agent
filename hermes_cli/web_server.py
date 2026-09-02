@@ -16150,23 +16150,63 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         # (dedicated vision/compression models) appear on the Models page
         # instead of being invisible (issue #23270). Keyed by
         # model+billing_provider to match the GROUP BY above.
+        #
+        # _aux_usage_rows groups by (model, task, billing_provider), so one
+        # model used for several aux tasks yields several rows for the SAME
+        # (model, billing_provider) pair. Appending them unconditionally
+        # emitted one card per aux task next to the sessions-derived card
+        # (#89631), and their session counts summed past totals.total_sessions
+        # because aux usage happens inside sessions the main row already
+        # counted. Fold into the existing pair when there is one; only a pair
+        # with no sessions-derived row becomes a new row.
+        aux_index: Dict[tuple, Dict[str, Any]] = {
+            (row.get("model") or "", row.get("billing_provider") or ""): row
+            for row in raw_rows
+        }
         for aux in _aux_usage_rows(db, cutoff):
-            raw_rows.append({
-                "model": aux.get("model") or "unknown",
-                "billing_provider": aux.get("billing_provider") or "",
-                "input_tokens": aux.get("input_tokens") or 0,
-                "output_tokens": aux.get("output_tokens") or 0,
-                "cache_read_tokens": aux.get("cache_read_tokens") or 0,
-                "reasoning_tokens": aux.get("reasoning_tokens") or 0,
-                "estimated_cost": aux.get("estimated_cost") or 0,
-                "actual_cost": 0,
-                "sessions": aux.get("sessions") or 0,
-                "api_calls": aux.get("api_calls") or 0,
-                "tool_calls": 0,
-                "last_used_at": aux.get("last_used_at"),
-                "avg_tokens_per_session": 0,
-                "aux_task": aux.get("task") or "",
-            })
+            model = aux.get("model") or "unknown"
+            provider = aux.get("billing_provider") or ""
+            target = aux_index.get((model, provider))
+            if target is None:
+                target = {
+                    "model": model,
+                    "billing_provider": provider,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "estimated_cost": 0,
+                    "actual_cost": 0,
+                    # Only an aux-only pair carries its own session count; a
+                    # folded row must not re-count sessions it already has.
+                    "sessions": aux.get("sessions") or 0,
+                    "api_calls": 0,
+                    "tool_calls": 0,
+                    "last_used_at": None,
+                    "avg_tokens_per_session": 0,
+                    "aux_task": aux.get("task") or "",
+                }
+                aux_index[(model, provider)] = target
+                raw_rows.append(target)
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "reasoning_tokens",
+                "estimated_cost",
+                "api_calls",
+            ):
+                target[key] = (target.get(key) or 0) + (aux.get(key) or 0)
+            if aux.get("last_used_at") is not None:
+                target["last_used_at"] = max(
+                    target.get("last_used_at") or 0, aux.get("last_used_at") or 0
+                )
+            sessions = target.get("sessions") or 0
+            if sessions:
+                target["avg_tokens_per_session"] = (
+                    (target.get("input_tokens") or 0)
+                    + (target.get("output_tokens") or 0)
+                ) / sessions
 
         # Session rows can be created before the first billable provider call
         # finishes. If that early row records only the model name, and a later

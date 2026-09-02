@@ -112,6 +112,15 @@ MODEL_GUARD_SURFACES = (
 )
 MODEL_GUARD_BASELINE = "governance/model-routing-baseline.json"
 
+# Standby utility profiles (Sahil-approved skip, 2026-09-01). These are
+# registered kind=utility, lifecycle=standby profiles with no gateway unit
+# and no model routing by design. The model-routing guard and the per-profile
+# schema-version expectation over-apply to them: a standby utility config
+# never routes a model and is not part of the migration baseline, so flagging
+# it is a false positive, not drift. Explicit allow-list (not heuristics) so
+# the skip is auditable and adding a profile here is a visible policy change.
+STANDBY_PROFILES = frozenset({"work"})
+
 
 def _model_routing_sig(cfg: dict) -> str:
     import hashlib as _hashlib
@@ -371,6 +380,12 @@ def run_checks(home: Path, drift: Drift) -> None:
         seen_profiles.add(name)
         cfg = _load_yaml(cfg_path)
         label = f"profiles/{name}/config.yaml"
+        if name in STANDBY_PROFILES:
+            # Standby utility profile: no model routing, no gateway, not part
+            # of the schema/migration baseline. Skip guard + schema checks;
+            # curator/budget/personality checks still gate on profile
+            # membership and will not fire for these names.
+            continue
         _check_model_guard(drift, home, label, cfg)
 
         # Schema version: every profile config on disk must match the code.

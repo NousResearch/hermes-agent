@@ -30,3 +30,24 @@ def test_cron_activity_uses_ledger_contract_fields(monkeypatch, tmp_path):
     assert event["payload"]["severity"] == "error"
     assert event["payload"]["correlation_id"] == "job-42"
     assert event["payload"]["delivery_error"] == "adapter unavailable"
+
+
+def test_created_job_carries_owner_profile(tmp_path, monkeypatch):
+    """New cron jobs persist a `profile` field so job_run_error events are
+    attributable (_record_cron_activity uses it for actor_profile). Root
+    gateway ('default') maps to the fleet vocabulary 'root'."""
+    import cron.jobs as jobs_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "default",
+        raising=False,
+    )
+    job = jobs_mod.create_job(
+        prompt="attribution probe",
+        schedule="every 60m",
+        name="attribution-probe",
+        enabled=False,
+    )
+    assert job["profile"] == "root"

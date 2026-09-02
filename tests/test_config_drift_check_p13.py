@@ -764,3 +764,45 @@ def test_allowed_cli_extra_tools_do_not_drift(tmp_path):
     _write_yaml(home / "config.yaml", root)
     r = _run_step6(home)
     assert r.returncode == 0, r.stdout
+
+
+# ── standby utility profile skip (Sahil-approved 2026-09-01) ──────────────
+
+
+def test_standby_profile_model_guard_and_schema_skipped(tmp_path):
+    """A standby utility profile (kind=utility, lifecycle=standby, no
+    gateway, no model routing by design) must NOT produce drift when its
+    config lacks a schema version or a model-routing baseline entry."""
+    home, _root = _make_policy_compliant_home(tmp_path)
+    prof_dir = home / "profiles" / "work"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    # No _config_version and no baseline entry: both would be drift for a
+    # routed profile. For a standby profile this must stay silent.
+    _write_yaml(prof_dir / "config.yaml", {
+        "model": {"default": "utility/no-routing"},
+        "skills": {"enabled_skills": []},
+    })
+    r = _run_step6(home)
+    assert r.returncode == 0, r.stdout
+    assert r.stdout == ""
+
+
+def test_non_standby_profile_without_baseline_is_still_drift(tmp_path):
+    """The standby skip must be an explicit allow-list: a NON-standby
+    profile absent from the approved baseline is still drift."""
+    home, _root = _make_policy_compliant_home(tmp_path)
+    # Build a minimal approved baseline so the guard is active (not fail-open)
+    import json as _json
+    gov = home / "governance"
+    gov.mkdir(parents=True, exist_ok=True)
+    (gov / "model-routing-baseline.json").write_text(_json.dumps({"sig": {}}))
+    prof_dir = home / "profiles" / "routedextra"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    _write_yaml(prof_dir / "config.yaml", {
+        "_config_version": SCHEMA_VERSION,
+        "model": {"default": "evil/extra-model"},
+        "skills": {"enabled_skills": []},
+    })
+    r = _run_step6(home)
+    assert r.returncode == 1, r.stdout
+    assert "routedextra" in r.stdout

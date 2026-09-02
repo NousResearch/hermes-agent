@@ -775,6 +775,28 @@ def ensure_dirs():
     _secure_dir(store.output_dir)
 
 
+def _capture_job_owner_profile() -> Optional[str]:
+    """Best-effort capture of the profile that owns a cron job.
+
+    Attribution seam for governance telemetry: ``_record_cron_activity``
+    reads ``job["profile"]`` for ``actor_profile`` so per-profile failure
+    analysis (e.g. denji-self-eval-trigger's repeated_failure reason) can
+    attribute ``job_run_error`` events. The root gateway's fleet crons
+    resolve to ``"default"`` via get_active_profile_name(); that is mapped
+    to ``"root"`` so it matches the fleet's profile vocabulary. Any failure
+    here must never break job creation — return None (legacy unattributed).
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name()
+        if not name:
+            return None
+        return "root" if name == "default" else name
+    except Exception:
+        return None
+
+
 def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) -> None:
     """Best-effort Profile Activity Ledger hook for cron job changes."""
     try:
@@ -2357,6 +2379,13 @@ def create_job(
         "id": job_id,
         "name": name or label_source[:50].strip(),
         "prompt": prompt_text,
+        # Owning profile: attribution for governance telemetry
+        # (_record_cron_activity reads this for actor_profile). Captured at
+        # creation time from the active profile; None keeps the legacy
+        # unattributed shape for back-compat (the ledger hook treats it as
+        # fleet-level). Fleet crons created on the root gateway resolve to
+        # "default" here — mapped to "root" at record time below.
+        "profile": _capture_job_owner_profile(),
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,

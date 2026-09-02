@@ -15,13 +15,14 @@ def _session(db, sid, profile_name=None):
     db.create_session(session_id=sid, source="telegram", user_id=CHAT, profile_name=profile_name)
 
 
-def test_legacy_v2_rows_migrate_only_to_default(tmp_path: Path):
+def test_legacy_rows_migrate_only_to_default(tmp_path: Path):
+    """v1 shape (no CASCADE, old user index) → v3: rows land in 'default' only."""
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         f"""
         CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
-        INSERT INTO state_meta(key, value) VALUES ('telegram_dm_topic_schema_version', '2');
+        INSERT INTO state_meta(key, value) VALUES ('telegram_dm_topic_schema_version', '1');
         CREATE TABLE sessions (
             id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT,
             model_config TEXT, system_prompt TEXT, parent_session_id TEXT,
@@ -43,11 +44,13 @@ def test_legacy_v2_rows_migrate_only_to_default(tmp_path: Path):
         CREATE TABLE telegram_dm_topic_bindings (
             chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
             session_key TEXT NOT NULL,
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
             managed_mode TEXT NOT NULL DEFAULT 'auto',
             linked_at REAL NOT NULL, updated_at REAL NOT NULL,
             PRIMARY KEY (chat_id, thread_id)
         );
+        CREATE INDEX idx_telegram_dm_topic_bindings_user
+            ON telegram_dm_topic_bindings(user_id, chat_id);
         INSERT INTO telegram_dm_topic_bindings
             VALUES ('{CHAT}', '99', '{CHAT}', 'k', 'legacy-sess', 'auto', 1.0, 1.0);
         """
@@ -69,6 +72,8 @@ def test_legacy_v2_rows_migrate_only_to_default(tmp_path: Path):
     assert db.get_telegram_topic_binding(
         chat_id=CHAT, thread_id="99", profile_name="coder",
     ) is None
+    fk = db._conn.execute("PRAGMA foreign_key_list('telegram_dm_topic_bindings')").fetchall()
+    assert any(row[2] == "sessions" and row[6] == "CASCADE" for row in fk)
     db.close()
 
 

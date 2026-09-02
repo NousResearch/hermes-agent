@@ -16111,20 +16111,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                gateways (shared ``state.db``) isolate topic mode/bindings
                per Hermes profile (issue #76423).
         """
-        def _table_columns(conn, table: str) -> set:
-            try:
-                return {
-                    row[1]
-                    for row in conn.execute(f"PRAGMA table_info('{table}')").fetchall()
-                }
-            except sqlite3.OperationalError:
-                return set()
-
-        def _do(conn):
-            # Fresh installs get the v3 shape immediately.
-            conn.executescript(
+        # (table, column list, DDL body). ``profile_name`` leads the primary
+        # key so multiplexed profiles sharing one state.db never collide on a
+        # private chat_id (which is the user id, identical across bots).
+        tables = (
+            (
+                "telegram_dm_topic_mode",
+                "profile_name, chat_id, user_id, enabled, activated_at, updated_at, "
+                "has_topics_enabled, allows_users_to_create_topics, "
+                "capability_checked_at, intro_message_id, pinned_message_id",
                 """
-                CREATE TABLE IF NOT EXISTS telegram_dm_topic_mode (
                     profile_name TEXT NOT NULL DEFAULT 'default',
                     chat_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -16137,9 +16133,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     intro_message_id TEXT,
                     pinned_message_id TEXT,
                     PRIMARY KEY (profile_name, chat_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS telegram_dm_topic_bindings (
+                """,
+            ),
+            (
+                "telegram_dm_topic_bindings",
+                "profile_name, chat_id, thread_id, user_id, session_key, "
+                "session_id, managed_mode, linked_at, updated_at",
+                """
                     profile_name TEXT NOT NULL DEFAULT 'default',
                     chat_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
@@ -16150,93 +16150,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (profile_name, chat_id, thread_id)
-                );
+                """,
+            ),
+        )
+
+        def _do(conn):
+            for table, columns, ddl in tables:
+                # Fresh installs get the v3 shape immediately.
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
+                have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+                if "profile_name" in have:
+                    continue
+                # Pre-profile shape (v1 or v2) → v3. SQLite can't ALTER a
+                # primary key (or a foreign key), so rebuild; this also
+                # supplies the v2 ON DELETE CASCADE for v1 bindings tables.
+                # Legacy rows land in the "default" namespace only — never
+                # replicated across profiles.
+                legacy_columns = columns.replace("profile_name, ", "", 1)
+                conn.executescript(
+                    f"""
+                    CREATE TABLE {table}_new ({ddl});
+                    INSERT INTO {table}_new ({columns})
+                        SELECT 'default', {legacy_columns} FROM {table};
+                    DROP TABLE {table};
+                    ALTER TABLE {table}_new RENAME TO {table};
+                    """
+                )
+
+            # Indexes after any rebuild so they always target the v3 shape
+            # (a legacy table lacking profile_name can't take the user index).
+            conn.executescript(
                 """
-            )
-            # Indexes are created after any rebuild: a legacy table still
-            # lacking profile_name cannot accept the v3 user index.
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
+                ON telegram_dm_topic_bindings(session_id);
 
-            mode_cols = _table_columns(conn, "telegram_dm_topic_mode")
-            bind_cols = _table_columns(conn, "telegram_dm_topic_bindings")
-
-            # Any pre-profile shape (v1 or v2) → v3: rebuild both tables with
-            # profile_name in the primary key. SQLite can't ALTER a primary key
-            # (or a foreign key), so we rebuild; the bindings rebuild also
-            # supplies the v2 ON DELETE CASCADE for v1 tables. Legacy rows
-            # migrate into the "default" namespace only — never replicated
-            # across profiles (collision-contaminated data would multiply).
-            if "profile_name" not in mode_cols:
-                conn.executescript(
-                    """
-                    CREATE TABLE telegram_dm_topic_mode_new (
-                        profile_name TEXT NOT NULL DEFAULT 'default',
-                        chat_id TEXT NOT NULL,
-                        user_id TEXT NOT NULL,
-                        enabled INTEGER NOT NULL DEFAULT 1,
-                        activated_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        has_topics_enabled INTEGER,
-                        allows_users_to_create_topics INTEGER,
-                        capability_checked_at REAL,
-                        intro_message_id TEXT,
-                        pinned_message_id TEXT,
-                        PRIMARY KEY (profile_name, chat_id)
-                    );
-                    INSERT INTO telegram_dm_topic_mode_new (
-                        profile_name, chat_id, user_id, enabled, activated_at,
-                        updated_at, has_topics_enabled, allows_users_to_create_topics,
-                        capability_checked_at, intro_message_id, pinned_message_id
-                    )
-                    SELECT
-                        'default', chat_id, user_id, enabled, activated_at,
-                        updated_at, has_topics_enabled, allows_users_to_create_topics,
-                        capability_checked_at, intro_message_id, pinned_message_id
-                    FROM telegram_dm_topic_mode;
-                    DROP TABLE telegram_dm_topic_mode;
-                    ALTER TABLE telegram_dm_topic_mode_new
-                        RENAME TO telegram_dm_topic_mode;
-                    """
-                )
-
-            if "profile_name" not in bind_cols:
-                conn.executescript(
-                    """
-                    CREATE TABLE telegram_dm_topic_bindings_new (
-                        profile_name TEXT NOT NULL DEFAULT 'default',
-                        chat_id TEXT NOT NULL,
-                        thread_id TEXT NOT NULL,
-                        user_id TEXT NOT NULL,
-                        session_key TEXT NOT NULL,
-                        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                        managed_mode TEXT NOT NULL DEFAULT 'auto',
-                        linked_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        PRIMARY KEY (profile_name, chat_id, thread_id)
-                    );
-                    INSERT INTO telegram_dm_topic_bindings_new (
-                        profile_name, chat_id, thread_id, user_id, session_key,
-                        session_id, managed_mode, linked_at, updated_at
-                    )
-                    SELECT
-                        'default', chat_id, thread_id, user_id, session_key,
-                        session_id, managed_mode, linked_at, updated_at
-                    FROM telegram_dm_topic_bindings;
-                    DROP TABLE telegram_dm_topic_bindings;
-                    ALTER TABLE telegram_dm_topic_bindings_new
-                        RENAME TO telegram_dm_topic_bindings;
-                    """
-                )
-
-            # Indexes after any rebuild so they always target the v3 shape.
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS "
-                "idx_telegram_dm_topic_bindings_session "
-                "ON telegram_dm_topic_bindings(session_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS "
-                "idx_telegram_dm_topic_bindings_user "
-                "ON telegram_dm_topic_bindings(profile_name, user_id, chat_id)"
+                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
+                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
+                """
             )
 
             conn.execute(

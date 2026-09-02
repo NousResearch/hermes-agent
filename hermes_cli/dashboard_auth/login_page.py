@@ -46,28 +46,28 @@ _LOGIN_HTML_TEMPLATE = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('{base_path}/fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('{base_path}/fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('{base_path}/fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('{base_path}/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -415,6 +415,7 @@ an SSH tunnel or Tailscale.</p>
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
+  var base = (typeof window.__HERMES_BASE_PATH__ === 'string' && window.__HERMES_BASE_PATH__) || '';
   function handle(form) {
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -428,7 +429,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch(base + '/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -436,7 +437,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign(base + ((data && data.next) || '/'));
           });
         }
         var msg = resp.status === 429
@@ -458,7 +459,7 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", base_path: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` — when set, the post-login landing path the user
@@ -467,6 +468,13 @@ def render_login_html(*, next_path: str = "") -> str:
     end-to-end. The caller (``routes.login_page``) is responsible for
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
+
+    ``base_path`` — the normalised ``X-Forwarded-Prefix`` (e.g.
+    ``/hermes``) when the dashboard is served behind a path-prefix
+    reverse proxy, else ``""``. Prepended to every absolute URL (fonts,
+    the password-login endpoint, the post-login landing path, and OAuth
+    provider button hrefs) so the page works behind such a proxy — the
+    same mechanism the SPA uses via ``window.__HERMES_BASE_PATH__``.
     """
     providers = list_session_providers()
     if not providers:
@@ -491,13 +499,30 @@ def render_login_html(*, next_path: str = "") -> str:
         else:
             buttons.append(
                 f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+                f'href="{base_path}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
+    if script and base_path:
+        # Mirror the SPA's __HERMES_BASE_PATH__ injection so the inline
+        # password-form script can build prefix-aware absolute URLs.
+        # NOTE: do NOT html.escape() here — inside a <script> element HTML
+        # entities are NOT decoded, so &quot; would be a JS SyntaxError and
+        # __HERMES_BASE_PATH__ would stay undefined. base_path comes from
+        # prefix.normalise_prefix(), which already rejects `..`, `//`,
+        # non-printable and other hostile characters, so raw JSON quoting
+        # (double quotes) is safe in this position.
+        import json
+        base_js = (
+            "<script>window.__HERMES_BASE_PATH__="
+            + json.dumps(base_path)
+            + ";</script>"
+        )
+        script = base_js + script
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=script,
+        base_path=base_path,
     )
 
 

@@ -574,3 +574,26 @@ def test_rollback_preserves_nested_git_inside_skill(backup_env):
     assert (nested_git / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
     staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
     assert staging == [], f"staging dir left behind: {staging}"
+
+
+def test_rollback_preserves_nested_git_file_pointer(backup_env):
+    """Submodule / worktree checkouts use a ``.git`` FILE (gitdir: pointer);
+    it must be carried across rollback like the dir form."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="v1")
+    git_ptr = skills / "alpha" / ".git"
+    git_ptr.write_text("gitdir: ../../.git/modules/alpha\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        assert "alpha/.git" not in tf.getnames()
+
+    _write_skill(skills, "alpha", body="v2")
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert git_ptr.is_file()
+    assert git_ptr.read_text(encoding="utf-8").startswith("gitdir:")

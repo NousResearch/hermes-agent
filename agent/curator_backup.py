@@ -557,24 +557,37 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
-    """Move excluded subtrees (nested ``.git``/``.hub``/...) from *staged*
-    back under *skills* after a successful extract. Best-effort: a subtree
-    is only moved when its parent skill dir was restored and the target
-    does not already exist."""
-    for dirpath, dirnames, _files in os.walk(staged):
+    """Move excluded entries (nested ``.git``/``.hub``/...) from *staged*
+    back under *skills* after a successful extract.
+
+    Snapshots never contain these, so the extract cannot restore them; the
+    staged copy of the live tree is the only source. ``.git`` may be a dir
+    or a file (submodule / worktree ``gitdir:`` pointer) — both are moved.
+    Best-effort and deliberately conditional: an entry is carried over only
+    when its parent skill dir was restored and nothing sits at the target.
+    If the target snapshot predates the skill, the entry is dropped with the
+    staging dir rather than left as an orphan; note the safety snapshot
+    excludes these paths too, so that case is not undoable.
+    """
+    def _carry(src: Path) -> None:
+        dest = skills / src.relative_to(staged)
+        if dest.parent.is_dir() and not dest.exists():
+            try:
+                shutil.move(str(src), str(dest))
+            except OSError as e:
+                logger.debug("Could not restore excluded entry %s: %s", src, e)
+
+    for dirpath, dirnames, filenames in os.walk(staged):
         keep = []
         for name in dirnames:
-            if name not in _EXCLUDE_TOP_LEVEL:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
+            else:
                 keep.append(name)
-                continue
-            src = Path(dirpath) / name
-            dest = skills / src.relative_to(staged)
-            if dest.parent.is_dir() and not dest.exists():
-                try:
-                    shutil.move(str(src), str(dest))
-                except OSError as e:
-                    logger.debug("Could not restore excluded subtree %s: %s", src, e)
         dirnames[:] = keep
+        for name in filenames:
+            if name in _EXCLUDE_TOP_LEVEL:
+                _carry(Path(dirpath) / name)
 
 
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
@@ -736,10 +749,9 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
 
     # Extract succeeded. Snapshots never contain excluded subtrees (nested
     # ``.git``, ``.hub``, ...), so the extract cannot restore them — carry
-    # them over from the staged copy of the live tree instead, the same way
-    # a top-level ``.git`` is preserved by never being staged at all. Then
-    # the staging dir has served its purpose; the user's undo handle is the
-    # safety snapshot tarball we took earlier.
+    # them over from the staged copy of the live tree (top-level ``.git`` is
+    # simpler: it is never staged). Then the staging dir has served its
+    # purpose; the user's undo handle is the safety snapshot tarball.
     _restore_excluded_subtrees(staged, skills)
     try:
         shutil.rmtree(staged, ignore_errors=True)

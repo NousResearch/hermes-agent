@@ -42,7 +42,8 @@ import {
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
-  processStartMarker
+  processStartMarker,
+  REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -3401,7 +3402,7 @@ async function backendCommandForPid(pid) {
   }
 }
 
-async function processIdentityMatches(identity) {
+async function processIdentityMatches(identity, timeoutMs: number = 30_000) {
   // Degraded PID-only identity (#93608): the start-marker probe failed while
   // the child was verifiably alive, so only PID liveness can be checked here.
   // backendIdentityMatches layers the command-line check on top before
@@ -3419,14 +3420,14 @@ async function processIdentityMatches(identity) {
   }
 
   try {
-    return (await processStartMarker(identity.pid)) === identity.startMarker
+    return (await processStartMarker(identity.pid, timeoutMs)) === identity.startMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function backendIdentityMatches(identity) {
-  const processMatches = await processIdentityMatches(identity)
+  const processMatches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (processMatches !== true) {
     return processMatches
@@ -3447,15 +3448,24 @@ async function backendParentMatches(entry) {
   }
 
   try {
-    return (await processStartMarker(entry.parentPid)) === entry.parentStartMarker
+    return (await processStartMarker(entry.parentPid, REAP_PROBE_TIMEOUT_MS)) === entry.parentStartMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function stopOwnedBackend(identity) {
-  if ((await processIdentityMatches(identity)) !== true) {
+  const matches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+
+  if (matches === false) {
     return
+  }
+
+  if (matches !== true) {
+    // Identity probe failed (not confirmed gone): preserve the record so a
+    // later launch retries the stop instead of dropping it and leaking the
+    // backend. reapOrphans keeps the entry when stop() throws.
+    throw new Error(`Could not verify backend PID ${identity.pid} before stopping it.`)
   }
 
   if (IS_WINDOWS) {
@@ -3474,7 +3484,7 @@ async function stopOwnedBackend(identity) {
     const deadline = Date.now() + 1500
 
     while (Date.now() < deadline) {
-      if ((await processIdentityMatches(identity)) !== true) {
+      if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) !== true) {
         return
       }
 
@@ -3483,7 +3493,7 @@ async function stopOwnedBackend(identity) {
 
     // Revalidate immediately before escalation so PID reuse cannot target a
     // replacement process.
-    if ((await processIdentityMatches(identity)) === true) {
+    if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) === true) {
       try {
         process.kill(-identity.pid, 'SIGKILL')
       } catch {
@@ -3493,7 +3503,7 @@ async function stopOwnedBackend(identity) {
   }
 
   await new Promise(resolve => setTimeout(resolve, 50))
-  const remaining = await processIdentityMatches(identity)
+  const remaining = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (remaining !== false) {
     throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)

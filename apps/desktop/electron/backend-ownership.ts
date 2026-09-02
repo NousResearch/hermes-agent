@@ -28,7 +28,21 @@ export interface BackendOwnershipDeps {
   matchesParent: (entry: BackendOwnershipEntry) => Promise<boolean | undefined>
   stop: (identity: BackendIdentity) => Promise<void> | void
   store: BackendOwnershipStore
+  /**
+   * Overall time budget for one reap sweep. The ownership file legitimately
+   * accumulates one record per profile per launch, and each record can cost
+   * up to two identity probes (parent + backend) plus a stop — on Windows
+   * those shell out to PowerShell, whose 5.1 cold starts are slow (#87169).
+   * Without a bound, a large roster could stall boot for minutes while the
+   * renderer's 45s backend-boot budget expires and the user stares at the
+   * connecting screen. When the budget is exhausted the sweep preserves the
+   * unprocessed records for the next launch and returns what it reaped.
+   */
+  reapDeadlineMs?: number
 }
+
+/** Default budget for one reap sweep (see `reapDeadlineMs`). */
+export const REAP_ORPHANS_DEADLINE_MS = 5_000
 
 export interface BackendClaim extends BackendIdentity {
   command?: string
@@ -222,8 +236,21 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
 
       const survivors: BackendOwnershipEntry[] = []
       const reaped: number[] = []
+      const deadline = Date.now() + (deps.reapDeadlineMs ?? REAP_ORPHANS_DEADLINE_MS)
 
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i += 1) {
+        // Budget exhausted: preserve the unprocessed records so a later launch
+        // can retry them. A slow identity probe must never stall boot — the
+        // renderer's backend-boot budget is 45s and the spawn itself needs
+        // most of it.
+        if (Date.now() >= deadline) {
+          survivors.push(...entries.slice(i))
+
+          break
+        }
+
+        const entry = entries[i]
+
         // A backend whose Electron parent is still running is NOT an orphan:
         // reaping it would kill a live instance's session. This is what stops
         // a second launch from SIGTERMing the running instance's backend even

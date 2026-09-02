@@ -35,6 +35,15 @@ const completePreviewed = (text: string) =>
     stream.handleEvent({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' })
   )
 
+const toolStart = (toolId = 'tool-1') =>
+  act(() =>
+    stream.handleEvent({
+      payload: { args: { command: 'echo ok' }, name: 'terminal', tool_id: toolId },
+      session_id: SID,
+      type: 'tool.start'
+    })
+  )
+
 function getState(): ClientSessionState {
   return stream.state()
 }
@@ -194,6 +203,107 @@ describe('useMessageStream interim text sealing', () => {
 
     const texts = assistantMessages()
     expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
+  })
+
+  it('settles an identical final after the tool row that follows its interim (#98524)', async () => {
+    mountStream()
+    await start()
+
+    // Production order: message.interim seals the narrated response and clears
+    // streamId, then tool.start creates the next live assistant row. Completion
+    // must not paint the same authoritative final onto that row while retaining
+    // the identical sealed interim a few rows earlier.
+    await delta('same reply')
+    await interim('same reply')
+    await toolStart()
+    await complete('same reply')
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].interim).toBeFalsy()
+    expect(chatMessageText(assistants[0])).toBe('same reply')
+    expect(assistants[0].parts.filter(part => part.type === 'text')).toHaveLength(1)
+    expect(assistants[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
+    expect(getState().streamId).toBeNull()
+  })
+
+  it('preserves distinct tool calls when a provider reuses ids across responses', async () => {
+    mountStream()
+    await start()
+
+    await delta('same reply')
+    await toolStart('terminal_0')
+    await interim('same reply')
+    await toolStart('terminal_0')
+    await complete('same reply')
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+    const tools = assistants.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(assistants).toHaveLength(1)
+    expect(tools).toHaveLength(2)
+    expect(new Set(tools.map(tool => tool.toolCallId)).size).toBe(2)
+  })
+
+  it('keeps distinct pre-tool commentary and final text as separate assistant segments', async () => {
+    mountStream()
+    await start()
+
+    await interim('Let me inspect that.')
+    await toolStart()
+    await complete('The implementation is correct.')
+
+    expect(assistantMessages()).toEqual(['Let me inspect that.', 'The implementation is correct.'])
+    expect(
+      getState()
+        .messages.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
+    ).toHaveLength(1)
+  })
+
+  it('does not fold when the live tool row streamed a distinct body', async () => {
+    mountStream()
+    await start()
+
+    await delta('same reply')
+    await interim('same reply')
+    await toolStart()
+    await delta('a different live body')
+    await complete('same reply')
+
+    expect(assistantMessages()).toEqual(['same reply', 'same reply'])
+  })
+
+  it('does not fold a failed completion into the sealed interim', async () => {
+    mountStream()
+    await start()
+
+    await delta('same reply')
+    await interim('same reply')
+    await toolStart()
+    await act(() =>
+      stream.handleEvent({
+        payload: { error: 'tool failed', status: 'error', text: 'same reply' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const assistants = getState().messages.filter(m => m.role === 'assistant' && !m.hidden)
+    expect(assistants.some(message => message.error === 'tool failed')).toBe(true)
+    expect(assistants).toHaveLength(2)
+  })
+
+  it('does not fold a longer final into pre-tool commentary after a tool row', async () => {
+    mountStream()
+    await start()
+
+    await interim('Let me inspect that.')
+    await toolStart()
+    await complete('Let me inspect that. The implementation is correct.')
+
+    expect(assistantMessages()).toEqual(['Let me inspect that.', 'Let me inspect that. The implementation is correct.'])
   })
 
   it('settles a prefix-extended final onto a non-previewed interim (streamed + trailing delta)', async () => {

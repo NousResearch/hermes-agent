@@ -4283,6 +4283,24 @@ def _wrap_with_dashboard_oauth_flow(coro):
     return _scoped()
 
 
+def _wrap_with_mcp_run_metadata(coro):
+    """Propagate private per-run MCP metadata onto the MCP loop task."""
+    try:
+        from agent.mcp_run_context import mcp_run_metadata, read_mcp_run_metadata
+
+        metadata = read_mcp_run_metadata()
+    except Exception:
+        return coro
+    if metadata is None:
+        return coro
+
+    async def _scoped():
+        with mcp_run_metadata(metadata):
+            return await coro
+
+    return _scoped()
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
 
@@ -4318,6 +4336,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
     coro = _wrap_with_dashboard_oauth_flow(coro)
+    coro = _wrap_with_mcp_run_metadata(coro)
 
     future = safe_schedule_threadsafe(
         coro, loop,
@@ -4620,7 +4639,28 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    forward_run_metadata = _parse_boolish(
+                        getattr(server, "_config", {}).get(
+                            "forward_run_metadata", False
+                        ),
+                        default=False,
+                    )
+                    if forward_run_metadata:
+                        from agent.mcp_run_context import read_mcp_run_metadata
+
+                        run_metadata = read_mcp_run_metadata()
+                    else:
+                        run_metadata = None
+                    if run_metadata is None:
+                        result = await server.session.call_tool(
+                            tool_name, arguments=args
+                        )
+                    else:
+                        result = await server.session.call_tool(
+                            tool_name,
+                            arguments=args,
+                            meta=run_metadata,
+                        )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

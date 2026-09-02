@@ -4221,12 +4221,19 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _stale_thinking_on_wire(self) -> bool:
         """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
-        if bool(getattr(self, "replay_historical_reasoning", False)):
-            return True
         try:
             from agent.message_sanitization import stale_thinking_reaches_wire
+            # Boolean compressor state means "soft historical replay is on".
+            # Pass ``reasoning`` as the accounting carrier regardless of the
+            # actual wire field (``reasoning`` vs ``reasoning_content``): both
+            # aliases are charged once in ``_estimate_msg_budget_tokens``.
             return stale_thinking_reaches_wire(
-                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
+                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url")),
+                reasoning_replay_field=(
+                    "reasoning"
+                    if getattr(self, "replay_historical_reasoning", False)
+                    else None
+                ),
             )
         except Exception:
             return False

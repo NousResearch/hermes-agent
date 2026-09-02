@@ -2005,7 +2005,10 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
             agent, get_compatible_custom_providers()
         )
     except Exception:
-        pass
+        logger.debug(
+            "reasoning replay re-resolution failed; leaving field unset (fail closed)",
+            exc_info=True,
+        )
     _sync_compressor_reasoning_replay(agent)
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
@@ -2980,21 +2983,80 @@ def _sync_compressor_reasoning_replay(agent) -> None:
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         compressor.replay_historical_reasoning = bool(
-            getattr(agent, "_reasoning_replay_field", None)
+            reasoning_replay_field_for_api(agent)
         )
 
 
 def reasoning_replay_field_for_api(agent) -> str | None:
-    """Return a supported provider-facing replay field for this runtime."""
-    field = getattr(agent, "_reasoning_replay_field", None)
-    if isinstance(field, str):
-        field = field.strip().lower()
-        if field in {"reasoning", "reasoning_content"}:
-            return field
-    return None
+    """Return the session-stable soft-replay carrier for the active route.
+
+    Explicit remote carriers never trigger capability probes.  Automatic mode
+    probes only loopback custom/self-hosted endpoints; the first verdict for a
+    route is pinned so a transient detector result cannot mutate an established
+    prompt-cache prefix or desynchronize compressor trigger and tail walks.
+    """
+    from agent.message_sanitization import (
+        _is_loopback_reasoning_route,
+        _is_self_hosted_reasoning_replay_provider,
+        resolve_reasoning_replay_field,
+    )
+
+    configured = getattr(agent, "_reasoning_replay_field", None)
+    mode = configured.strip().lower() if isinstance(configured, str) else "auto"
+    route = {
+        "provider": getattr(agent, "provider", ""),
+        "model": getattr(agent, "model", ""),
+        "base_url": getattr(agent, "base_url", ""),
+        "api_mode": getattr(agent, "api_mode", ""),
+    }
+    cache_key = (
+        mode,
+        *reasoning_route_identity(
+            route["provider"],
+            route["model"],
+            route["base_url"],
+            route["api_mode"],
+        ),
+    )
+    cached = getattr(agent, "_reasoning_replay_effective_cache", None)
+    if not isinstance(cached, dict):
+        cached = {}
+        agent._reasoning_replay_effective_cache = cached
+    if cache_key in cached:
+        return cached[cache_key]
+
+    def resolved(value: str | None) -> str | None:
+        cached[cache_key] = value
+        return value
+
+    effective = resolve_reasoning_replay_field(configured, **route)
+    if mode != "auto" or effective is not None:
+        return resolved(effective)
+
+    if not _is_self_hosted_reasoning_replay_provider(route["provider"]):
+        return resolved(None)
+    if not _is_loopback_reasoning_route(route["base_url"]):
+        return resolved(None)
+
+    try:
+        from agent.model_metadata import detect_local_server_type
+
+        detected = detect_local_server_type(
+            route["base_url"], api_key=getattr(agent, "api_key", "") or ""
+        )
+    except Exception:
+        logger.debug("reasoning replay auto-detect failed", exc_info=True)
+        detected = None
+    return resolved(
+        resolve_reasoning_replay_field(
+            configured, detected_server_type=detected, **route
+        )
+    )
 
 
-def reasoning_route_identity(provider: Any, model: Any, base_url: Any) -> tuple[str, str, str]:
+def reasoning_route_identity(
+    provider: Any, model: Any, base_url: Any, api_mode: Any = ""
+) -> tuple[str, str, str, str]:
     """Return a stable reasoning-provenance identity for a provider route."""
     from urllib.parse import urlsplit, urlunsplit
 
@@ -3016,24 +3078,28 @@ def reasoning_route_identity(provider: Any, model: Any, base_url: Any) -> tuple[
         str(provider or "").strip().lower(),
         str(model or "").strip(),
         normalized_url,
+        str(api_mode or "").strip().lower(),
     )
 
 
-def reasoning_api_route_identity(agent) -> tuple[str, str, str]:
+def reasoning_api_route_identity(agent) -> tuple[str, str, str, str]:
     """Return the active agent route used for reasoning provenance."""
     return reasoning_route_identity(
         getattr(agent, "provider", ""),
         getattr(agent, "model", ""),
         getattr(agent, "base_url", ""),
+        getattr(agent, "api_mode", ""),
     )
 
 
-def reasoning_route_fingerprint(provider: Any, model: Any, base_url: Any) -> str:
+def reasoning_route_fingerprint(
+    provider: Any, model: Any, base_url: Any, api_mode: Any = ""
+) -> str:
     """Return a non-secret persistent fingerprint for reasoning provenance."""
     import hashlib
     import json
 
-    route = reasoning_route_identity(provider, model, base_url)
+    route = reasoning_route_identity(provider, model, base_url, api_mode)
     payload = json.dumps(route, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -3061,6 +3127,7 @@ def copy_reasoning_content_for_api(
         getattr(agent, "provider", ""),
         getattr(agent, "model", ""),
         getattr(agent, "base_url", ""),
+        getattr(agent, "api_mode", ""),
     )
     unknown_or_foreign_provenance = (
         not has_provenance or provenance != current_fingerprint

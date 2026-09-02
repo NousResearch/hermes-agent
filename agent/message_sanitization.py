@@ -460,7 +460,92 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
+# Named local/self-hosted providers that may opt into soft historical replay.
+# ``custom`` / ``custom:<key>`` are handled separately by prefix.
+_SELF_HOSTED_REASONING_REPLAY_PROVIDERS = frozenset(
+    {"local", "llamacpp", "lm-studio", "ollama", "vllm"}
+)
+
+
+def _is_self_hosted_reasoning_replay_provider(provider: Any) -> bool:
+    provider_lower = str(provider or "").strip().lower()
+    return (
+        provider_lower == "custom"
+        or provider_lower.startswith("custom:")
+        or provider_lower in _SELF_HOSTED_REASONING_REPLAY_PROVIDERS
+    )
+
+
+# Loopback classification and its edge-case policy are adapted from PR #87123
+# by glitchbunny0.  Automatic carrier selection remains narrower here: server
+# identity alone is not enough except for llama.cpp's demonstrated
+# --reasoning-preserve / reasoning_content contract.
+def _is_loopback_reasoning_route(base_url: Any) -> bool:
+    import ipaddress
+
+    from utils import base_url_hostname
+
+    host = base_url_hostname(base_url)
+    if not host:
+        return False
+    host = host.strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(
+        address.is_loopback
+        or address.is_unspecified
+        or (mapped is not None and (mapped.is_loopback or mapped.is_unspecified))
+    )
+
+
+def resolve_reasoning_replay_field(
+    configured_mode: Any,
+    *,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    api_mode: Any,
+    detected_server_type: Any = None,
+) -> "str | None":
+    """Resolve the soft-replay wire carrier for one provider route.
+
+    Explicit carriers work on custom/self-hosted Chat Completions routes,
+    including remote endpoints.  Omission is ``auto`` and enables only a
+    directly evidenced loopback llama.cpp contract.  ``none`` and ambiguous
+    routes fail closed.  Require-side echo protocols are handled separately.
+    """
+    mode = configured_mode.strip().lower() if isinstance(configured_mode, str) else "auto"
+    transport = str(api_mode or "").strip().lower()
+    if transport not in {"", "chat_completions", "openai"}:
+        return None
+    if needs_reasoning_echo(provider, model, base_url):
+        return None
+    if mode == "none":
+        return None
+    if not _is_self_hosted_reasoning_replay_provider(provider):
+        return None
+    if mode in {"reasoning", "reasoning_content"}:
+        return mode
+    if mode != "auto" or not _is_loopback_reasoning_route(base_url):
+        return None
+    if str(detected_server_type or "").strip().lower() == "llamacpp":
+        return "reasoning_content"
+    return None
+
+
+def stale_thinking_reaches_wire(
+    api_mode: Any,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    *,
+    reasoning_replay_field: Any = None,
+) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
@@ -468,7 +553,12 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
-    return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+    if (api_mode or "") == "codex_responses":
+        return False
+    return (
+        needs_reasoning_echo(provider, model, base_url)
+        or reasoning_replay_field in {"reasoning", "reasoning_content"}
+    )
 
 
 def apply_reasoning_content_policy(

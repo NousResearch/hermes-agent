@@ -266,7 +266,12 @@ def _normalize_custom_provider_entry(
     reasoning_replay_field = entry.get("reasoning_replay_field")
     if isinstance(reasoning_replay_field, str):
         reasoning_replay_field = reasoning_replay_field.strip().lower()
-        if reasoning_replay_field in {"reasoning", "reasoning_content"}:
+        if reasoning_replay_field in {
+            "auto",
+            "reasoning",
+            "reasoning_content",
+            "none",
+        }:
             normalized["reasoning_replay_field"] = reasoning_replay_field
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.

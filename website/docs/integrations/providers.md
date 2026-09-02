@@ -1410,7 +1410,9 @@ extra_body:
 
 The configured `extra_body` follows the provider everywhere: it is merged at agent construction, **survives every gateway turn** (including turns where `/fast` layers `service_tier`/`speed` overrides on top — those merge over your `extra_body` rather than replacing it), and is **re-derived on `/model` switches** — switching to a named custom provider applies its `extra_body`, and switching away clears it so it never leaks to another provider.
 
-To preserve Qwen's historical thinking across turns, opt the active model into the structured field consumed by your server and keep template preservation explicit:
+Historical reasoning replay is automatic only when Hermes can identify both a supported local backend and its wire carrier. Today that conservative path covers a loopback llama.cpp server using `--reasoning-preserve`, where Hermes replays `reasoning_content`. Unknown templates, vLLM, LM Studio, Ollama, public providers, and non-loopback endpoints remain disabled unless you configure a carrier explicitly.
+
+For a remote or otherwise ambiguous Qwen/vLLM deployment, set the verified carrier and keep template preservation explicit:
 
 ```yaml
 model:
@@ -1419,7 +1421,7 @@ model:
 
 providers:
   qwen-vllm:
-    api: http://localhost:8000/v1
+    api: http://inference.example:8000/v1
     default_model: Qwen/Qwen3.8-27B
     reasoning_replay_field: reasoning
     extra_body:
@@ -1427,9 +1429,16 @@ providers:
         preserve_thinking: true
 ```
 
-`reasoning_replay_field` accepts only `reasoning` or `reasoning_content`. Use the field documented by your endpoint: vLLM's Qwen template consumes `reasoning`, while some OpenAI-compatible gateways consume `reasoning_content`. The opt-in is intentionally not inferred from `preserve_thinking`, because strict providers reject unsupported message fields. The same key may be set on a `fallback_providers:` entry so failover applies the destination provider's policy.
+`reasoning_replay_field` supports four modes:
 
-Hermes replays a stored hidden trace only when its persisted route provenance matches the active provider, model, and endpoint. Legacy messages saved without route provenance fail closed: their visible content is retained, but their hidden reasoning is not forwarded. Newly generated same-route messages are tagged automatically and replay normally.
+- Omitted or `auto`: probe only eligible loopback endpoints and enable a carrier only for a verified backend contract.
+- `reasoning`: explicitly replay the carrier consumed by Qwen-oriented vLLM templates and other endpoints where you have verified that contract.
+- `reasoning_content`: explicitly replay the OpenAI-style carrier used by llama.cpp `--reasoning-preserve` and compatible endpoints.
+- `none`: disable soft replay, including on an otherwise auto-eligible loopback route (useful for local proxies or incompatible templates).
+
+Explicit carriers work on loopback, LAN, and remote custom endpoints; remote endpoints are never probed solely to infer replay behavior. The same key may be set on a `fallback_providers:` entry so failover resolves the destination provider's own policy. Mandatory DeepSeek/Kimi/MiMo `reasoning_echo` padding is a separate provider protocol and is not disabled by `none`.
+
+Hermes replays a stored hidden trace only when its persisted route provenance matches the active provider, model, and endpoint. It stores a one-way route fingerprint rather than the raw endpoint URL. Legacy messages without provenance fail closed, and changing provider, model, endpoint, API mode, or transport strips generic and provider-specific hidden-thinking carriers before fallback. Visible content remains available, and newly generated same-route messages are tagged and replay normally.
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 

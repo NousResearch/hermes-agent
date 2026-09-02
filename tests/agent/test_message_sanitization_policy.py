@@ -18,9 +18,203 @@ from agent.message_sanitization import (
     matches_reasoning_echo_family,
     needs_reasoning_echo,
     reapply_reasoning_echo,
+    resolve_reasoning_replay_field,
     reasoning_echo_family,
     uniquify_tool_call_ids,
 )
+
+
+class TestResolveReasoningReplayField:
+    @pytest.mark.parametrize("configured", [None, "auto"])
+    def test_auto_uses_verified_loopback_llamacpp_carrier(self, configured):
+        assert resolve_reasoning_replay_field(
+            configured,
+            provider="custom:local",
+            model="opaque-model-id",
+            base_url="http://127.8.9.10:8080/v1",
+            api_mode="chat_completions",
+            detected_server_type="llamacpp",
+        ) == "reasoning_content"
+
+    @pytest.mark.parametrize("detected", [None, "vllm", "lm-studio", "ollama"])
+    def test_auto_fails_closed_for_ambiguous_backends(self, detected):
+        assert resolve_reasoning_replay_field(
+            "auto",
+            provider="custom:local",
+            model="qwen-name-is-not-evidence",
+            base_url="http://localhost:8000/v1",
+            api_mode="chat_completions",
+            detected_server_type=detected,
+        ) is None
+
+    def test_explicit_remote_reasoning_does_not_need_detection(self):
+        assert resolve_reasoning_replay_field(
+            "reasoning",
+            provider="custom:vllm",
+            model="Qwen/Qwen3.8-27B",
+            base_url="http://inference.internal:8000/v1",
+            api_mode="chat_completions",
+        ) == "reasoning"
+
+    def test_none_overrides_verified_auto_route(self):
+        assert resolve_reasoning_replay_field(
+            "none",
+            provider="custom:local",
+            model="model",
+            base_url="http://localhost:8080/v1",
+            api_mode="chat_completions",
+            detected_server_type="llamacpp",
+        ) is None
+
+    @pytest.mark.parametrize("api_mode", ["codex_responses", "anthropic_messages"])
+    def test_non_chat_transports_fail_closed(self, api_mode):
+        assert resolve_reasoning_replay_field(
+            "reasoning_content",
+            provider="custom:local",
+            model="model",
+            base_url="http://localhost:8080/v1",
+            api_mode=api_mode,
+            detected_server_type="llamacpp",
+        ) is None
+
+    def test_none_does_not_disable_require_side_protocol(self):
+        assert resolve_reasoning_replay_field(
+            "none",
+            provider="deepseek",
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com",
+            api_mode="chat_completions",
+        ) is None
+        assert needs_reasoning_echo(
+            "deepseek", "deepseek-chat", "https://api.deepseek.com"
+        ) is True
+
+
+class TestReasoningReplayFieldForApi:
+    def test_auto_detects_loopback_llamacpp(self, monkeypatch):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+        calls = []
+        monkeypatch.setattr(
+            model_metadata,
+            "detect_local_server_type",
+            lambda base_url, api_key="": calls.append((base_url, api_key)) or "llamacpp",
+        )
+        agent = SimpleNamespace(
+            _reasoning_replay_field="auto",
+            provider="custom:local",
+            model="opaque",
+            base_url="http://localhost:8080/v1",
+            api_mode="chat_completions",
+            api_key="local-key",
+        )
+
+        assert reasoning_replay_field_for_api(agent) == "reasoning_content"
+        assert calls == [("http://localhost:8080/v1", "local-key")]
+
+    def test_explicit_remote_carrier_never_probes(self, monkeypatch):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+        def unexpected_probe(*args, **kwargs):
+            raise AssertionError("remote explicit routes must not be probed")
+
+        monkeypatch.setattr(model_metadata, "detect_local_server_type", unexpected_probe)
+        agent = SimpleNamespace(
+            _reasoning_replay_field="reasoning",
+            provider="custom:vllm",
+            model="Qwen/Qwen3.8-27B",
+            base_url="http://inference.internal:8000/v1",
+            api_mode="chat_completions",
+            api_key="secret",
+        )
+
+        assert reasoning_replay_field_for_api(agent) == "reasoning"
+
+    def test_omitted_remote_route_never_probes_and_fails_closed(self, monkeypatch):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+        def unexpected_probe(*args, **kwargs):
+            raise AssertionError("automatic mode must not probe remote routes")
+
+        monkeypatch.setattr(model_metadata, "detect_local_server_type", unexpected_probe)
+        agent = SimpleNamespace(
+            _reasoning_replay_field=None,
+            provider="custom:vllm",
+            model="Qwen/Qwen3.8-27B",
+            base_url="http://inference.internal:8000/v1",
+            api_mode="chat_completions",
+            api_key="secret",
+        )
+
+        assert reasoning_replay_field_for_api(agent) is None
+
+    @pytest.mark.parametrize(
+        ("first_detection", "later_detection", "expected"),
+        [
+            (None, "llamacpp", None),
+            ("llamacpp", None, "reasoning_content"),
+        ],
+    )
+    def test_auto_resolution_is_stable_for_same_route(
+        self, monkeypatch, first_detection, later_detection, expected
+    ):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+        detections = iter([first_detection, later_detection])
+        calls = []
+
+        def detect(*args, **kwargs):
+            calls.append(args[0])
+            return next(detections)
+
+        monkeypatch.setattr(model_metadata, "detect_local_server_type", detect)
+        agent = SimpleNamespace(
+            _reasoning_replay_field="auto",
+            provider="custom:local",
+            model="model",
+            base_url="http://localhost:8080/v1",
+            api_mode="chat_completions",
+            api_key="",
+        )
+
+        assert reasoning_replay_field_for_api(agent) == expected
+        assert reasoning_replay_field_for_api(agent) == expected
+        assert calls == ["http://localhost:8080/v1"]
+
+    def test_auto_resolution_is_stable_when_returning_to_a_route(self, monkeypatch):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+        detections = iter(["llamacpp", None, None])
+        calls = []
+
+        def detect(base_url, api_key=""):
+            calls.append(base_url)
+            return next(detections)
+
+        monkeypatch.setattr(model_metadata, "detect_local_server_type", detect)
+        agent = SimpleNamespace(
+            _reasoning_replay_field="auto",
+            provider="custom:local",
+            model="model",
+            base_url="http://localhost:8080/v1",
+            api_mode="chat_completions",
+            api_key="",
+        )
+
+        assert reasoning_replay_field_for_api(agent) == "reasoning_content"
+        agent.base_url = "http://localhost:8081/v1"
+        assert reasoning_replay_field_for_api(agent) is None
+        agent.base_url = "http://localhost:8080/v1"
+        assert reasoning_replay_field_for_api(agent) == "reasoning_content"
+        assert calls == [
+            "http://localhost:8080/v1",
+            "http://localhost:8081/v1",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +697,79 @@ class TestPerProviderReasoningEcho:
             if m["role"] == "assistant":
                 assert "reasoning_content" not in m
 
+    def test_auto_replay_to_strict_fallback_strips_all_hidden_carriers(
+        self, monkeypatch
+    ):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        monkeypatch.setattr(
+            model_metadata,
+            "detect_local_server_type",
+            lambda *args, **kwargs: "llamacpp",
+        )
+        agent = self._make_agent(
+            reasoning_echo_flag=False,
+            provider="custom:local",
+            model="opaque",
+            base_url="http://localhost:8080/v1",
+        )
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "auto"
+        agent._fallback_activated = False
+        api_msgs = [
+            {
+                "role": "assistant",
+                "content": "visible",
+                "reasoning": "r",
+                "reasoning_content": "rc",
+                "reasoning_details": [{"type": "text", "text": "rd"}],
+                "anthropic_content_blocks": [{"type": "thinking", "thinking": "a"}],
+            }
+        ]
+
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
+        assert api_msgs[0]["reasoning_content"] == "rc"
+
+        agent.provider = "mistral"
+        agent.model = "mistral-large"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._reasoning_replay_field = None
+        agent._fallback_activated = True
+        reapply_reasoning_echo_for_provider(agent, api_msgs)
+
+        assert not {
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "anthropic_content_blocks",
+        }.intersection(api_msgs[0])
+
+    def test_none_strips_auto_eligible_route(self, monkeypatch):
+        from agent import model_metadata
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        monkeypatch.setattr(
+            model_metadata,
+            "detect_local_server_type",
+            lambda *args, **kwargs: "llamacpp",
+        )
+        agent = self._make_agent(
+            reasoning_echo_flag=False,
+            provider="custom:local",
+            model="opaque",
+            base_url="http://localhost:8080/v1",
+        )
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "none"
+        agent._fallback_activated = False
+        api_msgs = [
+            {"role": "assistant", "content": "visible", "reasoning_content": "trace"}
+        ]
+
+        reapply_reasoning_echo_for_provider(agent, api_msgs)
+        assert "reasoning_content" not in api_msgs[0]
+
     def test_fallback_opt_in_preserves_reasoning(self):
         """Fallback to a custom provider with reasoning_echo=True:
         the field is preserved/re-padded."""
@@ -595,6 +862,43 @@ class TestPerProviderReasoningEcho:
         assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
         assert "reasoning" not in api_msgs[0]
 
+    def test_api_mode_is_part_of_reasoning_route_fingerprint(self):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        chat_route = reasoning_route_fingerprint(
+            "custom", "model", "https://endpoint.example/v1", "chat_completions"
+        )
+        responses_route = reasoning_route_fingerprint(
+            "custom", "model", "https://endpoint.example/v1", "responses"
+        )
+
+        assert chat_route != responses_route
+
+    def test_api_mode_change_fails_closed_for_persisted_reasoning(self):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom",
+            model="model",
+            base_url="https://endpoint.example/v1",
+        )
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "reasoning"
+        source = {
+            "role": "assistant",
+            "content": "visible",
+            "reasoning": "PRIVATE_TRACE",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url, ""
+            ),
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert "reasoning" not in api_message
+        assert "_reasoning_route" not in api_message
+
     def test_fallback_rebuild_uses_message_provenance(self):
         from agent.agent_runtime_helpers import reasoning_route_fingerprint
 
@@ -661,7 +965,7 @@ class TestPerProviderReasoningEcho:
             "content": "Visible result.",
             "anthropic_content_blocks": hidden_blocks,
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
         }
         api_message = dict(source)
@@ -695,7 +999,7 @@ class TestPerProviderReasoningEcho:
             "content": "Visible content.",
             "anthropic_content_blocks": hidden_blocks,
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
         }
         api_message = dict(source)
@@ -726,7 +1030,7 @@ class TestPerProviderReasoningEcho:
             "content": "Visible result.",
             "anthropic_content_blocks": hidden_blocks,
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
         }
         api_message = dict(source)

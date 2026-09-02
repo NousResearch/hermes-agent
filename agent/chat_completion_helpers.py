@@ -1558,6 +1558,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             getattr(agent, "provider", None),
             getattr(agent, "model", None),
             getattr(agent, "base_url", None),
+            getattr(agent, "api_mode", None),
         )
 
     # Provider-native carriers replayed verbatim on later turns:
@@ -1904,7 +1905,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 _replay_field = _replay_field.strip().lower()
             agent._reasoning_replay_field = (
                 _replay_field
-                if _replay_field in {"reasoning", "reasoning_content"}
+                if _replay_field
+                in {"auto", "reasoning", "reasoning_content", "none"}
                 else None
             )
             from agent.agent_runtime_helpers import _sync_compressor_reasoning_replay

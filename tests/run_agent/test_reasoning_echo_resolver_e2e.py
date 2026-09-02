@@ -111,7 +111,10 @@ class TestReasoningEchoResolverE2E:
             "content": "calling a tool",
             "reasoning_content": "the model's chain of thought",
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider,
+                agent.model,
+                agent.base_url,
+                getattr(agent, "api_mode", ""),
             ),
         }
         api_msg = dict(source)
@@ -155,7 +158,10 @@ class TestReasoningEchoResolverE2E:
             "content": "calling a tool",
             "reasoning": "SYNTHETIC_REASONING_MARKER",
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider,
+                agent.model,
+                agent.base_url,
+                getattr(agent, "api_mode", ""),
             ),
         }
         api_msg = {"role": "assistant", "content": "calling a tool"}

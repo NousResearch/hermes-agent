@@ -1191,7 +1191,18 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
-    def test_providers_dict_normalizes_reasoning_replay_field(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("auto", "auto"),
+            ("reasoning", "reasoning"),
+            ("reasoning_content", "reasoning_content"),
+            ("none", "none"),
+        ],
+    )
+    def test_providers_dict_preserves_reasoning_replay_modes(
+        self, tmp_path, configured, expected
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -1201,7 +1212,7 @@ class TestCustomProviderCompatibility:
                         "qwen-vllm": {
                             "api": "http://127.0.0.1:8000/v1",
                             "default_model": "Qwen/Qwen3.8-27B",
-                            "reasoningReplayField": " Reasoning ",
+                            "reasoningReplayField": f" {configured.title()} ",
                         }
                     },
                 }
@@ -1212,7 +1223,29 @@ class TestCustomProviderCompatibility:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             compatible = get_compatible_custom_providers()
 
-        assert compatible[0]["reasoning_replay_field"] == "reasoning"
+        assert compatible[0]["reasoning_replay_field"] == expected
+
+    def test_invalid_reasoning_replay_mode_is_dropped(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "qwen-vllm": {
+                            "api": "http://127.0.0.1:8000/v1",
+                            "reasoning_replay_field": "both",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert "reasoning_replay_field" not in compatible[0]
 
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):

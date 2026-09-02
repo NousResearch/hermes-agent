@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.agent_init import (
     _configure_custom_provider_reasoning_replay,
     _merge_custom_provider_extra_body,
@@ -105,3 +107,27 @@ def test_named_custom_provider_reasoning_replay_matches_provider_key_and_model()
     )
 
     assert agent._reasoning_replay_field == "reasoning"
+
+
+@pytest.mark.parametrize("mode", ["auto", "none"])
+def test_custom_provider_preserves_non_carrier_replay_modes(mode):
+    agent = SimpleNamespace(
+        provider="custom:qwen-local",
+        model="model",
+        base_url="http://localhost:8080/v1",
+        _reasoning_replay_field=None,
+    )
+
+    _configure_custom_provider_reasoning_replay(
+        agent,
+        [
+            {
+                "provider_key": "qwen-local",
+                "base_url": "http://localhost:8080/v1",
+                "model": "model",
+                "reasoning_replay_field": mode,
+            }
+        ],
+    )
+
+    assert agent._reasoning_replay_field == mode

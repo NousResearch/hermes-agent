@@ -236,6 +236,37 @@ test('SSH remains separate from URL-shaped remote modes and preserves an explici
   })
 })
 
+test('profileRemoteOverride preserves an explicit remote profile mapping on a URL override', () => {
+  const config = {
+    profiles: { gris: { mode: 'remote', url: 'https://agent.example.com/hermes', remoteProfile: 'main-gris' } }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'gris'), {
+    url: 'https://agent.example.com/hermes',
+    authMode: 'token',
+    token: undefined,
+    remoteProfile: 'main-gris'
+  })
+})
+
+test('profileRemoteOverride drops invalid or reserved remote profile mappings', () => {
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: 'bad profile' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'cloud', url: 'https://x', remoteProfile: 'root' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: '' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+})
+
 test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'writer_2' }), {
     mode: 'ssh',
@@ -582,6 +613,32 @@ test('pathWithGlobalRemoteProfile translates a desktop SSH alias in an explicit 
       backendProfile: 'default'
     }),
     '/api/cron/jobs?profile=default'
+  )
+})
+
+test('pathWithGlobalRemoteProfile translates a URL-remote override alias via backendProfile', () => {
+  // A URL-remote per-profile override (gris → main-gris) must rewrite the
+  // self-profile scope the same way the SSH mapping does, or the backend 404s
+  // on a profile it does not have (#88282).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: 'main-gris'
+    }),
+    '/api/cron/jobs?profile=main-gris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile keeps the local label when a URL override has no mapping', () => {
+  // Blank remoteProfile → the label itself is the scope (historical behavior).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: undefined
+    }),
+    '/api/cron/jobs?profile=gris'
   )
 })
 

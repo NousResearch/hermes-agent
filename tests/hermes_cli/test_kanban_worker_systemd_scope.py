@@ -2948,6 +2948,60 @@ def test_reap_orphaned_scope_sweep(shims, conn):
     assert row["status"] == "running"
 
 
+
+def test_reap_sweep_bounds_synchronous_probes_per_tick(shims, conn, monkeypatch):
+    """AD: the audit runs under the dispatch lock, so many orphans must
+    not each cost a synchronous probe in ONE tick. At most
+    _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK units are touched per tick
+    (the lock hold stays bounded) and the rest are deferred — but over
+    successive ticks all of them are swept."""
+    units = []
+    pids = []
+    for i in range(10):
+        pid = shims.sleeper()
+        unit = kb._kanban_worker_scope_unit(f"t_adbound{i}", 1)
+        shims.write_unit(unit, [pid])
+        units.append(unit)
+        pids.append(pid)
+
+    real_state = kb._kanban_scope_state
+    probes_per_tick: list[int] = []
+
+    def counting_state(unit):
+        probes_per_tick[-1] += 1
+        return real_state(unit)
+
+    monkeypatch.setattr(kb, "_kanban_scope_state", counting_state)
+
+    all_reaped: list[str] = []
+    first_tick_reaped: list[int] = []
+    for tick in range(10):
+        probes_per_tick.append(0)
+        all_reaped.extend(kb.reap_orphaned_worker_scopes(conn))
+        # Bounded synchronous work: one listing (not counted) plus at
+        # most one liveness probe per TOUCHED unit — never one per
+        # orphan present. The bound is pinned as a LITERAL so editing
+        # the constant cannot quietly widen this assertion with it.
+        touched = probes_per_tick[-1]
+        assert touched <= 3, (
+            f"tick {tick}: {touched} synchronous probes under the "
+            "dispatch lock"
+        )
+        first_tick_reaped.append(len(all_reaped))
+        if len(all_reaped) == len(units):
+            break
+
+    assert sorted(all_reaped) == sorted(units), "every orphan swept eventually"
+    # The deferral was real: the first tick left orphans untouched...
+    assert first_tick_reaped[0] <= 3
+    # ...and the sweep needed more than one tick for ten orphans.
+    assert len(first_tick_reaped) >= 4
+    assert shims.wait_for(
+        lambda: all(not kb._pid_alive(p) for p in pids), timeout=8.0
+    ), "all ten orphan workers were eventually stopped"
+    # And the sweep reached completion: a further tick finds nothing.
+    probes_per_tick.append(0)
+    assert kb.reap_orphaned_worker_scopes(conn) == []
 def test_reap_sweep_escalates_a_wedged_deactivating_orphan(shims, conn):
     """D: a deactivating orphan is not terminal — a stop job draining a
     stubborn process sits in deactivating forever.  The sweep must

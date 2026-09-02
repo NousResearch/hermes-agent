@@ -9384,6 +9384,18 @@ _scope_stop_warned: set[str] = set()
 _scope_stop_wake = threading.Event()
 _scope_stop_thread: Optional[threading.Thread] = None
 
+# Pass 8 (AD): the scope audit's per-unit synchronous bus work (orphan
+# liveness probe, terminal-unit collect) runs under the dispatch lock;
+# with many orphans a slow bus held it for N probe timeouts. Bound the
+# synchronous work per tick — a plain constant, deliberately config-
+# free: a slow bus must slow the audit, never the dispatcher — ordered
+# oldest orphan first so an old leak is not starved by fresh ones.
+_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK = 3
+# unit -> monotonic time the audit FIRST saw it needing synchronous
+# work; pruned for units that left the listing, so it cannot grow
+# without bound.
+_scope_audit_first_seen: dict[str, float] = {}
+
 
 def _scope_stop_service_loop() -> None:
     while True:
@@ -9629,6 +9641,7 @@ def reset_scope_stop_service_for_tests() -> None:
         _scope_stop_attempts.clear()
         _scope_stop_warned.clear()
         _scope_stop_inflight = None
+    _scope_audit_first_seen.clear()
 
 
 def _mark_run_scope_stopping(
@@ -11256,6 +11269,16 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     completed without a stop, or a stale unit name left over from a
     retry that already moved on to a new unique unit.
 
+    The sweep runs inside the dispatch tick, under the dispatcher lock,
+    and every unit it touches costs a synchronous bus interaction (a
+    liveness probe for orphans, a collect for terminal-but-loaded
+    units) — with many orphans that held the lock for N probe timeouts
+    (pass 8, AD). The synchronous work is therefore bounded per tick
+    (``_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK``) and ordered OLDEST
+    orphan first, so an old leak never starves behind fresh ones; the
+    remainder is deferred to the next tick, when the listing rediscovers
+    it with its original first-seen stamp.
+
     Returns the list of reaped unit names. Safe to call every tick.
     """
     if not _kanban_worker_scope_enabled():
@@ -11265,7 +11288,37 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
         return []  # a board was unreadable — reap nothing this tick
     reaped: list[str] = []
     active = _kanban_list_scope_units("hermes-kanban-*")
+    now = time.monotonic()
+    # Units needing synchronous work this sweep: terminal-but-loaded
+    # units (collect) plus live/deactivating orphans (probe + stop).
+    work: list[tuple[str, str]] = []
     for unit, state in active.items():
+        if _kanban_scope_is_live(state) or state == "deactivating":
+            if unit in claimed:
+                continue  # a running task owns it
+        work.append((unit, state))
+    # Age bookkeeping: forget vanished units, stamp first-seen on new
+    # ones, then order oldest first (unit name as the deterministic
+    # tiebreak among same-tick discoveries).
+    for unit in list(_scope_audit_first_seen):
+        if unit not in active:
+            _scope_audit_first_seen.pop(unit, None)
+    for unit, _state in work:
+        _scope_audit_first_seen.setdefault(unit, now)
+    work.sort(
+        key=lambda unit_state: (
+            _scope_audit_first_seen.get(unit_state[0], now),
+            unit_state[0],
+        )
+    )
+    if len(work) > _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK:
+        _log.info(
+            "kanban: scope audit deferring %d unit(s) to the next tick "
+            "(per-tick synchronous bound %d under the dispatch lock)",
+            len(work) - _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,
+            _SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,
+        )
+    for unit, state in work[:_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK]:
         if not _kanban_scope_is_live(state) and state != "deactivating":
             # Terminal-but-still-loaded unit (a failed scope stays
             # inspectable without --collect by design): now that nothing
@@ -11278,8 +11331,6 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
         # forever if the sweep only collected.  It falls through to a
         # (re)requested verified stop, whose SIGKILL escalation is what
         # eventually clears a wedged drain.
-        if unit in claimed:
-            continue
         if not request_worker_scope_stop(unit, conn=conn):
             continue  # still stopping — retry next tick
         reaped.append(unit)

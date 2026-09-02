@@ -17673,7 +17673,7 @@ ipcMain.handle('hermes:wallpaper:select', async (event, profile) => {
   })
 
   if (result.canceled || !result.filePaths[0]) {
-    return { asset: null, canceled: true }
+    return { asset: null, canceled: true, palette: null }
   }
 
   const sourcePath = result.filePaths[0]
@@ -17711,6 +17711,7 @@ ipcMain.handle('hermes:wallpaper:select', async (event, profile) => {
       ? image
       : image.resize({ ...targetSize, quality: 'best' })
 
+  const palette = extractWallpaperPalette(normalized)
   const data = normalized.toJPEG(WALLPAPER_JPEG_QUALITY)
 
   if (data.length === 0) {
@@ -17719,7 +17720,7 @@ ipcMain.handle('hermes:wallpaper:select', async (event, profile) => {
 
   await writeWallpaperFile(app.getPath('userData'), profile, data)
 
-  return { asset: await desktopWallpaperAsset(profile), canceled: false }
+  return { asset: await desktopWallpaperAsset(profile), canceled: false, palette }
 })
 
 ipcMain.handle('hermes:wallpaper:remove', async (event, profile) => {

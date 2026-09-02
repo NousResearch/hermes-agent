@@ -3528,7 +3528,20 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_lit = {ev for ev in _cp_config.api_key_env_vars if os.environ.get(ev)}
+            _cp_has_creds = bool(_cp_lit)
+            # A regional "-cn" twin lit only by key vars it shares with its
+            # non-CN sibling (e.g. alibaba-coding-plan-cn off the intl
+            # ALIBABA_CODING_PLAN_API_KEY) is a phantom picker row (#101122).
+            # Hide it unless the user configured that CN provider -- and only
+            # when it has a dedicated var of its own the user could set instead.
+            _sib = _auth_registry.get(_cp.slug[:-3]) if _cp.slug.endswith("-cn") else None
+            _sib_vars = set(_sib.api_key_env_vars) if _sib else set()
+            if (
+                _cp_lit and _cp_lit <= _sib_vars < set(_cp_config.api_key_env_vars)
+                and _cp.slug != current_provider
+            ):
+                continue
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

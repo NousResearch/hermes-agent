@@ -323,7 +323,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._ws_url = str(
             extra.get("websocket_url")
             or extra.get("websocketUrl")
-            or os.getenv("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
+            or _get_scoped_secret("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
         ).strip() or DEFAULT_WS_URL
 
         self._dm_policy = str(extra.get("dm_policy") or _get_scoped_secret("WECOM_DM_POLICY", "pairing")).strip().lower()

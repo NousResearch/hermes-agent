@@ -119,6 +119,25 @@ def _hermes_version() -> str:
         return "dev"
 
 
+def _profile_capability_attestation() -> tuple[str, Optional[str]]:
+    """Return the active profile and the exact capabilities.json digest."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = _api_request_profile.get() or get_active_profile_name() or "default"
+    except Exception:
+        profile = _api_request_profile.get() or "default"
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        capability_path = get_hermes_home() / "capabilities.json"
+        digest = hashlib.sha256(capability_path.read_bytes()).hexdigest()
+    except (OSError, TypeError):
+        digest = None
+    return profile, digest
+
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -2747,11 +2766,14 @@ class APIServerAdapter(BasePlatformAdapter):
             process_completion_queue_depth=process_depth,
             active_delegations=active_delegations,
         )
+        profile, capability_manifest_sha256 = _profile_capability_attestation()
         return web.json_response({
             "status": readiness["status"],
             "readiness": readiness,
             "platform": "hermes-agent",
             "version": _hermes_version(),
+            "profile": profile,
+            "capability_manifest_sha256": capability_manifest_sha256,
             "gateway_state": gw_state,
             "platforms": runtime.get("platforms", {}),
             "active_agents": gw_active,

@@ -2,12 +2,13 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 
+import { formatDateTimeWithOptions } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { formatTimelineRange } from './timestamp'
 
-const preciseDateTime = new Intl.DateTimeFormat(undefined, {
+const preciseDateTimeOptions: Intl.DateTimeFormatOptions = {
   day: 'numeric',
   fractionalSecondDigits: 3,
   hour: 'numeric',
@@ -15,7 +16,7 @@ const preciseDateTime = new Intl.DateTimeFormat(undefined, {
   month: 'short',
   second: '2-digit',
   year: 'numeric'
-})
+}
 
 const validUnixSeconds = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -52,8 +53,8 @@ export const TimelineTimestamp: FC<{
   const completedLabel = validCompletedAt === undefined ? '' : formatTimelineRange(validCompletedAt, undefined)
 
   const title = completed
-    ? `${preciseDateTime.format(started)} → ${preciseDateTime.format(completed)}`
-    : preciseDateTime.format(started)
+    ? `${formatDateTimeWithOptions(started, preciseDateTimeOptions)} → ${formatDateTimeWithOptions(completed, preciseDateTimeOptions)}`
+    : formatDateTimeWithOptions(started, preciseDateTimeOptions)
 
   return (
     <span

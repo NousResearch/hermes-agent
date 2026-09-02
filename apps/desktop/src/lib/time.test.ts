@@ -1,17 +1,65 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
 import {
   calendarBucket,
+  createTimeFormatters,
   DAY,
+  fmtClock,
   fmtMonth,
   fmtMonthYear,
   formatAgo,
+  formatNumber,
   HOUR,
   MINUTE,
   nominalDayStart,
   SECOND,
   sessionBucketLabel
 } from './time'
+
+describe('localized date and time formatters', () => {
+  afterEach(() => {
+    setRuntimeI18nLocale('en')
+  })
+
+  it('formats dates and times with Danish locale conventions', () => {
+    const value = new Date(2026, 8, 2, 14, 5)
+    const formatters = createTimeFormatters('da')
+
+    expect(formatters.clock.format(value)).toBe(
+      new Intl.DateTimeFormat('da-DK', { hour: 'numeric', minute: '2-digit' }).format(value)
+    )
+    expect(formatters.date.format(value)).toBe(
+      new Intl.DateTimeFormat('da-DK', { day: 'numeric', month: 'short', year: 'numeric' }).format(value)
+    )
+    expect(formatters.date.resolvedOptions().locale.toLowerCase()).toMatch(/^da(?:-|$)/)
+  })
+
+  it('follows the active Hermes locale without restarting', () => {
+    const value = new Date(2026, 8, 2, 14, 5)
+
+    setRuntimeI18nLocale('da')
+    expect(fmtClock.format(value)).toBe(
+      new Intl.DateTimeFormat('da-DK', { hour: 'numeric', minute: '2-digit' }).format(value)
+    )
+
+    setRuntimeI18nLocale('ja')
+    expect(fmtClock.format(value)).toBe(
+      new Intl.DateTimeFormat('ja-JP', { hour: 'numeric', minute: '2-digit' }).format(value)
+    )
+  })
+
+  it('formats numbers with the active Hermes locale', () => {
+    const value = 1_234_567
+
+    setRuntimeI18nLocale('en')
+    expect(formatNumber(value)).toBe(new Intl.NumberFormat('en-US').format(value))
+
+    setRuntimeI18nLocale('da')
+    expect(formatNumber(value)).toBe(new Intl.NumberFormat('da-DK').format(value))
+  })
+})
 
 const labels = {
   ageNow: 'now',

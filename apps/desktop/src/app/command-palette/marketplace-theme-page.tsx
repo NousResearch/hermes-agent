@@ -19,11 +19,10 @@ import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette } from '@/lib/icons'
+import { formatNumber } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { $marketplaceInstalls } from '@/themes/user-themes'
-
-const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 
 interface MarketplaceThemePageProps {
   search: string
@@ -119,7 +118,9 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
               <span className="truncate font-medium">{item.displayName}</span>
               <span className="truncate text-[0.6875rem] text-muted-foreground/80">
                 {item.publisher}
-                {item.installs > 0 ? ` · ${copy.installs(compactNumber.format(item.installs))}` : ''}
+                {item.installs > 0
+                  ? ` · ${copy.installs(formatNumber(item.installs, { maximumFractionDigits: 1, notation: 'compact' }))}`
+                  : ''}
               </span>
             </span>
             <span className="ml-auto mt-0.5 flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">

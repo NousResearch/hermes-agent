@@ -32,6 +32,7 @@ vi.mock('@/i18n', () => ({
         color: 'Color…',
         colorFor: 'Color',
         connectGateway: 'Manage gateways…',
+        defaultProfile: 'Default profile',
         editSoul: 'Edit SOUL.md…',
         exportProfile: 'Export profile…',
         failedLoadSoul: 'Failed to load SOUL.md',
@@ -250,12 +251,12 @@ describe('ProfileRail fleet mode', () => {
     expect(dividers).toEqual(['local', 'pandora', 'vps'])
 
     const local = screen.getByRole('group', { name: 'Profiles on This device' })
-    expect(within(local).getByRole('button', { name: 'default · This device' })).toBeTruthy()
+    expect(within(local).getByRole('button', { name: 'Default profile · This device' })).toBeTruthy()
     expect(within(local).getByRole('button', { name: 'omer · This device' })).toBeTruthy()
 
     // The active gateway's own squares are unchanged and unqualified.
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Default profile' })).toBeTruthy()
 
     // Fleet pill: "all on this gateway" replaces the default↔all toggle.
     expect(screen.getByRole('button', { name: 'All profiles on this gateway' })).toBeTruthy()
@@ -273,7 +274,7 @@ describe('ProfileRail fleet mode', () => {
         '[data-slot="profile-rail-divider"][data-connection-id="vps"] [data-slot="profile-rail-unreachable"]'
       )
     ).toBeTruthy()
-    expect(within(vps as HTMLElement).getByRole('button', { name: 'default · VPS' })).toBeTruthy()
+    expect(within(vps as HTMLElement).getByRole('button', { name: 'Default profile · VPS' })).toBeTruthy()
   })
 
   it('re-homes onto the exact (gateway, profile) when an at-rest square is clicked', async () => {
@@ -303,7 +304,7 @@ describe('ProfileRail fleet mode', () => {
     armFleet()
     await renderFleet()
 
-    fireEvent.click(screen.getByRole('button', { name: 'default · This device' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Default profile · This device' }))
 
     expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
   })

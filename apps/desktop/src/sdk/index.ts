@@ -1682,7 +1682,15 @@ export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
  *  session rows beside you do; `formatAgo` is the same buckets with an " ago"
  *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
  *  for a scheduled next-run, not for an age. */
-export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
+export {
+  type AgoLabels,
+  coarseElapsed,
+  fmtDateTime,
+  fmtDayTime,
+  formatAgo,
+  formatDateTimeWithOptions,
+  relativeTime
+} from '@/lib/time'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {

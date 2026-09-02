@@ -52,6 +52,15 @@ describe('desktop i18n runtime translator', () => {
     )
   })
 
+  it('translates representative desktop surfaces into Danish', () => {
+    setRuntimeI18nLocale('da')
+
+    expect(translateNow('common.save')).toBe('Gem')
+    expect(translateNow('language.label')).toBe('Sprog')
+    expect(translateNow('settings.nav.providers')).toBe('Udbydere')
+    expect(translateNow('ui.sidebar.title')).toBe('Sidepanel')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

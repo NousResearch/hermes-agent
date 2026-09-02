@@ -22,6 +22,7 @@ vi.mock('@/i18n', () => ({
       profiles: {
         allProfiles: 'All profiles',
         connectGateway: 'Manage gateways…',
+        defaultProfile: 'Default profile',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
         importProfile: 'Import profile…',
@@ -117,11 +118,18 @@ describe('ProfileRail multi-gateway entry point', () => {
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 
+  it('labels the default-home and add-profile buttons with localized copy', () => {
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('button', { name: 'Default profile' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New profile' })).toBeTruthy()
+  })
+
   it('keeps the active profile explicit when gateway identity moves to the statusbar', () => {
     hasMultipleConnections.set(true)
     render(<ProfileRail />)
 
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Default profile' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })

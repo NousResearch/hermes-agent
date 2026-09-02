@@ -23,11 +23,20 @@ const REPORTED =
 const guard = (text: string) => remendPreservingTrailingDirective(text, tailBoundedRemend)
 
 describe('remendPreservingTrailingDirective', () => {
-  it('reproduces the bug without the guard', () => {
+  it('reproduces the corruption the guard exists to prevent', () => {
     // Guard rail on the guard: if upstream ever stops corrupting this, the
-    // test below stops proving anything and this failure says why.
-    expect(tailBoundedRemend(REPORTED)).not.toBe(REPORTED)
-    expect(parseTranscriptDirective(tailBoundedRemend(REPORTED))).toBeNull()
+    // tests below stop proving anything and this failure says why.
+    //
+    // Only the CORRUPTION is asserted, not that the parse fails. The parser
+    // now forgives trailing repair debris too, so these are two independent
+    // layers over one bug: the guard keeps the text byte-exact, the parser
+    // survives debris from anywhere else. Asserting a null parse here would
+    // couple this test to the parser being strict, and it is deliberately not.
+    const repaired = tailBoundedRemend(REPORTED)
+
+    expect(repaired).not.toBe(REPORTED)
+    expect(repaired.startsWith(REPORTED)).toBe(true)
+    expect(repaired.slice(REPORTED.length)).toBe('*')
   })
 
   it('keeps the reported directive parseable', () => {

@@ -269,9 +269,9 @@ def test_rapid_add_replace_remove_is_processed_in_fifo_order(tmp_path):
     assert calls[1][2]["uri"] == uri
     assert calls[2][3]["params"] == {"uri": uri, "recursive": False, "wait": True}
 
+    provider.shutdown()
     registry = json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))
     assert registry == {"version": 2, "entries": []}
-    provider.shutdown()
 
 
 def test_unmapped_replace_fails_closed_with_warning(tmp_path, caplog):

@@ -56,6 +56,14 @@ class TestChannelCards:
             for key in entry["env_vars"]:
                 assert not is_setup_hidden_env(key), f"{entry['id']}: {key}"
 
+    def test_whatsapp_card_links_to_hermes_baileys_setup_docs(self):
+        from hermes_cli.web_server import _messaging_platform_catalog
+
+        whatsapp = next(entry for entry in _messaging_platform_catalog() if entry["id"] == "whatsapp")
+
+        assert whatsapp["docs_url"] == "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp"
+        assert "whatsmeow" not in whatsapp["docs_url"]
+
 
     def test_hidden_knobs_move_to_the_keys_page_not_into_a_void(self):
         """Keys hides what a Channels card owns. Dropping these from the card

@@ -4670,6 +4670,11 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
             entry = (refresh_fn or _default_refresh)()
             if entry:
                 cache = _load_provider_models_cache()
+                # Skip the disk write when nothing actually changed — every
+                # --refresh picker open lands here, and rewriting an identical
+                # catalog just churns the file's mtime (review on #89874).
+                if cache.get(cache_key) == entry:
+                    return
                 cache[cache_key] = entry
                 _save_provider_models_cache(cache)
         except Exception:
@@ -4823,6 +4828,49 @@ def _save_provider_models_cache(data: dict) -> None:
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
+    except Exception:
+        pass
+
+
+def seed_custom_endpoint_cache(
+    base_url: Optional[str],
+    models: list,
+    *,
+    api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> None:
+    """Persist a natively discovered catalog into the custom-endpoint cache.
+
+    The Ollama native ``/api/tags`` discovery returns its list to the
+    current caller only — unlike the generic ``/v1/models`` path, nothing
+    wrote ``provider_models_cache.json`` — so after a ``--refresh`` wiped
+    the cache, the next plain ``/model`` open (which must not live-probe
+    non-current providers) found nothing cached and collapsed to 0 models
+    (#89874). Seed the same ``custom:<normalized-url>`` entry shape that
+    :func:`cached_fetch_api_models` reads.
+
+    The fingerprint is computed from the CALLER'S configured headers —
+    ``headers`` as passed in, not any probe-synthesized Authorization — so
+    a later ``cache_only=True`` lookup with the same configured headers
+    matches this entry. Thread-safe and best-effort, like every other
+    cache writer here. An authoritative empty list is stored as-is: a
+    fresh same-fingerprint entry shadows any stale non-empty one, so the
+    stale catalog cannot resurrect while this marker is valid.
+    """
+    try:
+        normalized_url = str(base_url or "").strip().rstrip("/").lower()
+        if not normalized_url:
+            return
+        fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            cache[f"custom:{normalized_url}"] = {
+                "fp": fp,
+                "at": time.time(),
+                "models": list(models or []),
+            }
+            _save_provider_models_cache(cache)
     except Exception:
         pass
 

@@ -331,6 +331,24 @@ def _fetch_picker_live_models(
             api_url, timeout=timeout, headers=resolved_headers
         )
         if native_models is not None:
+            # Persist the natively discovered catalog so the next cache_only
+            # picker open (no live probe of non-current providers) still sees
+            # it (#89874): /api/tags returned the list to THIS caller only.
+            # The fingerprint uses the caller's configured ``headers`` — not
+            # resolved_headers, which may carry a synthesized Authorization
+            # the later lookup will not reproduce.
+            try:
+                from hermes_cli.models import seed_custom_endpoint_cache
+
+                seed_custom_endpoint_cache(
+                    api_url,
+                    native_models,
+                    api_key=api_key,
+                    api_mode=api_mode,
+                    headers=headers,
+                )
+            except Exception:
+                pass
             return _NativePickerModelList(native_models)
         # A failed native probe is not authoritative: retry the cached generic
         # OpenAI-compatible catalog before reporting no models.
@@ -3847,7 +3865,7 @@ def list_authenticated_providers(
                         has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                         timeout=(1.5 if for_picker else 5.0),
-                        api_mode=ep_cfg.get("api_mode"),
+                        api_mode=grp.get("api_mode"),
                     )
                     if isinstance(live_models, _NativePickerModelList):
                         native_catalog_empty = not live_models
@@ -3869,7 +3887,7 @@ def list_authenticated_providers(
                         cache_only=True,
                         timeout=(1.5 if for_picker else 5.0),
                         headers=_extra_headers_from_config(ep_cfg) or None,
-                        api_mode=ep_cfg.get("api_mode"),
+                        api_mode=grp.get("api_mode"),
                     )
                     if cached_models:
                         models_list = cached_models

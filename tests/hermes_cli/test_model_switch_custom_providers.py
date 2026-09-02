@@ -2223,3 +2223,134 @@ def test_legacy_sentinel_catalog_still_resolves_and_migrates(tmp_path, monkeypat
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert "__discovered_model_catalog__" not in saved["models"]
     assert "__explicit_model_allowlist__" not in saved["models"]
+
+
+def test_transport_field_uses_grouped_api_mode_for_cache_lookup(monkeypatch):
+    """A provider declared with ``transport:`` (not ``api_mode:``) must read
+    its cached catalog (#89874).
+
+    The grouped row resolves ``transport: chat_completions`` into the
+    canonical ``api_mode`` identity that also keys the cache fingerprint.
+    The regressed cache lookups read ``ep_cfg.get("api_mode")`` — None for a
+    transport-declared provider — so the fingerprint never matched the one
+    the catalog was written under and the picker showed 0 models.
+    """
+    import hermes_cli.models as models_mod
+
+    catalog = ["llama-x", "qwen-y"]
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    # Warm cache written under the GROUPED identity (transport-resolved).
+    fp = models_mod._custom_endpoint_fingerprint(
+        "sk-t", "chat_completions", None
+    )
+    cache = {
+        "custom:https://ollama.example.com/v1": {
+            "fp": fp,
+            "at": time.time() - 10,
+            "models": list(catalog),
+        }
+    }
+    monkeypatch.setattr(models_mod, "_load_provider_models_cache", lambda: cache)
+
+    providers = list_authenticated_providers(
+        current_provider="nous",
+        user_providers={
+            "local-ollama": {
+                "name": "Local Ollama",
+                "api": "https://ollama.example.com/v1",
+                "api_key": "sk-t",
+                "transport": "chat_completions",
+                "model": "llama-x",
+            }
+        },
+        custom_providers=[],
+        for_picker=True,
+        refresh=False,
+        probe_custom_providers=False,
+    )
+    row = next(
+        (p for p in providers if "ollama.example.com" in str(p.get("api_url", ""))),
+        None,
+    )
+    assert row is not None
+    assert row["models"] == catalog, (
+        "a transport-declared provider must resolve its cached catalog via "
+        "the grouped api_mode identity, not ep_cfg's absent api_mode key"
+    )
+
+
+def test_native_ollama_discovery_seeds_custom_endpoint_cache(monkeypatch):
+    """The native /api/tags picker discovery must persist its catalog (#89874).
+
+    The native path used to return the list to the current caller only —
+    nothing wrote provider_models_cache.json — so a subsequent plain
+    ``/model`` open (cache_only, no live probe) collapsed to 0 models.
+    The seed must fingerprint the CALLER'S headers so the later lookup
+    matches, not the probe's synthesized Authorization header.
+    """
+    written = {}
+
+    def fake_seed(base_url, models, *, api_key=None, api_mode=None, headers=None):
+        written["args"] = (base_url, list(models), api_key, api_mode, headers)
+
+    monkeypatch.setattr(
+        "hermes_cli.models.seed_custom_endpoint_cache", fake_seed
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_ollama_local_models",
+        lambda url, **_kw: ["llama-a", "llama-b"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.should_use_ollama_native_catalog",
+        lambda *_a, **_kw: True,
+    )
+    from hermes_cli.model_switch import _NativePickerModelList
+
+    result = _fetch_picker_live_models(
+        "sk-n",
+        "https://ollama.example.com/v1",
+        "custom",
+        False,
+        headers={"X-Custom": "cfg"},
+        api_mode="chat_completions",
+    )
+    assert isinstance(result, _NativePickerModelList)
+    assert list(result) == ["llama-a", "llama-b"]
+    base_url, models, api_key, api_mode, headers = written["args"]
+    assert base_url == "https://ollama.example.com/v1"
+    assert models == ["llama-a", "llama-b"]
+    assert api_key == "sk-n"
+    assert api_mode == "chat_completions"
+    # The seed must use the caller's configured headers verbatim — a
+    # synthesized Authorization here would produce a fingerprint the later
+    # cache_only lookup can never match.
+    assert headers == {"X-Custom": "cfg"}
+
+
+def test_seed_custom_endpoint_cache_round_trips(monkeypatch, tmp_path):
+    """seed_custom_endpoint_cache writes the exact entry shape that a later
+    cache_only cached_fetch_api_models lookup resolves (#89874)."""
+    import hermes_cli.models as models_mod
+
+    monkeypatch.setattr(
+        models_mod, "_provider_models_cache_path", lambda: tmp_path / "pmc.json"
+    )
+
+    models_mod.seed_custom_endpoint_cache(
+        "https://ollama.example.com/v1",
+        ["llama-a", "llama-b"],
+        api_key="sk-n",
+        api_mode="chat_completions",
+        headers=None,
+    )
+
+    served = models_mod.cached_fetch_api_models(
+        "sk-n",
+        "https://ollama.example.com/v1",
+        cache_only=True,
+        api_mode="chat_completions",
+        headers=None,
+    )
+    assert served == ["llama-a", "llama-b"]

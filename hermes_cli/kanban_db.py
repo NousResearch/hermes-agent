@@ -6667,6 +6667,61 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    # Phase 0 — verified teardown BEFORE the spawnable write (dashboard
+    # contract, 7c8e884f72): a third party yanking a live running row to
+    # the spawnable ``review`` lane must confirm the worker is dead
+    # first, or defer with the stopping marker. The run's OWN worker
+    # (scope env / pid / run-id ownership) skips this — stopping it here
+    # would kill the caller before its write commits; its own exit plus
+    # the detached post-commit stop retire the scope.
+    snapshot = conn.execute(
+        "SELECT status, claim_lock, current_run_id, worker_pid, "
+        "worker_pid_started_at, worker_scope "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    caller_is_worker = (
+        _handoff_caller_is_worker(snapshot, expected_run_id=expected_run_id)
+        if snapshot is not None
+        else False
+    )
+    if (
+        snapshot is not None
+        and snapshot["status"] == "running"
+        and snapshot["claim_lock"] is not None
+        and (force or expected_run_id is not None)
+        and (
+            expected_run_id is None
+            or int(snapshot["current_run_id"] or 0) == int(expected_run_id)
+        )
+        and not caller_is_worker
+        and _parents_satisfied(conn, task_id)
+    ):
+        pid, claim_lock, pid_started, scope = _worker_termination_tuple(
+            snapshot,
+        )
+        termination = _terminate_reclaimed_worker(
+            pid, claim_lock,
+            scope_unit=scope or None,
+            pid_started_at=pid_started,
+        )
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, task_id, snapshot["claim_lock"], int(time.time()),
+                termination,
+                reason="request_review_stop_unconfirmed",
+            )
+            if scope:
+                _mark_run_scope_stopping(
+                    conn, task_id, scope,
+                    reason="request_review_stop_unconfirmed",
+                )
+            return _ret(
+                False,
+                "task stays running: its worker could not be verified "
+                "stopped (scope still draining); retry once the teardown "
+                "completes",
+            )
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
@@ -6793,11 +6848,14 @@ def request_review(
             },
             run_id=run_id,
         )
-    # The implementer's attempt is over (review lane takes over): reap
-    # its scope detached — see _stop_scope_after_worker_exit.
-    _stop_scope_after_worker_exit(
-        trow["worker_scope"] if trow is not None else None
-    )
+    # The implementer's attempt is over (review lane takes over). A
+    # third-party handoff verified the teardown in Phase 0 before the
+    # write; only the run's OWN worker still needs the fire-and-forget
+    # scope stop — see _stop_scope_after_worker_exit.
+    if caller_is_worker:
+        _stop_scope_after_worker_exit(
+            trow["worker_scope"] if trow is not None else None
+        )
     return _ret(True)
 
 
@@ -6819,6 +6877,83 @@ def request_changes(
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
+
+    # Phase 0 — verified teardown BEFORE the spawnable write (dashboard
+    # contract, 7c8e884f72): routing the task back to its implementer is
+    # a spawnable write, so a third party closing a live reviewer run
+    # must confirm that worker dead first, or defer with the stopping
+    # marker. The reviewer's OWN handoff (scope env / pid / run-id
+    # ownership) skips this — stopping it here would kill the caller
+    # before its write commits; its own exit plus the detached
+    # post-commit stop retire the scope. The claimed-from-review
+    # provenance is pre-checked so a request the transaction would
+    # refuse never tears a live worker down for nothing.
+    snapshot = conn.execute(
+        "SELECT status, claim_lock, current_run_id, worker_pid, "
+        "worker_pid_started_at, worker_scope "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    caller_is_worker = (
+        _handoff_caller_is_worker(snapshot, expected_run_id=expected_run_id)
+        if snapshot is not None
+        else False
+    )
+    _reviewer_provenance = None
+    if (
+        snapshot is not None
+        and snapshot["status"] == "running"
+        and snapshot["claim_lock"] is not None
+        and (
+            expected_run_id is None
+            or int(snapshot["current_run_id"] or 0) == int(expected_run_id)
+        )
+        and not caller_is_worker
+        and snapshot["current_run_id"] is not None
+    ):
+        claimed = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, int(snapshot["current_run_id"])),
+        ).fetchone()
+        try:
+            claimed_payload = (
+                json.loads(claimed["payload"])
+                if claimed and claimed["payload"]
+                else {}
+            )
+        except (json.JSONDecodeError, TypeError):
+            claimed_payload = {}
+        if not isinstance(claimed_payload, dict):
+            claimed_payload = {}
+        _reviewer_provenance = claimed_payload.get("source_status")
+    if _reviewer_provenance == "review":
+        pid, claim_lock, pid_started, scope = _worker_termination_tuple(
+            snapshot,
+        )
+        termination = _terminate_reclaimed_worker(
+            pid, claim_lock,
+            scope_unit=scope or None,
+            pid_started_at=pid_started,
+        )
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, task_id, snapshot["claim_lock"], int(time.time()),
+                termination,
+                reason="request_changes_stop_unconfirmed",
+            )
+            if scope:
+                _mark_run_scope_stopping(
+                    conn, task_id, scope,
+                    reason="request_changes_stop_unconfirmed",
+                )
+            return (
+                False,
+                "task stays running: its reviewer worker could not be "
+                "verified stopped (scope still draining); retry once the "
+                "teardown completes",
+            )
 
     with write_txn(conn):
         task_row = conn.execute(
@@ -6921,11 +7056,14 @@ def request_changes(
             },
             run_id=run_id,
         )
-    # The reviewer's attempt is over (work returns to the implementer):
-    # reap its scope detached — see _stop_scope_after_worker_exit.
-    _stop_scope_after_worker_exit(
-        task_row["worker_scope"] if task_row is not None else None
-    )
+    # The reviewer's attempt is over (work returns to the implementer).
+    # A third-party handoff verified the teardown in Phase 0 before the
+    # write; only the reviewer's OWN run still needs the fire-and-forget
+    # scope stop — see _stop_scope_after_worker_exit.
+    if caller_is_worker:
+        _stop_scope_after_worker_exit(
+            task_row["worker_scope"] if task_row is not None else None
+        )
     return True, implementer
 
 
@@ -9091,6 +9229,49 @@ commit."""
             {"scope": scope, "reason": reason},
             run_id=run_id,
         )
+
+
+def _handoff_caller_is_worker(
+    row: Any,
+    *,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """True when THIS process owns the run being handed off.
+
+    A terminal handoff issued by the run's own worker must skip the
+    pre-write teardown: stopping its scope or signalling its pid here
+    would kill the caller before its own write commits (the detached
+    post-commit stop in :func:`_stop_scope_after_worker_exit` exists for
+    exactly that case). Ownership signals, strongest first:
+
+    * scoped run: the worker's pinned ``HERMES_KANBAN_SCOPE`` env
+      (inherited by every CLI child it shells out to) matches the row's
+      scope — the caller is the worker or a descendant;
+    * unscoped run: the row's registered pid IS this process with a
+      matching start-time fingerprint;
+    * a matching ``expected_run_id`` — the run-id ownership rule
+      ``request_review`` has always honored: a caller that knows the
+      live run id is the worker or its delegate.
+    """
+    keys = row.keys() if hasattr(row, "keys") else ()
+    scope = row["worker_scope"] if "worker_scope" in keys else None
+    if scope and os.environ.get("HERMES_KANBAN_SCOPE", "").strip() == scope:
+        return True
+    pid = row["worker_pid"] if "worker_pid" in keys else None
+    if pid is not None and int(pid) == os.getpid():
+        started = (
+            row["worker_pid_started_at"]
+            if "worker_pid_started_at" in keys
+            else None
+        )
+        mine = _worker_pid_start_time(os.getpid())
+        if started is None or (mine is not None and int(started) == int(mine)):
+            return True
+    if expected_run_id is not None:
+        current = row["current_run_id"] if "current_run_id" in keys else None
+        if current is not None and int(current) == int(expected_run_id):
+            return True
+    return False
 
 
 def _stop_scope_after_worker_exit(unit_name: Optional[str]) -> None:

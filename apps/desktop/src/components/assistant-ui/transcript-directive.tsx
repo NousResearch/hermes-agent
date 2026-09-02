@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react'
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import {
+  describeDirectiveDrop,
   warnDirectiveRenderFailed,
   warnUnclaimedDirective,
   warnUnparsedDirective
@@ -97,8 +98,13 @@ export function useIsClaimedDirective(text: string | null): boolean {
  * different fixes — a malformed directive is the model's or the repair pass's
  * doing, an unclaimed one means the plugin is missing or disabled.
  */
-export function useDirectiveDropWarning(text: string | null, claimed: boolean, streaming: boolean): void {
+export function useDirectiveDropWarning(text: string | null, claimed: boolean, streaming: boolean): string | null {
   const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+
+  const registeredNames = useMemo(
+    () => contributions.map(c => (c.data as TranscriptDirectiveContribution | undefined)?.name ?? '?'),
+    [contributions]
+  )
 
   useEffect(() => {
     if (text === null || claimed) {
@@ -113,10 +119,11 @@ export function useDirectiveDropWarning(text: string | null, claimed: boolean, s
       return
     }
 
-    warnUnclaimedDirective(
-      parsed.name,
-      contributions.map(c => (c.data as TranscriptDirectiveContribution | undefined)?.name ?? '?'),
-      streaming
-    )
-  }, [text, claimed, contributions, streaming])
+    warnUnclaimedDirective(parsed.name, registeredNames, streaming)
+  }, [text, claimed, registeredNames, streaming])
+
+  return useMemo(
+    () => (text === null || claimed ? null : describeDirectiveDrop(text, registeredNames, streaming)),
+    [text, claimed, registeredNames, streaming]
+  )
 }

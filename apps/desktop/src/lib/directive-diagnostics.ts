@@ -12,7 +12,11 @@
  * un-deduped warning would emit hundreds of lines per message.
  */
 
-import { describeDirectiveParseFailure, looksLikeDirective } from '@/lib/transcript-directives'
+import {
+  describeDirectiveParseFailure,
+  looksLikeDirective,
+  parseTranscriptDirective
+} from '@/lib/transcript-directives'
 
 /** Warnings already emitted, keyed by their dedupe key. */
 const seen = new Set<string>()
@@ -99,4 +103,45 @@ export function warnDirectiveRenderFailed(name: string, contributionId: string, 
     `[transcript-directive] "::${name}" (${contributionId}) failed to render: ${message}`,
     error
   )
+}
+
+/**
+ * Why a directive-looking paragraph will render as a badge instead of a
+ * widget, phrased for a user rather than a maintainer.
+ *
+ * Returns null when the paragraph is NOT a dropped directive, which is the
+ * common case and must stay cheap: ordinary prose, and any directive that
+ * renders correctly, take this path on every paragraph of every message.
+ *
+ * Streaming is never a drop: every prefix of an arriving directive is
+ * malformed, so a badge would flicker through the whole emission.
+ */
+export function describeDirectiveDrop(
+  text: string,
+  registeredNames: readonly string[],
+  streaming: boolean
+): string | null {
+  if (streaming || !looksLikeDirective(text)) {
+    return null
+  }
+
+  if (describeDirectiveParseFailure(text)) {
+    return 'Malformed panel skipped'
+  }
+
+  const parsed = parseTranscriptDirective(text)
+
+  if (!parsed) {
+    return null
+  }
+
+  // Parsed cleanly and someone claims it: not a drop. The render-failure case
+  // is handled by the contribution boundary, which owns its own fallback.
+  if (registeredNames.includes(parsed.name)) {
+    return null
+  }
+
+  return registeredNames.length > 0
+    ? `Panel "${parsed.name}" is unavailable`
+    : 'Panel plugin not loaded'
 }

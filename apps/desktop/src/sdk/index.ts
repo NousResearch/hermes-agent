@@ -408,6 +408,8 @@ function waitForFocusedSessionHydration({
   storedSessionId: string
   timeoutMs: number
 }): Promise<void> {
+  const targetTileVisibility = $paneVisible(`session-tile:${storedSessionId}`)
+
   return new Promise((resolve, reject) => {
     let settled = false
     const unbinds: Array<() => void> = []
@@ -445,17 +447,17 @@ function waitForFocusedSessionHydration({
       const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
       const mainMatches = $selectedStoredSessionId.get() === storedSessionId
       const storedTile = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
-      const tileMatches = $focusedStoredSessionId.get() === storedSessionId || Boolean(storedTile)
       const focusedTileMatches = $focusedStoredSessionId.get() === storedSessionId
+      const visibleTileMatches = focusedTileMatches || Boolean(storedTile && targetTileVisibility.get())
+      const displayMatches = mainMatches || visibleTileMatches
       const tileRuntimeId = focusedTileMatches ? $focusedRuntimeId.get() : (storedTile?.runtimeId ?? null)
-
       const tileState = focusedTileMatches
         ? $focusedSessionState.get()
-        : tileRuntimeId
+        : visibleTileMatches && tileRuntimeId
           ? $sessionStates.get()[tileRuntimeId]
           : undefined
 
-      const runtimeReady = mainMatches ? Boolean($activeSessionId.get()) : tileMatches ? Boolean(tileRuntimeId) : false
+      const runtimeReady = mainMatches ? Boolean($activeSessionId.get()) : visibleTileMatches && Boolean(tileRuntimeId)
 
       const settlement = $sessionResumeSettlement.get()
 
@@ -465,7 +467,7 @@ function waitForFocusedSessionHydration({
 
       const historyPainted = mainMatches
         ? Boolean($messages.get().length)
-        : tileMatches
+        : visibleTileMatches
           ? Boolean(tileState?.messages.length)
           : false
 
@@ -481,9 +483,18 @@ function waitForFocusedSessionHydration({
       // immediately. Only an expected-EMPTY chat still waits for the runtime
       // — with no transcript to paint, a bound runtime is the only proof the
       // surface is real rather than a stuck loader.
-      const hydrated = (expectHistory ? historyPainted : runtimeReady) && freshResumeSettled
+      // A display-authoritative transcript paint is the history-bearing wake
+      // contract (#89510, #101227): keep the forced refresh running so
+      // background turns reconcile, but do not hide readable history behind
+      // that slower RPC. The warm path already suppresses unproven runtime
+      // tails until persisted-display authority lands (#97293), while the
+      // cold durable tail is scoped to this exact connection/profile/session
+      // and is deliberately display-only. Expected-empty chats have no paint
+      // to prove the surface, so they still wait for both runtime binding and
+      // the requested refresh settlement.
+      const hydrated = expectHistory ? historyPainted : runtimeReady && freshResumeSettled
 
-      if ((mainMatches || tileMatches) && hydrated) {
+      if (displayMatches && hydrated) {
         if (profileMatches) {
           finish()
 
@@ -524,6 +535,7 @@ function waitForFocusedSessionHydration({
     unbinds.push($focusedSessionState.listen(check))
     unbinds.push($sessionTiles.listen(check))
     unbinds.push($sessionStates.listen(check))
+    unbinds.push(targetTileVisibility.listen(check))
     unbinds.push($workspaceMode.listen(check))
     unbinds.push($workspaceOwnerKey.listen(check))
 
@@ -973,8 +985,11 @@ export const host = {
       }
 
       if (options.awaitHydration) {
-        // Keep the target-specific overlay visible through transcript hydration,
-        // not merely through the gateway/profile activation that precedes it.
+        // A destination transcript can be warm in a BACKGROUND tile while the
+        // center still paints the bot being left. Cover that ownership gap;
+        // the waiter releases it as soon as the exact destination is the
+        // selected/focused surface with history. Merely finding a cached tile
+        // is not display proof (#93604, #97293).
         $gatewaySwapTarget.set(targetProfile)
       }
 

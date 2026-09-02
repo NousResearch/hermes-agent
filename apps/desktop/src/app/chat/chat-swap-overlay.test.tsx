@@ -22,7 +22,7 @@ describe('ChatSwapOverlay', () => {
     vi.useRealTimers()
   })
 
-  it('animates the glyph without any timer', () => {
+  it('animates the glyph without any repeating timer', () => {
     const { container } = render(<ChatSwapOverlay profile="turqoise" />)
 
     expect(container.querySelector('.glyph-spinner__strip')).toBeTruthy()
@@ -55,6 +55,19 @@ describe('ChatSwapOverlay', () => {
     expect(screen.getByText(/Bot Chat/i)).toBeTruthy()
   })
 
+  it('keeps the modal wake label quiet for a fast Bot Mode switch', () => {
+    const { container } = render(<ChatSwapOverlay botMode profile="persephone" />)
+    const status = container.querySelector('[data-slot="chat-swap-status"]')
+
+    expect(status?.className).toContain('opacity-0')
+
+    act(() => vi.advanceTimersByTime(299))
+    expect(status?.className).toContain('opacity-0')
+
+    act(() => vi.advanceTimersByTime(1))
+    expect(status?.className).toContain('opacity-100')
+  })
+
   it('keeps the last profile name through the fade-out, with the glyph frozen', () => {
     const { container, rerender } = render(<ChatSwapOverlay profile="turqoise" />)
 
@@ -68,7 +81,7 @@ describe('ChatSwapOverlay', () => {
     expect(container.querySelector('.glyph-spinner')?.getAttribute('data-paused')).toBe('true')
   })
 
-  it('keeps the Bot Mode cover opaque until a blocked transcript commit settles, including the fade', () => {
+  it('keeps the Bot Mode cover opaque through six transcript paint frames', () => {
     const { container, rerender } = render(<ChatSwapOverlay botMode profile="persephone" />)
     const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
 
@@ -77,25 +90,31 @@ describe('ChatSwapOverlay', () => {
 
     rerender(<ChatSwapOverlay botMode profile={null} />)
 
-    // Keep the cover up long enough for a large transcript commit to begin. If
-    // that commit blocks the main thread, the timer and fade cannot run until
-    // the transcript has finished laying out.
+    // If a large transcript commit blocks the main thread, neither animation
+    // frame can run until it has finished laying out.
     expect(overlay?.className).toContain('opacity-100')
     expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
 
-    act(() => vi.advanceTimersByTime(499))
-    expect(overlay?.className).toContain('opacity-100')
-
-    act(() => vi.advanceTimersByTime(1))
-    expect(overlay?.className).toContain('opacity-100')
-
-    act(() => vi.advanceTimersByTime(16))
-    expect(overlay?.className).toContain('opacity-100')
+    for (let frame = 0; frame < 5; frame += 1) {
+      act(() => vi.advanceTimersByTime(16))
+      expect(overlay?.className).toContain('opacity-100')
+    }
 
     act(() => vi.advanceTimersByTime(16))
     expect(overlay?.className).toContain('opacity-0')
     expect(overlay?.className).toContain('transition-opacity')
     expect(overlay?.className).toContain('bg-(--ui-chat-surface-background)')
     expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
+  })
+
+  it('releases the Bot Mode cover after paint settles without a fixed half-second delay', () => {
+    const { container, rerender } = render(<ChatSwapOverlay botMode profile="persephone" />)
+    const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
+
+    rerender(<ChatSwapOverlay botMode profile={null} />)
+
+    act(() => vi.advanceTimersByTime(96))
+
+    expect(overlay?.className).toContain('opacity-0')
   })
 })

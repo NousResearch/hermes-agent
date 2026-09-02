@@ -1,10 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-
-const BOT_MODE_SETTLE_DELAY_MS = 500
 
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
@@ -13,42 +11,76 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
   const { t } = useI18n()
   const [label, setLabel] = useState<null | string>(profile)
   const [covering, setCovering] = useState(Boolean(profile))
+  const [statusVisible, setStatusVisible] = useState(!botMode && Boolean(profile))
+  const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (profile) {
       setLabel(profile)
       setCovering(true)
 
-      return
+      if (!botMode) {
+        setStatusVisible(true)
+
+        return
+      }
+
+      // Warm Bot Chat switches normally paint in well under this threshold.
+      // Keep the opaque ownership guard immediate, but do not flash a modal
+      // "Waking up" card for a transition that completes almost at once. A
+      // genuinely cold wake still gets status once the delay elapses.
+      setStatusVisible(false)
+      const statusTimer = window.setTimeout(() => setStatusVisible(true), 300)
+
+      return () => window.clearTimeout(statusTimer)
     }
+
+    setStatusVisible(false)
 
     if (!covering) {
       return
     }
 
-    // The message store can settle before React commits and scroll-restores a
-    // giant transcript. Wait long enough for that render to start, then keep
-    // one fully painted cover after the main thread becomes available again.
-    // A long transcript blocks this timer, which is intentional: the cover
-    // remains opaque until the expensive commit has actually finished.
-    let secondFrame: number | undefined
-    let firstFrame: number | undefined
+    // The session stores can settle before React commits, the tab becomes
+    // visible and a large transcript finishes its keep-alive catch-up. Keep a
+    // short paint-frame floor, then require two quiet frames after the last DOM
+    // mutation in this chat surface. This covers the raw-session flash without
+    // putting the old fixed 500ms sleep back on every warm switch.
+    let frame: number | undefined
+    let frames = 0
+    let quietFrames = 0
+    const surface = overlayRef.current?.closest('[data-chat-surface]')
+    const observer = surface
+      ? new MutationObserver(() => {
+          quietFrames = 0
+        })
+      : null
+
+    observer?.observe(surface!, { attributes: true, characterData: true, childList: true, subtree: true })
 
     const settleTimer = window.setTimeout(() => {
-      firstFrame = window.requestAnimationFrame(() => {
-        secondFrame = window.requestAnimationFrame(() => setCovering(false))
-      })
-    }, botMode ? BOT_MODE_SETTLE_DELAY_MS : 0)
+      const settle = () => {
+        frames += 1
+        quietFrames += 1
+
+        if (frames >= 6 && quietFrames >= 2) {
+          setCovering(false)
+
+          return
+        }
+
+        frame = window.requestAnimationFrame(settle)
+      }
+
+      frame = window.requestAnimationFrame(settle)
+    }, 0)
 
     return () => {
       window.clearTimeout(settleTimer)
+      observer?.disconnect()
 
-      if (firstFrame !== undefined) {
-        window.cancelAnimationFrame(firstFrame)
-      }
-
-      if (secondFrame !== undefined) {
-        window.cancelAnimationFrame(secondFrame)
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame)
       }
     }
   }, [botMode, covering, profile])
@@ -65,8 +97,15 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
       )}
       data-glass-opaque={botMode ? '' : undefined}
       data-slot="chat-swap-overlay"
+      ref={overlayRef}
     >
-      <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
+      <div
+        className={cn(
+          'flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer transition-opacity duration-100',
+          statusVisible ? 'opacity-100' : 'opacity-0'
+        )}
+        data-slot="chat-swap-status"
+      >
         {/* Was a local 80ms setInterval + setState braille ticker — the same
             mechanism class (per-tick DOM mutation scheduling style recalc)
             that GlyphSpinner was rewritten to remove. `braille` is exactly the

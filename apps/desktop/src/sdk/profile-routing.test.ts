@@ -10,8 +10,26 @@ vi.mock('@/app/chat/session-view', async () => {
 vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
+  const visibilityByPane = new Map<string, ReturnType<typeof atom<boolean>>>()
 
-  return { $narrowViewport: atom(false) }
+  const paneVisibility = (paneId: string) => {
+    const existing = visibilityByPane.get(paneId)
+
+    if (existing) {
+      return existing
+    }
+
+    const visible = atom(false)
+    visibilityByPane.set(paneId, visible)
+
+    return visible
+  }
+
+  return {
+    $narrowViewport: atom(false),
+    $paneVisible: vi.fn(paneVisibility),
+    setPaneVisibleForTest: (paneId: string, visible: boolean) => paneVisibility(paneId).set(visible)
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
@@ -164,6 +182,10 @@ const {
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 
+const { setPaneVisibleForTest } = (await import('@/components/pane-shell/tree/store')) as unknown as {
+  setPaneVisibleForTest(paneId: string, visible: boolean): void
+}
+
 const { $workspaceOwnerKey, setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
 const {
@@ -204,6 +226,8 @@ afterEach(() => {
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
   setMockAtom($sessionResumeSettlement, null)
+  setPaneVisibleForTest('session-tile:bot-chat', false)
+  setPaneVisibleForTest('session-tile:restored-bot-chat', false)
   $profiles.set([profile('cached-only')])
   setWorkspaceScope('sessions')
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -780,6 +804,7 @@ describe('profile-aware plugin session opens', () => {
         storedSessionId: 'restored-bot-chat'
       }
     } as never)
+    setPaneVisibleForTest('session-tile:restored-bot-chat', true)
 
     await opening
     expect($focusedStoredSessionId.get()).toBeNull()
@@ -946,6 +971,7 @@ describe('profile-aware plugin session opens', () => {
     setMockAtom($sessionTiles, [{ storedSessionId: 'bot-chat' }] as never)
     setMockAtom($focusedStoredSessionId, 'bot-chat')
     setMockAtom($focusedRuntimeId, 'runtime-bot-chat')
+    setPaneVisibleForTest('session-tile:bot-chat', true)
     setMockAtom($focusedSessionState, { messages: [{ id: 'stale-history', parts: [], role: 'assistant' }] } as never)
 
     const opening = host.openSession('bot-chat', {
@@ -964,15 +990,83 @@ describe('profile-aware plugin session opens', () => {
     expect(requestSessionResume).not.toHaveBeenCalled()
   })
 
-  it('keeps a forced Bot Chat wake covered until the fresh resume settles (#93604)', async () => {
-    // Bot-switch shape from the field: the previous visit left a non-empty
-    // snapshot in the session-states cache, so the surface passes every
-    // health check while painting STALE messages. The heuristic alone skips
-    // the resume; the explicit-navigation caller must be able to force it.
+  it('keeps a painted background Bot Chat covered until that exact tile is visible', async () => {
+    let finishRefresh: (() => void) | undefined
+    const resumeTile = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          finishRefresh = () => resolve('runtime-bot-chat')
+        })
+    )
+
+    vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($sessionTiles, [{ runtimeId: 'runtime-bot-chat', storedSessionId: 'bot-chat' }] as never)
+    setMockAtom($selectedStoredSessionId, 'previous-chat')
+    setMockAtom($activeSessionId, 'runtime-previous')
+    setMockAtom($messages, [{ id: 'previous-history', parts: [], role: 'assistant' }] as never)
+    setMockAtom($focusedStoredSessionId, 'previous-chat')
+    setMockAtom($focusedRuntimeId, 'runtime-previous')
+    setMockAtom($focusedSessionState, {
+      messages: [{ id: 'previous-history', parts: [], role: 'assistant' }],
+      storedSessionId: 'previous-chat'
+    } as never)
+    setMockAtom($sessionStates, {
+      'runtime-bot-chat': {
+        messages: [{ id: 'painted-history', parts: [], role: 'assistant' }],
+        storedSessionId: 'bot-chat',
+        transcriptProvenance: {
+          connectionId: 'local',
+          coverage: 'latest-page',
+          lineageRootId: null,
+          profile: 'hyoseob',
+          source: 'persisted-display',
+          storedSessionId: 'bot-chat'
+        }
+      }
+    } as never)
+
+    let resolved = false
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      forceResume: true,
+      hydrationTimeoutMs: 1_000,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'hyoseob'
+    }).then(() => {
+      resolved = true
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($gatewaySwapTarget.get()).toBe('hyoseob')
+    expect(resolved).toBe(false)
+
+    finishRefresh?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // A cached destination tile existing in the background does not prove the
+    // center has switched away from the previous bot yet.
+    expect($gatewaySwapTarget.get()).toBe('hyoseob')
+    expect(resolved).toBe(false)
+
+    setPaneVisibleForTest('session-tile:bot-chat', true)
+
+    await opening
+    expect(resumeTile).toHaveBeenCalledWith('bot-chat', { refreshTranscript: true })
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('keeps a forced Bot Chat wake covered until a display transcript paints (#93604, #97293)', async () => {
+    // The warm path has suppressed an unproven runtime tail, so the target is
+    // selected and runtime-bound but has no display-authoritative transcript.
+    // A refresh settlement alone must not uncover an empty/raw session shell.
     $activeGatewayProfile.set('hyoseob')
     setMockAtom($selectedStoredSessionId, 'bot-chat')
     setMockAtom($activeSessionId, 'runtime-stale-snapshot')
-    setMockAtom($messages, [{ id: 'stale-history', parts: [], role: 'assistant' }] as never)
+    setMockAtom($messages, [])
 
     let resolved = false
 
@@ -996,8 +1090,68 @@ describe('profile-aware plugin session opens', () => {
     expect(resumeRequest).toBeTruthy()
     setMockAtom($sessionResumeSettlement, resumeRequest)
 
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(resolved).toBe(false)
+    expect($gatewaySwapTarget.get()).toBe('hyoseob')
+
+    setMockAtom($messages, [{ id: 'persisted-history', parts: [], role: 'assistant' }] as never)
+
     await opening
     expect(resolved).toBe(true)
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('reveals painted Bot Chat history while its forced refresh continues (#89510, #101227)', async () => {
+    // A verified warm/cold transcript paint is already scoped to this exact
+    // stored Bot Chat. Refreshing it remains necessary for background turns,
+    // but that revalidation must not hold readable history behind the wake
+    // cover — the paint-first contract keeps the refresh off the critical path.
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-cached')
+    setMockAtom($messages, [{ id: 'painted-history', parts: [], role: 'assistant' }] as never)
+    setMockAtom($sessionStates, {
+      'runtime-cached': {
+        messages: [{ id: 'painted-history', parts: [], role: 'assistant' }],
+        storedSessionId: 'bot-chat',
+        transcriptProvenance: {
+          connectionId: 'local',
+          coverage: 'latest-page',
+          lineageRootId: null,
+          profile: 'hyoseob',
+          source: 'persisted-display',
+          storedSessionId: 'bot-chat'
+        }
+      }
+    } as never)
+
+    let resolved = false
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      forceResume: true,
+      hydrationTimeoutMs: 1_000
+    }).then(() => {
+      resolved = true
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const resumeRequest = vi.mocked(requestSessionResume).mock.results.at(-1)?.value
+
+    expect(resumeRequest).toBeTruthy()
+    const resolvedOnPaint = resolved
+
+    // Let the old implementation finish too, so the intentionally failing
+    // assertion below leaves no pending timer or promise behind.
+    if (!resolvedOnPaint) {
+      setMockAtom($sessionResumeSettlement, resumeRequest)
+    }
+
+    await opening
+    expect(resolvedOnPaint).toBe(true)
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 

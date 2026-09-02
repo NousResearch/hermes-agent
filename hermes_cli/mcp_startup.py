@@ -9,6 +9,7 @@ from typing import Optional
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+_mcp_discovery_deferred: Optional[threading.Timer] = None
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -172,6 +173,45 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
         discover_mcp_tools()
 
 
+def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) -> None:
+    """Arm ``start_background_mcp_discovery`` to run ``delay`` seconds from now.
+
+    Used by the Desktop ``serve`` backend after its socket is announced: the
+    discovery thread's first act is the ~350ms ``mcp`` SDK import, which holds
+    the GIL against the renderer's connect + first hydration reads if it starts
+    at bind time, and against the web_server import if it starts before. Any
+    consumer that needs discovery sooner (``wait_for_mcp_discovery`` from an
+    agent build) fires the deferred start immediately, so the bounded join and
+    the late-binding refresh behave exactly as if it had been started eagerly.
+    """
+    global _mcp_discovery_deferred
+    with _mcp_discovery_lock:
+        if _mcp_discovery_started or _mcp_discovery_deferred is not None:
+            return
+
+        def _fire() -> None:
+            global _mcp_discovery_deferred
+            with _mcp_discovery_lock:
+                _mcp_discovery_deferred = None
+            start_background_mcp_discovery(logger=logger, thread_name=thread_name)
+
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        timer.name = f"{thread_name}-deferred"
+        _mcp_discovery_deferred = timer
+        timer.start()
+
+
+def _start_deferred_mcp_discovery_now() -> None:
+    """Run an armed deferred start immediately (idempotent, thread-safe)."""
+    with _mcp_discovery_lock:
+        timer = _mcp_discovery_deferred
+    if timer is None:
+        return
+    timer.cancel()
+    timer.function()
+
+
 def wait_for_mcp_discovery(
     timeout: "float | None" = None, *, single_query: bool = False
 ) -> None:
@@ -188,6 +228,7 @@ def wait_for_mcp_discovery(
     ``mcp_single_query_discovery_timeout`` instead (default 15s vs 1.5s
     interactive) because one-shot sessions have no second turn to recover.
     """
+    _start_deferred_mcp_discovery_now()
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return

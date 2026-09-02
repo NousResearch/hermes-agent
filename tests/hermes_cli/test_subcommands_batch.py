@@ -76,8 +76,8 @@ SINGLE_HANDLER_CASES = [
 
 
 
-def test_config_get_unset_subcommands_parse():
-    """`hermes config get/unset` parse key args (and --json for get)."""
+def test_config_get_unset_append_subcommands_parse():
+    """Config value subcommands parse their key/value options."""
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
     handler = _h("config")
@@ -93,6 +93,14 @@ def test_config_get_unset_subcommands_parse():
     assert ns.func is handler
     assert ns.config_command == "unset"
     assert ns.key == "terminal.backend"
+
+    ns = parser.parse_args(
+        ["config", "append", "hooks.pre_llm_call", '{"command":"check.py"}']
+    )
+    assert ns.func is handler
+    assert ns.config_command == "append"
+    assert ns.key == "hooks.pre_llm_call"
+    assert ns.value == '{"command":"check.py"}'
 
 
 

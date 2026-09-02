@@ -46,11 +46,10 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  knownSessionOwner,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
-import { requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -70,6 +69,7 @@ import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
+import { tileOwnerRoute } from './session-tile-owner'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
@@ -160,49 +160,20 @@ function TileChat({
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
 
-  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103):
-  // this tile's explicit route first, then the session row's own
-  // (connection, profile) tag — knownSessionOwner also folds in the owner hint.
-  // A tile opened without an explicit route — e.g. a branch child, which
-  // openSessionTile creates with no workspaceScope — has no tile route, so the
-  // row/hint rung is the only thing keeping this tile's model + composer RPCs
-  // on the backend that owns the session instead of the ambient one.
-  //
+  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
   // Recomputed when the tile store or any owner-bearing session list changes,
   // NOT on every render: this component re-renders per streamed token, and the
-  // lookup spreads three arrays before scanning them. Only the resulting
-  // IDENTITY is memoised downstream, on primitives, because knownSessionOwner
-  // mints a fresh object per call and requestTileGateway is keyed on it.
+  // lookup spreads three arrays before scanning them.
   const tiles = useStore($sessionTiles)
   const sessionRows = useStore($sessions)
   const cronRows = useStore($cronSessions)
   const messagingRows = useStore($messagingSessions)
 
-  const resolvedOwner = useMemo(() => {
+  const ownerRoute = useMemo(() => {
     const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
 
-    return (
-      tiles.find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute ??
-      knownSessionOwner(rows, storedSessionId)
-    )
+    return tileOwnerRoute(tiles, rows, storedSessionId)
   }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
-
-  const ownerConnectionId = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.connectionId : ''
-  const ownerProfile = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.profile : ''
-  const ownerTargetProfile = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.targetProfile : undefined
-
-  // A bare profile string carries no connection and is not a usable route here.
-  const ownerRoute = useMemo<SessionOwnerRoute | undefined>(
-    () =>
-      ownerConnectionId
-        ? {
-            connectionId: ownerConnectionId,
-            profile: ownerProfile,
-            ...(ownerTargetProfile ? { targetProfile: ownerTargetProfile } : {})
-          }
-        : undefined,
-    [ownerConnectionId, ownerProfile, ownerTargetProfile]
-  )
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>

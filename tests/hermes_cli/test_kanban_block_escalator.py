@@ -77,3 +77,39 @@ def test_plugin_yaml_documents_jobsy_as_first_hop():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+def test_non_cost_ceiling_leaves_third_block_for_richie(monkeypatch, tmp_path):
+    """Charter §6 (2026-09-03): two Jobsy triages, then Richie.
+
+    A non-cost block with block_recurrences > 2 must NOT spawn an assessor; it
+    must leave the escalation-ceiling marker comment instead. A cost-cap block is
+    exempt (Steve-o's ladder applies).
+    """
+    import sqlite3
+
+    mod = _load_plugin_module()
+    assert mod.NON_COST_TRIAGE_LIMIT == 2
+
+    db = tmp_path / "kanban.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT, block_recurrences INTEGER)")
+    con.execute("INSERT INTO tasks VALUES ('t_third', 'blocked', 3)")
+    con.execute("INSERT INTO tasks VALUES ('t_second', 'triage', 2)")  # platform routes repeat blocks to triage
+    con.execute("INSERT INTO tasks VALUES ('t_cost', 'blocked', 5)")
+    con.commit()
+    con.close()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+
+    spawned = []
+    marked = []
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda argv, **kw: spawned.append(argv[2]))
+    monkeypatch.setattr(mod, "_mark_ceiling", lambda tid, reason, rec: marked.append((tid, rec)))
+
+    mod.on_block(task_id="t_third", assignee="bob", reason="tests still failing")
+    assert spawned == [] and marked == [("t_third", 3)]
+
+    mod.on_block(task_id="t_second", assignee="bob", reason="tests still failing")
+    assert spawned == ["jobsy"] and len(marked) == 1
+
+    mod.on_block(task_id="t_cost", assignee="bob", reason="cumulative spend $0.31 exceeded max_cost $0.30")
+    assert spawned == ["jobsy", "steve-o"] and len(marked) == 1

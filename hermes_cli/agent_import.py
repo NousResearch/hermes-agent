@@ -38,6 +38,7 @@ deliberately via ``hermes setup`` or config.yaml.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -364,6 +365,131 @@ def detect_agents() -> List[str]:
     return [a for a in SUPPORTED_AGENTS if default_source_dir(a).is_dir()]
 
 
+# ---------------------------------------------------------------------------
+# Sync manifest (ChatGPT Work-inspired "keep imported work in sync")
+#
+# ChatGPT Work's desktop import (Settings > Import) offers automatic updates
+# that keep instructions/skills/settings imported from another agent in sync
+# with the source.  Hermes ports the same idea explicitly: every successful
+# ``hermes import-agent`` run records its source in
+# ``HERMES_HOME/import-sync.json``, and ``hermes import-agent --sync``
+# re-imports every registered source whose files changed since the last run
+# (cheap content-digest check — unchanged sources are a no-op).
+# ---------------------------------------------------------------------------
+
+SYNC_MANIFEST_NAME = "import-sync.json"
+
+
+def sync_manifest_path(target_root: Path) -> Path:
+    return Path(target_root) / SYNC_MANIFEST_NAME
+
+
+def _iter_sync_files(agent: str, source_root: Path):
+    """Yield the source files whose content determines the sync digest.
+
+    Mirrors exactly what the importer reads; credential files are excluded
+    so a token refresh never triggers (or leaks into) a sync.
+    """
+    paths: List[Path] = []
+    if agent == "claude-code":
+        paths.append(source_root / "CLAUDE.md")
+        paths.append(source_root / "settings.json")
+        # ~/.claude.json lives NEXT TO ~/.claude/ (see _claude_mcp_servers)
+        paths.append(source_root.parent / ".claude.json")
+    else:
+        paths.append(source_root / "AGENTS.md")
+        paths.append(source_root / "config.toml")
+        memories = source_root / "memories"
+        if memories.is_dir():
+            paths.extend(sorted(memories.glob("*.md")))
+    skills = source_root / "skills"
+    if skills.is_dir():
+        paths.extend(p for p in sorted(skills.rglob("*")) if p.is_file())
+    for path in paths:
+        if path.name in _CREDENTIAL_FILENAMES:
+            continue
+        if path.is_file():
+            yield path
+
+
+def compute_source_digest(agent: str, source_root: Path) -> str:
+    """Content digest of everything the importer would read from a source."""
+    source_root = Path(source_root)
+    digest = hashlib.sha256()
+    for path in _iter_sync_files(agent, source_root):
+        try:
+            rel = str(path.relative_to(source_root))
+        except ValueError:
+            rel = f"../{path.name}"
+        try:
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            content_hash = "unreadable"
+        digest.update(rel.encode("utf-8", "replace"))
+        digest.update(b"\0")
+        digest.update(content_hash.encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_sync_manifest(target_root: Path) -> Dict[str, Any]:
+    path = sync_manifest_path(target_root)
+    if not path.exists():
+        return {"version": 1, "agents": {}}
+    try:
+        data = json.loads(read_text(path))
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Unreadable %s — starting a fresh sync manifest", path)
+        return {"version": 1, "agents": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("agents"), dict):
+        return {"version": 1, "agents": {}}
+    return data
+
+
+def save_sync_manifest(target_root: Path, manifest: Dict[str, Any]) -> None:
+    atomic_write_text(
+        sync_manifest_path(target_root),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _imported_skill_names(report: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    for item in report.get("items", []):
+        if item.get("kind") == "skill" and item.get("status") == "imported":
+            destination = item.get("destination")
+            if destination:
+                names.append(Path(destination).name)
+    return names
+
+
+def update_sync_manifest(
+    agent: str,
+    source_root: Path,
+    target_root: Path,
+    overwrite: bool,
+    report: Dict[str, Any],
+) -> None:
+    """Record/refresh the sync entry for ``agent`` after a real import run."""
+    manifest = load_sync_manifest(target_root)
+    agents = manifest.setdefault("agents", {})
+    entry = agents.get(agent)
+    if not isinstance(entry, dict):
+        entry = {}
+    previous_skills = entry.get("imported_skills")
+    skills = set(previous_skills) if isinstance(previous_skills, list) else set()
+    skills.update(_imported_skill_names(report))
+    entry.update({
+        "source": str(source_root),
+        "overwrite": bool(overwrite),
+        "digest": compute_source_digest(agent, Path(source_root)),
+        "last_import": int(time.time()),
+        "imported_skills": sorted(skills),
+    })
+    agents[agent] = entry
+    save_sync_manifest(target_root, manifest)
+
+
 def sanitize_mcp_env(env: Any) -> Tuple[Dict[str, str], List[str]]:
     """Split an MCP server env dict into (kept, stripped-secret-names)."""
     kept: Dict[str, str] = {}
@@ -398,6 +524,7 @@ class AgentImporter:
         target_root: Path,
         execute: bool = False,
         overwrite: bool = False,
+        sync_skills: Optional[Sequence[str]] = None,
     ) -> None:
         if agent not in SUPPORTED_AGENTS:
             raise ValueError(f"Unsupported agent: {agent!r}")
@@ -406,6 +533,10 @@ class AgentImporter:
         self.target_root = Path(target_root)
         self.execute = execute
         self.overwrite = overwrite
+        # Skills previously imported by import-agent (from the sync manifest):
+        # a --sync run may refresh these in place without --overwrite, because
+        # Hermes owns those copies — anything else keeps conflict semantics.
+        self.sync_skills = set(sync_skills or ())
         self.items: List[Dict[str, Any]] = []
         self.stripped_secrets: List[str] = []
 
@@ -822,7 +953,8 @@ class AgentImporter:
             return
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
-            if destination.exists() and not self.overwrite:
+            may_replace = self.overwrite or skill_dir.name in self.sync_skills
+            if destination.exists() and not may_replace:
                 self.record("skill", skill_dir, destination, "conflict",
                             "Destination skill already exists")
                 continue
@@ -854,6 +986,10 @@ def import_agent_command(args) -> None:
         print_error,
         prompt_yes_no,
     )
+
+    if getattr(args, "sync", False):
+        sync_imported_agents(args)
+        return
 
     agent = getattr(args, "agent", None)
     explicit_source = getattr(args, "source", None)
@@ -960,10 +1096,117 @@ def import_agent_command(args) -> None:
         return
 
     print_import_report(report, dry_run=False)
+
+    try:
+        update_sync_manifest(
+            agent=agent,
+            source_root=source_dir.resolve(),
+            target_root=hermes_home.resolve(),
+            overwrite=overwrite,
+            report=report,
+        )
+        print_info("Source registered for sync — re-run 'hermes import-agent "
+                   "--sync' any time to pull in changes.")
+    except OSError as exc:
+        logger.warning("Could not update import sync manifest: %s", exc)
+
     print()
     print_success("Import complete.")
     print_info("API keys and credentials were NOT imported — run 'hermes setup' "
                "to configure providers, or add them to ~/.hermes/.env.")
+
+
+def sync_imported_agents(args) -> None:
+    """Handle ``hermes import-agent --sync``.
+
+    Re-imports every source registered in HERMES_HOME/import-sync.json whose
+    files changed since the last import.  Inspired by ChatGPT Work's
+    Settings > Import automatic updates (Aug 2026): once a user has imported
+    another agent's setup, keeping it current should not require re-running
+    the full interactive flow.
+
+    Sync only re-applies sources the user already imported once, so it runs
+    without a confirmation prompt (suitable for cron).  Memory and config
+    merges are deduplicating; skills previously imported by this command are
+    refreshed in place, while skills the user created or renamed keep normal
+    conflict semantics.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli.setup import print_header, print_info, print_success, print_error
+
+    dry_run = getattr(args, "dry_run", False)
+    hermes_home = get_hermes_home().resolve()
+    manifest = load_sync_manifest(hermes_home)
+    agents: Dict[str, Any] = manifest.get("agents", {})
+    if not agents:
+        print()
+        print_info("No import sources registered yet.")
+        print_info("Run 'hermes import-agent' first — successful imports are "
+                   "registered for sync automatically.")
+        return
+
+    print()
+    print_header("Import Sync")
+    synced = 0
+    unchanged = 0
+    failed = 0
+    for agent_name in sorted(agents):
+        entry = agents[agent_name]
+        if not isinstance(entry, dict) or not entry.get("source"):
+            continue
+        source_dir = Path(entry["source"])
+        if not source_dir.is_dir():
+            print_info(f"{agent_name}: source {source_dir} no longer exists — skipped")
+            continue
+        digest = compute_source_digest(agent_name, source_dir)
+        if digest == entry.get("digest"):
+            print_info(f"{agent_name}: unchanged since last import")
+            unchanged += 1
+            continue
+
+        print_info(f"{agent_name}: changes detected in {source_dir}"
+                   + (" (dry run)" if dry_run else " — re-importing"))
+        sync_skills = entry.get("imported_skills")
+        try:
+            report = AgentImporter(
+                agent=agent_name,
+                source_root=source_dir,
+                target_root=hermes_home,
+                execute=not dry_run,
+                overwrite=bool(entry.get("overwrite", False)),
+                sync_skills=sync_skills if isinstance(sync_skills, list) else None,
+            ).run()
+        except Exception as exc:  # noqa: BLE001 — keep syncing other sources
+            print_error(f"{agent_name}: sync failed: {exc}")
+            logger.debug("import-agent sync error", exc_info=True)
+            failed += 1
+            continue
+        print_import_report(report, dry_run=dry_run)
+        if report.get("summary", {}).get("error"):
+            failed += 1
+        if not dry_run:
+            try:
+                update_sync_manifest(
+                    agent=agent_name,
+                    source_root=source_dir,
+                    target_root=hermes_home,
+                    overwrite=bool(entry.get("overwrite", False)),
+                    report=report,
+                )
+            except OSError as exc:
+                logger.warning("Could not update import sync manifest: %s", exc)
+        synced += 1
+
+    print()
+    if synced == 0 and failed == 0:
+        print_success(f"All {unchanged} source(s) already up to date.")
+    else:
+        parts = [f"{synced} synced"]
+        if unchanged:
+            parts.append(f"{unchanged} unchanged")
+        if failed:
+            parts.append(f"{failed} failed")
+        print_success("Sync complete: " + ", ".join(parts) + ".")
 
 
 def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:

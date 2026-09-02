@@ -727,3 +727,148 @@ class TestCliWiring:
             if (hermes_home / "config.yaml").exists() else ""
         assert "npm run build" not in config_text
         assert "github" not in config_text
+
+
+# ---------------------------------------------------------------------------
+# Sync mode (--sync): ChatGPT Work-inspired "keep imported work in sync"
+# ---------------------------------------------------------------------------
+
+class TestSyncManifest:
+    def _run_command(self, agent, source, dry_run=False, sync=False,
+                     overwrite=False):
+        import types
+        from hermes_cli.agent_import import import_agent_command
+
+        args = types.SimpleNamespace(
+            agent=agent, source=str(source) if source else None,
+            dry_run=dry_run, overwrite=overwrite, yes=True, sync=sync)
+        import_agent_command(args)
+
+    def test_successful_import_registers_source(self, claude_tree, hermes_home):
+        from hermes_cli.agent_import import load_sync_manifest
+
+        self._run_command("claude-code", claude_tree)
+        manifest = load_sync_manifest(hermes_home)
+        entry = manifest["agents"]["claude-code"]
+        assert entry["source"] == str(claude_tree.resolve())
+        assert entry["digest"]
+        assert "deploy-helper" in entry["imported_skills"]
+
+    def test_dry_run_does_not_register(self, claude_tree, hermes_home):
+        from hermes_cli.agent_import import sync_manifest_path
+
+        self._run_command("claude-code", claude_tree, dry_run=True)
+        assert not sync_manifest_path(hermes_home).exists()
+
+    def test_sync_without_manifest_is_a_noop(self, hermes_home, capsys):
+        self._run_command(None, None, sync=True)
+        assert "No import sources registered" in capsys.readouterr().out
+
+    def test_sync_unchanged_source_writes_nothing(
+            self, claude_tree, hermes_home, capsys):
+        self._run_command("claude-code", claude_tree)
+        before = snapshot_tree(hermes_home)
+        capsys.readouterr()
+        self._run_command(None, None, sync=True)
+        out = capsys.readouterr().out
+        assert "unchanged since last import" in out
+        assert snapshot_tree(hermes_home) == before
+
+    def test_sync_picks_up_new_memory_entries(self, claude_tree, hermes_home):
+        self._run_command("claude-code", claude_tree)
+        (claude_tree / "CLAUDE.md").write_text(
+            CLAUDE_MD + "\n- Freshly added sync rule\n", encoding="utf-8")
+        self._run_command(None, None, sync=True)
+        memory = (hermes_home / "memories" / "MEMORY.md").read_text(
+            encoding="utf-8")
+        assert "Freshly added sync rule" in memory
+
+    def test_sync_refreshes_previously_imported_skill_in_place(
+            self, claude_tree, hermes_home):
+        self._run_command("claude-code", claude_tree)
+        (claude_tree / "skills" / "deploy-helper" / "SKILL.md").write_text(
+            "---\nname: deploy-helper\n---\n\nDeploy v2.\n", encoding="utf-8")
+        self._run_command(None, None, sync=True)
+        imported = (hermes_home / "skills" / "claude-code-imports" /
+                    "deploy-helper" / "SKILL.md").read_text(encoding="utf-8")
+        assert "Deploy v2." in imported
+
+    def test_sync_does_not_replace_user_owned_skill(
+            self, claude_tree, hermes_home):
+        """A destination skill import-agent did NOT create keeps conflict
+        semantics on sync — the user's copy is never clobbered."""
+        self._run_command("claude-code", claude_tree)
+        # A NEW source skill whose destination the user created themselves.
+        user_skill = (hermes_home / "skills" / "claude-code-imports" /
+                      "hand-rolled")
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("user content", encoding="utf-8")
+        source_skill = claude_tree / "skills" / "hand-rolled"
+        source_skill.mkdir()
+        (source_skill / "SKILL.md").write_text(
+            "---\nname: hand-rolled\n---\n\nsource content\n", encoding="utf-8")
+        self._run_command(None, None, sync=True)
+        assert (user_skill / "SKILL.md").read_text(
+            encoding="utf-8") == "user content"
+
+    def test_sync_dry_run_previews_without_writing(
+            self, claude_tree, hermes_home, capsys):
+        from hermes_cli.agent_import import load_sync_manifest
+
+        self._run_command("claude-code", claude_tree)
+        old_digest = load_sync_manifest(hermes_home)["agents"]["claude-code"]["digest"]
+        (claude_tree / "CLAUDE.md").write_text(
+            CLAUDE_MD + "\n- Dry sync entry\n", encoding="utf-8")
+        before = snapshot_tree(hermes_home)
+        capsys.readouterr()
+        self._run_command(None, None, sync=True, dry_run=True)
+        out = capsys.readouterr().out
+        assert "changes detected" in out
+        assert snapshot_tree(hermes_home) == before
+        assert load_sync_manifest(
+            hermes_home)["agents"]["claude-code"]["digest"] == old_digest
+
+    def test_sync_skips_vanished_source(self, claude_tree, hermes_home, capsys):
+        import shutil as _shutil
+
+        self._run_command("claude-code", claude_tree)
+        _shutil.rmtree(claude_tree)
+        capsys.readouterr()
+        self._run_command(None, None, sync=True)
+        assert "no longer exists" in capsys.readouterr().out
+
+    def test_corrupt_manifest_recovers(self, claude_tree, hermes_home):
+        from hermes_cli.agent_import import load_sync_manifest, sync_manifest_path
+
+        sync_manifest_path(hermes_home).write_text("{not json", encoding="utf-8")
+        assert load_sync_manifest(hermes_home) == {"version": 1, "agents": {}}
+        # And a real import repairs it:
+        self._run_command("claude-code", claude_tree)
+        assert "claude-code" in load_sync_manifest(hermes_home)["agents"]
+
+    def test_credential_files_do_not_affect_digest(self, claude_tree):
+        from hermes_cli.agent_import import compute_source_digest
+
+        before = compute_source_digest("claude-code", claude_tree)
+        (claude_tree / ".credentials.json").write_text(
+            json.dumps({"api_key": "rotated-token"}), encoding="utf-8")
+        assert compute_source_digest("claude-code", claude_tree) == before
+
+    def test_codex_digest_tracks_memories(self, codex_tree):
+        from hermes_cli.agent_import import compute_source_digest
+
+        before = compute_source_digest("codex", codex_tree)
+        (codex_tree / "memories" / "2026-02-01.md").write_text(
+            "- Another memory\n", encoding="utf-8")
+        assert compute_source_digest("codex", codex_tree) != before
+
+    def test_parser_accepts_sync_flag(self):
+        import argparse
+        from hermes_cli.subcommands.import_agent import build_import_agent_parser
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        build_import_agent_parser(subparsers, cmd_import_agent=lambda a: None)
+        args = parser.parse_args(["import-agent", "--sync", "--dry-run"])
+        assert args.sync is True
+        assert args.dry_run is True

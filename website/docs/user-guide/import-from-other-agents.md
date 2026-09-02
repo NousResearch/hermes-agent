@@ -52,3 +52,21 @@ Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`
 - **Conflicts are skipped by default.** An MCP server or skill that already exists in Hermes is reported as a conflict; pass `--overwrite` to replace it.
 - **Malformed files don't abort the run.** A broken `settings.json` or `config.toml` becomes a per-item error in the report while everything else still imports.
 - Coming from OpenClaw instead? Use [`hermes claw migrate`](../guides/migrate-from-openclaw.md).
+
+## Keeping imports in sync
+
+Every successful import registers its source (and the digest of everything it read) in `~/.hermes/import-sync.json`. When the other agent's setup changes later — new skills, edited `CLAUDE.md`/`AGENTS.md`, added MCP servers — pull the changes in with:
+
+```bash
+hermes import-agent --sync            # re-import every changed source
+hermes import-agent --sync --dry-run  # preview what a sync would do
+```
+
+Sync is prompt-free and cheap: sources whose files are unchanged are skipped by digest comparison, so it is safe to run on a schedule (e.g. a daily [cron job](features/cron.md)). Rules:
+
+- **Memory and config merges stay deduplicating** — a sync never duplicates entries or patterns you already have.
+- **Skills previously imported by `import-agent` are refreshed in place** when the source copy changes.
+- **Skills you created or modified under the import category yourself are never clobbered** — they keep normal conflict semantics (use `--overwrite` on a manual run to force).
+- **Credential files never trigger a sync** — token refreshes in `~/.claude/.credentials.json` or `~/.codex/auth.json` are ignored by the digest, and secrets are still stripped from anything imported.
+
+This mirrors ChatGPT Work's *Settings > Import* automatic updates, adapted to an explicit, inspectable command instead of a background service.

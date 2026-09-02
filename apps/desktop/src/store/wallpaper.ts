@@ -6,7 +6,6 @@ import {
   DEFAULT_MANUAL_WALLPAPER_PALETTE,
   DEFAULT_WALLPAPER_PREFERENCES,
   sanitizeWallpaperPreferences,
-  type WallpaperPaletteMode,
   type WallpaperPreferences,
   wallpaperStorageKey
 } from '@/lib/wallpaper'
@@ -38,11 +37,11 @@ export function readWallpaperPreferences(profile: string): WallpaperPreferences 
   return sanitizeWallpaperPreferences(readJson(wallpaperStorageKey(normalizeProfileKey(profile))))
 }
 
-function persistPreferences(profile: string, preferences: WallpaperPreferences): void {
+export function persistPreferences(profile: string, preferences: WallpaperPreferences): void {
   writeJson(wallpaperStorageKey(normalizeProfileKey(profile)), preferences)
 }
 
-function schedulePreferences(profile: string, preferences: WallpaperPreferences): void {
+export function schedulePreferences(profile: string, preferences: WallpaperPreferences): void {
   const prior = persistTimers.get(profile)
 
   if (prior) {
@@ -60,7 +59,7 @@ function schedulePreferences(profile: string, preferences: WallpaperPreferences)
   )
 }
 
-function cancelScheduledPreferences(profile: string): void {
+export function cancelScheduledPreferences(profile: string): void {
   const prior = persistTimers.get(profile)
 
   if (prior) {
@@ -95,6 +94,26 @@ export const $wallpaperActive = computed(
   $wallpaper,
   state => Boolean(state.asset && state.preferences.enabled) && state.status !== 'removing'
 )
+
+export interface WallpaperVisualState {
+  asset: DesktopWallpaperAsset | null
+  preferences: WallpaperPreferences
+}
+
+let wallpaperVisualState: WallpaperVisualState = {
+  asset: $wallpaper.get().asset,
+  preferences: $wallpaper.get().preferences
+}
+
+export const $wallpaperVisual = computed($wallpaper, state => {
+  if (wallpaperVisualState.asset === state.asset && wallpaperVisualState.preferences === state.preferences) {
+    return wallpaperVisualState
+  }
+
+  wallpaperVisualState = { asset: state.asset, preferences: state.preferences }
+
+  return wallpaperVisualState
+})
 
 let themePaletteCacheKey = ''
 let themePaletteCache: WallpaperPalette | null = null
@@ -147,7 +166,7 @@ export const $wallpaperThemePaletteMode = computed($wallpaper, state => {
     : null
 })
 
-function cancelDeferredWallpaperRefresh(): void {
+export function cancelDeferredWallpaperRefresh(): void {
   cancelDeferredRefresh?.()
   cancelDeferredRefresh = null
 }
@@ -212,7 +231,7 @@ function scheduleAfterPaintAndIdle(run: () => void): () => void {
   }
 }
 
-async function decodeWallpaperAsset(asset: DesktopWallpaperAsset): Promise<HTMLImageElement> {
+export async function decodeWallpaperAsset(asset: DesktopWallpaperAsset): Promise<HTMLImageElement> {
   const image = new Image()
 
   image.decoding = 'async'
@@ -233,17 +252,23 @@ async function decodeWallpaperAsset(asset: DesktopWallpaperAsset): Promise<HTMLI
   return image
 }
 
-function cachedPalette(asset: DesktopWallpaperAsset, preferences: WallpaperPreferences): WallpaperPalette | null {
+export function cachedPalette(
+  asset: DesktopWallpaperAsset,
+  preferences: WallpaperPreferences
+): WallpaperPalette | null {
   return preferences.paletteSource === (asset.version || asset.url) ? preferences.palette : null
 }
 
-function manualPalette(asset: DesktopWallpaperAsset | null, preferences: WallpaperPreferences): WallpaperPalette {
+export function manualPalette(
+  asset: DesktopWallpaperAsset | null,
+  preferences: WallpaperPreferences
+): WallpaperPalette {
   return (
     preferences.manualPalette ?? (asset ? cachedPalette(asset, preferences) : null) ?? DEFAULT_MANUAL_WALLPAPER_PALETTE
   )
 }
 
-async function preferencesWithPalette(
+export async function preferencesWithPalette(
   profile: string,
   preferences: WallpaperPreferences,
   asset: DesktopWallpaperAsset
@@ -310,6 +335,33 @@ function scheduleDeferredWallpaperRefresh(profile: string): void {
 
 interface WallpaperRefreshOptions {
   loadWhenDisabled?: boolean
+}
+
+export function beginWallpaperRequest(): number {
+  cancelDeferredWallpaperRefresh()
+
+  return ++requestGeneration
+}
+
+export function invalidateWallpaperRequests(): void {
+  cancelDeferredWallpaperRefresh()
+  requestGeneration += 1
+}
+
+export function wallpaperRequestIsCurrent(generation: number, profile: string): boolean {
+  return generation === requestGeneration && $wallpaper.get().profile === profile
+}
+
+export function beginWallpaperPaletteRequest(): number {
+  return ++paletteRequestGeneration
+}
+
+export function invalidateWallpaperPaletteRequests(): void {
+  paletteRequestGeneration += 1
+}
+
+export function wallpaperPaletteRequestIsCurrent(generation: number): boolean {
+  return generation === paletteRequestGeneration
 }
 
 export async function refreshWallpaper(
@@ -417,23 +469,6 @@ export async function refreshWallpaper(
   }
 }
 
-export async function ensureWallpaperLoaded(): Promise<void> {
-  const state = $wallpaper.get()
-
-  if (
-    !state.supported ||
-    state.status === 'loading' ||
-    state.status === 'ready' ||
-    state.status === 'removing' ||
-    state.status === 'selecting'
-  ) {
-    return
-  }
-
-  cancelDeferredWallpaperRefresh()
-  await refreshWallpaper(state.profile, { loadWhenDisabled: true })
-}
-
 export function setWallpaperPreferences(patch: Partial<WallpaperPreferences>): void {
   const state = $wallpaper.get()
   const preferences = sanitizeWallpaperPreferences({ ...state.preferences, ...patch })
@@ -455,270 +490,6 @@ export function setWallpaperPreferences(patch: Partial<WallpaperPreferences>): v
 
   if (enabling && !state.asset) {
     void refreshWallpaper(state.profile, { loadWhenDisabled: true })
-  }
-}
-
-async function analyzeAndApplyWallpaperPalette(
-  profile: string,
-  asset: DesktopWallpaperAsset,
-  generation: number,
-  preferences: WallpaperPreferences
-): Promise<void> {
-  try {
-    const withPalette = await preferencesWithPalette(profile, preferences, asset)
-    const current = $wallpaper.get()
-
-    if (
-      generation !== paletteRequestGeneration ||
-      current.profile !== profile ||
-      current.asset?.url !== asset.url ||
-      !current.preferences.adaptiveTheme ||
-      current.preferences.paletteMode !== 'auto'
-    ) {
-      return
-    }
-
-    if (!withPalette) {
-      $wallpaper.set({ ...current, paletteStatus: 'error' })
-
-      return
-    }
-
-    const nextPreferences = sanitizeWallpaperPreferences({
-      ...current.preferences,
-      palette: withPalette.palette,
-      paletteSource: withPalette.paletteSource
-    })
-
-    cancelScheduledPreferences(profile)
-    persistPreferences(profile, nextPreferences)
-    $wallpaper.set({ ...current, paletteStatus: 'ready', preferences: nextPreferences })
-  } catch {
-    const current = $wallpaper.get()
-
-    if (
-      generation === paletteRequestGeneration &&
-      current.profile === profile &&
-      current.asset?.url === asset.url &&
-      current.preferences.adaptiveTheme &&
-      current.preferences.paletteMode === 'auto'
-    ) {
-      $wallpaper.set({ ...current, paletteStatus: 'error' })
-    }
-  }
-}
-
-export async function setWallpaperAdaptiveTheme(enabled: boolean): Promise<void> {
-  const state = $wallpaper.get()
-  const generation = ++paletteRequestGeneration
-  let preferences = sanitizeWallpaperPreferences({ ...state.preferences, adaptiveTheme: enabled })
-
-  if (enabled && state.asset && preferences.paletteMode === 'manual' && !preferences.manualPalette) {
-    preferences = sanitizeWallpaperPreferences({
-      ...preferences,
-      manualPalette: manualPalette(state.asset, preferences)
-    })
-  }
-
-  schedulePreferences(state.profile, preferences)
-  $wallpaper.set({
-    ...state,
-    error: false,
-    paletteStatus: enabled && state.asset ? (preferences.paletteMode === 'manual' ? 'ready' : 'loading') : 'idle',
-    preferences
-  })
-
-  if (!enabled || !state.asset) {
-    return
-  }
-
-  if (preferences.paletteMode === 'manual') {
-    return
-  }
-
-  if (cachedPalette(state.asset, preferences)) {
-    $wallpaper.set({ ...$wallpaper.get(), paletteStatus: 'ready' })
-
-    return
-  }
-
-  await analyzeAndApplyWallpaperPalette(state.profile, state.asset, generation, preferences)
-}
-
-export async function setWallpaperPaletteMode(mode: WallpaperPaletteMode): Promise<void> {
-  const state = $wallpaper.get()
-  const generation = ++paletteRequestGeneration
-  let preferences = sanitizeWallpaperPreferences({ ...state.preferences, paletteMode: mode })
-
-  if (mode === 'manual' && state.asset && !preferences.manualPalette) {
-    preferences = sanitizeWallpaperPreferences({
-      ...preferences,
-      manualPalette: manualPalette(state.asset, preferences)
-    })
-  }
-
-  const shouldApply = Boolean(state.asset && preferences.adaptiveTheme)
-
-  const paletteStatus: WallpaperState['paletteStatus'] = shouldApply
-    ? mode === 'manual'
-      ? 'ready'
-      : 'loading'
-    : 'idle'
-
-  schedulePreferences(state.profile, preferences)
-  $wallpaper.set({ ...state, error: false, paletteStatus, preferences })
-
-  if (!shouldApply || !state.asset || mode === 'manual') {
-    return
-  }
-
-  if (cachedPalette(state.asset, preferences)) {
-    $wallpaper.set({ ...$wallpaper.get(), paletteStatus: 'ready' })
-
-    return
-  }
-
-  await analyzeAndApplyWallpaperPalette(state.profile, state.asset, generation, preferences)
-}
-
-export function resetWallpaperPreferences(): void {
-  const state = $wallpaper.get()
-
-  const preferences = {
-    ...DEFAULT_WALLPAPER_PREFERENCES,
-    enabled: state.preferences.enabled,
-    palette: state.preferences.palette,
-    paletteSource: state.preferences.paletteSource
-  }
-
-  paletteRequestGeneration += 1
-  cancelScheduledPreferences(state.profile)
-  persistPreferences(state.profile, preferences)
-  $wallpaper.set({ ...state, error: false, paletteStatus: 'idle', preferences })
-}
-
-export async function selectWallpaper(): Promise<void> {
-  const state = $wallpaper.get()
-  const bridge = window.hermesDesktop?.wallpaper
-
-  if (!bridge) {
-    $wallpaper.set({ ...state, error: true, status: 'error', supported: false })
-
-    return
-  }
-
-  const profile = state.profile
-  const priorStatus = state.status
-  const generation = ++requestGeneration
-
-  cancelDeferredWallpaperRefresh()
-  $wallpaper.set({ ...state, error: false, status: 'selecting' })
-
-  try {
-    const result = await bridge.select(profile)
-
-    if (result.canceled) {
-      if (generation === requestGeneration && $wallpaper.get().profile === profile) {
-        $wallpaper.set({ ...$wallpaper.get(), status: priorStatus })
-      }
-
-      return
-    }
-
-    if (!result.asset) {
-      throw new Error('Wallpaper import returned no image.')
-    }
-
-    await decodeWallpaperAsset(result.asset)
-
-    const current = $wallpaper.get()
-    const priorPreferences = current.profile === profile ? current.preferences : readWallpaperPreferences(profile)
-
-    let preferences = sanitizeWallpaperPreferences({
-      ...priorPreferences,
-      enabled: true,
-      palette: null,
-      paletteSource: ''
-    })
-
-    let paletteStatus: WallpaperState['paletteStatus'] = 'idle'
-
-    if (preferences.adaptiveTheme) {
-      if (preferences.paletteMode === 'manual') {
-        preferences = sanitizeWallpaperPreferences({
-          ...preferences,
-          manualPalette: manualPalette(result.asset, preferences)
-        })
-        paletteStatus = 'ready'
-      } else {
-        try {
-          preferences = (await preferencesWithPalette(profile, preferences, result.asset)) ?? preferences
-          paletteStatus = preferences.palette ? 'ready' : 'error'
-        } catch {
-          paletteStatus = 'error'
-        }
-      }
-    }
-
-    if (generation !== requestGeneration || current.profile !== profile) {
-      return
-    }
-
-    cancelScheduledPreferences(profile)
-    persistPreferences(profile, preferences)
-
-    $wallpaper.set({
-      ...current,
-      asset: result.asset,
-      error: false,
-      paletteStatus,
-      preferences,
-      status: 'ready'
-    })
-  } catch {
-    if (generation === requestGeneration && $wallpaper.get().profile === profile) {
-      $wallpaper.set({ ...$wallpaper.get(), error: true, status: 'error' })
-    }
-  }
-}
-
-export async function removeWallpaper(): Promise<void> {
-  const state = $wallpaper.get()
-  const bridge = window.hermesDesktop?.wallpaper
-
-  if (!bridge) {
-    $wallpaper.set({ ...state, error: true, status: 'error', supported: false })
-
-    return
-  }
-
-  const profile = state.profile
-
-  cancelDeferredWallpaperRefresh()
-  requestGeneration += 1
-  paletteRequestGeneration += 1
-  cancelScheduledPreferences(profile)
-  $wallpaper.set({ ...state, error: false, status: 'removing' })
-
-  try {
-    await bridge.remove(profile)
-    writeJson(wallpaperStorageKey(profile), null)
-
-    if ($wallpaper.get().profile === profile) {
-      $wallpaper.set({
-        ...$wallpaper.get(),
-        asset: null,
-        error: false,
-        paletteStatus: 'idle',
-        preferences: { ...DEFAULT_WALLPAPER_PREFERENCES },
-        status: 'ready'
-      })
-    }
-  } catch {
-    if ($wallpaper.get().profile === profile) {
-      persistPreferences(profile, state.preferences)
-      $wallpaper.set({ ...$wallpaper.get(), error: true, status: 'error' })
-    }
   }
 }
 

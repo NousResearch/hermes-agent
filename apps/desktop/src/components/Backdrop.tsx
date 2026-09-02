@@ -4,7 +4,7 @@ import { createContext, type CSSProperties, type ReactNode, useContext } from 'r
 import type { DesktopWallpaperAsset } from '@/global'
 import { wallpaperBackgroundProperties, wallpaperMaskImage, type WallpaperPreferences } from '@/lib/wallpaper'
 import { $backdrop } from '@/store/backdrop'
-import { $wallpaper, $wallpaperActive } from '@/store/wallpaper'
+import { $wallpaperActive, $wallpaperVisual } from '@/store/wallpaper'
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 type BackdropScope = 'hidden' | 'surface' | 'workspace'
@@ -88,7 +88,7 @@ function BuiltInBackdrop() {
 }
 
 function SurfaceBackdrop() {
-  const wallpaper = useStore($wallpaper)
+  const wallpaper = useStore($wallpaperVisual)
 
   if (wallpaper.asset && wallpaper.preferences.enabled) {
     return <CustomWallpaperBackdrop asset={wallpaper.asset} preferences={wallpaper.preferences} />
@@ -122,7 +122,7 @@ export function HiddenBackdropScope({ children }: { children: ReactNode }) {
 }
 
 export function WorkspaceWallpaperBackdrop() {
-  const wallpaper = useStore($wallpaper)
+  const wallpaper = useStore($wallpaperVisual)
 
   if (!wallpaper.asset || !wallpaper.preferences.enabled) {
     return null

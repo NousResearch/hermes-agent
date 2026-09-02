@@ -56,7 +56,8 @@ def _install_fake_slack_sender(monkeypatch, result_factory):
     calls = []
 
     async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
-                          media_files=None, force_document=False, caption=None):
+                          media_files=None, force_document=False, caption=None,
+                          title=None, priority=None):
         calls.append({
             "chat_id": chat_id,
             "message": message,

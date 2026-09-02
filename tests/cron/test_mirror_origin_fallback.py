@@ -162,8 +162,12 @@ class TestFallbackMirrorEndToEnd:
 
         send_calls = []
 
+        # title/priority are the fork's ntfy X-Title / X-Priority kwargs (#2);
+        # standalone_sender_fn is always called with them, so the double has
+        # to accept them or every send fails as a delivery error.
         async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
-                              media_files=None, force_document=False, caption=None):
+                              media_files=None, force_document=False, caption=None,
+                              title=None, priority=None):
             send_calls.append({"chat_id": chat_id, "thread_id": thread_id})
             return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
 

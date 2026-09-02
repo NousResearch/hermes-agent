@@ -144,7 +144,8 @@ class _patch_discord_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None,
+                       title=None, priority=None):
         token = getattr(pconfig, "token", None)
         # Only forward caption= when set, so mocks written against the
         # pre-caption signature (no caption kwarg) keep working.

@@ -727,6 +727,10 @@ def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
             parts = entry.parts
             if not parts or parts[0].startswith(".") or parts[0] == "__pycache__":
                 continue
+            # Metadata dirs (``foo-1.0.dist-info``, legacy ``.egg-info``) own
+            # no importable code; compiling them is wasted work.
+            if parts[0].endswith((".dist-info", ".egg-info")):
+                continue
             root = Path(dist.locate_file(parts[0]))
             if root.is_dir():
                 roots.add(root)
@@ -830,8 +834,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             uv_bin = shutil.which("uv")
         if uv_bin:
             try:
+                # --compile-bytecode: uv does NOT write __pycache__ by default
+                # (pip does), so without it the first `import <backend>` in
+                # the foreground of a user request recompiles every module of
+                # the backend *and* its transitive deps (#100461). This covers
+                # the whole install; _warm_installed_bytecode below is the
+                # belt-and-braces pass for the spec's own roots on any tier.
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [uv_bin, "pip", "install", "--compile-bytecode",
+                     *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),

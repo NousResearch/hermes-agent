@@ -542,6 +542,13 @@ class TestWarmInstalledBytecode:
     def test_unknown_distribution_resolves_to_nothing(self):
         assert ld._installed_dist_roots("zzz-not-installed==9.9", None) == set()
 
+    def test_dist_roots_exclude_metadata_dirs(self):
+        # ``*.dist-info`` owns RECORD/METADATA/licenses, never importable
+        # code — compiling it is wasted work on every install.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots
+        assert not any(r.name.endswith((".dist-info", ".egg-info")) for r in roots)
+
 
 class TestInstallWarmsBytecode:
     """The warm runs on install success, and only on success."""
@@ -549,6 +556,7 @@ class TestInstallWarmsBytecode:
     @staticmethod
     def _install(monkeypatch, returncode):
         calls = []
+        cmds = []
         monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
         monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
         monkeypatch.setattr(
@@ -561,20 +569,34 @@ class TestInstallWarmsBytecode:
                 self.stdout = "out"
                 self.stderr = "err"
 
-        monkeypatch.setattr(ld.subprocess, "run", lambda *a, **kw: _Completed())
+        def fake_run(cmd, *a, **kw):
+            cmds.append(list(cmd))
+            return _Completed()
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
         monkeypatch.setattr(
             ld, "_warm_installed_bytecode",
             lambda specs, target: calls.append((specs, target)),
         )
         result = ld._venv_pip_install(("zzzfake==1.0",))
-        return result, calls
+        return result, calls, cmds
 
     def test_success_warms_once_with_the_installed_specs(self, monkeypatch):
-        result, calls = self._install(monkeypatch, 0)
+        result, calls, _ = self._install(monkeypatch, 0)
         assert result.success is True
         assert calls == [(("zzzfake==1.0",), None)]
 
     def test_failed_install_does_not_warm(self, monkeypatch):
-        result, calls = self._install(monkeypatch, 1)
+        result, calls, _ = self._install(monkeypatch, 1)
         assert result.success is False
         assert calls == []
+
+    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch):
+        # uv does not write __pycache__ unless asked (pip does). The flag
+        # covers transitive deps too, which the per-spec warm never sees.
+        _, _, cmds = self._install(monkeypatch, 0)
+        uv_cmds = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
+        assert len(uv_cmds) == 1
+        cmd = uv_cmds[0]
+        assert "--compile-bytecode" in cmd
+        assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")

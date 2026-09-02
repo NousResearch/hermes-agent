@@ -163,7 +163,7 @@ class ReplyQueueMixin:
                 # send finish=true.
                 pass
             fence_elapsed = time.monotonic() - fence_start
-            logger.info(
+            logger.debug(
                 "[ACK-SERIAL] req_id=%s fence_wait elapsed=%.3fs",
                 normalized, fence_elapsed,
             )
@@ -302,7 +302,7 @@ class ReplyQueueMixin:
         if not frame.future.done():
             _body = payload.get("body", {}) if isinstance(payload.get("body"), dict) else {}
             elapsed = time.monotonic() - (frame.sent_at or time.monotonic())
-            logger.info(
+            logger.debug(
                 "[ACK-SERIAL] req_id=%s ack_received elapsed=%.3fs errcode=%s",
                 req_id, elapsed, _body.get("errcode", "N/A"),
             )
@@ -352,7 +352,7 @@ class ReplyQueueMixin:
         self._reply_queues[normalized_req_id] = queue
         queue.pending_ack = frame
 
-        logger.info(
+        logger.debug(
             "[ACK-SERIAL] req_id=%s frame_sent content_len=%d",
             normalized_req_id,
             len(body.get("stream", {}).get("content", "") or ""),

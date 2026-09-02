@@ -662,6 +662,35 @@ describe('applyEverythingUpdate', () => {
     expect(updateAllMock).toHaveBeenCalledTimes(1)
   })
 
+  it('re-checks the client instead of trusting a stale cached status', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    // FAIL-BEFORE: `$updateStatus.get() ?? (await checkUpdates())` short-circuits
+    // on this cached row — captured up to a poll interval (30 min) ago, and
+    // before the backend leg ran — so the client apply was skipped and the app
+    // stayed stale. The live check says otherwise and must win.
+    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
+    checkClientMock.mockResolvedValue(status({ behind: 7, updateAvailable: true }))
+
+    await applyEverythingUpdate()
+
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the cached client status when the live re-check fails', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    $updateStatus.set(status({ behind: 7, updateAvailable: true }))
+    // `checkUpdates()` never rejects — it resolves with an error-status and
+    // overwrites the atom with it, so an unreachable bridge must not read as
+    // "client is current" and skip the leg.
+    checkClientMock.mockRejectedValue(new Error('bridge gone'))
+
+    await applyEverythingUpdate()
+
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
   it('requestActiveUpdate routes through the everything-flow when EITHER target is behind', async () => {
     setRemote(true)
     // Backend current, client behind — the exact case the old remote-only

@@ -132,6 +132,17 @@ class TestCreateProfile:
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
+    def test_seeds_plugins_dir(self, profile_env):
+        """#88143: a fresh profile must seed plugins/ alongside skills/ etc.
+        Without it, plugin discovery (_user_plugins_dir) finds nothing under
+        the profile HERMES_HOME and a provider configured in the profile's
+        config.yaml fails with "Unknown provider"."""
+        profile_dir = create_profile("coder", no_alias=True)
+        plugins_dir = profile_dir / "plugins"
+        assert plugins_dir.is_dir()
+        # The discovery path for model-provider plugins exists end-to-end.
+        assert (plugins_dir / "model-providers").parent.is_dir()
+
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
         """A profile created without a clone source still resolves a provider.

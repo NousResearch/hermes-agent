@@ -61,6 +61,12 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # User plugins (model-provider plugins under plugins/model-providers/,
+    # etc.). Without this directory, plugin discovery in
+    # providers/__init__.py::_user_plugins_dir() finds nothing for
+    # non-default profiles and a provider configured in the profile's
+    # config.yaml fails with "Unknown provider" (#88143).
+    "plugins",
     # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
     # the user's real HOME by default so normal CLI credentials remain visible;
     # containers still use this directory for persistent HOME state.

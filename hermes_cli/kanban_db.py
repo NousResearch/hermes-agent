@@ -4452,10 +4452,9 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    """Return True when ``task_id`` was deliberately placed in ``blocked``.
 
-    A ``blocked`` status can come from two very different sources:
+    A ``blocked`` status can come from three different sources:
 
     * **Worker- or operator-initiated** — a worker called
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
@@ -4463,22 +4462,22 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
 
+    * **Initially blocked** — a trusted intake created the task with
+      ``initial_status="blocked"``.  This is also an explicit hold and must
+      not be silently released by the dispatcher.  The creation event records
+      that initial status in its payload.
+
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
       ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
       automatically once the underlying conditions change (e.g. parents
       finish, transient infra error clears).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
-
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    The most recent ``"blocked"`` / ``"unblocked"`` event identifies an
+    explicit runtime hold.  If neither exists, the creation event distinguishes
+    an intentional initial hold from circuit-breaker or direct-DB transitions.
+    Missing/malformed creation metadata remains non-sticky, preserving the
+    pre-#28712 recovery behavior for legacy rows.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -4486,7 +4485,20 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row:
+        return row["kind"] == "blocked"
+
+    created = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'created' "
+        "ORDER BY id ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    try:
+        payload = json.loads(created["payload"]) if created and created["payload"] else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    return isinstance(payload, dict) and payload.get("status") == "blocked"
 
 
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
@@ -4531,9 +4543,9 @@ def recompute_ready(
     blocked purely by a parent dependency unblocks itself when the
     parent completes), *except* in two cases:
 
-    1. The most recent block event was a worker-initiated
-       ``kanban_block`` — those stay blocked until an explicit
-       ``kanban_unblock`` (#28712).
+    1. The task was explicitly blocked by a worker/operator or created in the
+       blocked state — those stay blocked until an explicit ``kanban_unblock``
+       (#28712).
 
     2. The task's ``consecutive_failures`` has reached the effective
        failure limit.  This prevents infinite retry loops when a task

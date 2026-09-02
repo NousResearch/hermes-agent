@@ -1278,6 +1278,10 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+
+    bundled_entry = _lookup_official_docs_pricing(route)
+    if bundled_entry:
+        return bundled_entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
@@ -1287,7 +1291,7 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    return None
 
 
 def normalize_usage(

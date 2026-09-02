@@ -1081,10 +1081,9 @@ def test_killing_the_launcher_does_not_kill_the_run(shims, conn, kanban_home):
     )
     # Simulate the gateway dying: only the LAUNCHER dies.
     os.kill(launcher_pid, signal.SIGKILL)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and kb._pid_alive(launcher_pid):
-        time.sleep(0.05)
-    assert not kb._pid_alive(launcher_pid)
+    assert shims.wait_for(
+        lambda: not kb._pid_alive(launcher_pid), timeout=5.0
+    )
     assert kb._pid_alive(worker_pid)  # the scoped worker survives
 
     # The claim now names a dead gateway; heartbeat is fresh.

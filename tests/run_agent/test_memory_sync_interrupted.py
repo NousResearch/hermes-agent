@@ -35,6 +35,12 @@ def _bare_agent():
     # providers that cache per-session state can update it mid-process
     # (see #6672).
     agent.session_id = "test_session_001"
+    agent.platform = "telegram"
+    agent._chat_id = "chat-42"
+    agent._thread_id = "thread-7"
+    agent._gateway_session_key = "agent:main:telegram:profile:group:chat-42:thread-7"
+    agent._parent_session_id = "parent-session"
+    agent._user_id = "user-9"
     return agent
 
 
@@ -53,6 +59,26 @@ class TestSyncExternalMemoryForTurn:
         )
         agent._memory_manager.sync_all.assert_not_called()
         agent._memory_manager.queue_prefetch_all.assert_not_called()
+
+    def test_completed_turn_forwards_runtime_provenance_metadata(self):
+        agent = _bare_agent()
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="원문을 찾아줘",
+            final_response="원문을 찾았어",
+            interrupted=False,
+        )
+
+        _, kwargs = agent._memory_manager.sync_all.call_args
+        assert kwargs["metadata"] == {
+            "session_id": "test_session_001",
+            "parent_session_id": "parent-session",
+            "lineage_key": "agent:main:telegram:profile:group:chat-42:thread-7",
+            "platform": "telegram",
+            "chat_id": "chat-42",
+            "thread_id": "thread-7",
+            "origin_kind": "direct",
+        }
 
 
     # --- Normal completed turn still syncs ------------------------------

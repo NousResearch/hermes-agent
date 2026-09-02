@@ -1,5 +1,6 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
+import inspect
 import json
 import threading
 import time
@@ -92,6 +93,26 @@ class MessagesMemoryProvider(FakeMemoryProvider):
 
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
+
+
+class TurnMetadataMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into completed-turn provenance metadata."""
+
+    def __init__(self, name="external"):
+        super().__init__(name=name)
+        self.synced_messages = []
+
+    def sync_turn(
+        self,
+        user_content,
+        assistant_content,
+        *,
+        session_id="",
+        messages=None,
+        metadata=None,
+    ):
+        self.synced_turns.append((user_content, assistant_content, session_id, metadata))
+        self.synced_messages.append(messages)
 
 
 class BlockingPrefetchProvider(FakeMemoryProvider):
@@ -235,6 +256,68 @@ class TestMemoryManager:
         mgr.flush_pending(timeout=5)
 
         assert legacy_provider.synced_turns == [("user", "assistant")]
+
+    def test_sync_all_forwards_generic_metadata_to_opted_in_provider(self):
+        mgr = MemoryManager()
+        provider = TurnMetadataMemoryProvider()
+        mgr.add_provider(provider)
+        metadata = {"platform": "telegram", "chat_id": "chat-42"}
+
+        mgr.sync_all("user", "assistant", metadata=metadata)
+        assert mgr.flush_pending(timeout=2)
+
+        assert provider.synced_turns == [
+            ("user", "assistant", "", metadata),
+        ]
+
+    def test_sync_all_omits_optional_context_when_signature_is_uninspectable(self, monkeypatch):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("legacy")
+        mgr.add_provider(provider)
+        original_signature = inspect.signature
+
+        def fail_for_provider(callable_obj):
+            if callable_obj == provider.sync_turn:
+                raise ValueError("signature unavailable")
+            return original_signature(callable_obj)
+
+        monkeypatch.setattr(inspect, "signature", fail_for_provider)
+        mgr.sync_all(
+            "user",
+            "assistant",
+            messages=[{"role": "user", "content": "user"}],
+            metadata={"platform": "telegram"},
+        )
+        assert mgr.flush_pending(timeout=2)
+
+        assert provider.synced_turns == [("user", "assistant")]
+
+    def test_sync_all_deeply_snapshots_optional_context_before_background_execution(self):
+        mgr = MemoryManager()
+        provider = TurnMetadataMemoryProvider()
+        mgr.add_provider(provider)
+        blocker = threading.Event()
+        mgr._submit_background(lambda: blocker.wait(timeout=2))
+        messages = [{"role": "user", "content": {"text": "original"}}]
+        metadata = {"platform": "telegram", "scope": {"chat_id": "original"}}
+
+        mgr.sync_all("user", "assistant", messages=messages, metadata=metadata)
+        messages[0]["content"]["text"] = "mutated"
+        metadata["scope"]["chat_id"] = "mutated"
+        blocker.set()
+        assert mgr.flush_pending(timeout=2)
+
+        assert provider.synced_turns == [
+            (
+                "user",
+                "assistant",
+                "",
+                {"platform": "telegram", "scope": {"chat_id": "original"}},
+            ),
+        ]
+        assert provider.synced_messages == [
+            [{"role": "user", "content": {"text": "original"}}],
+        ]
 
     # -- Tool routing -------------------------------------------------------
 

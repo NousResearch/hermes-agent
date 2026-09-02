@@ -217,6 +217,7 @@ class MemoryProvider(ABC):
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist a completed turn to the backend.
 
@@ -226,6 +227,10 @@ class MemoryProvider(ABC):
         ``messages`` is the OpenAI-style conversation message list as of the
         completed turn, including any assistant tool calls and tool results.
         Providers that do not need raw turn context can ignore it.
+
+        ``metadata`` contains optional platform-agnostic runtime provenance
+        (session lineage, platform, chat/thread and account identifiers). Only
+        fields known by the runtime are included. Providers may ignore it.
         """
 
     @abstractmethod

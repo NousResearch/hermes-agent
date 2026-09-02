@@ -27,7 +27,7 @@ import type {
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
+import { isCodeSkewRestartRequired, servingPidFromCodeSkewError } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { findCatalogProvider } from '@/lib/model-options'
@@ -290,10 +290,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // so a request in flight when the user switches profiles can't paint profile
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
+  const lastSkewServingPid = useRef<number | null>(null)
 
   const setCaughtError = useCallback(
     (err: unknown, fallback: string) => {
       const skew = isCodeSkewRestartRequired(err)
+      lastSkewServingPid.current = skew ? servingPidFromCodeSkewError(err) : null
       setSkewRestart(skew)
       setError(skew ? m.restartRequired : readableError(err, fallback).message)
     },
@@ -911,7 +913,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     setSkewRestart(false)
 
     try {
-      await window.hermesDesktop?.recycleBackend?.(scopeProfile)
+      const servingPid = lastSkewServingPid.current
+      if (servingPid != null) {
+        await window.hermesDesktop?.recycleBackend?.(scopeProfile, servingPid)
+      } else {
+        await window.hermesDesktop?.recycleBackend?.(scopeProfile)
+      }
+      lastSkewServingPid.current = null
       await refresh({ replaceSelection: true })
     } catch (err) {
       setCaughtError(err, m.restartFailed)

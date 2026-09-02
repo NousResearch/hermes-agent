@@ -579,7 +579,7 @@ declare global {
       /** Resolve This device without starting an install. Missing on an older preload. */
       probeLocalBackend?: () => Promise<{ bootstrapNeeded: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
-      recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
+      recycleBackend?: (profile?: null | string, servingPid?: number) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>

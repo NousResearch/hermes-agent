@@ -213,6 +213,7 @@ class TestKillStaleDashboardPosix:
 
 
 
+    @pytest.mark.platforms("linux")
     def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys):
         """A user unit is discovered and restarted through ``systemctl --user``.
 
@@ -221,7 +222,9 @@ class TestKillStaleDashboardPosix:
         unit recorded in ``already_restarted_units``), so the scan being
         reached is now part of the contract rather than a violation of it.
         The invariant this test pins is unchanged: nothing here may touch the
-        system scope or sudo.
+        system scope or sudo. ``platforms("linux")``: the managed restart is
+        systemd-only (#101561) — non-Linux hosts fail through to PID cleanup
+        before any systemctl probe, so this fake-probe path cannot run there.
         """
         calls: list[list[str]] = []
 
@@ -247,6 +250,16 @@ class TestKillStaleDashboardPosix:
         kill.assert_not_called()
 
 
+class TestRestartManagedDashboardSystemctl:
+    """Managed restart is systemd-only; missing systemctl must not be probed (#101561)."""
+
+    def test_missing_systemctl_skips_probe(self, monkeypatch):
+        import hermes_cli.main_dashboard as main_dashboard
+
+        monkeypatch.setattr(main_dashboard.shutil, "which", lambda _name: None)
+        with patch("subprocess.run") as mock_run:
+            assert main_dashboard._restart_managed_dashboard_service("test") is False
+            mock_run.assert_not_called()
 
 
 class TestKillStaleDashboardWindows:

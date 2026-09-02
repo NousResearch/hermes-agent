@@ -1730,6 +1730,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             getattr(agent, "provider", None),
             getattr(agent, "model", None),
             getattr(agent, "base_url", None),
+            getattr(agent, "api_mode", None),
         )
 
     # Provider-native carriers replayed verbatim on later turns:

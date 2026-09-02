@@ -71,7 +71,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     if isinstance(replay_field, str):
         replay_field = replay_field.strip().lower()
     agent._reasoning_replay_field = (
-        replay_field if replay_field in {"reasoning", "reasoning_content"} else None
+        replay_field if replay_field in {"auto", "reasoning", "reasoning_content", "none"} else None
     )
     from agent.agent_runtime_helpers import _sync_compressor_reasoning_replay
     _sync_compressor_reasoning_replay(agent)

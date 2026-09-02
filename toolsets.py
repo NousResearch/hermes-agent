@@ -203,6 +203,24 @@ TOOLSETS = {
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
+
+    # Read-only file/skill bundles for least-privilege role pins (report-only
+    # monitors, researchers, coordinators): the composite `file`/`skills`
+    # toolsets mix read and mutation tools, so granting them hands a
+    # restricted session write/patch/skill_manage as well. These bundles are
+    # read-only by construction and are NOT in CONFIGURABLE_TOOLSETS —
+    # they're selected via an explicit per-profile allowlist pin.
+    "file_readonly": {
+        "description": "Read-only file access: read files and search (content + names), no writes or patches",
+        "tools": ["read_file", "search_files"],
+        "includes": []
+    },
+
+    "skills_readonly": {
+        "description": "Read-only skill access: list and view skills without authoring or editing",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
     
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",

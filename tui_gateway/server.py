@@ -6247,6 +6247,40 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     cfg = None
     fallback_notice = None
 
+    # Profile pin (F1 role enforcement): a profile-saved tools.enabled_toolsets
+    # allowlist is authoritative for desktop/TUI sessions too. Resolve it
+    # through the same _get_platform_tools path as every other surface so the
+    # pin, fail-closed validation, MCP layering, and the final
+    # agent.disabled_toolsets subtraction all behave identically. GUI surface
+    # toolsets (project/desktop_ui) are folded in ONLY when the pin itself
+    # includes them — a role pin must never be silently widened by the client
+    # on the other end. coding_selection() below reads config lazily too, so
+    # the pin check must come FIRST or the coding posture would override an
+    # explicitly pinned profile in code workspaces.
+    try:
+        from hermes_cli.config import load_config as _pin_load
+        from hermes_cli.tools_config import _get_platform_tools as _gpt
+
+        pin_cfg = cfg if cfg is not None else _pin_load()
+        tools_cfg = pin_cfg.get("tools") if isinstance(pin_cfg.get("tools"), dict) else {}
+        pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
+        if isinstance(pin, list) and pin:
+            resolved_pin = _gpt(pin_cfg, "cli", include_default_mcp_servers=True)
+            if not resolved_pin:
+                # Pin failed closed (unknown names) — honor it; do NOT fall
+                # through to the coding posture or the "all toolsets" path.
+                return []
+            # Only fold in client-surface toolsets the pin explicitly allows:
+            # a pinned profile gets exactly what it lists, never an implicit
+            # project/desktop_ui bundle.
+            surfaces = {
+                s for s in _gui_surface_toolsets(session_platform)
+                if s in {str(t).strip() for t in pin}
+            }
+            return sorted({*resolved_pin, *surfaces})
+    except Exception:
+        pass
+
     # Coding posture (base Hermes): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
     # The desktop app and `hermes --tui` both land here. See

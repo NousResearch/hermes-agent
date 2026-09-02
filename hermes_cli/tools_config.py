@@ -2650,9 +2650,65 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import resolve_toolset, TOOLSETS, validate_toolset
 
     platform_toolsets = config.get("platform_toolsets") or {}
+    toolset_names = platform_toolsets.get(platform)
+
+    # Profile pin (F1 role enforcement): when the active profile saves
+    # ``tools.enabled_toolsets`` (the per-profile editor's allowlist), that
+    # list is the AUTHORITATIVE toolset selection for every session built
+    # from this config — CLI, Desktop/TUI gateway, and messaging platforms
+    # alike. Previously the editor stored this key but only the capabilities
+    # UI read it; live sessions resolved from ``platform_toolsets.cli``
+    # instead, so pins never narrowed the live surface. Semantics here:
+    #   * names are validated (built-in/plugin toolsets or MCP servers) —
+    #     any unknown name fails CLOSED (empty set, error logged) rather
+    #     than degrading to "all tools" (I4);
+    #   * no platform-default expansion, posture recovery, or default-off
+    #     filtering runs — the pin is the whole selection;
+    #   * ``agent.disabled_toolsets`` is still subtracted last (D8).
+    tools_cfg = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    profile_pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
+    if isinstance(profile_pin, list):
+        from toolsets import resolve_toolset as _rt  # noqa: F401 (parity with below)
+
+        pin_names = [str(t).strip() for t in profile_pin if str(t).strip()]
+        enabled_mcp = enabled_mcp_server_names(config)
+        enabled_toolsets: Set[str] = set()
+        unknown: List[str] = []
+        has_no_mcp = False
+        for name in pin_names:
+            if name == "no_mcp":
+                has_no_mcp = True
+            elif validate_toolset(name) or name in enabled_mcp:
+                enabled_toolsets.add(name)
+            else:
+                unknown.append(name)
+        if unknown:
+            # Fail closed: refuse to widen the surface when the pin names a
+            # toolset (or MCP server) this build doesn't know.
+            logger.error(
+                "profile tools.enabled_toolsets contains unknown name(s): %s — "
+                "failing closed with NO tools enabled. Fix the profile allowlist "
+                "(profile editor / config.yaml tools.enabled_toolsets).",
+                ", ".join(sorted(unknown)),
+            )
+            return set()
+        if include_default_mcp_servers and not has_no_mcp:
+            enabled_toolsets.update(enabled_mcp)
+
+        agent_cfg = config.get("agent") or {}
+        disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+        if disabled_toolsets:
+            from agent.skill_utils import parse_config_string_list
+
+            disabled_set = {
+                name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()
+            }
+            enabled_toolsets -= disabled_set
+        return enabled_toolsets
+
     toolset_names = platform_toolsets.get(platform)
     # Track whether the user explicitly saved a toolset list for this platform
     # (vs. falling back to the platform default). An explicit composite (e.g.

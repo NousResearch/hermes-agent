@@ -3449,6 +3449,18 @@ def create_task(
             # compose create_task calls under one outer commit so the
             # dispatcher can never observe a partially constructed graph.
             with write_txn(conn, allow_nested=True):
+                # Close the small race left by the fast-path lookup above.
+                # Feature-delivery resume relies on one durable child task per
+                # idempotency key even when two runners wake at once.
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -7757,7 +7769,14 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    *,
+    start_point: str = "HEAD",
+    detached: bool = False,
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
@@ -7766,12 +7785,17 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         if target_common == repo_common:
             return
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
+    if detached:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "--detach",
+            str(target), start_point,
+        ]
+    elif _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), start_point,
         ]
     result = subprocess.run(
         cmd,

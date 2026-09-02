@@ -514,6 +514,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.delivery import build_delivery_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -5913,6 +5914,13 @@ def cmd_kanban(args):
     from hermes_cli.kanban import kanban_command
 
     return kanban_command(args)
+
+
+def cmd_delivery(args):
+    """Durable Feature Delivery V1 runner."""
+    from hermes_cli.subcommands.delivery import delivery_command
+
+    return delivery_command(args)
 
 
 def cmd_project(args):
@@ -13983,6 +13991,8 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    build_delivery_parser(subparsers, cmd_delivery=cmd_delivery)
 
     # =========================================================================
     # project command — named, multi-folder workspaces

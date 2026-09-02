@@ -77,10 +77,11 @@ def _disk_cache_path() -> Optional[Path]:
 def _load_disk_cache() -> None:
     """Load persistent cache entries from disk into the in-process cache.
 
-    Called once under ``_cache_lock`` on first use. Skips expired or
-    malformed entries. Uses absolute wall-clock timestamps. Only adds
-    missing keys so an in-memory overwrite (e.g. a test forcing expiry)
-    is not silently reversed by the disk copy.
+    Invoked under ``_cache_lock`` from every get/put but does real work only
+    once per process (``_disk_cache_loaded`` latch); a transient ``OSError``
+    leaves the latch unset so the next call retries. Skips expired or
+    malformed entries. Only adds missing keys so an in-memory overwrite
+    (e.g. a test forcing expiry) is not silently reversed by the disk copy.
     """
     global _disk_cache_loaded
     if _disk_cache_loaded:
@@ -95,17 +96,13 @@ def _load_disk_cache() -> None:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        _disk_cache_loaded = True
-        return
-    except json.JSONDecodeError:
-        _disk_cache_loaded = True
-        return
+        data = None
     except OSError:
         # Transient I/O (file busy, brief permission flap). Retry next call.
         return
     except Exception:
-        _disk_cache_loaded = True
-        return
+        # Malformed JSON or anything else: unrecoverable, don't spin on it.
+        data = None
 
     _disk_cache_loaded = True
     if not isinstance(data, dict) or data.get("version") != _DISK_CACHE_VERSION:

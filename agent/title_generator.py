@@ -399,7 +399,7 @@ def generate_title(
         {"role": "user", "content": user_snippet},
     ]
 
-    try:
+    def _request_title(extra_body: Optional[dict]) -> str:
         response = call_llm(
             task="title_generation",
             messages=messages,
@@ -409,9 +409,36 @@ def generate_title(
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            extra_body=extra_body,
         )
-        content = response.choices[0].message.content or ""
+        return response.choices[0].message.content or ""
+
+    try:
+        try:
+            content = _request_title({"response_format": _TITLE_RESPONSE_FORMAT})
+        except Exception as e:
+            # Some gateways (e.g. OpenCode Zen "Console Go") reject the strict
+            # json_schema response_format outright with HTTP 400 instead of
+            # ignoring it. Retry once without the constraint: the prompt
+            # already demands a {"title": ...} object and _extract_title_text
+            # falls back through a loose JSON scan, so the retry still
+            # produces a title. Match on the 400 + invalid_request_error
+            # signal so an unrelated error that merely mentions
+            # "response_format" (e.g. an unknown-parameter typo) re-raises
+            # instead of being papered over.
+            err = str(e)
+            if (
+                "response_format" in err
+                and ("invalid_request_error" in err or "400" in err)
+            ):
+                logger.warning(
+                    "Title generation: provider rejected response_format "
+                    "(HTTP 400); retrying without structured output: %s",
+                    e,
+                )
+                content = _request_title({})
+            else:
+                raise
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title
         # with many words is a model that ignored the task and answered

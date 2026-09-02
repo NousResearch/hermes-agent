@@ -1,0 +1,7 @@
+name: minimax-music
+version: 1.0.0
+description: "MiniMax Music 3.0 music generation backend. Full songs (vocals, up to ~5 min) or instrumentals from a style prompt + lyrics, via POST /v1/music_generation. Direct MINIMAX_API_KEY (same key as the built-in MiniMax TTS provider) or managed Nous Subscription gateway."
+author: NousResearch
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY

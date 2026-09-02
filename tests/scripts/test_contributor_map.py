@@ -125,35 +125,25 @@ def test_cli_entrypoint_end_to_end(tmp_path):
 # then reports the other as modified in a FRESH clone, permanently: the repo can
 # never be checked out clean on those platforms.
 #
-# This pair is a real conflict in the tree today and needs a maintainer to say
-# which login is correct -- they point at different logins, so deleting either
-# silently reassigns commits. It is pinned here so the breakage is visible and,
-# more importantly, so it cannot spread.
-KNOWN_CASE_CONFLICTS = {
-    frozenset(
-        {
-            "agent@Agents-Mac-mini.local",
-            "agent@agents-Mac-mini.local",
-        }
-    )
-}
-
+# The historical agent@Agents-Mac-mini.local / agent@agents-Mac-mini.local pair
+# was removed from the tree (fcdae2cf0b), so there is no allowlist: any pair
+# is a regression. scripts/check-case-collisions.py enforces the same
+# invariant repo-wide in CI; this test keeps it visible next to the writer.
 EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
 
 
-def test_no_new_case_insensitive_mapping_collisions():
+def test_no_case_insensitive_mapping_collisions():
     groups: dict[str, set[str]] = {}
     for entry in EMAILS_DIR.iterdir():
         if entry.is_file():
-            groups.setdefault(entry.name.lower(), set()).add(entry.name)
+            groups.setdefault(entry.name.casefold(), set()).add(entry.name)
 
     collisions = {frozenset(names) for names in groups.values() if len(names) > 1}
-    unexpected = collisions - KNOWN_CASE_CONFLICTS
 
-    assert not unexpected, (
+    assert not collisions, (
         "contributor mappings differing only in case cannot coexist on "
         "case-insensitive filesystems (Windows, default macOS) — a fresh clone "
-        f"there is permanently dirty: {sorted(sorted(c) for c in unexpected)}"
+        f"there is permanently dirty: {sorted(sorted(c) for c in collisions)}"
     )
 
 
@@ -168,3 +158,24 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
     assert not (d / "agent@example-host.local").exists()
+
+
+def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):
+    # Same login, different spelling: still refused — the problem is the
+    # filename pair, not the login. The exact spelling is what's "present".
+    emails_dir.mkdir(parents=True)
+    (emails_dir / "Foo@Example.com").write_text("foouser\n")
+
+    assert add_contributor("foo@example.com", "foouser") == 1
+    assert "Foo@Example.com" in capsys.readouterr().err
+    assert sorted(p.name for p in emails_dir.iterdir()) == ["Foo@Example.com"]
+    # Exact-case re-add is the ordinary idempotent path.
+    assert add_contributor("Foo@Example.com", "foouser") == 0
+
+
+def test_case_collision_uses_casefold(emails_dir):
+    # casefold, not lower: matches how macOS/Windows fold non-ASCII (ß ~ ss).
+    emails_dir.mkdir(parents=True)
+    (emails_dir / "strasse@example.com").write_text("someone\n")
+    assert add_contributor("STRASSE@example.com", "someone") == 1
+    assert add_contributor("straße@example.com", "someone") == 1

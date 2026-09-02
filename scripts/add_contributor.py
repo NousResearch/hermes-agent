@@ -64,9 +64,11 @@ def _case_collision(email: str) -> str | None:
     if not EMAILS_DIR.is_dir():
         return None
 
-    folded = email.lower()
+    # casefold (not lower) matches how macOS/Windows fold non-ASCII text —
+    # same key scripts/check-case-collisions.py uses repo-wide.
+    folded = email.casefold()
     for entry in EMAILS_DIR.iterdir():
-        if entry.name != email and entry.name.lower() == folded:
+        if entry.name != email and entry.name.casefold() == folded:
             return entry.name
     return None
 

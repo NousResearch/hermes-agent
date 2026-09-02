@@ -88,8 +88,50 @@ def _observation(payload=None, *, provider=""):
     )
 
 
+def test_prefetch_result_bounds_exact_builtin_list_to_cap_plus_lookahead():
+    """Public result construction never eagerly copies an unbounded list."""
+    exact = MemoryPrefetchResult(
+        context="context",
+        observations=[
+            _observation({"index": index})
+            for index in range(MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES)
+        ],
+    )
+    cap_plus_one = MemoryPrefetchResult(
+        context="context",
+        observations=[
+            _observation({"index": index})
+            for index in range(MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
+        ],
+    )
+    very_large = MemoryPrefetchResult(
+        context="context",
+        observations=[_observation({"index": index}) for index in range(100_000)],
+    )
+
+    assert len(exact.observations) == MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES
+    assert len(cap_plus_one.observations) == MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
+    assert len(very_large.observations) == MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
+    assert very_large.context == "context"
+
+
+def test_prefetch_result_rejects_list_subclass_without_iteration():
+    """Subclass iteration cannot bypass the bounded exact-list contract."""
+
+    class IterationBomb(list):
+        def __iter__(self):
+            raise AssertionError("list subclass must not be iterated")
+
+    with pytest.raises(TypeError, match="observations must be a list or tuple"):
+        MemoryPrefetchResult(
+            context="context",
+            observations=IterationBomb([_observation()]),
+        )
+
+
 def _capture_hook(monkeypatch, events):
     """Install a deterministic in-process memory observer for manager tests."""
+    from hermes_cli import plugins
     import agent.plugin_stream_hooks as dispatcher
 
     def enqueue_hook(name, **kwargs):
@@ -97,6 +139,11 @@ def _capture_hook(monkeypatch, events):
         events.append(kwargs)
         return True
 
+    monkeypatch.setattr(
+        plugins,
+        "has_hook",
+        lambda name: name == "memory_prefetch",
+    )
     monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", enqueue_hook)
 
 
@@ -104,6 +151,7 @@ def _disable_hook(monkeypatch):
     from hermes_cli import plugins
 
     monkeypatch.setattr(plugins, "iter_hook_callbacks", lambda _name: ())
+    monkeypatch.setattr(plugins, "has_hook", lambda _name: False)
 
 
 def _stub_direct_prefetch(monkeypatch):
@@ -370,6 +418,68 @@ def test_no_event_for_string_only_prefetch(monkeypatch):
     assert events == []
 
 
+def test_prefetch_observation_skips_context_digest_without_consumer(monkeypatch):
+    """No registered observer means merged context is never encoded."""
+    from hermes_cli import plugins
+    import agent.plugin_stream_hooks as dispatcher
+
+    class ExplodingContext(str):
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("context digest should be gated off")
+
+    monkeypatch.setattr(plugins, "has_hook", lambda _name: False)
+    monkeypatch.setattr(
+        dispatcher,
+        "enqueue_plugin_observer_hook",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("enqueue should be gated off")
+        ),
+    )
+
+    MemoryManager._emit_prefetch_observation(
+        MemoryPrefetchResult(
+            context=ExplodingContext("large merged context"),
+            observations=(_observation(),),
+        ),
+        query="question",
+        session_id="session",
+        task_id="task",
+        turn_id="turn",
+    )
+
+
+def test_prefetch_observation_digest_is_preserved_for_consumer(monkeypatch):
+    """An opted-in consumer still receives the exact UTF-8 digest envelope."""
+    from hermes_cli import plugins
+    import agent.plugin_stream_hooks as dispatcher
+
+    events = []
+    monkeypatch.setattr(plugins, "has_hook", lambda name: name == "memory_prefetch")
+    monkeypatch.setattr(
+        dispatcher,
+        "enqueue_plugin_observer_hook",
+        lambda name, **kwargs: events.append((name, kwargs)) or True,
+    )
+    context = "résumé context"
+    result = MemoryPrefetchResult(context=context, observations=(_observation(),))
+
+    MemoryManager._emit_prefetch_observation(
+        result,
+        query="question",
+        session_id="session",
+        task_id="task",
+        turn_id="turn",
+    )
+
+    encoded = context.encode("utf-8")
+    assert len(events) == 1
+    name, event = events[0]
+    assert name == "memory_prefetch"
+    assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
+    assert event["context_byte_length"] == len(encoded)
+    assert event["observations"] is result.observations
+
+
 def test_hook_callback_errors_are_isolated(monkeypatch):
     """The real plugin registry continues after one observer raises."""
     from hermes_cli import plugins
@@ -431,6 +541,11 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
         plugins,
         "iter_hook_callbacks",
         lambda name: (consumer,) if name == "memory_prefetch" else (),
+    )
+    monkeypatch.setattr(
+        plugins,
+        "has_hook",
+        lambda name: name == "memory_prefetch",
     )
     manager = MemoryManager()
     manager.add_provider(
@@ -701,6 +816,10 @@ def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
     # The deterministic test observer serializes capture so assertions do not
     # depend on callback timing.
     monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.has_hook",
+        lambda name: name == "memory_prefetch",
+    )
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
 
@@ -743,6 +862,10 @@ def test_concurrent_same_session_turns_keep_explicit_ids_bound(monkeypatch):
         return []
 
     monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.has_hook",
+        lambda name: name == "memory_prefetch",
+    )
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
 
@@ -992,6 +1115,19 @@ def test_operation_budget_exhausted_across_many_valid_payloads():
         _freeze_memory_observation_payload(
             {"anything": 1}, operation_budget=operation_budget
         )
+
+
+def test_payload_encoded_size_boundary_is_exact_and_bounded():
+    """The compact UTF-8 payload limit accepts exactly N bytes, not N+1."""
+    exact = ["x" * 4092] * 4 + [10]
+    frozen, encoded_size = _freeze_memory_observation_payload(exact)
+    encoded = json.dumps(frozen, ensure_ascii=False, separators=(",", ":"))
+    assert len(encoded.encode("utf-8")) == MAX_MEMORY_OBSERVATION_BYTES
+    assert encoded_size == MAX_MEMORY_OBSERVATION_BYTES
+
+    over = ["x" * 4092] * 4 + [100]
+    with pytest.raises(ValueError, match="payload is too large"):
+        _freeze_memory_observation_payload(over)
 
 
 def test_ordered_valid_observations_unaffected_by_shared_operation_budget(

@@ -11,6 +11,7 @@ Covers:
 import asyncio
 import threading
 import time
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _api_request_profile,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
@@ -144,6 +146,98 @@ class TestStartRun:
                 assert status["run_id"] == data["run_id"]
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_reuses_run_for_concurrent_retries(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first, retry = await asyncio.gather(
+                    cli.post(
+                        "/v1/runs",
+                        json={"input": "hello"},
+                        headers={"Idempotency-Key": "same-run"},
+                    ),
+                    cli.post(
+                        "/v1/runs",
+                        json={"input": "hello"},
+                        headers={"Idempotency-Key": "same-run"},
+                    ),
+                )
+                first_data = await first.json()
+                retry_data = await retry.json()
+
+                assert first.status == retry.status == 202
+                assert retry_data["run_id"] == first_data["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                assert mock_create.call_count == 1
+
+                mock_agent.interrupt("finish test")
+                for _ in range(40):
+                    if not adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_is_scoped_by_profile(self, adapter, tmp_path):
+        async def profiled_runs(request):
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            token = _api_request_profile.set(request.match_info["profile"])
+            home_token = set_hermes_home_override(
+                tmp_path / request.match_info["profile"]
+            )
+            try:
+                return await adapter._handle_runs(request)
+            finally:
+                reset_hermes_home_override(home_token)
+                _api_request_profile.reset(token)
+
+        app = web.Application()
+        app.router.add_post("/p/{profile}/v1/runs", profiled_runs)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, patch.object(
+                adapter, "_profile_scope", side_effect=lambda _profile: nullcontext()
+            ):
+                agents = []
+                for _ in range(2):
+                    mock_agent, _, _ = _make_slow_agent()
+                    agents.append(mock_agent)
+                mock_create.side_effect = agents
+
+                employee = await cli.post(
+                    "/p/employee/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "shared-key"},
+                )
+                customer = await cli.post(
+                    "/p/customer/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "shared-key"},
+                )
+                employee_data = await employee.json()
+                customer_data = await customer.json()
+
+                assert employee.status == customer.status == 202
+                assert employee_data["run_id"] != customer_data["run_id"]
+                for _ in range(40):
+                    if mock_create.call_count == 2:
+                        break
+                    await asyncio.sleep(0.05)
+                assert mock_create.call_count == 2
+
+                for mock_agent in agents:
+                    mock_agent.interrupt("finish test")
+                for _ in range(40):
+                    if not adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
 
     @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):

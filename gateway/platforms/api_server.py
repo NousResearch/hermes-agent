@@ -1285,6 +1285,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Idempotent run starts are local to this runtime adapter and further
+        # scoped by multiplex profile. Values stay bounded and expire after the
+        # same short retry window as the other API idempotency cache.
+        self._run_idempotency: Dict[
+            tuple[str, str], tuple[str, float]
+        ] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -6007,6 +6013,48 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_IDEMPOTENCY_TTL = 300
+    _RUN_IDEMPOTENCY_MAX_ITEMS = 1000
+
+    @staticmethod
+    def _run_idempotency_scope() -> str:
+        """Identify the concrete profile home served by this request."""
+        try:
+            from hermes_constants import get_hermes_home
+
+            return str(get_hermes_home().resolve())
+        except (OSError, RuntimeError):
+            return _api_request_profile.get() or "default"
+
+    def _get_idempotent_run_id(self, key: str) -> Optional[str]:
+        """Return a prior run for this runtime/profile retry scope."""
+        now = time.time()
+        stale = [
+            cache_key
+            for cache_key, (run_id, created_at) in self._run_idempotency.items()
+            if now - created_at > self._RUN_IDEMPOTENCY_TTL
+            and self._run_statuses.get(run_id, {}).get("status")
+            not in {"queued", "running", "waiting_for_approval", "stopping"}
+        ]
+        for cache_key in stale:
+            self._run_idempotency.pop(cache_key, None)
+
+        cache_key = (self._run_idempotency_scope(), key)
+        item = self._run_idempotency.get(cache_key)
+        if item is None:
+            return None
+        run_id, _ = item
+        if run_id not in self._run_statuses:
+            self._run_idempotency.pop(cache_key, None)
+            return None
+        return run_id
+
+    def _remember_idempotent_run(self, key: str, run_id: str) -> None:
+        cache_key = (self._run_idempotency_scope(), key)
+        self._run_idempotency.pop(cache_key, None)
+        self._run_idempotency[cache_key] = (run_id, time.time())
+        while len(self._run_idempotency) > self._RUN_IDEMPOTENCY_MAX_ITEMS:
+            self._run_idempotency.pop(next(iter(self._run_idempotency)))
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -6127,6 +6175,24 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+
+        def _started_response(run_id: str) -> "web.Response":
+            response_headers = (
+                {"X-Hermes-Session-Key": gateway_session_key}
+                if gateway_session_key
+                else {}
+            )
+            return web.json_response(
+                {"run_id": run_id, "status": "started"},
+                status=202,
+                headers=response_headers,
+            )
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key:
+            existing_run_id = self._get_idempotent_run_id(idempotency_key)
+            if existing_run_id is not None:
+                return _started_response(existing_run_id)
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -6252,6 +6318,13 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
+
+        # Re-check after all awaits and request validation. Concurrent retries
+        # can both miss the fast path, but only the first may allocate a run.
+        if idempotency_key:
+            existing_run_id = self._get_idempotent_run_id(idempotency_key)
+            if existing_run_id is not None:
+                return _started_response(existing_run_id)
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
@@ -6588,14 +6661,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
-        )
-        return web.json_response(
-            {"run_id": run_id, "status": "started"},
-            status=202,
-            headers=response_headers,
-        )
+        if idempotency_key:
+            self._remember_idempotent_run(idempotency_key, run_id)
+        return _started_response(run_id)
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""

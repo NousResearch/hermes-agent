@@ -13,9 +13,11 @@ import {
   installedAgentInstallScript,
   installRefForStamp,
   isPinnedCommit,
+  isTransientInstallScriptHttpStatus,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  shouldRetryInstallScriptDownload
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -271,4 +273,27 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('isTransientInstallScriptHttpStatus retries CDN blips only', () => {
+  for (const status of [408, 429, 500, 502, 503, 504]) {
+    assert.equal(isTransientInstallScriptHttpStatus(status), true, String(status))
+  }
+
+  for (const status of [200, 301, 400, 401, 403, 404, 410]) {
+    assert.equal(isTransientInstallScriptHttpStatus(status), false, String(status))
+  }
+})
+
+test('shouldRetryInstallScriptDownload is bounded and skips 404', () => {
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 503 from url'), 1), true)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 502 from url'), 2), true)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 503 from url'), 3), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 404 from url'), 1), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 401 from url'), 1), false)
+
+  const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+  assert.equal(shouldRetryInstallScriptDownload(reset, 1), true)
+  assert.equal(shouldRetryInstallScriptDownload(reset, 3), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('disk full'), 1), false)
 })

@@ -227,7 +227,73 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
+const MAX_DOWNLOAD_ATTEMPTS = 3
+
+function isTransientInstallScriptHttpStatus(status) {
+  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504
+}
+
+function httpStatusFromDownloadError(err) {
+  const match = /HTTP (\d{3})\b/.exec(String(err && err.message ? err.message : err))
+
+  return match ? Number(match[1]) : null
+}
+
+function isTransientInstallScriptTransport(err) {
+  const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined
+
+  return (
+    code === 'EAI_AGAIN' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENETUNREACH' ||
+    code === 'ENOTFOUND' ||
+    code === 'EPIPE' ||
+    code === 'ETIMEDOUT'
+  )
+}
+
+function shouldRetryInstallScriptDownload(err, attempt) {
+  if (attempt >= MAX_DOWNLOAD_ATTEMPTS) {
+    return false
+  }
+
+  const status = httpStatusFromDownloadError(err)
+
+  if (status !== null) {
+    return isTransientInstallScriptHttpStatus(status)
+  }
+
+  return isTransientInstallScriptTransport(err)
+}
+
+function downloadBackoffMs(attempt) {
+  return 200 * 2 ** Math.min(attempt - 1, 3)
+}
+
 function downloadInstallScript(ref, destPath) {
+  return (async () => {
+    let lastError
+
+    for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      try {
+        return await downloadInstallScriptOnce(ref, destPath)
+      } catch (err) {
+        lastError = err
+
+        if (!shouldRetryInstallScriptDownload(err, attempt)) {
+          throw err
+        }
+
+        await new Promise(resolve => setTimeout(resolve, downloadBackoffMs(attempt)))
+      }
+    }
+
+    throw lastError
+  })()
+}
+
+function downloadInstallScriptOnce(ref, destPath) {
   // Fetch from GitHub raw at the install ref. Normal production builds pass a
   // pinned SHA (immutable). Non-git fallback builds pass an unpinned branch
   // ref so local builds can still bootstrap without pretending the all-zero
@@ -1027,11 +1093,13 @@ export {
   installedAgentInstallScript,
   installRefForStamp,
   isPinnedCommit,
+  isTransientInstallScriptHttpStatus,
   // Exposed for testability
   parseStageResult,
   resolveCheckoutHead,
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  shouldRetryInstallScriptDownload
 }

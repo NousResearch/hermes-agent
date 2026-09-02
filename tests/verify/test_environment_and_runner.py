@@ -187,3 +187,61 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+class TestWindowsTeardown:
+    """#88427 — on Windows the teardown must take down the whole tree.
+
+    ``shell=True`` means the direct child is ``cmd.exe``; the real app and
+    its workers (Django's auto-reloader) are grandchildren that
+    ``TerminateProcess`` cannot reach. They keep the stdout pipe open, so
+    ``proc.stdout.read()`` blocks forever and the verify run never emits its
+    receipt. The Windows branch must therefore use ``taskkill /T``.
+    """
+
+    def test_windows_teardown_kills_process_tree_via_taskkill(self, monkeypatch):
+        import sys as _sys
+        from unittest.mock import MagicMock
+
+        import agent.verify.runner as runner_mod
+
+        monkeypatch.setattr(_sys, "platform", "win32")
+
+        proc = MagicMock()
+        proc.poll.return_value = None  # still running
+        proc.pid = 4242
+
+        taskkill_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            taskkill_calls.append((list(cmd), kwargs))
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(runner_mod.subprocess, "run", _fake_run)
+
+        runner_mod._terminate_process_group(proc)
+
+        assert len(taskkill_calls) == 1
+        cmd, kwargs = taskkill_calls[0]
+        assert cmd == ["taskkill", "/PID", "4242", "/T", "/F"]
+        assert kwargs.get("check") is False
+        proc.wait.assert_called_once()
+
+    def test_windows_teardown_skips_already_exited_process(self, monkeypatch):
+        import sys as _sys
+        from unittest.mock import MagicMock
+
+        import agent.verify.runner as runner_mod
+
+        monkeypatch.setattr(_sys, "platform", "win32")
+
+        proc = MagicMock()
+        proc.poll.return_value = 0  # already exited
+
+        def _no_run(*_a, **_kw):
+            raise AssertionError("taskkill must not run for an exited process")
+
+        monkeypatch.setattr(runner_mod.subprocess, "run", _no_run)
+
+        runner_mod._terminate_process_group(proc)
+        proc.wait.assert_not_called()

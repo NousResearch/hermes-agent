@@ -67,6 +67,25 @@ class TestSessionKeyNamespacedWhenOn:
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""
 
+    def test_cron_shared_adapters_follow_named_active_profile(self, monkeypatch):
+        """A named primary gateway must give its own cron store the live adapters."""
+        from gateway import run as run_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "rex"
+        )
+
+        assert run_mod._cron_shared_adapter_profile() == "rex"
+
+    def test_cron_shared_adapters_fall_back_to_default_profile(self, monkeypatch):
+        from gateway import run as run_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: None
+        )
+
+        assert run_mod._cron_shared_adapter_profile() == "default"
+
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
 

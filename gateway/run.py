@@ -4917,6 +4917,32 @@ class TurnRunner:
         if not ctx.progress_queue or not ctx._run_still_current():
             return
 
+        # Tool-timer lifecycle, independent of ``display.tool_progress``.
+        # When tool_progress is OFF the detailed progress line is never built
+        # (the callback returns before reaching it), so the timer would never
+        # see tool.started / tool.completed.  Drive it directly here — placed
+        # above the onboarding-hint and _thinking gates, both of which `return`
+        # on tool.completed — using only the bare tool name (no arguments;
+        # Issue B).  When tool_progress is ON, the ordinary progress path
+        # below already arms and closes the timer, so this stays scoped to the
+        # off case to avoid double-dispatch (#96942).
+        if (
+            ctx.tool_timer_enabled
+            and not ctx.tool_progress_enabled
+            and event_type in {"tool.started", "tool.completed"}
+        ):
+            _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
+            if _sc is not None and getattr(_sc, "supports_tool_timer", False):
+                _tool_call_id = kwargs.get("tool_call_id")
+                if event_type == "tool.completed":
+                    _duration = kwargs.get("duration", 0.0)
+                    _sc.on_tool_completed(
+                        tool_name or "unknown", _duration, tool_call_id=_tool_call_id
+                    )
+                elif tool_name != "clarify":
+                    _sc.on_tool_started(tool_name or "tool", tool_call_id=_tool_call_id)
+            return
+
         # First-touch onboarding: the first time a tool takes longer than
         # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
         # (progress_mode == "all"), append a one-time hint suggesting
@@ -31552,8 +31578,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        # Tool-timer animation (opt-in, native-stream bubbles): its lifecycle
+        # events (tool.started / tool.completed / llm.request_started) must
+        # reach the stream consumer even when ``display.tool_progress`` is off
+        # — otherwise setting only ``extra.tool_timer_enabled: true`` yields no
+        # ticks.  Detect it from the adapter capability so the progress queue
+        # and callback are still allocated to carry the timer signals (#96942).
+        _tool_timer_enabled = bool(
+            getattr(_progress_adapter_for_native, "SUPPORTS_TOOL_TIMER", False)
+        )
         needs_progress_queue = (
-            tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
+            tool_progress_enabled
+            or _thinking_enabled
+            or _native_slack_task_cards
+            or _tool_timer_enabled
         )
 
 
@@ -31627,6 +31665,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
             tool_progress_enabled=tool_progress_enabled,
+            tool_timer_enabled=_tool_timer_enabled,
             progress_queue=progress_queue,
             log_queue=log_queue,
             last_progress_msg=last_progress_msg,

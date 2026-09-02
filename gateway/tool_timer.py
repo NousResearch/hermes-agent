@@ -115,6 +115,27 @@ class ToolTimerMixin:
                 self._tool_timer_labels[key] = tool_name
             self._start_tool_timer(key)
 
+    def on_tool_started(self, tool_name: str, tool_call_id: str | None = None) -> None:
+        """Start the tool timer from a lifecycle event, no overlay line.
+
+        Timer-only entry point used by ``run.py`` when ``display.tool_progress``
+        is off but ``extra.tool_timer_enabled`` is on: the detailed progress
+        line is never built, yet the animated timer must still arm.  Unlike
+        ``on_tool_progress`` this pushes nothing to ``_queue`` — the periodic
+        tick supplies the frames.
+
+        No-op unless the timer is opted in.  *tool_name* is used verbatim as
+        the sanitized label (callers pass the bare tool name).
+        """
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        if not tool_name:
+            tool_name = "tool"
+        key = tool_call_id if tool_call_id is not None else tool_name
+        with self._timer_lock:
+            self._tool_timer_labels[key] = tool_name
+        self._start_tool_timer(key)
+
     def on_tool_completed(self, tool_name: str, duration: float, tool_call_id: str | None = None) -> None:
         """Record a completed tool in the history overlay.
 

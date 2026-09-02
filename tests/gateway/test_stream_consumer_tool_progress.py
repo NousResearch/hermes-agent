@@ -435,6 +435,71 @@ class TestToolTimerStart:
             loop.close()
 
 
+class TestToolStartedTimerOnlyPath:
+    """Tests for on_tool_started — the timer-only lifecycle entry point used
+    when display.tool_progress is off but the timer is enabled (Issue C)."""
+
+    def test_arms_timer_without_overlay_line(self):
+        consumer = _make_consumer(native_streaming=True)
+        loop = asyncio.new_event_loop()
+        consumer._tool_timer_loop = loop
+        try:
+            consumer.on_tool_started("terminal", tool_call_id="call-1")
+            loop.run_until_complete(asyncio.sleep(0))
+            # Timer armed and start time recorded under the tool_call_id.
+            assert consumer._tool_timer_handle is not None
+            assert "call-1" in consumer._tool_start_times
+            # Sanitized label = bare tool name.
+            assert consumer._tool_timer_labels["call-1"] == "terminal"
+            # No overlay line pushed — the tick supplies frames.
+            assert consumer._queue.empty()
+        finally:
+            if consumer._tool_timer_handle:
+                consumer._tool_timer_handle.cancel()
+            loop.close()
+
+    def test_noop_when_timer_disabled(self):
+        consumer = _make_consumer(native_streaming=True, supports_tool_timer=False)
+        loop = asyncio.new_event_loop()
+        consumer._tool_timer_loop = loop
+        try:
+            consumer.on_tool_started("terminal", tool_call_id="call-1")
+            assert consumer._tool_timer_handle is None
+            assert consumer._tool_start_times == {}
+        finally:
+            loop.close()
+
+    @pytest.mark.asyncio
+    async def test_produces_animated_frames_without_progress_lines(self):
+        """End-to-end: on_tool_started alone (no on_tool_progress) still
+        produces animated timer frames."""
+        consumer = _make_consumer(native_streaming=True)
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.1)
+
+        consumer.on_tool_started("terminal", tool_call_id="call-1")
+        await asyncio.sleep(2.5)
+
+        consumer.finish()
+        await asyncio.sleep(0.3)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        frames = consumer.adapter.frames
+        timer_frames = [
+            f for f in frames
+            if not f["finalize"] and f["text"] and "terminal" in f["text"] and "s)" in f["text"]
+        ]
+        assert len(timer_frames) >= 2, (
+            f"Expected >=2 timer frames, got {len(timer_frames)}: "
+            f"{[f['text'] for f in timer_frames]}"
+        )
+
+
 class TestToolTimerTick:
     """Tests for the tick callback behavior."""
 

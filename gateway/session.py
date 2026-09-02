@@ -23,6 +23,14 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+class TranscriptReadError(RuntimeError):
+    """Raised when persisted history cannot be read safely."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"transcript read failed for session {session_id}")
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -4400,15 +4408,17 @@ class SessionStore:
                 session_id, repair_alternation=True
             )
         except Exception as e:
-            # A failed read must be distinguishable from an empty transcript:
-            # downstream guards treat [] as "nothing persisted" and may make
-            # routing decisions on it (#82616). WARNING, not DEBUG.
-            logger.warning(
-                "Transcript read failed for session %s (returning empty; "
-                "downstream must not treat this as data loss): %s",
-                session_id, e,
+            # Empty history is valid data; a failed canonical read is not.
+            # Preserve that distinction so live-replay callers can fail closed
+            # instead of starting the model with a plausible-looking [].
+            logger.error(
+                "Transcript read failed for session %s; refusing to treat the "
+                "conversation as empty: %s",
+                session_id,
+                e,
+                exc_info=True,
             )
-            return []
+            raise TranscriptReadError(session_id) from e
 
     def rewind_session(
         self,

@@ -2986,6 +2986,7 @@ from gateway.session import (
     SessionStore,
     SessionSource,
     SessionContext,
+    TranscriptReadError,
     build_session_context,
     build_session_context_prompt,
     build_channel_continuity_note,
@@ -20867,8 +20868,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # began processing if the gateway died while it was still waiting.
         await self._mark_durable_active_turn(event, session_entry.session_key)
 
-        # Load conversation history from transcript
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        # Load conversation history from transcript. An unreadable canonical
+        # store is not an empty conversation: stop before the agent can invent
+        # continuity from a plausible-looking []. This return happens before
+        # the broad cleanup finally below, so restore task-local context here;
+        # the outer dispatch still clears the durable marker and turn lease.
+        try:
+            history = await self.async_session_store.load_transcript(
+                session_entry.session_id
+            )
+        except TranscriptReadError:
+            self._clear_session_env(_session_env_tokens)
+            return (
+                "⚠️ This session's history is temporarily unavailable, so "
+                "this message was not processed. Ask the operator to inspect "
+                "state.db, then resend after it is healthy. Use /reset only "
+                "if you intentionally want to start a new conversation."
+            )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts

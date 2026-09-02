@@ -13519,20 +13519,47 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     """Resolve the loopback URL of the gateway api_server's cron-fire route.
 
     Port resolution mirrors gateway/config.py's api_server load order for the
-    TARGET profile: ``platforms.api_server.extra.port`` in the profile's
-    config.yaml, then ``API_SERVER_PORT`` (process env for the active profile,
-    the profile's own .env otherwise), then the adapter default 8642. The bind
-    host is the adapter's loopback default — the dashboard and gateway share a
-    network namespace in every supported deployment (same host process tree,
-    or the same container under s6).
+    LISTENER-OWNER profile: ``platforms.api_server.extra.port`` in that
+    profile's config.yaml, then ``API_SERVER_PORT`` (process env for the
+    active profile, the profile's own .env otherwise), then the adapter
+    default 8642. The bind host is the adapter's loopback default — the
+    dashboard and gateway share a network namespace in every supported
+    deployment (same host process tree, or the same container under s6).
 
     Multiplex mode (one gateway serving several profiles) exposes per-profile
     mirrors under ``/p/<profile>/…``, so a non-default profile routes through
-    the default gateway's port with that prefix; per-profile-gateway mode
-    (each profile its own process/port) uses the bare path on the profile's
-    own port.
+    the default gateway's port with that prefix — only the DEFAULT profile's
+    api_server is bound in that mode, so the port must be read from the
+    default home, never the target profile's (a secondary's own
+    ``API_SERVER_PORT`` is a port nothing listens on). Per-profile-gateway
+    mode (each profile its own process/port) uses the bare path on the
+    profile's own port.
     """
     import os as _os
+
+    multiplex = False
+    try:
+        from gateway.config import _env_multiplex_profiles_override
+
+        cfg = load_config()
+        multiplex = bool(cfg_get(cfg, "gateway", "multiplex_profiles", default=False))
+        env_flag = _env_multiplex_profiles_override()
+        if env_flag is not None:
+            multiplex = env_flag
+    except Exception:
+        _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
+
+    listener_profile, listener_home = profile, home
+    if multiplex and profile != "default":
+        from hermes_constants import get_default_hermes_root
+
+        listener_profile, listener_home = "default", get_default_hermes_root()
+        _log.info(
+            "cron fire: multiplex gateway — resolving api_server port for %s "
+            "from the default profile's listener (%s)",
+            profile,
+            listener_home,
+        )
 
     port = 0
     try:
@@ -13540,14 +13567,14 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
         # overlay, ${ENV_VAR} expansion, profile pathing) — never a raw
         # yaml.safe_load of config.yaml (tests/hermes_cli/
         # test_config_read_guard.py). The HERMES_HOME override scopes
-        # get_config_path() to the TARGET profile, same pattern the
+        # get_config_path() to the LISTENER-OWNER profile, same pattern the
         # deprecated _fire_cron_job_for_profile used for its store scope.
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
 
-        token = set_hermes_home_override(str(home))
+        token = set_hermes_home_override(str(listener_home))
         try:
             profile_cfg = load_config()
         finally:
@@ -13562,8 +13589,8 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     if not port:
         raw = (
             _os.getenv("API_SERVER_PORT", "")
-            if profile == _cron_default_profile()
-            else _profile_env_value(home, "API_SERVER_PORT")
+            if listener_profile == _cron_default_profile()
+            else _profile_env_value(listener_home, "API_SERVER_PORT")
         )
         try:
             port = int(raw) if raw else 0
@@ -13571,18 +13598,6 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
             port = 0
     if not port:
         port = 8642
-
-    multiplex = False
-    try:
-        cfg = load_config()
-        multiplex = bool(cfg_get(cfg, "gateway", "multiplex_profiles", default=False))
-        env_flag = _os.getenv("GATEWAY_MULTIPLEX_PROFILES", "").strip().lower()
-        if env_flag in {"1", "true", "yes", "on"}:
-            multiplex = True
-        elif env_flag in {"0", "false", "no", "off"}:
-            multiplex = False
-    except Exception:
-        pass
 
     if multiplex and profile != "default":
         return f"http://127.0.0.1:{port}/p/{profile}/api/cron/fire"

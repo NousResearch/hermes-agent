@@ -478,8 +478,15 @@ def shims(tmp_path, monkeypatch):
     # exit it early (see test_default_spawn_*): the shims fail/succeed
     # well inside a second.
     monkeypatch.setattr(kb, "WORKER_SPAWN_PROBE_SECONDS", 1.0)
+    # Run the background verified-stop service inline: same code path,
+    # but every tick observes a settled stop outcome — no thread-timing
+    # races in single-tick assertions. Service state is per-test because
+    # tests reuse unit names.
+    monkeypatch.setattr(kb, "_scope_stop_inline", True)
+    kb.reset_scope_stop_service_for_tests()
     handle = Shims(root, bin_dir)
     yield handle
+    kb.reset_scope_stop_service_for_tests()
     handle.teardown()
 
 
@@ -1283,6 +1290,74 @@ def test_release_stale_claims_stops_worker_scope(shims, conn):
     ).fetchone()
     assert row["status"] != "running"
     assert row["worker_scope"] is None
+
+
+def test_crash_cleanup_defers_until_scope_stop_verified(shims, conn):
+    """Crash reclamation of a scoped run waits for the VERIFIED scope
+    stop (Gate B review, crash-cleanup ordering): a deactivating unit
+    makes the worker look dead (its pid is gone) but the stop cannot yet
+    be confirmed — the claim is held, a ``scope_stopping`` event records
+    the hold, and the requeue happens only on a later tick once the
+    verified stop lands. Nothing is released beside an unconfirmed
+    cgroup, so no duplicate worker can spawn."""
+    straggler = shims.sleeper()  # live process inside the worker's cgroup
+    launcher = subprocess.Popen(["true"])
+    launcher.wait()  # the recorded worker pid: already gone
+    unit = kb._kanban_worker_scope_unit("t_crashstop", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_deactivating(unit)
+    tid = kb.create_task(conn, title="crash stop", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (launcher.pid, kb._worker_pid_start_time(launcher.pid), now,
+         unit, now, now, tid),
+    )
+    conn.execute(
+        "UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,)
+    )
+    conn.commit()
+
+    # Tick 1: the worker pid is gone and deactivating is NOT "alive", so
+    # the run classifies as dead — but the stop job is still draining, so
+    # NOTHING is released and the crash is retried next tick.
+    assert kb.detect_crashed_workers(conn) == []
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["worker_scope"] == unit
+    stopping = conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='scope_stopping'", (tid,),
+    ).fetchone()
+    assert stopping["n"] == 1  # the hold is auditable, once per run
+
+    # Still exactly one marker if the stop keeps failing: ticks repeat
+    # without flooding the timeline.
+    assert kb.detect_crashed_workers(conn) == []
+    stopping = conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='scope_stopping'", (tid,),
+    ).fetchone()
+    assert stopping["n"] == 1
+
+    # Tick 3: the stop job completes — scope verified dead, so the crash
+    # requeue goes through.
+    shims.clear_deactivating(unit)
+    assert kb.detect_crashed_workers(conn) == [tid]
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["worker_scope"] is None
+    # The verified stop killed the straggler the dead worker left behind.
+    assert not kb._pid_alive(straggler)
 
 
 def test_stop_timeout_does_not_release_claim_then_completes(shims, conn):

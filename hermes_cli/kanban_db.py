@@ -8731,6 +8731,189 @@ def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Background scope-stop service — verified teardown OFF the dispatcher tick
+#
+# One verified stop (stop → SIGKILL escalation → re-verify) can cost up to
+# ``SCOPE_STOP_VERIFY_BOUND_SECONDS`` per unit; a tick reclaiming several
+# scopes serialised them all inside ``dispatch_once``. Every tick-driven
+# terminal path now hands units to this single background worker instead:
+# the tick pays at most one cheap liveness probe per unit, keeps its claim
+# ("stopping"), and re-checks on later ticks. Only paths that genuinely
+# need a synchronous answer (the spawn fallback's half-created-unit
+# cleanup, the shutdown policy — which joins the service) still call
+# ``_stop_kanban_worker_scope`` directly.
+# ---------------------------------------------------------------------------
+
+SCOPE_STOP_SERVICE_THREAD_NAME = "kanban-scope-stop"
+# Tests flip this so the queued verified stop runs inline: same code path,
+# deterministic single-tick behaviour without thread timing.
+_scope_stop_inline = False
+
+
+@dataclass
+class _ScopeStopRequest:
+    unit: str
+    task_id: Optional[str] = None
+    attempts: int = 0
+
+
+_scope_stop_lock = threading.Lock()
+_scope_stop_pending: dict[str, _ScopeStopRequest] = {}
+_scope_stop_confirmed: set[str] = set()
+_scope_stop_attempts: dict[str, int] = {}
+_scope_stop_warned: set[str] = set()
+_scope_stop_wake = threading.Event()
+_scope_stop_thread: Optional[threading.Thread] = None
+
+
+def _scope_stop_service_loop() -> None:
+    while True:
+        _scope_stop_wake.wait()
+        _scope_stop_wake.clear()
+        _drain_scope_stop_requests()
+
+
+def _drain_scope_stop_requests() -> None:
+    """Run every queued verified stop (service thread; inline in tests)."""
+    while True:
+        with _scope_stop_lock:
+            if not _scope_stop_pending:
+                return
+            unit = next(iter(_scope_stop_pending))
+            request = _scope_stop_pending.pop(unit)
+        verified = _stop_kanban_worker_scope(unit)
+        with _scope_stop_lock:
+            if verified:
+                _scope_stop_confirmed.add(unit)
+                _scope_stop_attempts.pop(unit, None)
+            else:
+                _scope_stop_attempts[unit] = request.attempts + 1
+                if unit not in _scope_stop_warned:
+                    _scope_stop_warned.add(unit)
+                    _log.warning(
+                        "kanban: verified stop of worker scope %s did not "
+                        "confirm (task %s, attempt %d) — keeping claims "
+                        "and retrying on later ticks",
+                        unit, request.task_id, request.attempts + 1,
+                    )
+                # Left unconfirmed: the next request re-enqueues it.
+
+
+def _ensure_scope_stop_thread() -> None:
+    global _scope_stop_thread
+    if _scope_stop_thread is not None and _scope_stop_thread.is_alive():
+        return
+    _scope_stop_thread = threading.Thread(
+        target=_scope_stop_service_loop,
+        name=SCOPE_STOP_SERVICE_THREAD_NAME,
+        daemon=True,
+    )
+    _scope_stop_thread.start()
+
+
+def request_worker_scope_stop(
+    unit_name: Optional[str],
+    *,
+    task_id: Optional[str] = None,
+) -> bool:
+    """Hand a worker scope to the verified-stop service. True = confirmed
+    dead, the caller may release its bookkeeping THIS tick.
+
+    Fast path: a unit whose cgroup is already empty (the common case —
+    the worker died and nothing double-forked) confirms after one cheap
+    liveness probe. Otherwise (live pids, a stop job still draining, or
+    a probe failure) the unit is queued on the background service and
+    this returns False = "stopping": keep the claim, requeue/clear
+    nothing, retry next tick — releasing beside an unverified cgroup is
+    what let the dispatcher spawn duplicates. Never blocks longer than
+    one liveness probe; the stop+escalate+verify sequence runs on the
+    service thread.
+    """
+    if not unit_name:
+        return False
+    with _scope_stop_lock:
+        if unit_name in _scope_stop_confirmed:
+            return True
+    state = _kanban_scope_state(unit_name)
+    if state == "dead":
+        with _scope_stop_lock:
+            _scope_stop_confirmed.add(unit_name)
+        return True
+    if state != "active":
+        # Probe failed ("unknown"): death can be neither confirmed nor
+        # ruled out. Queue a stop attempt anyway — an unreachable bus
+        # makes the background pass fail cheaply and the tick retries.
+        _log.debug(
+            "kanban: scope %s state unknown (task %s) — queueing a "
+            "verified stop attempt", unit_name, task_id,
+        )
+    with _scope_stop_lock:
+        _scope_stop_pending[unit_name] = _ScopeStopRequest(
+            unit=unit_name,
+            task_id=task_id,
+            attempts=_scope_stop_attempts.get(unit_name, 0),
+        )
+    if _scope_stop_inline:
+        _drain_scope_stop_requests()
+        with _scope_stop_lock:
+            return unit_name in _scope_stop_confirmed
+    _ensure_scope_stop_thread()
+    _scope_stop_wake.set()
+    return False
+
+
+def join_scope_stop_service(timeout: float) -> list[str]:
+    """Wait for the background service (shutdown path). Returns the units
+    still pending or in flight once the budget expires, so the caller can
+    log exactly what it leaves to the next gateway's adoption sweep."""
+    thread = _scope_stop_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+    with _scope_stop_lock:
+        return list(_scope_stop_pending)
+
+
+def reset_scope_stop_service_for_tests() -> None:
+    """Drop all service state. Production unit names are unique per
+    attempt so state never needs resetting there; tests reuse ids."""
+    with _scope_stop_lock:
+        _scope_stop_pending.clear()
+        _scope_stop_confirmed.clear()
+        _scope_stop_attempts.clear()
+        _scope_stop_warned.clear()
+
+
+def _mark_run_scope_stopping(
+    conn: sqlite3.Connection,
+    task_id: str,
+    scope: str,
+    *,
+    reason: str = "terminal_stop_unconfirmed",
+) -> None:
+    """Record the run's "stopping" state — durable, once per run.
+
+    A tick that wants to close a run but could not verify its scope dead
+    defers the close and marks this event instead; the row keeps its
+    claim and the next tick re-checks the service. One event per run id
+    so a long teardown doesn't flood the timeline."""
+    with write_txn(conn):
+        run_id = _current_run_id(conn, task_id)
+        already = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind = 'scope_stopping' "
+            "  AND run_id IS ? LIMIT 1",
+            (task_id, run_id),
+        ).fetchone()
+        if already is not None:
+            return
+        _append_event(
+            conn, task_id, "scope_stopping",
+            {"scope": scope, "reason": reason},
+            run_id=run_id,
+        )
+
+
 def _stop_scope_after_worker_exit(unit_name: Optional[str]) -> None:
     """Best-effort DETACHED scope stop for worker-side terminal paths.
 
@@ -8972,9 +9155,13 @@ def _terminate_reclaimed_worker(
         # Scoped worker: stop the whole transient unit (SIGTERM to every
         # process in the cgroup, SIGKILL escalation, state verified) so
         # descendants the worker spawned — dev servers, headless
-        # browsers, databases — die with it.
+        # browsers, databases — die with it. Handed to the background
+        # verified-stop service: already-dead scopes confirm with one
+        # cheap probe; a live/draining one returns False immediately
+        # (the service does the stop→escalate→verify work off the tick)
+        # and the caller defers the reclaim.
         info["scope_unit"] = scope_unit
-        info["scope_stopped"] = _stop_kanban_worker_scope(scope_unit)
+        info["scope_stopped"] = request_worker_scope_stop(scope_unit)
         if info["scope_stopped"]:
             # Cgroup verified empty: nothing of this run survives. Skip
             # the pid kill — the recorded pid is either dead or has been
@@ -9209,7 +9396,7 @@ def enforce_max_runtime(
         # releasing a claim while a max-runtime worker still lives would
         # let the dispatcher spawn a duplicate beside it.
         if row["worker_scope"]:
-            if not _stop_kanban_worker_scope(row["worker_scope"]):
+            if not request_worker_scope_stop(row["worker_scope"], task_id=tid):
                 _log.warning(
                     "kanban: max-runtime stop of scope %s for task %s "
                     "unconfirmed; deferring to next tick",
@@ -9485,7 +9672,7 @@ def reconcile_orphaned_running(
         # it double-forked survives the requeue. An unconfirmed stop
         # defers the requeue for the same reason as a live pid.
         if row["worker_scope"]:
-            if not _stop_kanban_worker_scope(row["worker_scope"]):
+            if not request_worker_scope_stop(row["worker_scope"], task_id=tid):
                 _log.debug(
                     "kanban reconcile: task %s scope %s still stopping — "
                     "deferring requeue to next tick", tid, row["worker_scope"],
@@ -9589,7 +9776,7 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
         started = row["run_started_at"] or row["started_at"]
         if started is None or (now - int(started)) < WORKER_REGISTRATION_GRACE_SECONDS:
             continue  # still inside the launch grace window
-        if not _stop_kanban_worker_scope(scope):
+        if not request_worker_scope_stop(scope, task_id=row["id"]):
             continue  # stop unconfirmed — retry next tick
         _record_spawn_failure(
             conn, row["id"],
@@ -9684,7 +9871,7 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
             continue
         if unit in claimed:
             continue
-        if not _stop_kanban_worker_scope(unit):
+        if not request_worker_scope_stop(unit):
             continue  # still stopping — retry next tick
         reaped.append(unit)
         _log.info(
@@ -9939,11 +10126,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
-    # Scope units of dead workers to stop AFTER the main txn closes —
-    # ``systemctl --user stop`` blocks up to its timeout and must never
-    # hold the write txn (same discipline as the exited-hook firing).
-    scope_units_to_stop: list[str] = []
-    # Per-crash details collected inside the main txn, used after it
+    # Phase 1 classifies dead workers under one snapshot txn; Phase 2
+    # (outside every txn — systemctl must never hold the write lock)
+    # confirms scope teardown BEFORE Phase 3 reclaims anything. A scoped
+    # row whose unit is not verified dead keeps its claim and is retried
+    # next tick ("stopping"): releasing a claim beside a still-draining
+    # cgroup is what let the dispatcher spawn duplicates (review
+    # finding 4).
+    # Per-crash details collected under the snapshot, consumed after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case, which is accounted against its
@@ -9951,9 +10141,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
-    # Worker-exit observer payloads (RFC #58548), collected inside the main
-    # txn and fired only after every reclaim/accounting txn has committed.
+    # Worker-exit observer payloads (RFC #58548), collected under the
+    # snapshot and fired only after every reclaim/accounting txn has
+    # committed.
     exited_hook_payloads: list[dict] = []
+    # Classified rows: phase 1 fills ``pending_rows``, phase 2 (scope
+    # teardown confirmed) filters them into ``close_rows``.
+    pending_rows: list[dict[str, Any]] = []
+    close_rows: list[dict[str, Any]] = []
     now = int(time.time())
     with write_txn(conn):
         rows = conn.execute(
@@ -10001,12 +10196,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             pid = int(row["worker_pid"])
             pid_reused = _pid_alive(pid)
-            # The worker is gone. If it ran in its own scope, stop the
-            # unit too so any stragglers it left behind (double-forked
-            # dev servers, browsers) are reaped with it — stopping an
-            # already-dead unit is a no-op. Deferred to after the txn.
-            if row["worker_scope"]:
-                scope_units_to_stop.append(row["worker_scope"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
@@ -10082,6 +10271,42 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
+            pending_rows.append({
+                "id": row["id"],
+                "pid": pid,
+                "claim_lock": row["claim_lock"],
+                "assignee": row["assignee"],
+                "worker_scope": row["worker_scope"],
+                "kind": kind,
+                "code": code,
+                "error_text": error_text,
+                "event_kind": event_kind,
+                "event_payload": event_payload,
+                "protocol_violation": protocol_violation,
+                "rate_limited_exit": rate_limited_exit,
+                "retry_status": retry_status,
+            })
+
+    # Phase 2 — confirmed scope teardown BEFORE any reclaim bookkeeping.
+    # A scoped dead worker whose unit is not yet verified empty keeps
+    # its claim and gets a ``scope_stopping`` marker; the next tick
+    # re-checks and closes it once the verified stop lands. (Unscoped
+    # rows need no teardown and close immediately, as before.)
+    for entry in pending_rows:
+        scope = entry["worker_scope"]
+        if scope and not request_worker_scope_stop(scope, task_id=entry["id"]):
+            _mark_run_scope_stopping(conn, entry["id"], scope)
+            continue
+        close_rows.append(entry)
+
+    # Phase 3 — reclaim each verified-dead row under its own guarded
+    # txn. The CAS (status/pid/claim_lock unchanged since the snapshot)
+    # makes the split txn safe: a task that moved on — completed,
+    # re-registered a worker pid, got reclaimed elsewhere — is skipped
+    # rather than double-processed.
+    for entry in close_rows:
+        with write_txn(conn):
+            retry_status = entry["retry_status"]
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
@@ -10089,35 +10314,37 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 "worker_registered_at = NULL, worker_scope = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                (retry_status, entry["id"], entry["pid"], entry["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                _run_outcome = (
+                    "rate_limited" if entry["rate_limited_exit"] else "crashed"
+                )
                 run_id = _end_run(
-                    conn, row["id"],
+                    conn, entry["id"],
                     outcome=_run_outcome, status=_run_outcome,
-                    error=error_text,
-                    metadata=dict(event_payload),
+                    error=entry["error_text"],
+                    metadata=dict(entry["event_payload"]),
                 )
                 _append_event(
-                    conn, row["id"], event_kind,
-                    event_payload,
+                    conn, entry["id"], entry["event_kind"],
+                    entry["event_payload"],
                     run_id=run_id,
                 )
                 exited_hook_payloads.append({
-                    "task_id": row["id"],
-                    "assignee": row["assignee"],
+                    "task_id": entry["id"],
+                    "assignee": entry["assignee"],
                     "run_id": run_id,
-                    "worker_pid": pid,
-                    "exit_kind": kind,
-                    "exit_code": code,
+                    "worker_pid": entry["pid"],
+                    "exit_kind": entry["kind"],
+                    "exit_code": entry["code"],
                     "outcome": _run_outcome,
                     "retry_status": retry_status,
                 })
-                if rate_limited_exit:
+                if entry["rate_limited_exit"]:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
                     # respawn until the window clears — WITHOUT touching
@@ -10125,11 +10352,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     # breaker trip on a throttle).
                     conn.execute(
                         "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
-                        (error_text[:500], row["id"]),
+                        (entry["error_text"][:500], entry["id"]),
                     )
-                    rate_limited.append(row["id"])
+                    rate_limited.append(entry["id"])
                 else:
-                    if protocol_violation:
+                    if entry["protocol_violation"]:
                         # Stamp the failure error now: a below-budget
                         # violation never reaches ``_record_task_failure``
                         # (which stamps this column for every other failure
@@ -10139,17 +10366,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         conn.execute(
                             "UPDATE tasks SET last_failure_error = ? "
                             "WHERE id = ?",
-                            (error_text[:500], row["id"]),
+                            (entry["error_text"][:500], entry["id"]),
                         )
-                    crashed.append(row["id"])
+                    crashed.append(entry["id"])
                     crash_details.append(
-                        (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                        (entry["id"], entry["pid"], entry["claim_lock"],
+                         entry["protocol_violation"], entry["error_text"])
                     )
-    # Outside the main txn: reap the scopes of the dead workers so any
-    # double-forked stragglers die with their parent worker.
-    for unit in scope_units_to_stop:
-        _stop_kanban_worker_scope(unit)
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the retried task transitions to blocked with a ``gave_up`` event
     # on top of the event we already emitted).

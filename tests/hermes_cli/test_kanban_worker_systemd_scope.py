@@ -3078,6 +3078,12 @@ def test_scope_stop_intents_are_connection_local_not_thread_local(
 
     monkeypatch.setattr(kb, "_scope_stop_inline", False)
     monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    # A service thread left alive by an EARLIER test is parked on the
+    # module wake event; the flush below sets it, and the thread would
+    # drain (and pop) the queued entry before the asserts look at it.
+    # Parking that thread on the OLD event keeps this test the only
+    # observer of the queue.
+    monkeypatch.setattr(kb, "_scope_stop_wake", threading.Event())
     monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
     kb.reset_scope_stop_service_for_tests()
 
@@ -3142,6 +3148,12 @@ def test_committed_txn_flushes_stops_when_invariant_raises(conn, monkeypatch):
     monkeypatch.setattr(kb, "_check_file_length_invariant", boom)
     monkeypatch.setattr(kb, "_scope_stop_inline", False)
     monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    # Park any lingering service thread on the OLD wake event (see the
+    # connection-local intents test) — the flush must not let it drain
+    # the queued entry before the assert reads it.
+    import threading as _threading
+
+    monkeypatch.setattr(kb, "_scope_stop_wake", _threading.Event())
     monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
     kb.reset_scope_stop_service_for_tests()
     unit = kb._kanban_worker_scope_unit("t_inv", 3)
@@ -3221,6 +3233,88 @@ def test_stop_pending_cleared_on_run_end_and_confirmed_stop(shims, conn):
     ).fetchone()["stop_pending"] == 0
 
 
+def test_generic_reclaim_never_signals_unreadable_identity(
+    conn, monkeypatch, caplog,
+):
+    """X: the generic reclaim path treats an unreadable pid identity as a
+    third state and never signals it — a signal we cannot attribute might
+    hit an unrelated process. The row is reclaimed WITHOUT a signal (the
+    same fail-safe stance enforce_max_runtime took in pass 4) and the
+    stand-down warns once per run id."""
+    import logging
+
+    killed: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    # Alive pid whose live start fingerprint cannot be read.
+    monkeypatch.setattr(
+        "gateway.status.get_process_start_time", lambda pid: None,
+    )
+    tid = kb.create_task(conn, title="unreadable identity", assignee="w")
+    assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
+    kb._set_worker_pid(conn, tid, os.getpid())
+    run_id = kb._current_run_id(conn, tid)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        assert kb.reclaim_task(
+            conn, tid, reason="operator reclaim", signal_fn=fake_kill,
+        )
+    assert killed == []  # unknown identity — no signal, ever
+    row = conn.execute(
+        "SELECT status, claim_lock FROM tasks WHERE id=?", (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"
+    assert row["claim_lock"] is None
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["payload"])
+    assert payload["termination_attempted"] is True
+    assert payload["terminated"] is True
+    assert payload["signal_skipped"] == "pid_identity_unknown"
+    warnings = [
+        r for r in caplog.records
+        if "not signalling; reclaiming" in r.message
+    ]
+    assert len(warnings) == 1
+    assert str(run_id) in warnings[0].message
+
+
+def test_generic_reclaim_legacy_missing_fingerprint_not_signalled(
+    conn, monkeypatch,
+):
+    """X, legacy half: a row with NO start fingerprint (pre-column spawn)
+    is also 'unknown', never 'alive' — the old boolean helper folded
+    missing into alive and signalled the bare pid. The row reclaims
+    without a signal."""
+    killed: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    tid = kb.create_task(conn, title="legacy row", assignee="w")
+    assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET worker_pid=4242, worker_pid_started_at=NULL "
+            "WHERE id=?",
+            (tid,),
+        )
+    assert kb.reclaim_task(
+        conn, tid, reason="operator reclaim", signal_fn=fake_kill,
+    )
+    assert killed == []
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["payload"])
+    assert payload["signal_skipped"] == "pid_identity_unknown"
+    assert payload["terminated"] is True
+
+
 def test_queue_coalescing_never_reenables_skipping(monkeypatch):
     """AB: two queued requests for one unit coalesce into one entry and
     ``skip_if_registered`` composes with AND. A terminal request (False —
@@ -3229,6 +3323,12 @@ def test_queue_coalescing_never_reenables_skipping(monkeypatch):
     can never re-enable skipping past a terminal stop."""
     monkeypatch.setattr(kb, "_scope_stop_inline", False)
     monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    # Park any lingering service thread on the OLD wake event (see the
+    # connection-local intents test) so nothing drains the entries the
+    # asserts inspect.
+    import threading as _threading
+
+    monkeypatch.setattr(kb, "_scope_stop_wake", _threading.Event())
     monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
     kb.reset_scope_stop_service_for_tests()
     unit = kb._kanban_worker_scope_unit("t_coal", 2)

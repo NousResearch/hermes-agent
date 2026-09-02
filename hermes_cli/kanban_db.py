@@ -5181,7 +5181,7 @@ def release_stale_claims(
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, worker_pid_started_at, "
         "       worker_registered_at, worker_scope, claim_expires, "
-        "       last_heartbeat_at, assignee "
+        "       last_heartbeat_at, assignee, current_run_id "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -5249,6 +5249,7 @@ def release_stale_claims(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
             pid_started_at=row["worker_pid_started_at"],
+            task_id=row["id"], run_id=row["current_run_id"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -5355,6 +5356,7 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
         scope_unit=row["worker_scope"] or None,
         pid_started_at=row["worker_pid_started_at"],
+        task_id=task_id, run_id=_current_run_id(conn, task_id),
     )
     # Never release the claim beside a worker/scope we could not verify
     # dead — that would spawn a duplicate beside it (same guard as the
@@ -6821,6 +6823,7 @@ def request_review(
             pid, claim_lock,
             scope_unit=scope or None,
             pid_started_at=pid_started,
+            task_id=task_id, run_id=snapshot["current_run_id"],
         )
         if _worker_survived_termination(termination):
             _defer_reclaim_for_live_worker(
@@ -7053,6 +7056,7 @@ def request_changes(
             pid, claim_lock,
             scope_unit=scope or None,
             pid_started_at=pid_started,
+            task_id=task_id, run_id=snapshot["current_run_id"],
         )
         if _worker_survived_termination(termination):
             _defer_reclaim_for_live_worker(
@@ -9588,19 +9592,21 @@ def _run_worker_alive(row: Any) -> "tuple[bool, str]":
         # a host with no readable cgroup hierarchy at all) — fall through
         # to pid checks, which for unsupported hosts IS the contract.
     if registered_at is not None:
-        if _worker_pid_identity_alive(pid, started_at):
+        # Liveness keeps unknown-alive (conservative: hold the claim) —
+        # see ``_worker_pid_identity_state`` for why signal gates differ.
+        if _worker_pid_identity_state(pid, started_at) != "dead":
             return True, "pid_identity"
         return False, "pid_gone_or_reused"
     if scope:
         # Unregistered scoped run: the recorded pid is the launcher.
-        if _worker_pid_identity_alive(pid, started_at):
+        if _worker_pid_identity_state(pid, started_at) != "dead":
             return True, "launcher_alive"
         return False, "launcher_gone"
     if started_at is not None:
         # Unscoped row with a fingerprint but no registered_at (written
         # before that column existed): the fingerprint is still the
         # authority — a recycled pid must not pass.
-        if _worker_pid_identity_alive(pid, started_at):
+        if _worker_pid_identity_state(pid, started_at) != "dead":
             return True, "pid_identity"
         return False, "pid_gone_or_reused"
     return _pid_alive(pid), "legacy_bare_pid"
@@ -9690,11 +9696,12 @@ def register_worker_pid(
                         row["worker_pid_started_at"], started,
                     )
                     return False
-            elif _worker_pid_identity_alive(
+            elif _worker_pid_identity_state(
                 row["worker_pid"], row["worker_pid_started_at"],
-            ):
+            ) != "dead":
                 # A different, still-alive pid already owns this attempt —
-                # do not let a stray process overwrite it.
+                # do not let a stray process overwrite it. Unknown
+                # identity also refuses the overwrite (conservative).
                 return False
             # A different, DEAD pid: superseded launcher/worker (adoption
             # rewrote the claim, a reclaim killed it) — the new worker
@@ -9836,18 +9843,30 @@ def _pid_identity_state(pid: int, started_at: Optional[int]) -> str:
     return "match" if live == int(started_at) else "different"
 
 
-def _worker_pid_identity_alive(pid: int, started_at: Optional[int]) -> bool:
-    """True when *pid* is alive AND is the same process we spawned.
+def _worker_pid_identity_state(pid: int, started_at: Optional[int]) -> str:
+    """Tri-state identity verdict for a recorded worker pid (pass 8, X).
 
-    A bare liveness check can be fooled by PID reuse: the worker dies, the
-    kernel hands its number to an unrelated process, and the dispatcher
-    keeps "extending" a claim for a worker that no longer exists. When a
-    start-time fingerprint was recorded at spawn, require the live process
-    to present the same one. When it wasn't (legacy rows from before this
-    column, or a fingerprint read failure), fall back to plain liveness —
-    this guard refines detection, it must never make it worse than today.
+    ``"dead"`` — the pid is gone, or alive with a DIFFERENT start
+    fingerprint (a recycled pid): nothing of ours to signal or extend.
+    ``"alive"`` — the live process presents the recorded fingerprint.
+    ``"unknown"`` — alive, but the identity cannot be verified (no
+    fingerprint recorded — legacy rows — or the live one is unreadable).
+
+    The tri-state exists so SIGNAL gates can fail safe: a caller about to
+    ``kill(pid, ...)`` treats ``"unknown"`` as never-signal (the pid may
+    belong to an unrelated process), while LIVENESS callers keep
+    ``state != "dead"`` so an unreadable identity stays conservative
+    (keep the claim, refuse the overwrite) exactly as before. The old
+    boolean helper folded ``"unknown"`` into alive, which made every
+    generic reclaim path happily signal an unattributable pid
+    (``enforce_max_runtime`` had already fixed its own gate — finding P).
     """
-    return _pid_identity_state(pid, started_at) not in ("gone", "different")
+    state = _pid_identity_state(pid, started_at)
+    if state in ("gone", "different"):
+        return "dead"
+    if state == "match":
+        return "alive"
+    return "unknown"
 
 
 def _worker_termination_tuple(row: Any) -> tuple[
@@ -9877,16 +9896,22 @@ def _terminate_reclaimed_worker(
     signal_fn=None,
     scope_unit: Optional[str] = None,
     pid_started_at: Optional[int] = None,
+    task_id: Optional[str] = None,
+    run_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """Best-effort host-local worker termination for reclaim paths.
 
     Scoped workers are killed by stopping (and verifying) the whole
     transient unit; unscoped workers by the classic SIGTERM→SIGKILL pid
-    loop, gated on the pid's start-time fingerprint so a recycled PID is
-    never signalled. ``terminated`` means "we know nothing of this run is
-    alive"; a scope whose stop could not be verified leaves
-    ``scope_stopped`` False so callers defer the reclaim instead of
-    releasing the claim beside a still-draining cgroup.
+    loop, gated on the pid's tri-state identity so a recycled PID — or a
+    pid whose identity cannot be verified — is never signalled (pass 8,
+    X: an unattributable signal might hit an unrelated process; the run
+    is reclaimed without it, exactly like ``enforce_max_runtime``).
+    ``terminated`` means "we know nothing of this run is alive"; a scope
+    whose stop could not be verified leaves ``scope_stopped`` False so
+    callers defer the reclaim instead of releasing the claim beside a
+    still-draining cgroup. ``task_id``/``run_id`` only feed the
+    warn-once gate for skipped signals.
     """
     import signal
 
@@ -9928,18 +9953,33 @@ def _terminate_reclaimed_worker(
         # kill below runs as a backstop, but the caller must defer the
         # reclaim on scope_stopped=False regardless of the pid's fate.
 
-    if (
-        pid_started_at is not None
-        and _pid_alive(pid)
-        and not _worker_pid_identity_alive(pid, pid_started_at)
-    ):
-        # PID-reuse guard: the worker is gone and the kernel handed its
-        # number to an unrelated process. Nothing of ours to signal —
-        # report terminated (releasing the claim is correct) and record
-        # why, so events/logs can distinguish this from a clean kill.
-        info["pid_reused"] = True
+    identity = _worker_pid_identity_state(pid, pid_started_at)
+    if identity == "dead":
+        # PID-reuse guard, unified over gone and recycled: the worker is
+        # gone, or alive with a different start fingerprint. Nothing of
+        # ours to signal — report terminated (releasing the claim is
+        # correct) and record why, so events/logs can distinguish this
+        # from a clean kill. A gone pid no longer round-trips through
+        # kill()/ProcessLookupError either: the gap between an is-alive
+        # check and a signal is exactly where a recycled pid would catch
+        # a stray SIGTERM.
+        if _pid_alive(pid):
+            info["pid_reused"] = True
         info["termination_attempted"] = True
         info["terminated"] = True
+        return info
+    if identity == "unknown":
+        # Pass 8 (X): the identity is unreadable or was never recorded
+        # (legacy row) — a signal we cannot attribute might hit an
+        # unrelated process, so the run is reclaimed WITHOUT signalling
+        # (the same fail-safe stance ``enforce_max_runtime``'s gate took
+        # in pass 4, finding P). One warning per run id.
+        info["signal_skipped"] = "pid_identity_unknown"
+        info["termination_attempted"] = True
+        info["terminated"] = True
+        _warn_bare_pid_gate_stood_down(
+            task_id, run_id, pid, "pid_identity_unknown",
+        )
         return info
 
     kill = signal_fn if signal_fn is not None else (
@@ -10337,7 +10377,7 @@ def detect_stale_running(
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_pid_started_at, t.worker_scope, "
-        "       t.last_heartbeat_at, t.claim_lock, "
+        "       t.last_heartbeat_at, t.claim_lock, t.current_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -10367,6 +10407,7 @@ def detect_stale_running(
             pid, lock, signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
             pid_started_at=row["worker_pid_started_at"],
+            task_id=tid, run_id=row["current_run_id"],
         )
 
         # Never release a claim while our own worker is still alive: that would

@@ -269,12 +269,6 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
-    # The fingerprint gate in enforce_max_runtime refuses to signal a pid
-    # it cannot vouch for; with _pid_alive stubbed dead the identity
-    # check would (correctly) skip signalling, so vouch for the pid the
-    # way its true fingerprint would.
-    original_identity = _kb._worker_pid_identity_alive
-    _kb._worker_pid_identity_alive = lambda pid, started_at: True
 
     try:
         conn = kb.connect()
@@ -318,7 +312,6 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             conn.close()
     finally:
         _kb._pid_alive = original_alive
-        _kb._worker_pid_identity_alive = original_identity
 
 
 
@@ -1228,10 +1221,15 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
         conn.execute(
-            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=? "
+            "WHERE id=?",
+            (lock, future, t),
         )
+        # A REAL pid with its recorded start fingerprint: the pass-8
+        # identity gate never signals a pid it cannot attribute, and the
+        # old bare 12345 (no fingerprint, no process) is exactly that
+        # unattributable case.
+        kb._set_worker_pid(conn, t, os.getpid())
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
             "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",

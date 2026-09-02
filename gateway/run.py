@@ -26136,6 +26136,19 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _build_gateway_stderr_handler(
+    level: int, *, stream=None
+) -> logging.StreamHandler:
+    """Build gateway stderr with the same routine-noise policy as file logs."""
+    from hermes_logging import _RoutineTransportNoiseFilter, _safe_stderr
+
+    handler = logging.StreamHandler(stream if stream is not None else _safe_stderr())
+    handler.setLevel(level)
+    handler.setFormatter(_gateway_stderr_formatter())
+    handler.addFilter(_RoutineTransportNoiseFilter())
+    return handler
+
+
   # ownership guard inserted below (PR #93084)
 def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     """Return True when ``--replace`` must refuse to signal ``existing_pid``.
@@ -26760,13 +26773,11 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     # Optional stderr handler from -v/-q: None (quiet) = none; 0 = WARNING; 1 = INFO; 2+ = DEBUG.
     if verbosity is not None:
         _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
-        _stderr_handler = logging.StreamHandler(_safe_stderr())
-        _stderr_handler.setLevel(_stderr_level)
-        _stderr_handler.setFormatter(_gateway_stderr_formatter())
-        root = logging.getLogger()
-        root.addHandler(_stderr_handler)
-        if _stderr_level < root.level:  # so DEBUG records can reach the handler
-            root.setLevel(_stderr_level)
+        _stderr_handler = _build_gateway_stderr_handler(_stderr_level)
+        logging.getLogger().addHandler(_stderr_handler)
+        # Lower root logger level if needed so DEBUG records can reach the handler
+        if _stderr_level < logging.getLogger().level:
+            logging.getLogger().setLevel(_stderr_level)
 
 
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):

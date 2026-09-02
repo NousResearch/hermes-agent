@@ -223,6 +223,38 @@ class TestSetupLogging:
 
 
 
+    def test_filters_only_routine_mcp_transport_noise(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        http_logger = logging.getLogger("httpx2")
+        mcp_logger = logging.getLogger("mcp.client.streamable_http")
+        previous_http_level = http_logger.level
+        previous_mcp_level = mcp_logger.level
+        try:
+            # Simulate libraries resetting their logger levels after setup.
+            http_logger.setLevel(logging.INFO)
+            mcp_logger.setLevel(logging.INFO)
+            http_logger.info("routine MCP HTTP 200")
+            http_logger.warning("important MCP transport warning")
+            mcp_logger.info("Received session ID: test-session-id")
+            mcp_logger.warning("Session termination failed: 404")
+            mcp_logger.warning("Session termination failed: 500")
+            hermes_logging.flush_log_queue()
+        finally:
+            http_logger.setLevel(previous_http_level)
+            mcp_logger.setLevel(previous_mcp_level)
+
+        agent = (hermes_home / "logs" / "agent.log").read_text()
+        errors = (hermes_home / "logs" / "errors.log").read_text()
+        assert "routine MCP HTTP 200" not in agent
+        assert "test-session-id" not in agent
+        assert "Session termination failed: 404" not in agent
+        assert "Session termination failed: 404" not in errors
+        assert "important MCP transport warning" in agent
+        assert "Session termination failed: 500" in agent
+        assert "important MCP transport warning" in errors
+        assert "Session termination failed: 500" in errors
+
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
         import yaml

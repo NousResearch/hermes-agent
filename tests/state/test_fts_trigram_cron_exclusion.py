@@ -129,6 +129,38 @@ def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path):
         migrated.close()
 
 
+def test_install_already_at_v28_still_gets_the_cron_exclusion_migration(tmp_path):
+    """The migration gate must fire for installs that were on main's v28.
+
+    The original PR gated on ``current_version < 27``; main had meanwhile
+    reached SCHEMA_VERSION 28 via column-reconciliation bumps, so a v28
+    database would have skipped the rebuild and kept cron rows in the trigram
+    index forever. Pin the gate against the version main actually shipped.
+    """
+    db_path = tmp_path / "state.db"
+    old = SessionDB(db_path=db_path)
+    if not old._trigram_available:
+        old.close()
+        pytest.skip("trigram tokenizer unavailable in this SQLite build")
+    _install_pre_v27_trigram(old)
+    old.create_session("cli", source="cli")
+    old.create_session("cron", source="cron")
+    cli_id = old.append_message("cli", role="user", content="交互迁移内容")
+    cron_id = old.append_message("cron", role="user", content="定时迁移内容")
+    assert _trigram_rowids(old) == {cli_id, cron_id}
+    old._conn.execute("UPDATE schema_version SET version = 28")
+    old._conn.commit()
+    old.close()
+
+    migrated = SessionDB(db_path=db_path)
+    try:
+        assert _trigram_rowids(migrated) == {cli_id}, (
+            "a v28 database kept cron rows in the trigram index: the migration gate did not fire"
+        )
+    finally:
+        migrated.close()
+
+
 def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path):
     db_path = tmp_path / "state.db"
     old = SessionDB(db_path=db_path)

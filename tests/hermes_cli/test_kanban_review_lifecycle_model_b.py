@@ -99,7 +99,7 @@ def test_model_b_precreated_review_child_rejects_via_fallback(
         # Pre-created review child: review profile as assignee, parent is the
         # completed artifact, and NO review_requested event exists.
         review_id = kb.create_task(
-            conn, title="review the widget", assignee="worf-reviewer",
+            conn, title="review the widget", assignee="reviewer",
             parents=[artifact],
         )
         claimed = kb.claim_task(conn, review_id)  # claimed from ready, not review

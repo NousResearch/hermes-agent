@@ -3112,7 +3112,24 @@ def request_changes(
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    gating reapplied. Returns ``(ok, implementer | reason)``.
+
+    The transition is valid for a run claimed from ``review`` (Model A — the
+    first-class handoff): it closes that reviewer run, restores the
+    implementer recorded by the latest ``review_requested`` event, reapplies
+    parent gating, and emits an auditable ``changes_requested`` event.
+
+    It also gives ``kanban_request_changes`` a Model-B fallback for runs NOT
+    claimed from ``review`` (a pre-created review child claimed from
+    ``ready``, with no ``review_requested`` event): the implementer is derived
+    from the newest-done NON-REVIEWER parent, a ``[rework]`` card is routed
+    back to it and linked as a parent of this review card, and a real
+    ``changes_requested`` event is emitted. Zero candidates or a completed_at
+    tie still resolve to False — provenance is never fabricated.
+
+    The second tuple item is the implementer on success or a diagnostic reason
+    on failure.
+    """
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
@@ -3132,7 +3149,18 @@ def request_changes(
         claimed_event = _latest_event(conn, task_id, "claimed", current_run_id)
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
         if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
+            # Model-B fallback: a pre-created review child was claimed from
+            # ``ready`` (no ``review_requested`` event, no ``source_status=
+            # review`` provenance on the claim). Derive the implementer from
+            # the newest-done NON-REVIEWER parent and route a rework card back
+            # to it instead of returning a hard False.
+            return _request_changes_model_b(
+                conn,
+                task_id,
+                reviewer=task_row["assignee"],
+                reason=reason,
+                current_run_id=current_run_id,
+            )
 
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
@@ -3174,6 +3202,143 @@ def request_changes(
             },
             run_id=run_id,
         )
+    return True, implementer
+
+
+def _derive_idempotency_key(parent_ids: Iterable[str]) -> str:
+    """Deterministic idempotency key for a set of parent task ids.
+
+    ``"+"``-join of the sorted parent ids, sha256-truncated to 32 hex.
+    Recovering the same key on a retried Model-B reject makes
+    :func:`create_task` return the existing rework card instead of
+    duplicating it.
+    """
+    joined = "+".join(sorted(str(p) for p in parent_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
+
+
+def _request_changes_model_b(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewer: Optional[str],
+    reason: str,
+    current_run_id: int,
+) -> tuple[bool, Optional[str]]:
+    """Model-B reject path for a pre-created review child.
+
+    A review child the orchestrator pre-created and the reviewer claimed from
+    ``ready`` has no ``review_requested`` event to recover the implementer
+    from. This fallback derives it from the *newest-done* NON-REVIEWER parent
+    (the artifact under review), creates a ``[rework]`` card back to that
+    implementer, links the rework card as a PARENT of this review card (so the
+    next review pass re-promotes when rework lands), and emits a real
+    ``changes_requested`` event — giving the Model-B reviewer a legal native
+    reject verb instead of a forced ``kanban_block`` workaround.
+
+    When the parent set yields no unambiguous implementer (zero done
+    non-reviewer parents, or a completed_at tie) the call returns ``False``
+    with a diagnostic reason — provenance is never fabricated.
+
+    Assumes it is called from inside the ``request_changes`` write_txn, so the
+    parent link is inserted inline (``link_tasks`` opens its own transaction
+    and must not nest).
+    """
+    canonical_reviewer = (
+        _canonical_assignee(reviewer)
+        if reviewer and str(reviewer).strip()
+        else None
+    )
+    # Newest-done = largest completed_at among done parents whose assignee is
+    # NOT this review card's reviewer. Survives review cycles: each rework
+    # becomes a newer done parent on the next pass.
+    candidates = conn.execute(
+        """
+        SELECT p.id, p.title, p.assignee, p.completed_at
+          FROM task_links tl
+          JOIN tasks p ON p.id = tl.parent_id
+         WHERE tl.child_id = ? AND p.status = 'done'
+           AND p.completed_at IS NOT NULL
+        """,
+        (task_id,),
+    ).fetchall()
+    if canonical_reviewer is not None:
+        non_reviewers = [
+            c for c in candidates
+            if _canonical_assignee(c["assignee"]) != canonical_reviewer
+        ]
+    else:
+        non_reviewers = list(candidates)
+    if not non_reviewers:
+        return False, "no done non-reviewer parent to derive the implementer from"
+    best_ts = max(c["completed_at"] for c in non_reviewers)
+    tied = [c for c in non_reviewers if c["completed_at"] == best_ts]
+    if len(tied) != 1:
+        return False, "ambiguous newest-done parent — cannot route rework"
+    selected = tied[0]
+    implementer = _canonical_assignee(selected["assignee"])
+    if not implementer:
+        return False, "selected parent has no valid implementer assignee"
+
+    artifact_title = (selected["title"] or "").strip() or "untitled"
+    rework_title = f"[rework] {artifact_title}"
+    if len(rework_title) > 200:
+        rework_title = rework_title[:200]
+    rework_id = create_task(
+        conn,
+        title=rework_title,
+        body=(
+            f"Review of artifact `{selected['id']}` ({artifact_title}) "
+            f"requested changes from review card `{task_id}`.\n\n{reason}"
+        ),
+        assignee=implementer,
+        parents=[selected["id"]],
+        idempotency_key=_derive_idempotency_key([selected["id"]]),
+        created_by=canonical_reviewer or "review",
+        workspace_kind="scratch",
+    )
+    # Link the rework card as a PARENT of this review card. Rework is a fresh
+    # childless card, so no cycle is possible; the insert mirrors link_tasks'
+    # semantics inline (already inside the outer write_txn).
+    conn.execute(
+        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        (rework_id, task_id),
+    )
+    conn.execute(
+        "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+        (task_id,),
+    )
+    _append_event(
+        conn, task_id, "linked",
+        {"parent": rework_id, "child": task_id},
+    )
+
+    # Close the reviewer's run and land the review card on parent gating.
+    new_status = _landing_status_after_parents(conn, task_id)
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+        "worker_pid = NULL WHERE id = ? AND status = 'running' AND current_run_id = ?",
+        (new_status, task_id, int(current_run_id)),
+    )
+    if cur.rowcount != 1:
+        return False, "task changed during review handoff"
+    run_id = _end_run(
+        conn, task_id,
+        outcome="changes_requested",
+        status=new_status,
+        summary=reason,
+    )
+    _append_event(
+        conn, task_id, "changes_requested",
+        {
+            "reason": reason,
+            "implementer": implementer,
+            "reviewer": canonical_reviewer,
+            "status": new_status,
+            "rework": rework_id,
+        },
+        run_id=run_id,
+    )
     return True, implementer
 
 

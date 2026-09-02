@@ -1124,11 +1124,21 @@ def _run_claimed_job(
             _registered = False
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        last_status = refreshed.get("last_status")
+        # "delivery_failed" (#83993): the agent run itself succeeded but the
+        # output never reached the user. That is NOT a success for the caller
+        # — the calling agent relays this result — so report it as failed
+        # and surface the delivery error, which lives in last_delivery_error
+        # (last_error is None for these runs, and a bare success=False with
+        # error=None reads as an unexplained failure).
+        ok = last_status == "ok"
+        run_error = refreshed.get("last_error")
+        if last_status == "delivery_failed" and not run_error:
+            run_error = refreshed.get("last_delivery_error")
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": run_error,
         }
 
     except Exception as e:

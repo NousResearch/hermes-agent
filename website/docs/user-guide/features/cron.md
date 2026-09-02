@@ -440,6 +440,19 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+### Delivery failures are a distinct status
+
+Execution and delivery are tracked separately. When the agent run succeeds but
+the output never reaches the target (platform 5xx, rate limit, stale session,
+adapter returned no positive evidence of a send), the job records
+`last_status: delivery_failed` — never a plain `ok` — with the reason in
+`last_delivery_error`. `hermes cron list` shows it in yellow as
+`delivery_failed: <reason>`, `hermes cron doctor` reports it as a delivery
+issue, and a manual `cronjob run` reports `success: false` with the delivery
+error. A delivery failure does not count toward the job's `failure_streak`
+(the agent did its job); the next fully successful run returns the status to
+`ok`.
+
 ### Bot Chat delivery (`bot-chat`)
 
 `bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.

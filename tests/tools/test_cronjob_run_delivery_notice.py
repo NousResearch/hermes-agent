@@ -199,7 +199,9 @@ class TestRunnerSummaryWiring:
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={
-                        "last_status": "ok",
+                        # Post-#83993 record shape: mark_job_run writes
+                        # delivery_failed (not ok) when only delivery failed.
+                        "last_status": "delivery_failed",
                         "last_error": None,
                         "last_delivery_error": "telegram send failed: 400",
                     },
@@ -214,6 +216,9 @@ class TestRunnerSummaryWiring:
         assert "delivery FAILED" in summary
         assert "telegram send failed: 400" in summary
         assert "delivered there by the job itself" not in summary
+        # The headline must not read "Result: ok" over an undelivered run.
+        assert "Result: FAILED" in summary
+        assert "Result: ok" not in summary
 
     def test_empty_deliver_summary_states_local_not_phantom_target(self):
         """End-to-end: an empty stored deliver must render as the local target

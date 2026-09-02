@@ -84,6 +84,7 @@ import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
+  startUnrestoredTileTitleBackfill,
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
@@ -459,6 +460,7 @@ watchContributedPanes()
 // into the transparent overlay).
 if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
+  startUnrestoredTileTitleBackfill()
   watchRouteTiles()
   watchPreviewTiles()
 }

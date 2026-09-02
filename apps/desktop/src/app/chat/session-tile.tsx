@@ -478,6 +478,33 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
   )
 }
 
+/** One-shot by-id title fill for restored tiles that never mount (#94167).
+ *  A restored background tab has no runtimeId and does not mount its pane, so
+ *  the resolution effect above never runs; when its row is outside the recents
+ *  page and project tree, `tileTitle()` reads "New session" until first click.
+ *  `resolveStoredSession` upserts the row into `$sessions`, which the tab strip
+ *  already watches — nothing is persisted. Runs once the gateway can answer. */
+export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession): () => void {
+  const run = () => {
+    if ($gatewayState.get() !== 'open') {
+      return
+    }
+
+    off()
+
+    for (const tile of $sessionTiles.get()) {
+      if (!tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId)) {
+        void lookup(tile.storedSessionId, tile.ownerRoute).catch(() => undefined)
+      }
+    }
+  }
+
+  const off = $gatewayState.listen(run)
+  run()
+
+  return off
+}
+
 /** The tab's REGISTERED name. Deliberately the bare placeholder for a draft
  *  rather than its live composer title (`tabTitle` renders that): re-registering
  *  per keystroke would re-render the strip, and holding the draft's text here

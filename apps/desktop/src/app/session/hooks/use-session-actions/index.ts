@@ -2024,7 +2024,7 @@ export function useSessionActions({
           await ensureGatewayProfile(profile)
         }
 
-        const requestBranchGateway = <T,>(method: string, params: Record<string, unknown>): Promise<T> =>
+        const requestBranchGateway = <T>(method: string, params: Record<string, unknown>): Promise<T> =>
           ownerRoute
             ? requestGatewayForAgent<T>(ownerRoute.connectionId, ownerRoute.profile, method, params)
             : requestGateway<T>(method, params)

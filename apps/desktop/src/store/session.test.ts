@@ -694,9 +694,7 @@ describe('carryForwardFailedProfileSessions', () => {
       session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
     ]
 
-    const carried = carryForwardFailedProfileSessions(previous, [], [
-      { profile: 'default', error: 'disk I/O error' }
-    ])
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'default', error: 'disk I/O error' }])
 
     expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
     expect(carried[1]).toBe(previous[1])
@@ -724,9 +722,11 @@ describe('carryForwardFailedProfileSessions', () => {
 
     const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
 
-    expect(
-      carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)
-    ).toEqual(['idle-newer', 'home', 'idle-older'])
+    expect(carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)).toEqual([
+      'idle-newer',
+      'home',
+      'idle-older'
+    ])
   })
 
   it('treats a missing profile tag on the error as default', () => {

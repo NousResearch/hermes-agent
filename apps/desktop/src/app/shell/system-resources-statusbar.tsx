@@ -103,7 +103,8 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
       : null
 
   const ramUsed = hardware ? hardware.ram_total_bytes - hardware.ram_available_bytes : null
-  const ramPercent = hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
+  const ramPercent =
+    hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
 
   // Compact bar label: the numbers a local-inference user glances at.
   // "GPU 34% · 18G/32G" with a GPU; "RAM 41G/256G" without.
@@ -124,10 +125,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     menuAlign: 'end',
     menuClassName: 'w-64 p-0',
     menuContent: (
-      <div
-        className="grid grid-cols-[minmax(0,1fr)] gap-3 p-3 text-[0.75rem]"
-        data-slot="system-resources-panel"
-      >
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-3 p-3 text-[0.75rem]" data-slot="system-resources-panel">
         {/* min-w-0 everywhere a flex/grid child must shrink: grid items
             default min-width:auto, so a long GPU name's nowrap min-content
             props the track open past the w-64 box and overflow-x:hidden

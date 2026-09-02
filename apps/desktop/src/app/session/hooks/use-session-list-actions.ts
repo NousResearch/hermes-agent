@@ -303,11 +303,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // whole list re-renders once per turn/broadcast for nothing.
           setSessions(prev => {
             const incoming = dropTombstoned(
-              carryForwardFailedProfileSessions(
-                prev,
-                recents.sessions ?? [],
-                recents.errors ?? result.errors
-              )
+              carryForwardFailedProfileSessions(prev, recents.sessions ?? [], recents.errors ?? result.errors)
             )
 
             const next = mergeSessionPage(prev, incoming, sessionsToKeep())

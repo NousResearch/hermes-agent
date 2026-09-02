@@ -970,7 +970,9 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS)
+    )
 
     // Switch to session B before compression resolves.
     activeSessionIdRef.current = RUNTIME_SESSION_B
@@ -1029,7 +1031,9 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS)
+    )
     activeSessionIdRef.current = RUNTIME_SESSION_B
     storedSessionIdRef.current = 'stored-b'
     rejectCompress(new Error('compression failed'))

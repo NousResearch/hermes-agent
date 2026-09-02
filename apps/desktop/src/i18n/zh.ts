@@ -1359,7 +1359,8 @@ export const zh: Translations = {
       useAction: '使用',
       activePill: '默认',
       updateTitle: '引擎有可用更新',
-      updateDetail: (next, current) => `新的 llama.cpp 构建（${next}）可以安装——当前为 ${current}。下载期间模型仍可正常使用。`,
+      updateDetail: (next, current) =>
+        `新的 llama.cpp 构建（${next}）可以安装——当前为 ${current}。下载期间模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',

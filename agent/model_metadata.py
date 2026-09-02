@@ -2090,7 +2090,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     _rc = msg.get("reasoning_content")
-    drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
+    drop_reasoning_dup = isinstance(_rc, str)
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):

@@ -87,6 +87,58 @@ class TestBudgetExcludesReasoningDetailsEnvelope:
         )
 
 
+class TestReasoningContentDisplacesInternalReasoning:
+    def test_string_placeholder_makes_internal_reasoning_wire_dead(self):
+        """Even an empty/space reasoning_content hits policy case 1.
+
+        Request building returns from that branch before ``reasoning`` can be
+        promoted, then removes the internal field.  Both compression budgets
+        must therefore ignore the trajectory copy (#99398).
+        """
+        from agent.model_metadata import _estimate_message_tokens_without_images
+
+        prose = "private reasoning " * 1_000
+        for placeholder in ("", " "):
+            base = {
+                "role": "assistant",
+                "content": "hi",
+                "reasoning_content": placeholder,
+            }
+            loaded = {**base, "reasoning": prose}
+
+            tail_delta = (
+                _estimate_msg_budget_tokens(loaded)
+                - _estimate_msg_budget_tokens(base)
+            )
+            preflight_delta = (
+                _estimate_message_tokens_without_images(loaded)
+                - _estimate_message_tokens_without_images(base)
+            )
+
+            assert tail_delta < 100, (
+                f"tail budget charged wire-dead reasoning for {placeholder!r}: "
+                f"{tail_delta} tokens"
+            )
+            assert preflight_delta < 100, (
+                f"preflight charged wire-dead reasoning for {placeholder!r}: "
+                f"{preflight_delta} tokens"
+            )
+
+    def test_reasoning_without_string_placeholder_remains_chargeable(self):
+        """Without a string reasoning_content, policy may promote reasoning."""
+        from agent.model_metadata import _estimate_message_tokens_without_images
+
+        base = {"role": "assistant", "content": "hi"}
+        loaded = {**base, "reasoning": "wire reasoning " * 1_000}
+
+        assert _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base) > 1_000
+        assert (
+            _estimate_message_tokens_without_images(loaded)
+            - _estimate_message_tokens_without_images(base)
+            > 1_000
+        )
+
+
 class TestReasoningDetailsTextChars:
     def test_none_and_empty(self):
         assert _reasoning_details_text_chars(None) == 0

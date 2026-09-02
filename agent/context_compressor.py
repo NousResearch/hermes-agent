@@ -1138,7 +1138,7 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     # Wire ships at most ONE generic thinking key (reasoning_content wins);
     # charging both double-counts on echo-back providers.
     _rc = msg.get("reasoning_content")
-    _skip_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
+    _skip_reasoning_dup = isinstance(_rc, str)
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
         if key == "reasoning" and _skip_reasoning_dup:
             continue

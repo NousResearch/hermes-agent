@@ -68,7 +68,7 @@ def test_classify_deleted_wal_is_replaced_not_disk():
 
 
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
-    monkeypatch.setattr(hermes_state, "_IS_WINDOWS", True)
+    monkeypatch.setattr(hermes_state.sys, "platform", "win32")
     assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []
 
 
@@ -117,13 +117,14 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
     wal = _require_wal(db)
     inode_before = wal.stat().st_ino
     _unlink_sidecars(path)
-    holders = iter_deleted_sqlite_sidecar_holders(path, include_self=True)
+    holders = iter_deleted_sqlite_sidecar_holders(path)
     try:
         assert holders, "expected this process to still hold the deleted WAL inode"
         assert any("(deleted)" in target for _pid, target in holders)
-        assert any(target.rstrip(" (deleted)").endswith("-wal") or
-                   target.rstrip(" (deleted)").endswith("-shm")
-                   for _pid, target in holders)
+        assert any(
+            target.removesuffix(" (deleted)").endswith(("-wal", "-shm"))
+            for _pid, target in holders
+        )
         assert not wal.exists() or wal.stat().st_ino != inode_before
     finally:
         db.close()

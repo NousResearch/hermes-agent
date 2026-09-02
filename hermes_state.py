@@ -2264,11 +2264,10 @@ def classify_persistence_error(exc_or_str) -> str:
     if isinstance(exc_or_str, CompressionSessionBusyError):
         return "compression"
     if isinstance(exc_or_str, StateDbReplacedError):
+        # Includes DeletedWalGenerationError (subclass).
         return "replaced"
     if isinstance(exc_or_str, StateDbCorruptError):
         return "corrupt"
-    if isinstance(exc_or_str, DeletedWalGenerationError):
-        return "replaced"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
@@ -4355,7 +4354,7 @@ class StateDbReplacedError(RuntimeError):
     """
 
 
-class DeletedWalGenerationError(RuntimeError):
+class DeletedWalGenerationError(StateDbReplacedError):
     """A live process holds a deleted state.db-wal / -shm generation.
 
     Opening or writing through this handle would mint a second WAL inode
@@ -4363,6 +4362,12 @@ class DeletedWalGenerationError(RuntimeError):
     intermittent SQLITE_CORRUPT / SQLITE_IOERR. Stop the writers; do not
     unlink the WAL yourself. ``database.journal_mode: delete`` is operator
     containment, not a default change.
+
+    Subclasses :class:`StateDbReplacedError` so every downstream consumer
+    that already stops SQLite writes and diverts pending transcripts on a
+    replaced store (gateway retry queue, run_agent flush) handles the split
+    WAL generation identically — the correct response is the same: stop
+    writing, preserve the transcript tail on disk.
     """
 
 
@@ -4571,34 +4576,29 @@ def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     }
 
 
-def iter_deleted_sqlite_sidecar_holders(
-    db_path, include_self: bool = True
-) -> List[Tuple[int, str]]:
+def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.
 
     Linux-only (``/proc/<pid>/fd`` readlink). Windows and other hosts
     return ``[]`` — Windows cannot unlink a sidecar another process still
     holds, and macOS does not use the `` (deleted)`` suffix.
 
-    ``include_self=True`` is required on the SessionDB open/write refuse
-    path: the in-process writer that still holds the orphan inode is the
+    The scan includes this process: on the SessionDB open/write refuse
+    path, the in-process writer that still holds the orphan inode is the
     one that must not mint a replacement WAL (and must stop committing).
     ``_foreign_state_db_holders`` keeps skipping this PID for FTS
     maintenance so a process does not block its own optional repair.
     """
-    if _IS_WINDOWS or not sys.platform.startswith("linux"):
+    if not sys.platform.startswith("linux"):
         return []
 
     holders: List[Tuple[int, str]] = []
-    own_pid = os.getpid()
     watched = _watched_sqlite_sidecar_paths(db_path)
     try:
         for pid_str in os.listdir("/proc"):
             if not pid_str.isdigit():
                 continue
             pid = int(pid_str)
-            if pid == own_pid and not include_self:
-                continue
             fd_dir = f"/proc/{pid}/fd"
             try:
                 fds = os.listdir(fd_dir)
@@ -4625,7 +4625,7 @@ def refuse_deleted_wal_generation(db_path) -> None:
     Called *before* ``sqlite3.connect`` so a second opener cannot mint a
     replacement WAL inode while a live writer still holds the orphan.
     """
-    holders = iter_deleted_sqlite_sidecar_holders(db_path, include_self=True)
+    holders = iter_deleted_sqlite_sidecar_holders(db_path)
     if not holders:
         return
     logger.error(_DELETED_WAL_GENERATION_MSG)
@@ -5510,10 +5510,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # readonly database" from deep inside _init_schema.
             if not read_only:
                 preflight_db_writability(self.db_path, db_label="state.db")
-                # Refuse before the first sqlite3.connect so we cannot mint a
-                # replacement WAL while a live writer still holds a deleted
-                # sidecar inode.
-                refuse_deleted_wal_generation(self.db_path)
 
             # #68474 / #97568: Serialize startup across zero-byte check, quarantine,
             # connect, and schema commit so concurrent openers don't race on an
@@ -5554,6 +5550,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
+                # Refuse before sqlite3.connect (under the startup lock) so we
+                # cannot mint a replacement WAL while a live writer still
+                # holds a deleted sidecar inode.
                 refuse_deleted_wal_generation(self.db_path)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
@@ -6501,37 +6500,51 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _wal_generation_was_lost(self) -> bool:
         """True when the WAL/SHM generation this instance opened is gone.
 
-        Two independent cheap signals, either sufficient:
+        Steady state (a sidecar generation is recorded): pure stat — a
+        recorded inode that is missing or replaced by a new file at the same
+        path means the generation split. No /proc walk on healthy writes.
 
-        - a sidecar inode recorded at open is missing or has been replaced
-          by a new file at the same path (stat only — no /proc walk);
-        - this process still holds a ``state.db-wal (deleted)`` /
-          ``-shm (deleted)`` fd (``/proc/self/fd`` only).
-
-        A full ``/proc/*/fd`` walk is reserved for
+        Empty-identity state (fresh DB whose WAL appears only after open, or
+        identity cleared by a clean ``close()``): fall back to a
+        ``/proc/self/fd`` deleted-fd probe, and adopt the current sidecars as
+        this handle's generation once the probe comes back clean. The full
+        ``/proc/*/fd`` walk is reserved for
         :func:`refuse_deleted_wal_generation` on open, where we must see
         *foreign* deleted holders before ``sqlite3.connect`` mints a new WAL.
         """
         recorded = self._db_sidecar_identity or {}
         base = os.fspath(self.db_path)
-        for suffix, recorded_ident in recorded.items():
-            current = _stat_db_file_identity(Path(base + suffix))
-            if current is None or current != recorded_ident:
-                return True
-        if _IS_WINDOWS or not sys.platform.startswith("linux"):
-            return False
-        watched = _watched_sqlite_sidecar_paths(self.db_path)
-        fd_dir = f"/proc/{os.getpid()}/fd"
-        try:
-            for fd in os.listdir(fd_dir):
-                try:
-                    target = os.readlink(f"{fd_dir}/{fd}")
-                except OSError:
-                    continue
-                if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+        if recorded:
+            for suffix, recorded_ident in recorded.items():
+                current = _stat_db_file_identity(Path(base + suffix))
+                if current is None or current != recorded_ident:
                     return True
-        except OSError:
             return False
+        if not self._wal_active:
+            # No WAL on this handle (journal_mode=delete/truncate fallback):
+            # there is no sidecar generation to lose, and probing every write
+            # would put a /proc walk on the hot path of exactly the
+            # delete-mode deployments the field report used as containment.
+            return False
+        if sys.platform.startswith("linux"):
+            watched = _watched_sqlite_sidecar_paths(self.db_path)
+            fd_dir = f"/proc/{os.getpid()}/fd"
+            try:
+                for fd in os.listdir(fd_dir):
+                    try:
+                        target = os.readlink(f"{fd_dir}/{fd}")
+                    except OSError:
+                        continue
+                    if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                        return True
+            except OSError:
+                return False
+        # Probe clean (or unavailable on this platform): adopt whatever
+        # sidecar generation exists now so subsequent writes use the cheap
+        # stat check.
+        current_identity = _stat_sqlite_sidecar_identity(self.db_path)
+        if current_identity:
+            self._db_sidecar_identity = current_identity
         return False
 
     def _halt_deleted_wal_generation(self) -> None:
@@ -7040,6 +7053,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         )
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+                # A clean close of the last connection lets SQLite unlink the
+                # WAL/SHM sidecars — a legitimate end of this handle's sidecar
+                # generation, not a split (#94736 late writes must still
+                # self-heal). Drop the recorded generation so a teardown-race
+                # reopen re-adopts whatever exists then instead of halting.
+                self._db_sidecar_identity = {}
 
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.

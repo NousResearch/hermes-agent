@@ -475,6 +475,190 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_review_rework_bypasses_active_pr_guard_and_spawns_implementer(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-card changes-requested handoff may reuse its existing PR.
+
+    The PR comment is still recent, but a valid reviewer handoff back to the
+    original implementer is evidence that this ready task is intentional
+    rework, not a fresh task that would create a duplicate PR.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    spawned: list[tuple[str, str]] = []
+
+    def spawn(task, workspace):
+        spawned.append((task.id, task.assignee or ""))
+        return 4242
+
+    pr_comment = "Opened https://github.com/example/repo/pull/456 for review."
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="rework existing PR", assignee="builder")
+        implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert implementation is not None
+        comment_id = kb.add_comment(
+            conn, task_id, author="builder", body=pr_comment,
+        )
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            summary="Ready for review.",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="Fix the fallback branch.",
+            expected_run_id=review.current_run_id,
+        ) == (True, "builder")
+
+        # Make the handoff ordering deterministic without relying on wall-clock
+        # scheduling: the PR comment is recent and strictly precedes rework.
+        now = int(kb.time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? WHERE id = ?",
+                (now - 10, comment_id),
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE id = ("
+                "SELECT id FROM task_events WHERE task_id = ? "
+                "AND kind = 'changes_requested' ORDER BY id DESC LIMIT 1)",
+                (now - 5, task_id),
+            )
+
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+        first = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert [item[0] for item in first.spawned] == [task_id]
+        assert spawned == [(task_id, "builder")]
+        running = kb.get_task(conn, task_id)
+        assert running is not None
+        assert running.status == "running"
+
+        # The claimed task is no longer eligible on a second dispatcher pass.
+        second = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert second.spawned == []
+        assert spawned == [(task_id, "builder")]
+
+
+@pytest.mark.parametrize(
+    "timestamp_kind",
+    ["same_second", "future", "malformed", "infinite"],
+)
+def test_active_pr_guard_fails_closed_on_ambiguous_rework_timestamp(
+    kanban_home: Path,
+    timestamp_kind: str,
+) -> None:
+    """Ambiguous review ordering must not enable duplicate PR work."""
+    pr_comment = "Opened https://github.com/example/repo/pull/789 for review."
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="guard provenance", assignee="builder")
+        comment_id = kb.add_comment(
+            conn, task_id, author="builder", body=pr_comment,
+        )
+        now = int(kb.time.time())
+        rework_at = {
+            "same_second": now - 10,
+            "future": now + 3600,
+            "malformed": "not-a-timestamp",
+            "infinite": float("inf"),
+        }[timestamp_kind]
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? WHERE id = ?",
+                (now - 10, comment_id),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'changes_requested', ?, ?)",
+                (
+                    task_id,
+                    json.dumps({
+                        "status": "ready",
+                        "implementer": "builder",
+                    }),
+                    rework_at,
+                ),
+            )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_active_pr_guard_does_not_fall_back_to_older_rework_provenance(
+    kanban_home: Path,
+) -> None:
+    """A malformed latest rework cannot hide a still-live PR guard."""
+    pr_comment = "Opened https://github.com/example/repo/pull/999 for review."
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="latest provenance", assignee="builder")
+        comment_id = kb.add_comment(
+            conn, task_id, author="builder", body=pr_comment,
+        )
+        now = int(kb.time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? WHERE id = ?",
+                (now - 20, comment_id),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'changes_requested', ?, ?)",
+                (
+                    task_id,
+                    json.dumps({"status": "ready", "implementer": "builder"}),
+                    now - 10,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'changes_requested', ?, ?)",
+                (task_id, "[]", now - 5),
+            )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_reason"),
+    [("completed", "recent_success"), ("rate_limited", "rate_limit_cooldown")],
+)
+def test_respawn_guard_fails_closed_on_nonfinite_run_timestamp(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    expected_reason: str,
+) -> None:
+    """A non-finite run timestamp must retain its duplicate-work guard."""
+    monkeypatch.setattr(kb, "_resolve_rate_limit_cooldown_seconds", lambda: 60)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="nonfinite run", assignee="builder")
+        assert kb.claim_task(conn, task_id, claimer="builder:1") is not None
+        kb._end_run(conn, task_id, outcome=outcome, status=outcome)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+                (float("inf"), task_id),
+            )
+
+        assert kb.check_respawn_guard(conn, task_id) == expected_reason
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

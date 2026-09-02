@@ -12684,6 +12684,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
+        "realtime",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13741,6 +13742,50 @@ def main():
         return 1
 
     browser_parser.set_defaults(func=_dispatch_browser)
+
+    # =========================================================================
+    # realtime command — speech-to-speech voice session (mic <-> provider)
+    # =========================================================================
+    realtime_parser = subparsers.add_parser(
+        "realtime",
+        help="Talk to Hermes over a realtime speech-to-speech provider (microphone in, speaker out)",
+        description=(
+            "Open a bidirectional voice session with a registered realtime voice "
+            "provider (default: the bundled OpenAI Realtime backend, which needs "
+            "OPENAI_API_KEY). The provider owns audio and turn-taking; Hermes owns "
+            "tools and approvals. Needs a microphone, a speaker, and the "
+            "sounddevice package. Ctrl+C hangs up."
+        ),
+    )
+    realtime_parser.add_argument(
+        "--provider",
+        help="Registered realtime voice provider name (default: openai)",
+    )
+    realtime_parser.add_argument("--model", help="Provider model id (default: the provider's default)")
+    realtime_parser.add_argument("--voice", help="Provider voice id (default: the provider's default)")
+    realtime_parser.add_argument(
+        "--toolset",
+        help="Toolset exposed to the voice model as function tools (default: hermes-cli)",
+    )
+    realtime_parser.add_argument(
+        "--no-tools", action="store_true", help="Open the session without any tools"
+    )
+    realtime_parser.add_argument(
+        "--tool-timeout",
+        type=float,
+        metavar="SECONDS",
+        help="Per-call tool timeout; a slower tool answers with a timeout result (default: 60)",
+    )
+    realtime_parser.add_argument(
+        "--list", action="store_true", help="List registered realtime voice providers and exit"
+    )
+
+    def _dispatch_realtime(_args):
+        from hermes_cli.realtime_voice import cmd_realtime
+
+        return cmd_realtime(_args)
+
+    realtime_parser.set_defaults(func=_dispatch_realtime)
 
 
     # =========================================================================

@@ -692,6 +692,78 @@ class _DictFileOps:
         return SimpleNamespace(error=None)
 
 
+class _NormalizingDictFileOps(_DictFileOps):
+    """In-memory file_ops that treats ./path aliases as the same backend file."""
+
+    def _norm(self, path):
+        import posixpath
+
+        return posixpath.normpath(path)
+
+    def read_file_raw(self, path):
+        return super().read_file_raw(self._norm(path))
+
+    def write_file(self, path, content, pre_content=None):
+        return super().write_file(self._norm(path), content, pre_content=pre_content)
+
+    def move_file(self, src, dst):
+        return super().move_file(self._norm(src), self._norm(dst))
+
+    def delete_file(self, path):
+        return super().delete_file(self._norm(path))
+
+
+class TestDuplicateOperationPaths:
+    def test_distinct_updated_paths_still_apply(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: first.txt\n"
+            "@@\n"
+            "-first before\n"
+            "+first after\n"
+            "*** Update File: second.txt\n"
+            "@@\n"
+            "-second before\n"
+            "+second after\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _NormalizingDictFileOps({
+            "first.txt": "first before\n",
+            "second.txt": "second before\n",
+        })
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["first.txt"] == "first after\n"
+        assert fo.files["second.txt"] == "second after\n"
+
+    def test_duplicate_normalized_paths_rejected_before_any_write(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: duplicate.txt\n"
+            "@@\n"
+            "-before\n"
+            "+first after\n"
+            "*** Update File: ./duplicate.txt\n"
+            "@@\n"
+            "-before\n"
+            "+second after\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _NormalizingDictFileOps({"duplicate.txt": "before\n"})
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is False
+        assert "multiple operations target" in (result.error or "")
+        assert fo.files["duplicate.txt"] == "before\n"
+
+
 class TestDuckTypedWriteFileCompat:
     """V4A UPDATE must work with basic write_file(path, content) impls.
 

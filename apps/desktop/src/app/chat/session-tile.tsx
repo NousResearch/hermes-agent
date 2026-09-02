@@ -50,6 +50,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
+import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -97,6 +98,28 @@ export function sessionTileResumeFailure(
   }
 
   return 'Session unavailable — you can retry resuming it.'
+}
+
+/** Should this tile dispatch a `session.resume`?
+ *
+ *  - The gateway must be OPEN: persisted tiles mount at boot while it is still
+ *    connecting, and an ungated resume rejected there latched every restored
+ *    tile into the error card.
+ *  - A bound runtime, a latched error, or an in-flight attempt means there is
+ *    nothing to do.
+ *  - A removal-pending session is skipped for the same reason the primary's
+ *    `resumeSession` skips it: a 4001 racing a delete unbinds this tile's
+ *    runtime and re-arms the effect against an id that is already gone. The
+ *    resume would 404 and latch an error card for a chat the user deleted;
+ *    `closeSessionTile` lands moments later. */
+export function shouldResumeSessionTile(opts: {
+  gatewayOpen: boolean
+  removalPending: boolean
+  resuming: boolean
+  runtimeId: null | string | undefined
+  tileError: string | undefined
+}): boolean {
+  return !opts.removalPending && opts.gatewayOpen && !opts.runtimeId && !opts.tileError && !opts.resuming
 }
 
 /** The tile's SessionView: the same atom shape the primary chat renders
@@ -371,13 +394,18 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     }
   }, [hasMessages, ownerRoute, runtimeId, storedSessionId, storedSessionStillExists])
 
-  // Same gating as the primary's route resume (use-route-resume): never fire
-  // session.resume before the gateway is OPEN. Persisted tiles mount at boot
-  // while it's still connecting — an ungated resume rejected there and
-  // latched every restored tile into the error card.
+  // Gating lives in shouldResumeSessionTile (unit-tested there).
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!gatewayOpen || runtimeId || tile?.error || resumingRef.current) {
+    if (
+      !shouldResumeSessionTile({
+        gatewayOpen,
+        removalPending: isSessionRemovalPending(storedSessionId),
+        resuming: resumingRef.current,
+        runtimeId,
+        tileError: tile?.error
+      })
+    ) {
       return
     }
 

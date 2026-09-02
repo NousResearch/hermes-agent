@@ -38,7 +38,7 @@ vi.mock('@/store/session', async importActual => ({
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
-const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/projects')
+const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
 
 const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
   await import('@/store/session')
@@ -239,7 +239,10 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
   it.each([
     ['tombstoned', $removedSessionIds],
     ['being deleted', $sessionMutationsInFlight]
-  ])('does not rebind a selected session that is %s', async (_state, sessions) => {
+  ])('still reports the 4001 for a selected session that is %s', async (_state, sessions) => {
+    // The rebind decision moved to requestSessionResume (store/session-removal),
+    // which drops resume requests for a removal-pending id — this seam only has
+    // to keep surfacing the error to its caller.
     setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
     sessions.set(new Set(['stored-omar']))
     gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(
@@ -248,8 +251,6 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     const { request } = dispatcher(undefined, 'stored-omar')
 
     await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
-
-    expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
   })
 
   it('does not interpret an unrelated coded RPC failure as a stale runtime', async () => {

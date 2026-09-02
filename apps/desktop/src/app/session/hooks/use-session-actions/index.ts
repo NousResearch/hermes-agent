@@ -49,14 +49,7 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import {
-  $projectScope,
-  beginSessionMutation,
-  endSessionMutation,
-  resolveNewSessionCwd,
-  tombstoneSessions,
-  untombstoneSessions
-} from '@/store/projects'
+import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
 import { setApprovalRequest } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -99,6 +92,13 @@ import {
   setYoloActive
 } from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
+import {
+  beginSessionMutation,
+  endSessionMutation,
+  isSessionRemovalPending,
+  tombstoneSessions,
+  untombstoneSessions
+} from '@/store/session-removal'
 import {
   requestForSessionProfile,
   type SessionOwnerRoute,
@@ -858,6 +858,15 @@ export function useSessionActions({
 
   const resumeSession = useCallback(
     async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
+      // Delete/archive tombstones the durable id before the route flips, and
+      // requestSessionResume already refuses to queue for a doomed id. This is
+      // the actuator-side half of the same rule: a resume that was queued
+      // BEFORE the tombstone (an idle-reap 4001 racing the delete) must not
+      // re-select the chat and toast "Resume failed / Session not found".
+      if (isSessionRemovalPending(storedSessionId)) {
+        return
+      }
+
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId

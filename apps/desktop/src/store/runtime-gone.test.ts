@@ -13,6 +13,7 @@ import {
   resetRuntimeGoneHealing
 } from './runtime-gone'
 import { $activeSessionId, $sessionResumeRequest } from './session'
+import { $removedSessionIds, tombstoneSessions } from './session-removal'
 import { $sessionStates, $sessionTiles } from './session-states'
 
 const STORED = 'stored-1'
@@ -29,6 +30,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  $removedSessionIds.set(new Set())
 })
 
 afterEach(() => {
@@ -39,6 +41,7 @@ afterEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  $removedSessionIds.set(new Set())
 })
 
 describe('markRuntimeGone', () => {
@@ -72,6 +75,19 @@ describe('markRuntimeGone', () => {
     $activeSessionId.set('runtime-of-the-focused-chat')
 
     expect(markRuntimeGone(RUNTIME)).toBe(true)
+    expect($sessionResumeRequest.get()).toBeNull()
+  })
+
+  it('does not resurrect a chat the user just deleted', () => {
+    // An idle reap can land its 4001 in the same tick as the delete. The stored
+    // id is already tombstoned, so requestSessionResume drops the request
+    // instead of re-selecting a doomed chat and toasting "Resume failed".
+    $sessionStates.set({ [RUNTIME]: cachedState(STORED) })
+    $activeSessionId.set(RUNTIME)
+    tombstoneSessions([STORED])
+
+    markRuntimeGone(RUNTIME)
+
     expect($sessionResumeRequest.get()).toBeNull()
   })
 

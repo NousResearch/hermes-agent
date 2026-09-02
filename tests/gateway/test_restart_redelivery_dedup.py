@@ -26,6 +26,23 @@ def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
     )
 
 
+def _make_matrix_restart_event(message_id: str) -> MessageEvent:
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    return MessageEvent(
+        text="/restart",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!home:example.org",
+            chat_type="dm",
+            user_id="@alice:example.org",
+        ),
+        message_id=message_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, monkeypatch):
     """update_id strictly LESS than the recorded one is also a redelivery."""
@@ -163,4 +180,57 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     # One-shot: the flag is consumed so a later legitimate /restart is honored.
     assert runner._booted_from_restart is False
 
+
+@pytest.mark.asyncio
+async def test_matrix_restart_same_event_id_is_ignored_after_restart(tmp_path, monkeypatch):
+    """Matrix initial-sync replay of the exact triggering event is idempotent."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "matrix",
+        "message_id": "$restart-event",
+        "requested_at": time.time() - 5,
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = True
+
+    result = await runner._handle_restart_command(
+        _make_matrix_restart_event("$restart-event")
+    )
+
+    assert result == ""
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_matrix_restart_different_event_id_is_honored(tmp_path, monkeypatch):
+    """A new Matrix command is not swallowed merely because restart was recent."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "matrix",
+        "message_id": "$old-restart-event",
+        "requested_at": time.time() - 5,
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = True
+
+    result = await runner._handle_restart_command(
+        _make_matrix_restart_event("$new-restart-event")
+    )
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+    persisted = json.loads(marker.read_text())
+    assert persisted["platform"] == "matrix"
+    assert persisted["message_id"] == "$new-restart-event"
 

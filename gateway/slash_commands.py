@@ -1603,8 +1603,10 @@ class GatewaySlashCommandsMixin:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
-        # recorded this same /restart (same platform + update_id) and the new
-        # process is seeing it *again*, this is a re-delivery caused by PTB's
+        # recorded this same /restart (same platform + immutable message/event
+        # ID, or Telegram update_id) and the new process is seeing it *again*,
+        # this is a platform startup re-delivery. Telegram commonly does this
+        # when PTB's
         # graceful-shutdown `get_updates` ACK failing on the way out ("Error
         # while calling `get_updates` one more time to mark all fetched
         # updates. Suppressing error to ensure graceful shutdown. When
@@ -1615,9 +1617,10 @@ class GatewaySlashCommandsMixin:
         # again.
         if self._is_stale_restart_redelivery(event):
             logger.info(
-                "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
+                "Ignoring redelivered /restart (platform=%s, message_id=%s, update_id=%s) — "
                 "already processed by a previous gateway instance.",
                 event.source.platform.value if event.source and event.source.platform else "?",
+                event.message_id,
                 event.platform_update_id,
             )
             return ""
@@ -1665,16 +1668,19 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
 
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
+        # Record the triggering platform + immutable message/event ID in a
+        # dedicated dedup marker. Telegram also records its ordered update_id.
+        # Unlike .restart_notify.json (which gets unlinked once the new gateway
+        # sends the "gateway restarted" notification), this marker persists so
+        # the new gateway can detect a delayed platform replay of the same
+        # /restart event. Overwritten on every /restart.
         try:
             dedup_data = {
                 "platform": event.source.platform.value if event.source.platform else None,
                 "requested_at": time.time(),
             }
+            if event.message_id:
+                dedup_data["message_id"] = str(event.message_id)
             if event.platform_update_id is not None:
                 dedup_data["update_id"] = event.platform_update_id
             await asyncio.to_thread(

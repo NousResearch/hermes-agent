@@ -17377,7 +17377,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             if profile_home is not None:
-                with _profile_runtime_scope(profile_home):
+                async with _async_profile_runtime_scope(profile_home):
                     return await self._handle_message(event)
             return await self._handle_message(event)
 
@@ -17441,7 +17441,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if getattr(source, "profile", None)
                 else default_home
             )
-            with _profile_runtime_scope(profile_home):
+            async with _async_profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 
         return _handler
@@ -20435,7 +20435,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            async with _async_profile_runtime_scope(
+                self._resolve_profile_home_for_source(source)
+            ):
                 return await self._prepare_inbound_message_text(
                     event=event,
                     source=source,

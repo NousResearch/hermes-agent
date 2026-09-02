@@ -386,6 +386,21 @@ def _template_visible_role(message: Any) -> Optional[str]:
     return role
 
 
+def _last_template_visible_role(messages: List[Dict[str, Any]]) -> Optional[str]:
+    """Last role a strict alternation template would count in *messages*.
+
+    ``None`` when every row is template-exempt (tool flow only).
+    """
+    return next(
+        (
+            role
+            for role in (_template_visible_role(m) for m in reversed(messages))
+            if role is not None
+        ),
+        None,
+    )
+
+
 def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
     """Enforce the compaction invariant: no assembled message carries a
     session-store persistence marker.
@@ -6822,20 +6837,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "handoff so it stays actionable (#100818)"
             )
 
-        # Alternation is judged on template-visible rows only: a tail of
-        # tool_calls/tool pairs is exempt, so a user-pinned summary followed by
-        # such a tail still "ends on user" for the Mistral-style pre-flight
-        # check (#58753). Look through the exempt tail, not just at [-1].
-        last_visible_role = next(
-            (
-                role
-                for role in (
-                    _template_visible_role(msg) for msg in reversed(compressed)
-                )
-                if role is not None
-            ),
-            None,
-        )
+        last_visible_role = _last_template_visible_role(compressed)
         if inflight.get(_INFLIGHT_REPLAY_MERGED_KEY):
             # Never copy a summary carrier (metadata would mark the replay
             # synthetic): restate as a plain user row.
@@ -8511,20 +8513,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Jinja alternation 500, permanently poisoning the session.
         last_head_role: Optional[str] = "user"
         if compressed:
-            last_head_role = next(
-                (
-                    role
-                    for role in (
-                        _template_visible_role(m) for m in reversed(compressed)
-                    )
-                    if role is not None
-                ),
-                # Head holds only template-exempt messages: the summary will
-                # be the first message the template counts, and the sequence
-                # must open with "user" (handled below alongside the forced
-                # cases).
-                None,
-            )
+            # None: head holds only template-exempt messages, so the summary
+            # will be the first message the template counts and the sequence
+            # must open with "user" (handled below alongside the forced cases).
+            last_head_role = _last_template_visible_role(compressed)
         first_tail_role = None
         first_tail_visible_idx: Optional[int] = None
         if tail_messages:

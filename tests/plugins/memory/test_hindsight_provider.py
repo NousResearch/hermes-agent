@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from hermes_cli.memory_setup import _CANCELLED
+import plugins.memory.hindsight as hindsight_module
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
@@ -1097,6 +1098,135 @@ class TestShutdownRace:
         # Both retains drained before shutdown returned.
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# Session-end / shutdown buffer flush (#88944)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionEndBufferFlush:
+    """retain_every_n_turns > 1 buffers turns in RAM. Every path that can end
+    a session has to drain that buffer or the turns are lost outright."""
+
+    def test_on_session_end_flushes_buffered_turns(self, provider_with_config):
+        """Sessions that end WITHOUT rotating session_id (desktop
+        session.close, the WS orphan reaper, gateway expiry) never reach
+        on_session_switch. Without on_session_end nothing flushes them."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        doc = p._document_id
+
+        # Two turns buffered; the boundary is at turn 3, so no retain yet.
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._client.aretain_batch.assert_not_called()
+
+        p.on_session_end([])
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == doc
+        flat = json.dumps(json.loads(kw["items"][0]["content"]))
+        assert "turn1-user" in flat
+        assert "turn2-user" in flat
+        # Buffer drained, so a later hook can't re-ship the same turns.
+        assert p._session_turns == []
+
+    def test_shutdown_flushes_buffered_turns(self, provider_with_config):
+        """The gateway/dashboard die on SIGTERM without running atexit, so
+        shutdown() is the last chance to persist a partial buffer."""
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        doc = p._document_id
+
+        p.sync_turn("only-user", "only-asst")
+        p._client.aretain_batch.assert_not_called()
+
+        # shutdown() drops the client reference — hold it to assert afterwards.
+        client = p._client
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        kw = client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == doc
+        assert "only-user" in json.dumps(json.loads(kw["items"][0]["content"]))
+
+    def test_session_end_then_switch_does_not_double_ingest(
+        self, provider_with_config
+    ):
+        """MemoryManager.commit_session_boundary_async delivers on_session_end
+        strictly BEFORE on_session_switch. The end-flush must clear the buffer
+        so the switch doesn't re-ship the same turns into the bank."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+
+        p.on_session_end([])
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        assert p._client.aretain_batch.call_count == 1
+
+    def test_no_flush_when_last_turn_hit_a_retain_boundary(
+        self, provider_with_config
+    ):
+        """A turn count landing exactly on the boundary already retained
+        everything. Flushing again would duplicate it."""
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
+
+        client = p._client
+        p.on_session_end([])
+        p.shutdown()
+
+        # Still one — no duplicate ingest from either hook.
+        assert client.aretain_batch.call_count == 1
+
+    def test_session_end_waits_for_the_flush_to_dispatch(
+        self, provider_with_config
+    ):
+        """Enqueueing is not persistence. Session end is routinely followed
+        straight by process exit, so a flush still sitting in the queue when
+        the hook returns dies with the writer — the loss this hook exists to
+        prevent. on_session_end must not return until the writer drains it."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._client.aretain_batch.assert_not_called()
+
+        # Occupy the writer so the flush cannot be dispatched immediately;
+        # without the wait, on_session_end returns while this is still running.
+        released = threading.Event()
+        p._retain_queue.put(lambda: released.wait(timeout=5.0))
+        threading.Timer(0.3, released.set).start()
+
+        p.on_session_end([])
+
+        # No queue.join() here — that is the whole point of the assertion.
+        p._client.aretain_batch.assert_called_once()
+        assert "turn1-user" in json.dumps(
+            json.loads(p._client.aretain_batch.call_args.kwargs["items"][0]["content"])
+        )
+
+    def test_session_end_wait_is_bounded(self, provider_with_config, monkeypatch):
+        """A wedged retain must not hang session teardown forever."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+
+        monkeypatch.setattr(
+            hindsight_module, "_SESSION_END_FLUSH_TIMEOUT", 0.2
+        )
+        # Never released — the writer stays blocked past the budget.
+        p._retain_queue.put(lambda: time.sleep(30))
+
+        started = time.monotonic()
+        p.on_session_end([])
+        assert time.monotonic() - started < 5.0
 
 
 # ---------------------------------------------------------------------------

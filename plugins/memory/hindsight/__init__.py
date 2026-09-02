@@ -76,6 +76,10 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+# seconds — how long on_session_end waits for the buffered-turn flush to reach
+# the writer. Session end runs on a teardown path, so this trades a bounded
+# stall for not losing the buffer to an immediately following process exit.
+_SESSION_END_FLUSH_TIMEOUT = 10.0
 # ``metadata.source`` stamped on retained memories — OPT-IN, empty by default.
 # AGENTS.md forbids shipping third-party attribution tags on-by-default until a
 # generic user-facing opt-in exists, so this stays unset unless the user sets it
@@ -2295,6 +2299,189 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    def _flush_buffered_turns(self, *, reason: str, respect_watermark: bool) -> bool:
+        """Enqueue whatever is sitting in ``_session_turns`` and clear it.
+
+        With ``retain_every_n_turns > 1`` turns accumulate in RAM and are only
+        persisted at every Nth-turn boundary. Anything buffered past the last
+        boundary lives nowhere else, so every lifecycle path that can end a
+        session has to drain it or the turns are lost outright (#88944).
+
+        Clearing the buffer here is what makes the hook safe to call from more
+        than one place. ``MemoryManager.commit_session_boundary_async`` delivers
+        ``on_session_end`` strictly BEFORE ``on_session_switch``; without the
+        clear, the switch would re-flush the same turns and double-ingest them
+        into the bank — the exact hazard that method's docstring warns about.
+        A second call finds an empty buffer and no-ops.
+
+        Snapshots every ``self._*`` field the retain depends on before the
+        caller mutates them, so metadata, tags, and ``document_id`` all
+        describe the session the turns actually came from.
+
+        ``respect_watermark`` selects how much of the buffer to ship, mirroring
+        the branch in ``sync_turn``:
+
+        * True — on append-capable APIs ship only the turns added since
+          ``_last_retained_turn_count``, because the server appends to the
+          existing document and re-sending retained turns duplicates them.
+          Legacy/overwrite APIs still ship the whole buffer: there each retain
+          REPLACES the document, so a delta would drop the earlier turns.
+        * False — always ship the whole buffer. This is what the extracted
+          flush-on-switch did, and ``on_session_switch`` keeps passing False so
+          this refactor is behavior-preserving for that path. Making the switch
+          watermark exact is #41911, which is already open.
+
+        Returns True when a flush was enqueued.
+        """
+        if not self._session_turns:
+            return False
+
+        if respect_watermark:
+            # Has anything accumulated PAST the last Nth-turn boundary? This
+            # mirrors sync_turn's buffering gate, and it is the only signal
+            # that works in both modes: _last_retained_turn_count is advanced
+            # only on append-capable APIs (see sync_turn), so on legacy it sits
+            # at 0 forever and cannot answer this question.
+            every_n = max(1, int(self._retain_every_n_turns or 1))
+            already_retained = self._turn_counter % every_n == 0
+            _, _probe_mode = self._resolve_retain_target(self._document_id)
+            if _probe_mode == "append":
+                already_retained = (
+                    already_retained
+                    or self._last_retained_turn_count >= len(self._session_turns)
+                )
+            if already_retained:
+                # The document already holds these turns. Re-sending them
+                # appends duplicates on >=0.5.0 and burns a pointless
+                # overwrite on legacy. Clear so a later hook sees no stale
+                # buffer.
+                self._session_turns = []
+                self._last_retained_turn_count = 0
+                return False
+            # Append APIs take just the un-retained tail. Legacy/overwrite APIs
+            # must resend the whole session because each retain REPLACES the
+            # document — a delta there would drop every earlier turn.
+            old_turns = (
+                self._session_turns[self._last_retained_turn_count:]
+                if _probe_mode == "append"
+                else list(self._session_turns)
+            )
+        else:
+            old_turns = list(self._session_turns)
+
+        old_session_id = self._session_id
+        old_parent_session_id = self._parent_session_id
+        old_turn_index = self._turn_index
+        old_metadata = self._build_metadata(
+            message_count=len(old_turns) * 2,
+            turn_index=old_turn_index,
+        )
+        old_lineage_tags: list[str] = []
+        if old_session_id:
+            old_lineage_tags.append(f"session:{old_session_id}")
+        if old_parent_session_id:
+            old_lineage_tags.append(f"parent:{old_parent_session_id}")
+        old_content = "[" + ",".join(old_turns) + "]"
+        # Resolve doc_id + update_mode against the OLD session BEFORE the
+        # caller rotates _session_id, so the flush lands in the old session's
+        # document either way (legacy: per-process unique; >=0.5.0: stable
+        # session-scoped + append).
+        old_document_id, old_update_mode = self._resolve_retain_target(
+            self._document_id
+        )
+
+        def _flush():
+            try:
+                item = self._build_retain_kwargs(
+                    old_content,
+                    context=self._retain_context,
+                    metadata=old_metadata,
+                    tags=old_lineage_tags or None,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if old_update_mode is not None:
+                    item["update_mode"] = old_update_mode
+                logger.debug(
+                    "Hindsight flush-on-%s: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                    reason, self._bank_id, old_document_id, old_update_mode,
+                    len(old_turns),
+                )
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=self._bank_id,
+                        items=[item],
+                        document_id=old_document_id,
+                        retain_async=self._retain_async,
+                    )
+                )
+            except Exception as e:
+                logger.warning(
+                    "Hindsight flush-on-%s failed: %s", reason, e, exc_info=True
+                )
+
+        # Route the flush through the same writer queue sync_turn uses. That
+        # serializes it behind any still-queued retains from the old session
+        # (FIFO by document_id), avoids racing two threads on aretain_batch
+        # against the same document, and keeps shutdown's drain semantics
+        # intact. Skip enqueue if shutdown has already fired — the writer is
+        # draining/gone, so shutdown() must flush BEFORE it sets that flag.
+        enqueued = False
+        if not self._shutting_down.is_set():
+            self._ensure_writer()
+            self._register_atexit()
+            self._retain_queue.put(_flush)
+            enqueued = True
+
+        # Clear unconditionally. If the enqueue was skipped the writer is
+        # already gone and re-flushing later cannot help — keeping the turns
+        # would only risk a duplicate ingest from a subsequent hook.
+        self._session_turns = []
+        self._last_retained_turn_count = 0
+        return enqueued
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Persist buffered turns when a session actually ends.
+
+        Hindsight is the only bundled memory provider that batches turns in
+        RAM, and it was the only one not implementing this hook. Sessions that
+        ended on a path which does NOT rotate session_id — desktop
+        ``session.close``, the WS orphan reaper, gateway session expiry — never
+        reached ``on_session_switch``, so every turn buffered since the last
+        Nth-turn boundary died with the process (#88944).
+
+        ``messages`` is unused: the buffer already holds this session's turns
+        in the retain format, formatted by ``sync_turn``.
+
+        Blocks until the writer picks the flush up. Enqueueing is NOT a
+        durability signal: the paths that end a session without rotating
+        ``session_id`` are frequently followed straight by process exit, and a
+        job still sitting in ``_retain_queue`` dies with the writer — the exact
+        loss this hook exists to prevent.
+        """
+        if not self._flush_buffered_turns(
+            reason="session-end", respect_watermark=True
+        ):
+            return
+        # Poll unfinished_tasks rather than queue.join() so a wedged retain
+        # can't hang the caller forever — same reasoning as
+        # _wait_for_retains_drained. Bounded: a session end that cannot
+        # persist within the budget is logged, not stalled on.
+        deadline = time.monotonic() + _SESSION_END_FLUSH_TIMEOUT
+        while self._retain_queue.unfinished_tasks > 0:
+            if self._shutting_down.is_set():
+                # shutdown() owns the drain from here; it joins the writer.
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Hindsight session-end flush did not dispatch within %.1fs "
+                    "(%d pending retain(s))",
+                    _SESSION_END_FLUSH_TIMEOUT,
+                    self._retain_queue.unfinished_tasks,
+                )
+                return
+            time.sleep(0.05)
+
     def on_session_switch(
         self,
         new_session_id: str,
@@ -2338,69 +2525,8 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
-        # 1. Flush any buffered turns under the OLD identifiers. Snapshot
-        # everything before mutating self._* so metadata + tags + doc_id
-        # all reference the old session consistently.
-        if self._session_turns:
-            old_turns = list(self._session_turns)
-            old_session_id = self._session_id
-            old_parent_session_id = self._parent_session_id
-            old_turn_index = self._turn_index
-            old_metadata = self._build_metadata(
-                message_count=len(old_turns) * 2,
-                turn_index=old_turn_index,
-            )
-            old_lineage_tags: list[str] = []
-            if old_session_id:
-                old_lineage_tags.append(f"session:{old_session_id}")
-            if old_parent_session_id:
-                old_lineage_tags.append(f"parent:{old_parent_session_id}")
-            old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
-            old_document_id, old_update_mode = self._resolve_retain_target(
-                self._document_id
-            )
-
-            def _flush():
-                try:
-                    item = self._build_retain_kwargs(
-                        old_content,
-                        context=self._retain_context,
-                        metadata=old_metadata,
-                        tags=old_lineage_tags or None,
-                    )
-                    item.pop("bank_id", None)
-                    item.pop("retain_async", None)
-                    if old_update_mode is not None:
-                        item["update_mode"] = old_update_mode
-                    logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
-                    )
-                    self._run_hindsight_operation(
-                        lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
-                            items=[item],
-                            document_id=old_document_id,
-                            retain_async=self._retain_async,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
-
-            # Route the flush through the same writer queue sync_turn
-            # uses. That serializes it behind any still-queued retains
-            # from the old session (FIFO by document_id), avoids racing
-            # two threads on aretain_batch against the same document, and
-            # keeps shutdown's drain semantics intact. Skip enqueue if
-            # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
-                self._ensure_writer()
-                self._register_atexit()
-                self._retain_queue.put(_flush)
+        # 1. Flush any buffered turns under the OLD identifiers.
+        self._flush_buffered_turns(reason="switch", respect_watermark=False)
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
@@ -2426,7 +2552,14 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
-        # Stop accepting new retain jobs first so anyone still calling
+        # Drain the turn buffer BEFORE the shutdown flag goes up. Ordering is
+        # load-bearing: _flush_buffered_turns refuses to enqueue once
+        # _shutting_down is set, so flushing after it would silently discard
+        # everything buffered since the last Nth-turn boundary — the shutdown
+        # half of #88944. The writer drain below then carries this final
+        # retain out with the rest of the queue.
+        self._flush_buffered_turns(reason="shutdown", respect_watermark=True)
+        # Stop accepting new retain jobs so anyone still calling
         # sync_turn() during teardown is dropped, not enqueued.
         self._shutting_down.set()
         # Drain the writer: it will finish in-flight work, then exit on

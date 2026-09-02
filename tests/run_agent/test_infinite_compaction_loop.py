@@ -292,3 +292,22 @@ class TestPressureRealFloor:
         from agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
         assert _pressure_with_real_floor(object(), 10_000) == 10_000
+
+    def test_anchored_pressure_is_never_floored(self):
+        """A valid usage anchor is provider-exact and wins as-is.
+
+        On MoA turns the anchor deliberately uses the pre-fold aggregator
+        usage while ``last_real_prompt_tokens`` holds the folded figure;
+        flooring the anchored value would re-add the advisor fan-out tokens
+        the anchor exists to exclude. Pin the wiring shape: the floor is
+        applied only on the ``else`` (rough fallback) branch.
+        """
+        import inspect
+        from agent import conversation_loop
+
+        src = inspect.getsource(conversation_loop.run_conversation)
+        i = src.index("if _anchored_pressure is not None:")
+        window = src[i : i + 400]
+        assert "request_pressure_tokens = _anchored_pressure" in window
+        assert "else:" in window
+        assert window.index("else:") < window.index("_pressure_with_real_floor(")

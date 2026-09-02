@@ -610,15 +610,23 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
-    """Floor the rough pre-API pressure estimate at the last REAL prompt size.
+    """Floor the ROUGH pre-API pressure estimate at the last REAL prompt size.
 
-    The chars/4 rough estimate under-counts Cyrillic (and other non-ASCII
-    scripts) by up to ~2x, so a session can sit at the provider's real context
-    ceiling while the rough figure stays under the compaction threshold — on
-    silent-clip providers (ollama /v1) that is a truncation death spiral the
-    reactive overflow handler never sees (observed live: real prompts
-    64,842→64,995 against a 55,705 threshold). The provider's own last
-    reported prompt_tokens is authoritative; never let the pressure figure
+    Applied only on the fallback path -- when ``anchored_context_tokens`` has
+    no valid anchor (first request, transcript rewritten under the anchor,
+    provider never reported usage). A valid anchor is provider-exact and is
+    used as-is; in particular on MoA turns the anchor deliberately uses the
+    pre-fold aggregator usage while ``last_real_prompt_tokens`` holds the
+    folded figure, so flooring an anchored value would re-add fan-out tokens
+    the anchor exists to exclude.
+
+    On the rough path, non-ASCII text (Cyrillic, Greek, Polish, ...)
+    under-counts by up to ~2x, so a session can sit at the provider's real
+    context ceiling while the rough figure stays under the compaction
+    threshold -- on silent-clip providers (ollama /v1) that is a truncation
+    death spiral the reactive overflow handler never sees (observed live:
+    real prompts 64,842->64,995 against a 55,705 threshold). The provider's
+    last reported prompt_tokens is authoritative; never let the rough figure
     fall below it. Skipped for exactly one turn after a compaction, when
     last_real_prompt_tokens still holds the stale pre-compression value
     (#36718's awaiting_real_usage_after_compression window).
@@ -2904,9 +2912,10 @@ def run_conversation(
         )
         if _anchored_pressure is not None:
             request_pressure_tokens = _anchored_pressure
-        request_pressure_tokens = _pressure_with_real_floor(
-            agent.context_compressor, request_pressure_tokens
-        )
+        else:
+            request_pressure_tokens = _pressure_with_real_floor(
+                agent.context_compressor, request_pressure_tokens
+            )
         total_chars = approx_tokens * 4
         # Stash this request's rough estimate so update_from_response() can
         # pair it with the provider's real prompt count — the (rough, real)

@@ -548,3 +548,29 @@ def test_rollback_preserves_top_level_git(backup_env):
     assert (git_dir / "HEAD").exists()
     assert (git_dir / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
 
+
+
+def test_rollback_preserves_nested_git_inside_skill(backup_env):
+    """A skill that is itself a git checkout keeps its .git across rollback:
+    the snapshot excludes it, so rollback must carry it over from the live tree."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="v1")
+    nested_git = skills / "alpha" / ".git"
+    nested_git.mkdir()
+    (nested_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+
+    _write_skill(skills, "alpha", body="v2")
+    (nested_git / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    # Live .git state (post-snapshot) is what survives — it was never archived.
+    assert (nested_git / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
+    staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    assert staging == [], f"staging dir left behind: {staging}"

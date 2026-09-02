@@ -172,6 +172,32 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_session_context_close_on_disconnect_disables_async_delivery():
+    """close_on_disconnect (dashboard/sidecar) sessions declare async delivery
+    unsupported, so delegate_task(background=True) runs synchronously and joins
+    in-turn instead of surfacing subagent output as a separate later turn.
+    A persistent session keeps async delivery enabled."""
+    from gateway.session_context import async_delivery_supported
+
+    server._sessions["ephemeral"] = {"session_key": "ephemeral", "close_on_disconnect": True}
+    server._sessions["persistent"] = {"session_key": "persistent", "close_on_disconnect": False}
+    try:
+        tokens = server._set_session_context("ephemeral")
+        try:
+            assert async_delivery_supported() is False
+        finally:
+            server._clear_session_context(tokens)
+
+        tokens = server._set_session_context("persistent")
+        try:
+            assert async_delivery_supported() is True
+        finally:
+            server._clear_session_context(tokens)
+    finally:
+        server._sessions.pop("ephemeral", None)
+        server._sessions.pop("persistent", None)
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):

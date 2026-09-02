@@ -3429,6 +3429,15 @@ def _set_session_context(
         # session-finalize), so an identified session is never left blank.
         session_id = session_key
         hermes_user_id = ""
+        # A close_on_disconnect session (dashboard/sidecar chat) is reaped the
+        # moment its WS drops, and its async-completion drain re-enters results
+        # as a *separate* later turn. Left async, a backgrounded delegate_task
+        # would surface subagent output straight to the UI while the spawning
+        # turn is still running (and lose it entirely if the socket has closed).
+        # Declare async delivery unsupported so delegate_task takes its
+        # synchronous path — children still run in parallel, but join in-turn —
+        # and only the spawning agent's own reply reaches the user.
+        async_delivery = True
         with _sessions_lock:
             for sess in list(_sessions.values()):
                 if sess.get("session_key") == session_key:
@@ -3437,6 +3446,8 @@ def _set_session_context(
                         getattr(sess.get("agent"), "session_id", None) or session_key
                     )
                     hermes_user_id = str(sess.get("hermes_user_id") or "")
+                    if sess.get("close_on_disconnect"):
+                        async_delivery = False
                     break
         return set_session_vars(
             session_key=session_key,
@@ -3446,6 +3457,7 @@ def _set_session_context(
             ui_session_id=ui_session_id,
             cron_session="",
             user_id=hermes_user_id,
+            async_delivery=async_delivery,
         )
     except Exception:
         return []

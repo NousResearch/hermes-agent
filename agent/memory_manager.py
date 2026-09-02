@@ -672,6 +672,14 @@ class MemoryManager:
         if not result.observations:
             return
         try:
+            from hermes_cli import plugins
+
+            # The merged context can be large even when the observer payload is
+            # small. Resolve the real, lazily-discovered hook registry before
+            # doing any digest work; without a consumer this method must be a
+            # no-op after the observation-presence check.
+            if not plugins.has_hook("memory_prefetch"):
+                return
             from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
 
             context_bytes = result.context.encode("utf-8")

@@ -2479,6 +2479,30 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     )
 
 
+def _enable_multiplex_log_routing(config: object) -> bool:
+    """Route agent.log/errors.log/gateway.log records to their owning profile.
+
+    ``setup_logging(mode="gateway")`` binds the queued file handlers to the
+    launch home, so under ``multiplex_profiles`` every secondary profile's
+    records (emitted inside ``_profile_runtime_scope``) land in the default
+    profile's log files (#82936). Swap the static handlers for the
+    profile routers from #99440 — the same primitive the Desktop cron ticker
+    uses — once the served-profile set is known. Inert for single-profile
+    gateways (``enable_profile_log_routing`` is a no-op below two homes).
+    """
+    if not getattr(config, "multiplex_profiles", False):
+        return False
+    try:
+        from hermes_logging import enable_profile_log_routing
+
+        return enable_profile_log_routing(
+            [home for _name, home in _multiplex_profile_homes(config)]
+        )
+    except Exception:
+        logger.debug("could not enable per-profile log routing", exc_info=True)
+        return False
+
+
 def _handoff_watch_scopes(runner: object) -> list:
     """``(profile_name, home)`` pairs whose ``state.db`` the watcher must poll.
 
@@ -33627,6 +33651,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
+    # Multiplex: swap the launch-home file handlers for per-profile routers so
+    # each profile's records land in its own logs/ (#82936). Must run after
+    # the runner resolved the (possibly None) config and after setup_logging.
+    _enable_multiplex_log_routing(runner.config)
     # ``--replace`` is explicit startup authority, not a durable reconnect
     # policy. GatewayRunner scopes this bit to cold adapter connects and clears
     # it before the background reconnect watcher starts.

@@ -27,7 +27,7 @@
 
 export interface ReleaseGateDeps {
   /** Probe the venv hermes.exe shim (real: O_RDWR open attempt). */
-  isShimLocked: () => boolean
+  isShimLocked: () => boolean | Promise<boolean>
   /** True while `pid` is still enumerable in the process table. */
   isPidAlive: (pid: number) => boolean
   /**
@@ -75,7 +75,7 @@ export async function waitForBackendRelease(
   while (deps.now() < deadline) {
     const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
-    if (!deps.isShimLocked() && lingering.length === 0) {
+    if (!(await deps.isShimLocked()) && lingering.length === 0) {
       deps.log(`[${tag}] venv shim unlocked and ${killedPids.size} signalled backend PID(s) exited; safe to proceed`)
 
       return { unlocked: true, lingeringPids: [] }
@@ -100,7 +100,7 @@ export async function waitForBackendRelease(
   // residue (and a REAL foreign holder still fails the shim probe).
   const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
-  if (!deps.isShimLocked()) {
+  if (!(await deps.isShimLocked())) {
     deps.log(
       `[${tag}] proceeding after deadline: venv shim unlocked, but ${lingering.length} signalled PID(s) still enumerable`
     )

@@ -41,6 +41,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message
 from agent.turn_context import (
     PreflightCompressionTimedOut,
@@ -2042,6 +2043,7 @@ def run_conversation(
     agent._last_compaction_in_place = False
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
+    begin_fast_mode_turn(agent, conversation_history)
 
     # Adopt any ~/.hermes/.env credential/base-url edits made since the last
     # turn — a Settings save updates .env but not this worker's client, which

@@ -6113,6 +6113,8 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw in {"auto", "cold"}:
+        return raw
     return None
 
 
@@ -14644,19 +14646,20 @@ def _(rid, params: dict) -> dict:
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
         if agent is not None:
-            current_fast = getattr(agent, "service_tier", None) == "priority"
+            current_tier = getattr(agent, "service_tier", None)
         elif session is not None and session.get("create_service_tier_override") is not None:
             # Pre-build session with a pinned tier (desktop draft pick or an
             # earlier session-scoped toggle) — report/toggle from the pin, not
             # the global default.
-            current_fast = session["create_service_tier_override"] == "priority"
+            current_tier = session["create_service_tier_override"] or None
         else:
-            current_fast = _load_service_tier() == "priority"
+            current_tier = _load_service_tier()
+        current_fast = current_tier == "priority"
 
         if raw in {"status"}:
             return _ok(
                 rid,
-                {"key": key, "value": "fast" if current_fast else "normal"},
+                {"key": key, "value": {"priority": "fast", None: "normal"}.get(current_tier, current_tier)},
             )
 
         if raw in {"", "toggle"}:
@@ -14665,6 +14668,8 @@ def _(rid, params: dict) -> dict:
             nv = "fast"
         elif raw in {"normal", "off"}:
             nv = "normal"
+        elif raw in {"auto", "cold"}:
+            nv = raw
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
@@ -14690,7 +14695,11 @@ def _(rid, params: dict) -> dict:
                     4002,
                     "fast mode is not available without a selected model",
                 )
-            overrides = resolve_fast_mode_overrides(target_model)
+            overrides = resolve_fast_mode_overrides(
+                target_model,
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            )
             if overrides is None:
                 return _err(
                     rid,
@@ -14707,13 +14716,11 @@ def _(rid, params: dict) -> dict:
             # build ("switch one session, switches everywhere"). Pin the
             # create override so lazily-built sessions and rebuilds (/new,
             # deferred resume) keep the choice; "" pins normal explicitly.
-            session["create_service_tier_override"] = (
-                "priority" if nv == "fast" else ""
-            )
+            session["create_service_tier_override"] = {"fast": "priority", "normal": ""}.get(nv, nv)
         else:
             _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
+            agent.service_tier = {"fast": "priority", "normal": None}.get(nv, nv)
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
@@ -16897,6 +16904,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
+            elif mode in {"auto", "cold"}:
+                agent.service_tier = mode
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

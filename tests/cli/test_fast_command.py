@@ -159,8 +159,8 @@ class TestFastModeRouting(unittest.TestCase):
         stub = SimpleNamespace(
             model="gpt-5.4",
             api_key="primary-key",
-            base_url="https://openrouter.ai/api/v1",
-            provider="openrouter",
+            base_url="https://api.openai.com/v1",
+            provider="openai",
             api_mode="chat_completions",
             acp_command=None,
             acp_args=[],
@@ -171,10 +171,15 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         # Provider should NOT have changed
-        assert route["runtime"]["provider"] == "openrouter"
+        assert route["runtime"]["provider"] == "openai"
         assert route["runtime"]["api_mode"] == "chat_completions"
         # But request_overrides should be set
         assert route["request_overrides"] == {"service_tier": "priority"}
+
+        # Proxied routes (OpenRouter etc.) strip/400 on the param — never sent.
+        stub.base_url = "https://openrouter.ai/api/v1"
+        stub.provider = "openrouter"
+        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] is None
 
     def test_turn_route_keeps_primary_runtime_when_model_has_no_fast_backend(self):
         cli_mod = _import_cli()

@@ -1181,7 +1181,17 @@ agent:
   #   "claude-opus-4.6": "high"           # bare model name also works
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
-  
+
+  # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
+  # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.
+  #   "" / "normal" - off (default)
+  #   "fast"        - every request
+  #   "auto"        - only the first fast_auto_seconds of every turn
+  #   "cold"        - that window on the first turn of a session only
+  # Also: /fast normal|fast|auto|cold [--global]
+  service_tier: ""
+  fast_auto_seconds: 60
+
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
   # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always

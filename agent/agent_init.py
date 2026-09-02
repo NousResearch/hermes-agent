@@ -1831,6 +1831,9 @@ def init_agent(
     except Exception:
         agent.show_commentary = True
 
+    # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
+    agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
+
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Hermes behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default

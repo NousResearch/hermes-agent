@@ -8504,7 +8504,7 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: {"service_tier": "priority"},
+        lambda _model_id, **_route: {"service_tier": "priority"},
     )
 
     try:
@@ -8583,7 +8583,7 @@ def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: None,
+        lambda _model_id, **_route: None,
     )
 
     try:

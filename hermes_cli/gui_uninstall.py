@@ -40,7 +40,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
 
 from hermes_cli.colors import Colors, color
 
@@ -177,6 +177,13 @@ def agent_is_installed(hermes_home: Path) -> bool:
         return True
     if (agent_root / "venv").is_dir() or (agent_root / ".venv").is_dir():
         return True
+    # Profile redirect: when the active profile points HERMES_HOME at a
+    # data-only profile dir (no agent code by design), fall back to the
+    # platform default home where the shared agent actually lives. Without
+    # this the desktop uninstall panel hides the remove-agent options.
+    default_root = _get_platform_default_hermes_home()
+    if hermes_home != default_root:
+        return agent_is_installed(default_root)
     return False
 
 

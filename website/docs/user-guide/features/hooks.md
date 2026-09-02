@@ -552,7 +552,7 @@ return {"action": "block", "message": "Reason the tool call was blocked"}
 return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 ```
 
-The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
+Directives are ranked `block` > `approve`, not by hook registration order: one plugin's veto always wins over another plugin's request for confirmation. Within a single action the first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
 **Return value — rewrite the tool's arguments:**
 
@@ -561,6 +561,14 @@ return {"action": "modify", "args": {"new_string": "fixed content"}}
 ```
 
 The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. If two hooks modify the same key, the later hook wins.
+
+The merge is shallow at every level: a `modify` directive replaces a top-level key, it does not merge into the value underneath it. Return a whole new value for the key you are changing rather than mutating a nested object you received, because nested values are shared with the original arguments and mutating one in place affects every other reader of them.
+
+:::warning Behaviour change for plugin authors
+
+`block` now outranks `approve` regardless of registration order. Previously the first valid directive won outright, so a plugin registered earlier returning `approve` suppressed a later plugin's `block`. If you relied on ordering to let a permissive plugin pre-empt a restrictive one, that pairing now blocks instead of prompting. Nothing changes for hooks that return only one kind of directive, for observer-only hooks, or for `modify`.
+
+:::
 
 Shell hooks also accept the Claude Code-compatible format:
 

@@ -3159,6 +3159,63 @@ def test_committed_txn_flushes_stops_when_invariant_raises(conn, monkeypatch):
         kb.reset_scope_stop_service_for_tests()
 
 
+def test_stop_pending_cleared_on_run_end_and_confirmed_stop(shims, conn):
+    """AC: the stop-pending marker has clearing paths. ``_end_run`` wipes
+    it when the run closes (a respawn's fresh registration must never see
+    a stale marker), and the scope-stop service wipes it once a
+    registration-sensitive stop CONFIRMS (a verified-empty cgroup means
+    nothing is left to signal, so an adopted run must be registrable
+    again)."""
+    # Half 1 — run end: a marked run closes, the task respawns, the new
+    # run registers cleanly.
+    tid = kb.create_task(conn, title="ac respawn", assignee="w")
+    claimed = kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    assert claimed is not None
+    run_n = kb._current_run_id(conn, tid)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET stop_pending=1 WHERE id=?", (run_n,),
+        )
+        kb._end_run(conn, tid, outcome="crashed", status="crashed")
+        conn.execute(
+            "UPDATE tasks SET status='ready', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, "
+            "worker_pid_started_at=NULL, worker_registered_at=NULL, "
+            "worker_scope=NULL WHERE id=?",
+            (tid,),
+        )
+    assert conn.execute(
+        "SELECT stop_pending FROM task_runs WHERE id=?", (run_n,),
+    ).fetchone()["stop_pending"] == 0
+    claimed2 = kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    assert claimed2 is not None
+    run_m = kb._current_run_id(conn, tid)
+    assert run_m != run_n
+    assert kb.register_worker_pid(conn, tid, expected_run_id=run_m)
+
+    # Half 2 — confirmed stop: the service marks the run right before
+    # signalling, the stop verifies, the marker clears.
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_ac", 1)
+    shims.write_unit(unit, [pid])
+    tid2 = _scoped_task_row(
+        conn, scope=unit, pid=pid, started_delta=-3600,
+    )
+    run2 = kb._current_run_id(conn, tid2)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET stop_pending=1 WHERE id=?", (run2,),
+        )
+    # The drain re-marks (CAS) then signals; verified True clears again.
+    assert kb.request_worker_scope_stop(
+        unit, task_id=tid2, skip_if_registered=True,
+    )
+    assert shims.wait_for(lambda: not kb._pid_alive(pid))
+    assert conn.execute(
+        "SELECT stop_pending FROM task_runs WHERE id=?", (run2,),
+    ).fetchone()["stop_pending"] == 0
+
+
 def test_queue_coalescing_never_reenables_skipping(monkeypatch):
     """AB: two queued requests for one unit coalesce into one entry and
     ``skip_if_registered`` composes with AND. A terminal request (False —

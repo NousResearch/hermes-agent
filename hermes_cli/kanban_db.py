@@ -4558,7 +4558,8 @@ def _end_run(
                ended_at      = ?,
                claim_lock    = NULL,
                claim_expires = NULL,
-               worker_pid    = NULL
+               worker_pid    = NULL,
+               stop_pending  = 0
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -9264,6 +9265,13 @@ def _drain_scope_stop_requests() -> None:
                         unit, request.task_id, request.attempts + 1,
                     )
                 # Left unconfirmed: the next request re-enqueues it.
+        if verified and request.skip_if_registered and request.task_id:
+            # Pass 8 (AC): this drain CAS-marked the run stop-pending right
+            # before signalling; the cgroup is now verified empty, so the
+            # marker has done its job and must not outlive the stop — a
+            # re-adopted run with a stale marker would refuse its worker's
+            # registration forever.
+            _clear_run_stop_pending(request.task_id)
 
 
 def _ensure_scope_stop_thread() -> None:
@@ -10783,6 +10791,51 @@ def _mark_run_stop_pending(task_id: str) -> bool:
             if conn is not None:
                 conn.close()
     return False
+
+
+def _clear_run_stop_pending(task_id: str) -> None:
+    """Clear the current run's ``stop_pending`` marker (pass 8, AC).
+
+    Called by the scope-stop service once a registration-sensitive stop
+    CONFIRMS: the marker made ``register_worker_pid`` self-abort while
+    the service was about to signal the scope, but a verified-empty
+    cgroup means there is nothing left to signal. Without this clearing
+    path the marker was write-only — a run marked and later re-adopted
+    (gateway restart before the run row closed) would refuse its
+    worker's registration forever. ``_end_run`` clears the marker with
+    the same UPDATE for every run it closes.
+
+    Best-effort across all boards (same traversal as
+    :func:`_mark_run_stop_pending`): a failed clear retries on the next
+    confirmed stop or dies with the run at ``_end_run``.
+    """
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        return
+    slugs = [b.get("slug") for b in boards if b.get("slug")] or [DEFAULT_BOARD]
+    for slug in slugs:
+        conn = None
+        try:
+            path = kanban_db_path(board=slug)
+            if not path.exists():
+                continue
+            conn = connect(db_path=path)
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET stop_pending = 0 "
+                    "WHERE id = (SELECT current_run_id FROM tasks "
+                    "            WHERE id = ?) AND stop_pending = 1",
+                    (task_id,),
+                )
+        except Exception as exc:
+            _log.debug(
+                "kanban: stop-pending clear cannot write board %s: %s",
+                slug, exc,
+            )
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:

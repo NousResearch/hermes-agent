@@ -2615,13 +2615,17 @@ export interface Translations {
       resetStatusbar: string
       toggleApprovalMode: string
       toggleBackendVersion: string
+      toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
+      toggleTokensPerSecond: string
       toggleVersion: string
       toggleWorkspace: string
+      cacheHitRateTitle: string
+      tokensPerSecondTitle: string
       agents: string
       closeAgents: string
       openAgents: string

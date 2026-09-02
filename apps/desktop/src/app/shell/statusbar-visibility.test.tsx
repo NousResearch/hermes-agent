@@ -99,21 +99,27 @@ describe('statusbar item visibility', () => {
     const statusbar = bar([
       item('running-timer', 'Turn timer', { variant: 'text' }),
       item('context-usage', 'Context meter', { variant: 'menu' }),
+      item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
+      item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
       item('session-timer', 'Session timer', { variant: 'text' }),
       item('gateway-health', 'Gateway')
     ])
 
-    for (const label of ['Turn timer', 'Context meter', 'Session timer']) {
+    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
       expect(screen.queryByText(label)).toBeNull()
     }
 
     openContextMenu(statusbar)
 
-    const row = await screen.findByRole('menuitemcheckbox', { name: 'Session timer' })
-    fireEvent.click(row)
+    for (const [id, label] of [
+      ['session-timer', 'Session timer'],
+      ['cache-hit-rate', 'Cache hit rate']
+    ]) {
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: label }))
 
-    expect($statusbarHiddenIds.get()).not.toContain('session-timer')
-    expect(within(statusbar).getByText('Session timer')).toBeTruthy()
+      expect($statusbarHiddenIds.get()).not.toContain(id)
+      expect(within(statusbar).getByText(label)).toBeTruthy()
+    }
   })
 })
 

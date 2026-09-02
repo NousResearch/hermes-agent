@@ -938,6 +938,8 @@ def init_agent(
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
+    agent._context_engine_shutdown_lock = threading.Lock()
+    agent._context_engine_shutdown = False
 
     # Background memory/skill review state (agent/background_review.py).
     # ``_background_review_run`` is installed before the worker starts and

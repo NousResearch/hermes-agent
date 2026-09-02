@@ -25,6 +25,7 @@ handle is never closed, and a handle that WAS transferred is not closed twice.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import types
 
@@ -140,6 +141,62 @@ def test_raising_close_is_swallowed_and_not_retried():
 
     assert attempts == [1]
     assert getattr(agent, "_owns_session_db") is False
+
+
+def test_close_shuts_down_context_engine_sqlite_once(tmp_path):
+    """Logical session finalization must not retain an engine's SQLite handle."""
+    context_path = tmp_path / "context.db"
+
+    class _SQLiteContextEngine:
+        def __init__(self):
+            self.connection = sqlite3.connect(context_path)
+            self.shutdown_count = 0
+
+        def shutdown(self):
+            self.shutdown_count += 1
+            self.connection.close()
+
+    engine = _SQLiteContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+
+    agent.close()
+    agent.close()
+
+    assert engine.shutdown_count == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        engine.connection.execute("SELECT 1")
+
+
+def test_concurrent_close_selects_context_engine_shutdown_once():
+    """Concurrent teardown must not double-close or hold the lock in plugins."""
+    shutdown_started = threading.Event()
+    release_shutdown = threading.Event()
+
+    class _BlockingContextEngine:
+        shutdown_count = 0
+
+        def shutdown(self):
+            self.shutdown_count += 1
+            shutdown_started.set()
+            assert release_shutdown.wait(timeout=2)
+
+    engine = _BlockingContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+    agent._context_engine_shutdown_lock = threading.Lock()
+    agent._context_engine_shutdown = False
+    first = threading.Thread(target=agent.close)
+    second = threading.Thread(target=agent.close)
+
+    first.start()
+    assert shutdown_started.wait(timeout=2)
+    second.start()
+    second.join(timeout=2)
+    release_shutdown.set()
+    first.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert engine.shutdown_count == 1
 
 
 def test_close_still_ends_the_session_row_before_closing():

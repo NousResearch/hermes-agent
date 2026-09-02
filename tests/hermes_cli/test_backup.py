@@ -1336,6 +1336,32 @@ class TestQuickSnapshot:
             assert "state.db" not in data.get("files", {})
             assert "state.db" in data.get("failed_dbs", [])
 
+    def test_restore_refused_db_is_not_counted(self, hermes_home, monkeypatch):
+        """A refused live-safe restore (holder detected, backup leg failed) must
+        not be counted as a restored file — `hermes import` reports it, and
+        /snapshot restore must not claim success for that file either."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        restored_log: list[str] = []
+        real_info = backup_mod.logger.info
+        monkeypatch.setattr(
+            backup_mod.logger, "info",
+            lambda msg, *a, **kw: restored_log.append(msg % a if a else msg) or real_info(msg, *a, **kw),
+        )
+
+        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        manifest = json.loads(
+            (backup_mod._quick_snapshot_root(hermes_home) / snap_id / "manifest.json").read_text()
+        )
+        non_db = [rel for rel in manifest.get("files", {}) if not rel.endswith(".db")]
+        summary = [line for line in restored_log if line.startswith("Restored ")]
+        assert summary, restored_log
+        assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
+
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
 
@@ -2344,6 +2370,31 @@ class TestImportLiveSessionDatabase:
         assert "state.db" in out
         # The pre-import database is still the one on disk.
         assert _count_rows(live_db) == (3, 12)
+
+    def test_sidecar_members_are_not_installed_beside_a_restored_db(
+        self, tmp_path, monkeypatch
+    ):
+        """A `state.db-wal` member from an old/hand-built archive must not be
+        os.replace'd next to the page-restored database: it describes a
+        different image and SQLite would replay it on the next open."""
+        from hermes_cli.backup import run_import
+
+        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        with zipfile.ZipFile(zip_path, "a") as zf:
+            zf.writestr("state.db-wal", b"foreign-wal-from-archive")
+            zf.writestr("state.db-shm", b"foreign-shm")
+            zf.writestr("state.db-journal", b"foreign-journal")
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        for suffix, payload in (
+            ("-wal", b"foreign-wal-from-archive"),
+            ("-shm", b"foreign-shm"),
+            ("-journal", b"foreign-journal"),
+        ):
+            sidecar = live_db.with_name("state.db" + suffix)
+            assert not sidecar.exists() or sidecar.read_bytes() != payload, suffix
+        assert _count_rows(live_db) == (2, 4)
 
     def test_missing_target_takes_the_plain_publish(self, tmp_path, monkeypatch):
         """A fresh install has no inode to preserve; the member still lands."""

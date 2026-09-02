@@ -3,7 +3,7 @@
 When a parent fans out N subagents and a child fans out its own M, both
 batches print ``[n/N]`` completion lines to the same console. Without a
 batch tag ``✓ [3/3]`` and ``✓ [3/9]`` are indistinguishable. Every progress
-surface must carry the short delegation id.
+surface carries a human-readable ``set N`` ordinal (not a raw id slice).
 """
 import types
 
@@ -13,9 +13,15 @@ import tools.delegate_tool as dt
 from tools.delegate_tool import _batch_prefix, _build_child_progress_callback, format_batch_tag
 
 
-def test_format_batch_tag_shortens_delegation_handle():
-    assert format_batch_tag("deleg_6a664903") == "6a66"
-    assert format_batch_tag("deleg_") == ""
+@pytest.fixture(autouse=True)
+def _fresh_ordinals(monkeypatch):
+    monkeypatch.setattr(dt, "_BATCH_ORDINALS", {})
+
+
+def test_format_batch_tag_assigns_stable_ordinals_per_batch():
+    assert format_batch_tag("deleg_6a664903") == "set 1"
+    assert format_batch_tag("deleg_b2ac1234") == "set 2"
+    assert format_batch_tag("deleg_6a664903") == "set 1"  # same batch, same label
     assert format_batch_tag(None) == ""
     assert format_batch_tag("") == ""
 
@@ -23,9 +29,9 @@ def test_format_batch_tag_shortens_delegation_handle():
 @pytest.mark.parametrize(
     "deleg, idx, count, expected",
     [
-        ("deleg_6a664903", 2, 9, "[6a66 3/9] "),
+        ("deleg_6a664903", 2, 9, "[set 1 · 3/9] "),
         (None, 2, 9, "[3/9] "),
-        ("deleg_6a664903", 0, 1, "[6a66] "),
+        ("deleg_6a664903", 0, 1, "[set 1] "),
         (None, 0, 1, ""),
     ],
 )
@@ -60,8 +66,8 @@ def test_child_tree_lines_and_relayed_events_carry_batch_tag():
     cb("tool.started", "terminal", "ls")
 
     tree = parent._delegate_spinner.lines
-    assert tree[0].startswith(" [6a66 3/9] ├─ 🔀 triage cluster")
-    assert tree[1].startswith(" [6a66 3/9] ├─ ")
+    assert tree[0].startswith(" [set 1 · 3/9] ├─ 🔀 triage cluster")
+    assert tree[1].startswith(" [set 1 · 3/9] ├─ ")
     assert all(kw.get("delegation_id") == "deleg_6a664903" for _, kw in relayed)
     assert all(kw.get("child_session_id") == "child-sess" for _, kw in relayed)
 
@@ -74,8 +80,7 @@ def test_child_tree_prefix_without_batch_id_is_unchanged():
 
 
 def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch, tmp_path):
-    """Two interleaved batches: every ✓ line names its own batch tag, and the
-    tag equals the delegation_id the dispatch returns."""
+    """Two interleaved batches: every ✓ line names its own ``set N``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
     lines = []
@@ -104,13 +109,11 @@ def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch,
             parent_agent=parent,
         )
         assert "error" not in str(res)[:20], res
-    headers = [re.match(r"\s*🔀 \[([0-9a-f]{4})\] delegating (\d+) tasks", l) for l in lines]
+    headers = [re.match(r"\s*🔀 \[(set \d+)\] delegating (\d+) tasks", l) for l in lines]
     headers = [m for m in headers if m]
-    assert [int(m.group(2)) for m in headers] == [3, 9]
-    tags = [m.group(1) for m in headers]
-    assert len(set(tags)) == 2
+    assert [(m.group(1), int(m.group(2))) for m in headers] == [("set 1", 3), ("set 2", 9)]
 
     done = [l for l in lines if "✓ [" in l]
     assert len(done) == 12
-    assert sum(1 for l in done if f"✓ [{tags[0]} " in l and "/3]" in l) == 3
-    assert sum(1 for l in done if f"✓ [{tags[1]} " in l and "/9]" in l) == 9
+    assert sum(1 for l in done if "✓ [set 1 · " in l and "/3]" in l) == 3
+    assert sum(1 for l in done if "✓ [set 2 · " in l and "/9]" in l) == 9

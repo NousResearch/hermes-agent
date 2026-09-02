@@ -1402,27 +1402,37 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 
+_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS_LOCK = threading.Lock()
+
+
 def format_batch_tag(delegation_id: Optional[str]) -> str:
     """Short human tag identifying which delegation batch a line belongs to.
 
-    ``deleg_6a664903`` → ``6a66``. Several batches (a parent's fan-out plus
-    a child's nested fan-out, or two concurrent tools) print interleaved
-    ``[n/N]`` progress lines to the same console; without a batch tag a
-    ``✓ [3/3]`` and a ``✓ [3/9]`` are indistinguishable. Empty string when
+    ``deleg_6a664903`` → ``set 1`` (first batch seen in this process),
+    the next distinct id → ``set 2``, and so on. Several batches (a parent's
+    fan-out plus a child's nested fan-out, or two concurrent tools) print
+    interleaved ``[n/N]`` progress lines to the same console; without a batch
+    tag a ``✓ [3/3]`` and a ``✓ [3/9]`` are indistinguishable, and a raw hex
+    slice (``[b2ac 3/9]``) is attributable but unreadable. Empty string when
     no id is known so callers can concatenate unconditionally.
     """
     if not isinstance(delegation_id, str) or not delegation_id:
         return ""
-    short = delegation_id.split("_", 1)[-1][:4]
-    return f"{short}" if short else ""
+    with _BATCH_ORDINALS_LOCK:
+        n = _BATCH_ORDINALS.get(delegation_id)
+        if n is None:
+            n = len(_BATCH_ORDINALS) + 1
+            _BATCH_ORDINALS[delegation_id] = n
+    return f"set {n}"
 
 
 def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
-    """``[6a66 3/9] `` for batch children, ``[6a66] `` for a lone child,
+    """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
     ``[3/9] `` / ``""`` when the batch id is unknown."""
     tag = format_batch_tag(delegation_id)
     if task_count > 1:
-        inner = f"{tag} {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
+        inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
         return f"[{inner}] "
     return f"[{tag}] " if tag else ""
 
@@ -4366,7 +4376,7 @@ def delegate_task(
                         icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
                         _tag = format_batch_tag(live_deleg_id)
-                        _slot = f"{_tag} {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
+                        _slot = f"{_tag} · {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
                         completion_line = f"{icon} [{_slot}] {label}  ({dur}s)"
                         # Failed/errored/timed-out children: say WHY on the
                         # same line, cleaned to one short human-readable

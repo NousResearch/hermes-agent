@@ -281,6 +281,83 @@ class TestConnectionLifecycle:
         healed.close()
         assert list(tmp_path.glob("*malformed-backup*"))
 
+    def test_read_only_open_retries_transient_wal_ioerr(self, tmp_path, monkeypatch):
+        """A transient SQLITE_IOERR on a read-only open must retry, not raise.
+
+        A ``mode=ro`` connection cannot perform WAL recovery (recovery would
+        need to write the -shm index, which read-only mode refuses), so a
+        concurrent checkpoint / WAL reset / frame-flush on the writer side can
+        surface "disk I/O error" to a reader on a perfectly healthy database
+        (#100436). The transition window is millisecond-scale; a bounded retry
+        must let the open succeed instead of 500-ing the /api/sessions poll
+        and every other read-only opener.
+        """
+        import sqlite3
+
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("wal-race", source="cli")
+        writable.close()
+
+        real_connect = hermes_state._connect_tracked_db
+        attempts = []
+
+        def flaky_connect(*args, **kwargs):
+            attempts.append(kwargs.get("uri"))
+            if len(attempts) == 1:
+                # First open lands inside the writer's WAL transition window.
+                raise sqlite3.OperationalError("disk I/O error")
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", flaky_connect)
+        # Keep the test fast: one backoff tick is enough; the retry budget
+        # itself is exercised by the attempt count below.
+        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+
+        read_only = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert read_only._fts_enabled is True
+            matches = read_only.search_messages("wal-race")
+        finally:
+            read_only.close()
+
+        assert len(attempts) >= 2, "the transient IOERR must be retried"
+        assert has_live_connection(db_path) is False  # no leaked connections
+
+    def test_read_only_open_exhausts_retry_budget_for_persistent_ioerr(
+        self, tmp_path, monkeypatch
+    ):
+        """A persistent SQLITE_IOERR must exhaust the budget and raise.
+
+        The retry exists to ride out a millisecond WAL transition — a
+        storage layer that keeps failing after the full budget is genuinely
+        broken and must surface the error (and not loop forever).
+        """
+        import sqlite3
+
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("broken-disk", source="cli")
+        writable.close()
+
+        attempts = []
+
+        def bad_connect(*args, **kwargs):
+            attempts.append(1)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", bad_connect)
+        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+        budget = hermes_state._READ_ONLY_IOERR_RETRY_ATTEMPTS
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            SessionDB(db_path=db_path, read_only=True)
+
+        # budget + 1 = the initial attempt plus `budget` retries.
+        assert len(attempts) == budget + 1
+
 
 # =========================================================================
 # Session lifecycle

@@ -197,6 +197,11 @@ def _sidebar_singleflight_cache(func):
             if cached is not miss:
                 return cached
             result = func(*args, **kwargs)
+            # A 200 carrying errors[] is a FAILED profile scan, not a
+            # successful empty page. Caching it holds the empty recents in
+            # front of a store that has already recovered, for the whole TTL.
+            if isinstance(result, dict) and result.get("errors"):
+                return result
             try:
                 snapshot = copy.deepcopy(result)
             except Exception:

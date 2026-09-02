@@ -30,6 +30,7 @@ import {
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
+  carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
@@ -41,6 +42,7 @@ import {
   getSessionOwnerHint,
   getSessionOwnerHints,
   hydrateSessionOwnerHints,
+  keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
   mergeSessionPage,
@@ -670,6 +672,87 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['bumped', 'survivor'])
     expect(merged[0]?.last_active).toBe(300)
+  })
+})
+
+describe('carryForwardFailedProfileSessions', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const previous = [session({ id: 'yesterday', profile: 'default' })]
+    const incoming = [session({ id: 'today', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, incoming, undefined)).toBe(incoming)
+    expect(carryForwardFailedProfileSessions(previous, incoming, [])).toBe(incoming)
+  })
+
+  it('re-attaches idle rows for a profile whose slice failed (empty 200 + errors)', () => {
+    // Repro: current session is running, sidebar scan hits disk I/O, backend
+    // returns recents=[] with errors=[{profile:default}]. mergeSessionPage then
+    // keeps only working/pinned/selected and Yesterday/This-week vanish.
+    const previous = [
+      session({ id: 'running', last_active: 300, profile: 'default', title: 'Now' }),
+      session({ id: 'yesterday', last_active: 200, profile: 'default', title: 'Yesterday' }),
+      session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [
+      { profile: 'default', error: 'disk I/O error' }
+    ])
+
+    expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
+    expect(carried[1]).toBe(previous[1])
+  })
+
+  it('does not resurrect a successful profile’s omitted rows, and does not duplicate', () => {
+    const previous = [
+      session({ id: 'work-old', profile: 'work' }),
+      session({ id: 'home-idle', profile: 'default' }),
+      session({ id: 'home-fresh', profile: 'default' })
+    ]
+
+    const incoming = [session({ id: 'home-fresh', message_count: 4, profile: 'default' })]
+
+    const carried = carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }])
+
+    expect(carried.map(s => `${s.profile}:${s.id}`)).toEqual(['default:home-fresh', 'work:work-old'])
+  })
+
+  it('re-ranks carried rows by recency instead of parking them at the tail', () => {
+    const previous = [
+      session({ id: 'idle-newer', last_active: 500, profile: 'work' }),
+      session({ id: 'idle-older', last_active: 50, profile: 'work' })
+    ]
+
+    const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
+
+    expect(
+      carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)
+    ).toEqual(['idle-newer', 'home', 'idle-older'])
+  })
+
+  it('treats a missing profile tag on the error as default', () => {
+    const previous = [session({ id: 'idle', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, [], [{ error: 'disk I/O error' }]).map(s => s.id)).toEqual([
+      'idle'
+    ])
+  })
+})
+
+describe('keepFailedProfileMeta', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const incoming = { default: { cost_usd: 1, tokens: 2 } }
+
+    expect(keepFailedProfileMeta({ default: { cost_usd: 9, tokens: 9 } }, incoming, [])).toBe(incoming)
+  })
+
+  it('restores previous usage/truncated flags for profiles whose slice failed', () => {
+    const previous = { default: { cost_usd: 4, tokens: 40 }, work: { cost_usd: 1, tokens: 10 } }
+    const incoming = { work: { cost_usd: 2, tokens: 20 } }
+
+    expect(keepFailedProfileMeta(previous, incoming, [{ profile: 'default' }])).toEqual({
+      default: { cost_usd: 4, tokens: 40 },
+      work: { cost_usd: 2, tokens: 20 }
+    })
   })
 })
 

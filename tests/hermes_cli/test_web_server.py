@@ -319,6 +319,29 @@ class TestWebServerEndpoints:
                 monitor.close()
             writer.close()
 
+    def test_get_sessions_transient_ioerr_is_503(self, monkeypatch):
+        """Busy store, not a gone store: the desktop keeps the list it has."""
+        import sqlite3
+
+        from hermes_cli import web_server
+
+        def boom(*_args, **_kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
+        assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 503
+
+    def test_get_sessions_non_transient_operational_error_is_500(self, monkeypatch):
+        import sqlite3
+
+        from hermes_cli import web_server
+
+        def boom(*_args, **_kwargs):
+            raise sqlite3.OperationalError("no such table: sessions")
+
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
+        assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 500
+
     def test_get_status_loads_gateway_config_off_event_loop(self, monkeypatch):
         """Cold gateway config loading must not block the WebSocket loop.
 

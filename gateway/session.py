@@ -3981,14 +3981,23 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import CompressionSessionClosedError, StateDbReplacedError
+                from hermes_state import (
+                    CompressionSessionClosedError,
+                    StateDbCorruptError,
+                    StateDbReplacedError,
+                )
 
-                if isinstance(exc, StateDbReplacedError):
+                if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
+                    # Both classes mean "this handle must not touch the file
+                    # again": replaced generation (#89332) or structural
+                    # corruption (quarantine). Retrying cannot succeed, and
+                    # the FTS one-shot rebuild below must never run on a
+                    # damaged file. Divert instead.
                     logger.error(
-                        "Session DB was replaced underneath the gateway for %s; "
-                        "stopping SQLite writes and diverting pending "
+                        "Session DB refused further writes on this handle for "
+                        "%s (%s); stopping SQLite writes and diverting pending "
                         "transcripts to the on-disk fallback: %s",
-                        session_id, exc,
+                        session_id, type(exc).__name__, exc,
                     )
                     with self._transcript_retry_lock:
                         remaining = list(self._dirty_transcripts.get(queue_session_id, []))

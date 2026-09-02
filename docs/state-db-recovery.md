@@ -23,6 +23,44 @@ cross-process admission lock and foreign-holder guard. If that guarded rebuild
 cannot run, FTS remains detached, canonical writes stay available, and
 `hermes doctor` reports the explicit repair command.
 
+## Live behavior when the file itself is corrupt
+
+If a live write reports bare `SQLITE_CORRUPT` / `SQLITE_NOTADB` (`database
+disk image is malformed`, `file is not a database`) with no FTS provenance,
+the damage is in a canonical B-tree, the schema, or the freelist. `SessionDB`
+then quarantines that handle (`StateDbCorruptError`):
+
+1. the failing write propagates the typed error and nothing is retried;
+2. later writes on the handle fail immediately without touching the file;
+3. the handle never reopens its connection after `close()`; and
+4. `close()` skips its explicit WAL checkpoint.
+
+Stopping the writes is the protection. In the field, a handle that kept
+writing for ~50 minutes after the first structural error checkpointed 15
+pages under the wrong page numbers on shutdown (page 1 received a
+`messages_fts_trigram_data` leaf) and turned a damaged-but-readable file into
+one that no longer opened at all. Skipping the explicit checkpoint is the
+second line of defence; SQLite may still run its own last-connection
+checkpoint when the connection closes, so copy `state.db`, `state.db-wal` and
+`state.db-shm` together before restarting anything.
+
+The gateway and the agent flush path treat the quarantine like a replaced
+file: pending transcripts go to `sessions/<id>.jsonl` and the gateway
+`pending_messages/` spool instead of the retry queue, and the FTS one-shot
+rebuild never runs on the damaged file. The quarantine is per process — the
+shared handle stays poisoned for every holder until the process restarts on a
+repaired or restored file. Do not run `hermes doctor --fix` while the gateway
+is still up. Next steps:
+
+```bash
+hermes gateway stop
+HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --inspect-only
+# if recoverable:
+HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --output "$HOME/recovered-state.db"
+```
+
+or restore the newest snapshot from `state-snapshots/`.
+
 ## Explicit repair
 
 Stop every process that can open the profile database before repairing it.

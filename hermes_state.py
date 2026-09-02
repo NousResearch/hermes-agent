@@ -2265,6 +2265,8 @@ def classify_persistence_error(exc_or_str) -> str:
         return "compression"
     if isinstance(exc_or_str, StateDbReplacedError):
         return "replaced"
+    if isinstance(exc_or_str, StateDbCorruptError):
+        return "corrupt"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
@@ -4361,6 +4363,40 @@ _STATE_DB_REPLACED_MSG = (
 )
 
 
+class StateDbCorruptError(sqlite3.DatabaseError):
+    """A live SessionDB observed structural (non-FTS) corruption and is quarantined.
+
+    Raised once a write on this handle reports bare ``SQLITE_CORRUPT`` /
+    ``SQLITE_NOTADB`` that is neither FTS-scoped (``_is_fts_write_corruption_error``)
+    nor a replaced-file case (``StateDbReplacedError``). Subclasses
+    ``sqlite3.DatabaseError`` so every existing ``except sqlite3.Error``
+    degrade path keeps working; ``sqlite_errorcode``/``sqlite_errorname``
+    are copied from the originating error.
+
+    The quarantine is sticky for the life of the handle: later writes fail
+    fast, the handle never reopens after ``close()``, and ``close()`` skips
+    its own WAL checkpoint. Field evidence (the #90837 lost/reordered-page
+    signature, the #90950 page-1 clobber): a handle that kept writing for ~50
+    minutes after the first structural error checkpointed 15 pages under the
+    wrong page numbers on shutdown, turning a still-readable file into
+    ``file is not a database``. Stopping the writes is what prevents that;
+    skipping the explicit checkpoint is the second line of defence (SQLite
+    may still run its own last-connection checkpoint on close — Python's
+    ``sqlite3`` does not expose ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``). The
+    recovery boundary is a process restart on a repaired or restored file.
+    """
+
+
+_STATE_DB_CORRUPT_MSG = (
+    "FATAL: state.db reported structural corruption (database disk image is "
+    "malformed outside the FTS shadow tables) on a live handle; refusing further "
+    "writes, automatic reopen, and the close-time WAL checkpoint on this file. "
+    "Stop the gateway, then run `hermes sessions recover --source <state.db> "
+    "--inspect-only` or restore a snapshot. Unwritten transcripts are diverted to "
+    "sessions/<id>.jsonl (and the gateway pending_messages spool)."
+)
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages as JSON lines under HERMES_HOME/sessions.
 
@@ -5242,6 +5278,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._db_file_application_id: int = 0
         self._db_file_generation_token: str = ""
         self._db_replaced = False
+        # Sticky: set once a write on THIS handle reports bare SQLITE_CORRUPT /
+        # NOTADB that is not FTS-scoped and not a replaced-file case. Never
+        # cleared; the recovery boundary is a process restart on a repaired or
+        # restored file (see StateDbCorruptError).
+        self._db_corrupt = False
+        self._db_corrupt_reason = ""
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -5783,6 +5825,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # through stale WAL/shm assumptions (#89332). Refuse instead.
         if self._db_replaced or self._db_file_was_replaced():
             self._halt_db_replaced()
+        # A quarantined handle must never come back: reopening would hand a
+        # fresh connection (and its own close-time checkpoint) to a file we
+        # already know is structurally damaged.
+        if self._db_corrupt:
+            raise self._corrupt_error(
+                f"state.db connection for {self.db_path} is quarantined after "
+                f"structural corruption; refusing to reopen for a {context} "
+                "after close(). "
+            )
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -6127,6 +6178,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return "no more rows available" in str(exc).lower()
 
         while True:
+            self._raise_if_db_corrupt()
             self._raise_if_db_replaced()
             fn_started = False
             try:
@@ -6229,6 +6281,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # explicit repair paths retain rebuild ownership.
                 if self._enter_fts_fail_open(exc):
                     continue
+                # Bare SQLITE_CORRUPT / NOTADB that survived the replaced-file
+                # check and the FTS-scoped fail-open is structural damage:
+                # quarantine the handle (see StateDbCorruptError).
+                if self._is_structural_corruption_error(exc):
+                    self._halt_db_corrupt(exc)
                 raise
             except sqlite3.Error as exc:
                 # Catch-all for builds that surface 'no more rows available'
@@ -6323,6 +6380,54 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_file_was_replaced():
             self._halt_db_replaced()
+
+    @classmethod
+    def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
+        """Bare SQLITE_CORRUPT/NOTADB with no FTS provenance.
+
+        ``_is_fts_write_corruption_error`` is the positive FTS classifier;
+        everything else in the ``corrupt`` bucket of
+        ``classify_persistence_error`` is damage to a canonical B-tree, the
+        schema, or the freelist — never repairable from the live write path.
+        """
+        if not isinstance(exc, sqlite3.DatabaseError):
+            return False
+        if isinstance(exc, StateDbCorruptError):
+            return False
+        if cls._is_fts_write_corruption_error(exc):
+            return False
+        return classify_persistence_error(exc) == "corrupt"
+
+    def _corrupt_error(self, prefix: str = "") -> "StateDbCorruptError":
+        """Build the quarantine error for this handle (message assembled once)."""
+        return StateDbCorruptError(
+            f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})"
+        )
+
+    def _halt_db_corrupt(self, exc: BaseException) -> None:
+        """Quarantine this handle and raise; never run in-file repair here."""
+        self._db_corrupt = True
+        self._db_corrupt_reason = str(exc)
+        logger.error(
+            "state.db %s reported structural corruption outside the FTS "
+            "indexes (%s); quarantining this handle: no further writes, no "
+            "automatic reopen, no explicit WAL checkpoint at close. Stop the "
+            "gateway and run `hermes sessions recover --source %s "
+            "--inspect-only`.",
+            self.db_path,
+            exc,
+            self.db_path,
+        )
+        err = self._corrupt_error()
+        for attr in ("sqlite_errorcode", "sqlite_errorname"):
+            value = getattr(exc, attr, None)
+            if value is not None:
+                setattr(err, attr, value)
+        raise err from exc
+
+    def _raise_if_db_corrupt(self) -> None:
+        if self._db_corrupt:
+            raise self._corrupt_error()
 
     def _sleep_before_write_retry(
         self, deadline: float, patience_s: float
@@ -6545,6 +6650,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
+        self._raise_if_db_corrupt()
         if self._db_replaced or self._db_file_was_replaced():
             self._halt_db_replaced()
 
@@ -6612,6 +6718,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
+        if self._db_corrupt:
+            return  # quarantined: never checkpoint over a damaged image
         try:
             with self._lock:
                 result = self._conn.execute(
@@ -6703,7 +6811,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._close_read_conn(conn)
         with self._lock:
             if self._conn:
-                if not self.read_only:
+                if self._db_corrupt:
+                    # Quarantined handle (see StateDbCorruptError): no explicit
+                    # checkpoint over a damaged page image.
+                    logger.warning(
+                        "Skipping the close-time WAL checkpoint for %s: this "
+                        "handle observed structural corruption (%s). Take a "
+                        "snapshot of state.db, -wal and -shm before restarting, "
+                        "then run `hermes sessions recover --source %s "
+                        "--inspect-only`.",
+                        self.db_path,
+                        self._db_corrupt_reason,
+                        self.db_path,
+                    )
+                elif not self.read_only:
                     # PASSIVE, not TRUNCATE. Every cron run_agent opens+closes a
                     # transient SessionDB, so a TRUNCATE here fires a full WAL
                     # reset many times/hour, racing the gateway's long-lived

@@ -2670,13 +2670,17 @@ class AIAgent:
             # ("storage was busy, send it again") from disk-full/read-only.
             from hermes_state import (
                 CompressionSessionClosedError,
+                StateDbCorruptError,
                 StateDbReplacedError,
                 classify_persistence_error,
                 divert_session_transcript_jsonl,
             )
 
             self._last_persistence_error_cause = classify_persistence_error(e)
-            if isinstance(e, StateDbReplacedError):
+            if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
+                # Replaced generation or quarantined (structurally corrupt)
+                # handle: SQLite will not take this batch again, so keep it
+                # on disk instead of only in RAM.
                 try:
                     divert_session_transcript_jsonl(
                         getattr(self, "session_id", "") or "",
@@ -2684,7 +2688,8 @@ class AIAgent:
                     )
                 except Exception:
                     logger.warning(
-                        "JSONL divert failed after state.db replace for %s",
+                        "JSONL divert failed after state.db %s for %s",
+                        self._last_persistence_error_cause,
                         getattr(self, "session_id", None),
                         exc_info=True,
                     )

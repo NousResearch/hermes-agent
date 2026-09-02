@@ -854,4 +854,31 @@ class TestNonConversationalTrackerOffload:
         assert write_threads
         assert all(tid != loop_thread for tid in write_threads)
 
+    @pytest.mark.asyncio
+    async def test_concurrent_mark_many_persists_land_in_order(self):
+        """Two in-flight mark_many() calls (send() racing a history fetch) must
+        not let an older snapshot overwrite a newer one on disk."""
+        import asyncio as _asyncio
+        import time
+
+        tracker = discord_platform._DiscordNonConversationalMessageTracker()
+        tracker._ids = {}
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(list(data))
+
+        with patch.object(discord_platform, "atomic_json_write", side_effect=slow_first_write):
+            first = _asyncio.create_task(tracker.mark_many(["1"]))
+            await _asyncio.sleep(0.005)
+            second = _asyncio.create_task(tracker.mark_many(["2"]))
+            await _asyncio.gather(first, second)
+
+        assert sorted(writes[-1]) == ["1", "2"]
+
 

@@ -1614,6 +1614,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
+        # Serializes the offloaded dedup-state flushes so two concurrent
+        # inbound messages cannot land their writes out of order.
+        self._dedup_persist_lock = asyncio.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
@@ -4762,8 +4765,11 @@ class FeishuAdapter(BasePlatformAdapter):
         # atomic_json_write() calls os.fsync(), which blocks until the write
         # reaches stable storage. _handle_message_event_data runs on the
         # event loop for every inbound message, so offload the flush the
-        # same way #83906 did for the other gateway persist paths.
-        await asyncio.to_thread(self._persist_seen_message_ids)
+        # same way #83906 did for the other gateway persist paths. The lock
+        # keeps flushes in mutation order (the snapshot inside the worker is
+        # taken under _dedup_lock, but the write itself is not).
+        async with self._dedup_persist_lock:
+            await asyncio.to_thread(self._persist_seen_message_ids)
         return False
 
     # =========================================================================

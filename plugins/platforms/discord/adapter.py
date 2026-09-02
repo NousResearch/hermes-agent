@@ -382,6 +382,10 @@ class _DiscordNonConversationalMessageTracker:
     def __init__(self, max_tracked: int = _MAX_TRACKED):
         self._max_tracked = max_tracked
         self._ids: dict[str, None] = dict.fromkeys(self._load())
+        # Serializes the offloaded flushes so two concurrent mark_many() calls
+        # cannot land their writes out of order (last-writer-wins would drop
+        # the newer ids from disk).
+        self._persist_lock = asyncio.Lock()
 
     def _state_path(self) -> _Path:
         from hermes_constants import get_hermes_home
@@ -404,11 +408,15 @@ class _DiscordNonConversationalMessageTracker:
             logger.debug("[%s] Failed to load non-conversational Discord IDs", "Discord")
         return []
 
-    def _save(self) -> None:
+    def _snapshot(self) -> list[str]:
+        """Trim in-memory state and return the ids to persist (loop-side)."""
         ids = list(self._ids)
         if len(ids) > self._max_tracked:
             ids = ids[-self._max_tracked:]
             self._ids = dict.fromkeys(ids)
+        return ids
+
+    def _save(self, ids: list[str]) -> None:
         try:
             atomic_json_write(self._state_path(), ids, indent=None)
         except Exception:
@@ -425,8 +433,13 @@ class _DiscordNonConversationalMessageTracker:
             # atomic_json_write() calls os.fsync(), which blocks until the
             # write reaches stable storage. Both callers of mark_many() run
             # on the event loop, so offload the flush the same way #83906
-            # did for the other gateway persist paths.
-            await asyncio.to_thread(self._save)
+            # did for the other gateway persist paths. The snapshot (and the
+            # trim that reassigns ``_ids``) stays on the loop so the worker
+            # never touches the dict while another task mutates it; the lock
+            # keeps flushes in mutation order.
+            async with self._persist_lock:
+                ids = self._snapshot()
+                await asyncio.to_thread(self._save, ids)
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids

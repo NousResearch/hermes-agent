@@ -1682,6 +1682,35 @@ class TestDedupTTL(unittest.TestCase):
         self.assertTrue(write_threads)
         self.assertTrue(all(tid != loop_thread for tid in write_threads))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_concurrent_dedup_persists_land_in_order(self):
+        """Two in-flight _is_duplicate() calls (two chats) must not let an
+        older seen-ids snapshot overwrite a newer one on disk."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(sorted(data["message_ids"]))
+
+        async def run():
+            first = asyncio.create_task(adapter._is_duplicate("om_a"))
+            await asyncio.sleep(0.005)
+            second = asyncio.create_task(adapter._is_duplicate("om_b"))
+            await asyncio.gather(first, second)
+
+        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
+            asyncio.run(run())
+
+        self.assertEqual(writes[-1], ["om_a", "om_b"])
+
 
 class TestGroupMentionAtAll(unittest.TestCase):
     """Tests for @_all (Feishu @everyone) group mention routing."""

@@ -191,6 +191,33 @@ class TestWeixinStatePersistence:
         assert write_threads
         assert all(tid != loop_thread for tid in write_threads)
 
+    @pytest.mark.asyncio
+    async def test_concurrent_context_token_persists_land_in_order(self, tmp_path):
+        """Two in-flight set() calls (two concurrent inbound messages) must not
+        let an older snapshot overwrite a newer one on disk. Without
+        serialization the first (slow) flush lands last and drops user-2."""
+        import asyncio as _asyncio
+        import time
+
+        store = ContextTokenStore(str(tmp_path))
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(dict(data))
+
+        with patch("gateway.platforms.weixin.atomic_json_write", side_effect=slow_first_write):
+            first = _asyncio.create_task(store.set("acct-1", "user-1", "t1"))
+            await _asyncio.sleep(0.005)
+            second = _asyncio.create_task(store.set("acct-1", "user-2", "t2"))
+            await _asyncio.gather(first, second)
+
+        assert writes[-1] == {"user-1": "t1", "user-2": "t2"}
+
 
 class TestWeixinQrLogin:
     @pytest.mark.asyncio

@@ -133,7 +133,10 @@ def _(rid, params: dict) -> dict:
 
         live_sid = _live_bot_chat_sid(resolved)
         if live_sid:
-            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message})
+            # queued=True: a teammate's DM runs as the NEXT turn. It must never
+            # interrupt or steer a turn already in flight (the default busy
+            # mode does); hundreds of arrivals simply queue in arrival order.
+            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
             if "error" in submitted:
                 return submitted
             return _ok(

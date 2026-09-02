@@ -127,7 +127,8 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
         {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []},
     )
     out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
-    assert submitted == [{"session_id": "live-ops", "text": "ping"}]
+    # queued=True is the invariant: a DM never interrupts a turn in flight.
+    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True}]
     assert not spawned
     assert "reply" in out
 

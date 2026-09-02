@@ -4332,6 +4332,42 @@ def _append_event(
     )
 
 
+def transition_workflow_step_cas(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    workflow_template_id: str,
+    expected_step: str,
+    new_step: str,
+    event_payload: Optional[dict] = None,
+) -> bool:
+    """Atomically advance one opt-in workflow step and record one event.
+
+    The ordinary Kanban ``status`` column is intentionally untouched.  A stale
+    expected step, a different workflow, or a regular task with no workflow
+    returns ``False`` and writes no event.
+    """
+
+    with write_txn(conn):
+        cursor = conn.execute(
+            "UPDATE tasks SET current_step_key = ? "
+            "WHERE id = ? AND workflow_template_id = ? AND current_step_key = ?",
+            (new_step, task_id, workflow_template_id, expected_step),
+        )
+        if cursor.rowcount != 1:
+            return False
+        payload = dict(event_payload or {})
+        payload.update(
+            {
+                "workflow_template_id": workflow_template_id,
+                "from_step": expected_step,
+                "to_step": new_step,
+            }
+        )
+        _append_event(conn, task_id, "workflow_step_transitioned", payload)
+    return True
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,

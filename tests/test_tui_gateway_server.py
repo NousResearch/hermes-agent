@@ -19364,6 +19364,70 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     assert session["agent"] is new_agent
 
 
+def test_reset_session_agent_carries_live_session_db(monkeypatch):
+    """/new (and the toolset/MCP-change rebuild that shares it) must keep
+    writing through the live agent's session handle: _make_agent falls back
+    to the module-level _get_db() singleton, i.e. the LAUNCH profile's shared
+    store, which silently persists a named profile's turns into the launch
+    profile's state.db (#101719)."""
+    captured = {}
+    new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
+    live_db = object()
+    session = _session(agent=types.SimpleNamespace(_session_db=live_db))
+
+    def make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return new_agent
+
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: True)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    server._reset_session_agent("sid", session)
+
+    assert captured.get("session_db") is live_db
+
+
+def test_sync_bot_capabilities_carries_live_session_db(monkeypatch):
+    """A capability-surface rebuild swaps in a fresh agent for the same Bot
+    Chat; it must hand _make_agent the live agent's session handle so a named
+    profile's bot keeps persisting into its own state.db instead of the
+    launch profile's _get_db() singleton (#101719)."""
+    captured = {}
+    new_agent = types.SimpleNamespace()
+    live_db = object()
+    session = _session(
+        agent=types.SimpleNamespace(_session_title_hint="Bot Chat", _session_db=live_db),
+        profile_home="/profiles/named",
+        bot_caps_seen="old-fp",
+        cwd="/tmp",
+    )
+
+    def make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return new_agent
+
+    import tools.bot_mode_probe as bot_mode_probe
+
+    monkeypatch.setattr(bot_mode_probe, "capability_fingerprint", lambda _home: "new-fp")
+    monkeypatch.setattr(server, "_set_session_context", lambda _sid, cwd=None: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+
+    server._sync_bot_capabilities("sid", session)
+
+    assert captured.get("session_db") is live_db
+    assert session["agent"] is new_agent
+
+
 @pytest.mark.parametrize(
     "card,expected",
     [

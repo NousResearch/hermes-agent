@@ -6,7 +6,9 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import os
 import sys
+import tempfile
 
 import pytest
 import uvicorn
@@ -68,6 +70,19 @@ def _stub_uvicorn(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
+
+    def _unique_lock(_home):
+        fd, path = tempfile.mkstemp()
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return fd
+
+    monkeypatch.setattr(
+        "hermes_cli.ssh_isolated_liveness.acquire_ssh_isolated_home_lock",
+        _unique_lock,
+    )
     return captured
 
 
@@ -107,6 +122,58 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_enables_ws_ping_on_ssh_isolated_loopback(monkeypatch):
+    """SSH-tunneled ``serve --isolated`` binds 127.0.0.1 but the client is
+    across a real SSH hop. Half-open sockets after a sleeping laptop are the
+    #101626 class (``ss -tni lastrcv`` while the process still holds
+    ``state.db``). Loopback ping must stay on for that spawn so uvicorn can
+    drop the dead tunnel; timeout stays >= interval so a GIL stall is not
+    immediately fatal (#53773).
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssh_session_token="s" * 64,
+        ssh_owner_nonce="0123456789abcdef",
+    )
+
+    assert captured["ws_ping_interval"] and captured["ws_ping_interval"] >= 60
+    assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] >= 300
+    assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
+
+
+def test_start_server_refuses_second_ssh_isolated_writer_on_same_home(monkeypatch, tmp_path):
+    """Production flock, not the unique-fd stub used by ping tests."""
+    import hermes_cli.ssh_isolated_liveness as liveness
+
+    real_acquire = liveness.acquire_ssh_isolated_home_lock
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setattr(liveness, "acquire_ssh_isolated_home_lock", real_acquire)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssh_session_token="s" * 64,
+        ssh_owner_nonce="0123456789abcdef",
+    )
+    assert captured["ws_ping_interval"]
+
+    with pytest.raises(SystemExit, match="already holds this"):
+        web_server.start_server(
+            host="127.0.0.1",
+            port=0,
+            open_browser=False,
+            ssh_session_token="t" * 64,
+            ssh_owner_nonce="fedcba9876543210",
+        )
 
 
 def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):

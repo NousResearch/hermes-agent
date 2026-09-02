@@ -5776,131 +5776,133 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         await ws.close(code=4403)
         return
     await ws.accept()
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
-    # Profile via query param, like /api/pty and /api/console: the provider
-    # chain + API keys must resolve from the requesting profile's config, not
-    # the dashboard's own. The streamer captures its config at resolve time,
-    # so scoping resolution scopes the whole session.
-    profile = (ws.query_params.get("profile") or "").strip() or None
+    with track_ssh_isolated_ws():
+        # Profile via query param, like /api/pty and /api/console: the provider
+        # chain + API keys must resolve from the requesting profile's config, not
+        # the dashboard's own. The streamer captures its config at resolve time,
+        # so scoping resolution scopes the whole session.
+        profile = (ws.query_params.get("profile") or "").strip() or None
 
-    loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
 
-    def _resolve():
-        from tools.tts_streaming import resolve_streaming_provider
-        from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
+        def _resolve():
+            from tools.tts_streaming import resolve_streaming_provider
+            from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
 
-        with _config_profile_scope(profile):
-            cfg = _load_tts_config()
-            streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
-
-    try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
-    except Exception:
-        _log.exception("speak-stream provider resolution failed")
-        streamer, cap = None, 0
-    if streamer is None:
-        with contextlib.suppress(Exception):
-            await ws.send_json({"type": "fallback"})
-            await ws.close()
-        return
-
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
-
-    stop = threading.Event()
-    text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
-
-    def _produce():
-        from tools.tts_streaming import SentenceChunker
-        from tools.tts_tool import _strip_markdown_for_tts
-
-        chunker = SentenceChunker()
-
-        # The session stays open for a whole agent turn, and the client only
-        # sends `done` when the turn ends. During tool execution no text
-        # arrives, so without an idle flush a narration line with no trailing
-        # whitespace ("Let me check.") sits in the chunker until end-of-turn
-        # and is spoken long after the tool already finished. Mirror the CLI
-        # speaker pipeline: poll with a timeout and flush the buffer when the
-        # producer goes idle — immediately when the buffer ends on sentence
-        # punctuation, after a longer quiet spell otherwise.
-        idle_poll_seconds = 0.5
-        idle_polls_before_force_flush = 4  # ~2s of silence
-
-        def _sentences():
-            idle_polls = 0
-            while not stop.is_set():
-                try:
-                    delta = text_q.get(timeout=idle_poll_seconds)
-                except queue.Empty:
-                    idle_polls += 1
-                    buffered = chunker.buf.strip()
-                    if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
-                        continue
-                    if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
-                        yield from chunker.flush()
-                    continue
-                idle_polls = 0
-                if delta is None:
-                    yield from chunker.flush()
-                    return
-                yield from chunker.feed(delta)
+            with _config_profile_scope(profile):
+                cfg = _load_tts_config()
+                streamer = resolve_streaming_provider(cfg)
+                cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+            return streamer, cap
 
         try:
-            for sentence in _sentences():
-                cleaned = _strip_markdown_for_tts(sentence)
-                if not cleaned:
-                    continue
-                for piece in _split_text_for_speak_stream(cleaned, cap):
-                    for chunk in streamer.stream(piece):
-                        if stop.is_set():
-                            return
-                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
-        except Exception as exc:
-            _log.warning("speak-stream synthesis failed: %s", exc)
-        finally:
-            loop.call_soon_threadsafe(chunks.put_nowait, None)
+            streamer, cap = await loop.run_in_executor(None, _resolve)
+        except Exception:
+            _log.exception("speak-stream provider resolution failed")
+            streamer, cap = None, 0
+        if streamer is None:
+            with contextlib.suppress(Exception):
+                await ws.send_json({"type": "fallback"})
+                await ws.close()
+            return
 
-    threading.Thread(target=_produce, daemon=True).start()
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
-    async def _pump_client():
-        # Text frames feed synthesis; done ends the text; stop/disconnect
-        # (or any unparseable frame) is barge-in.
+        stop = threading.Event()
+        text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
+        chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+
+        def _produce():
+            from tools.tts_streaming import SentenceChunker
+            from tools.tts_tool import _strip_markdown_for_tts
+
+            chunker = SentenceChunker()
+
+            # The session stays open for a whole agent turn, and the client only
+            # sends `done` when the turn ends. During tool execution no text
+            # arrives, so without an idle flush a narration line with no trailing
+            # whitespace ("Let me check.") sits in the chunker until end-of-turn
+            # and is spoken long after the tool already finished. Mirror the CLI
+            # speaker pipeline: poll with a timeout and flush the buffer when the
+            # producer goes idle — immediately when the buffer ends on sentence
+            # punctuation, after a longer quiet spell otherwise.
+            idle_poll_seconds = 0.5
+            idle_polls_before_force_flush = 4  # ~2s of silence
+
+            def _sentences():
+                idle_polls = 0
+                while not stop.is_set():
+                    try:
+                        delta = text_q.get(timeout=idle_poll_seconds)
+                    except queue.Empty:
+                        idle_polls += 1
+                        buffered = chunker.buf.strip()
+                        if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
+                            continue
+                        if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                            yield from chunker.flush()
+                        continue
+                    idle_polls = 0
+                    if delta is None:
+                        yield from chunker.flush()
+                        return
+                    yield from chunker.feed(delta)
+
+            try:
+                for sentence in _sentences():
+                    cleaned = _strip_markdown_for_tts(sentence)
+                    if not cleaned:
+                        continue
+                    for piece in _split_text_for_speak_stream(cleaned, cap):
+                        for chunk in streamer.stream(piece):
+                            if stop.is_set():
+                                return
+                            loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+            except Exception as exc:
+                _log.warning("speak-stream synthesis failed: %s", exc)
+            finally:
+                loop.call_soon_threadsafe(chunks.put_nowait, None)
+
+        threading.Thread(target=_produce, daemon=True).start()
+
+        async def _pump_client():
+            # Text frames feed synthesis; done ends the text; stop/disconnect
+            # (or any unparseable frame) is barge-in.
+            try:
+                while True:
+                    frame = json.loads(await ws.receive_text())
+                    if frame.get("text"):
+                        text_q.put(str(frame["text"]))
+                    if frame.get("stop"):
+                        break
+                    if frame.get("done"):
+                        text_q.put(None)
+            except Exception:
+                pass
+            stop.set()
+            text_q.put(None)  # unblock the producer
+
+        pump = asyncio.ensure_future(_pump_client())
         try:
             while True:
-                frame = json.loads(await ws.receive_text())
-                if frame.get("text"):
-                    text_q.put(str(frame["text"]))
-                if frame.get("stop"):
+                chunk = await chunks.get()
+                if chunk is None:
                     break
-                if frame.get("done"):
-                    text_q.put(None)
-        except Exception:
+                await ws.send_bytes(chunk)
+            if not stop.is_set():
+                await ws.send_json({"type": "end"})
+        except (WebSocketDisconnect, RuntimeError):
             pass
-        stop.set()
-        text_q.put(None)  # unblock the producer
-
-    pump = asyncio.ensure_future(_pump_client())
-    try:
-        while True:
-            chunk = await chunks.get()
-            if chunk is None:
-                break
-            await ws.send_bytes(chunk)
-        if not stop.is_set():
-            await ws.send_json({"type": "end"})
-    except (WebSocketDisconnect, RuntimeError):
-        pass
-    finally:
-        stop.set()
-        text_q.put(None)
-        pump.cancel()
-        with contextlib.suppress(Exception):
-            await ws.close()
+        finally:
+            stop.set()
+            text_q.put(None)
+            pump.cancel()
+            with contextlib.suppress(Exception):
+                await ws.close()
 
 
 @app.get("/api/actions/{name}/status")
@@ -17326,322 +17328,324 @@ async def console_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
-    profile = _console_profile_from_ws(ws)
-    send_lock = asyncio.Lock()
+    with track_ssh_isolated_ws():
+        profile = _console_profile_from_ws(ws)
+        send_lock = asyncio.Lock()
 
-    try:
-        from hermes_cli.console_engine import HermesConsoleEngine
-
-        engine = HermesConsoleEngine(output_limit=_CONSOLE_OUTPUT_LIMIT)
-        if profile and profile.lower() != "current":
-            _resolve_profile_dir(profile)
-    except HTTPException as exc:
-        await _console_send(
-            ws,
-            send_lock,
-            {
-                "type": "error",
-                "message": str(exc.detail),
-                "prompt": "",
-            },
-        )
-        await ws.close(code=4400, reason=_ws_close_reason(str(exc.detail)))
-        return
-    except Exception as exc:
-        _log.exception("console failed to initialize")
-        await _console_send(
-            ws,
-            send_lock,
-            {
-                "type": "error",
-                "message": f"Console unavailable: {exc}",
-                "prompt": "",
-            },
-        )
-        await ws.close(code=1011)
-        return
-
-    _log.info(
-        "console accepted peer=%s mode=%s cred=%s profile=%s",
-        peer,
-        mode,
-        cred,
-        profile or "current",
-    )
-    await _console_send(
-        ws,
-        send_lock,
-        {
-            "type": "ready",
-            "profile": profile or "current",
-            "prompt": _CONSOLE_PROMPT,
-        },
-    )
-
-    active_task: asyncio.Task | None = None
-    pending_confirmation: Optional[str] = None
-    command_generation = 0
-
-    async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
-        nonlocal active_task, pending_confirmation, command_generation
         try:
-            loop = asyncio.get_running_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(
-                        _execute_console_line,
-                        engine,
-                        line,
-                        confirmed=confirmed,
-                        profile=profile,
-                    ),
-                ),
-                timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
-            )
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            if command_id == command_generation:
-                pending_confirmation = None
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "error",
-                        "id": command_id,
-                        "message": (
-                            "Command timed out. Hermes Console returned to the prompt."
-                        ),
-                        "command": line,
-                    },
-                )
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "complete",
-                        "id": command_id,
-                        "status": "timeout",
-                        "command": line,
-                        "prompt": _CONSOLE_PROMPT,
-                    },
-                )
-        except Exception as exc:
-            if command_id == command_generation:
-                pending_confirmation = None
-                _log.exception("console command failed")
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "error",
-                        "id": command_id,
-                        "message": str(exc) or exc.__class__.__name__,
-                        "command": line,
-                    },
-                )
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "complete",
-                        "id": command_id,
-                        "status": "error",
-                        "command": line,
-                        "prompt": _CONSOLE_PROMPT,
-                    },
-                )
-        else:
-            if command_id != command_generation:
-                return
-            pending_confirmation = (
-                result.command if result.status == "confirm_required" else None
-            )
-            await _console_send_result(
-                ws,
-                send_lock,
-                result,
-                command_id=command_id,
-            )
-            if result.status == "exit":
-                await ws.close(code=1000)
-        finally:
-            if command_id == command_generation:
-                active_task = None
+            from hermes_cli.console_engine import HermesConsoleEngine
 
-    async def start_command(line: str, *, confirmed: bool = False) -> None:
-        nonlocal active_task, command_generation
-        command_generation += 1
-        command_id = command_generation
-        active_task = asyncio.create_task(
-            run_command(line, confirmed=confirmed, command_id=command_id)
-        )
-
-    try:
-        while True:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:
-                break
-            msg_type = msg.get("type")
-            if msg_type == "websocket.disconnect":
-                break
-
-            payload, error = _console_json_payload(msg)
-            if error:
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "error",
-                        "message": error,
-                        "prompt": _CONSOLE_PROMPT,
-                    },
-                )
-                continue
-            if payload is None:
-                continue
-
-            frame_type = str(payload.get("type") or "").strip().lower()
-            if frame_type == "ping":
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "pong",
-                        "prompt": _CONSOLE_PROMPT,
-                    },
-                )
-                continue
-
-            if frame_type == "cancel":
-                if active_task and not active_task.done():
-                    command_generation += 1
-                    active_task.cancel()
-                    active_task = None
-                    pending_confirmation = None
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "complete",
-                            "status": "cancelled",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                elif pending_confirmation:
-                    pending_confirmation = None
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "complete",
-                            "status": "cancelled",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                else:
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "complete",
-                            "status": "idle",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                continue
-
-            if active_task and not active_task.done():
-                await _console_send(
-                    ws,
-                    send_lock,
-                    {
-                        "type": "error",
-                        "message": "A console command is already running.",
-                        "prompt": _CONSOLE_PROMPT,
-                    },
-                )
-                continue
-
-            if frame_type == "confirm":
-                command = str(payload.get("command") or pending_confirmation or "").strip()
-                if not pending_confirmation:
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "error",
-                            "message": "No command is waiting for confirmation.",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                    continue
-                if command != pending_confirmation:
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "error",
-                            "message": "Confirmation does not match the pending command.",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                    continue
-                pending_confirmation = None
-                await start_command(command, confirmed=True)
-                continue
-
-            if frame_type in {"input", "command"}:
-                line = str(payload.get("line") or payload.get("command") or "").strip()
-                if not line:
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "complete",
-                            "status": "ok",
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                    continue
-                if pending_confirmation:
-                    await _console_send(
-                        ws,
-                        send_lock,
-                        {
-                            "type": "error",
-                            "message": (
-                                "Confirm or cancel the pending command before "
-                                "running another one."
-                            ),
-                            "prompt": _CONSOLE_PROMPT,
-                        },
-                    )
-                    continue
-                await start_command(line)
-                continue
-
+            engine = HermesConsoleEngine(output_limit=_CONSOLE_OUTPUT_LIMIT)
+            if profile and profile.lower() != "current":
+                _resolve_profile_dir(profile)
+        except HTTPException as exc:
             await _console_send(
                 ws,
                 send_lock,
                 {
                     "type": "error",
-                    "message": f"Unsupported console frame: {frame_type or '?'}",
-                    "prompt": _CONSOLE_PROMPT,
+                    "message": str(exc.detail),
+                    "prompt": "",
                 },
             )
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if active_task and not active_task.done():
-            active_task.cancel()
+            await ws.close(code=4400, reason=_ws_close_reason(str(exc.detail)))
+            return
+        except Exception as exc:
+            _log.exception("console failed to initialize")
+            await _console_send(
+                ws,
+                send_lock,
+                {
+                    "type": "error",
+                    "message": f"Console unavailable: {exc}",
+                    "prompt": "",
+                },
+            )
+            await ws.close(code=1011)
+            return
+
+        _log.info(
+            "console accepted peer=%s mode=%s cred=%s profile=%s",
+            peer,
+            mode,
+            cred,
+            profile or "current",
+        )
+        await _console_send(
+            ws,
+            send_lock,
+            {
+                "type": "ready",
+                "profile": profile or "current",
+                "prompt": _CONSOLE_PROMPT,
+            },
+        )
+
+        active_task: asyncio.Task | None = None
+        pending_confirmation: Optional[str] = None
+        command_generation = 0
+
+        async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
+            nonlocal active_task, pending_confirmation, command_generation
             try:
-                await active_task
-            except (asyncio.CancelledError, Exception):
-                pass
+                loop = asyncio.get_running_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        _get_console_executor(),
+                        functools.partial(
+                            _execute_console_line,
+                            engine,
+                            line,
+                            confirmed=confirmed,
+                            profile=profile,
+                        ),
+                    ),
+                    timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                if command_id == command_generation:
+                    pending_confirmation = None
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "error",
+                            "id": command_id,
+                            "message": (
+                                "Command timed out. Hermes Console returned to the prompt."
+                            ),
+                            "command": line,
+                        },
+                    )
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "complete",
+                            "id": command_id,
+                            "status": "timeout",
+                            "command": line,
+                            "prompt": _CONSOLE_PROMPT,
+                        },
+                    )
+            except Exception as exc:
+                if command_id == command_generation:
+                    pending_confirmation = None
+                    _log.exception("console command failed")
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "error",
+                            "id": command_id,
+                            "message": str(exc) or exc.__class__.__name__,
+                            "command": line,
+                        },
+                    )
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "complete",
+                            "id": command_id,
+                            "status": "error",
+                            "command": line,
+                            "prompt": _CONSOLE_PROMPT,
+                        },
+                    )
+            else:
+                if command_id != command_generation:
+                    return
+                pending_confirmation = (
+                    result.command if result.status == "confirm_required" else None
+                )
+                await _console_send_result(
+                    ws,
+                    send_lock,
+                    result,
+                    command_id=command_id,
+                )
+                if result.status == "exit":
+                    await ws.close(code=1000)
+            finally:
+                if command_id == command_generation:
+                    active_task = None
+
+        async def start_command(line: str, *, confirmed: bool = False) -> None:
+            nonlocal active_task, command_generation
+            command_generation += 1
+            command_id = command_generation
+            active_task = asyncio.create_task(
+                run_command(line, confirmed=confirmed, command_id=command_id)
+            )
+
+        try:
+            while True:
+                try:
+                    msg = await ws.receive()
+                except RuntimeError:
+                    break
+                msg_type = msg.get("type")
+                if msg_type == "websocket.disconnect":
+                    break
+
+                payload, error = _console_json_payload(msg)
+                if error:
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "error",
+                            "message": error,
+                            "prompt": _CONSOLE_PROMPT,
+                        },
+                    )
+                    continue
+                if payload is None:
+                    continue
+
+                frame_type = str(payload.get("type") or "").strip().lower()
+                if frame_type == "ping":
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "pong",
+                            "prompt": _CONSOLE_PROMPT,
+                        },
+                    )
+                    continue
+
+                if frame_type == "cancel":
+                    if active_task and not active_task.done():
+                        command_generation += 1
+                        active_task.cancel()
+                        active_task = None
+                        pending_confirmation = None
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "complete",
+                                "status": "cancelled",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                    elif pending_confirmation:
+                        pending_confirmation = None
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "complete",
+                                "status": "cancelled",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                    else:
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "complete",
+                                "status": "idle",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                    continue
+
+                if active_task and not active_task.done():
+                    await _console_send(
+                        ws,
+                        send_lock,
+                        {
+                            "type": "error",
+                            "message": "A console command is already running.",
+                            "prompt": _CONSOLE_PROMPT,
+                        },
+                    )
+                    continue
+
+                if frame_type == "confirm":
+                    command = str(payload.get("command") or pending_confirmation or "").strip()
+                    if not pending_confirmation:
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "error",
+                                "message": "No command is waiting for confirmation.",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                        continue
+                    if command != pending_confirmation:
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "error",
+                                "message": "Confirmation does not match the pending command.",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                        continue
+                    pending_confirmation = None
+                    await start_command(command, confirmed=True)
+                    continue
+
+                if frame_type in {"input", "command"}:
+                    line = str(payload.get("line") or payload.get("command") or "").strip()
+                    if not line:
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "complete",
+                                "status": "ok",
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                        continue
+                    if pending_confirmation:
+                        await _console_send(
+                            ws,
+                            send_lock,
+                            {
+                                "type": "error",
+                                "message": (
+                                    "Confirm or cancel the pending command before "
+                                    "running another one."
+                                ),
+                                "prompt": _CONSOLE_PROMPT,
+                            },
+                        )
+                        continue
+                    await start_command(line)
+                    continue
+
+                await _console_send(
+                    ws,
+                    send_lock,
+                    {
+                        "type": "error",
+                        "message": f"Unsupported console frame: {frame_type or '?'}",
+                        "prompt": _CONSOLE_PROMPT,
+                    },
+                )
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if active_task and not active_task.done():
+                active_task.cancel()
+                try:
+                    await active_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 @app.websocket("/api/pty")
@@ -17682,151 +17686,153 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
-    _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
-    if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
-        return
+    with track_ssh_isolated_ws():
+        _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
-    # --- spawn PTY ------------------------------------------------------
-    raw_resume = ws.query_params.get("resume") or None
-    resume = raw_resume
-    profile = ws.query_params.get("profile") or None
-    channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
-    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    active_session_file: Optional[Path] = None
+        # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
+        # client and close cleanly rather than pretending the feature works.
+        if not _PTY_BRIDGE_AVAILABLE:
+            await ws.send_text(
+                "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+                "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+                "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+                "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+            )
+            await ws.close(code=1011)
+            return
 
-    if channel:
-        active_session_file = _active_session_file_for_channel(ws.app, channel)
-        if force_fresh:
-            resume = None
-            _forget_active_session_file(active_session_file)
-        elif not resume:
-            resume = _read_active_session_file(active_session_file)
-            if resume:
-                # The client only knows to pin the viewport to the bottom
-                # when it requested `?resume=`. Tell it a replay is coming
-                # anyway so the implicit active-session fallback gets the
-                # same follow-scroll treatment as an explicit resume (#93518).
-                await ws.send_json({"type": "resume", "id": resume})
+        # --- spawn PTY ------------------------------------------------------
+        raw_resume = ws.query_params.get("resume") or None
+        resume = raw_resume
+        profile = ws.query_params.get("profile") or None
+        channel = _channel_or_close_code(ws)
+        sidecar_url = _build_sidecar_url(channel) if channel else None
+        force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        active_session_file: Optional[Path] = None
 
-    resolve_kwargs = {
-        "resume": resume,
-        "sidecar_url": sidecar_url,
-        "profile": profile,
-    }
-    if active_session_file is not None:
-        resolve_kwargs["active_session_file"] = str(active_session_file)
+        if channel:
+            active_session_file = _active_session_file_for_channel(ws.app, channel)
+            if force_fresh:
+                resume = None
+                _forget_active_session_file(active_session_file)
+            elif not resume:
+                resume = _read_active_session_file(active_session_file)
+                if resume:
+                    # The client only knows to pin the viewport to the bottom
+                    # when it requested `?resume=`. Tell it a replay is coming
+                    # anyway so the implicit active-session fallback gets the
+                    # same follow-scroll treatment as an explicit resume (#93518).
+                    await ws.send_json({"type": "resume", "id": resume})
 
-    try:
-        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
-    except HTTPException as exc:
-        # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
+        resolve_kwargs = {
+            "resume": resume,
+            "sidecar_url": sidecar_url,
+            "profile": profile,
+        }
+        if active_session_file is not None:
+            resolve_kwargs["active_session_file"] = str(active_session_file)
 
-
-    attach_token = ws.query_params.get("attach") or None
-    registry_resume = raw_resume
-    if raw_resume and env:
-        registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
-    if attach_token is not None and (registry_resume or profile):
-        # Key explicit resumes on their canonical target, never the active-session fallback.
-        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
-
-    def _spawn():
-        return PtyBridge.spawn(argv, cwd=cwd, env=env)
-
-    if attach_token is None:
-        # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
         try:
-            bridge = _spawn()
+            argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
+        except HTTPException as exc:
+            # Unknown/invalid profile from _resolve_profile_dir.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except SystemExit as exc:
+            # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+
+        attach_token = ws.query_params.get("attach") or None
+        registry_resume = raw_resume
+        if raw_resume and env:
+            registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
+        if attach_token is not None and (registry_resume or profile):
+            # Key explicit resumes on their canonical target, never the active-session fallback.
+            attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+
+        def _spawn():
+            return PtyBridge.spawn(argv, cwd=cwd, env=env)
+
+        if attach_token is None:
+            # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
+            try:
+                bridge = _spawn()
+            except PtyUnavailableError as exc:
+                await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+                await ws.close(code=1011)
+                return
+            except (FileNotFoundError, OSError) as exc:
+                await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+                await ws.close(code=1011)
+                return
+            await _legacy_pump(ws, bridge)
+            return
+
+        # Keep-alive path: the PTY outlives this socket; reattach by token.
+        try:
+            session, _created = await PTY_REGISTRY.attach_or_spawn(
+                attach_token, spawn=_spawn
+            )
         except PtyUnavailableError as exc:
             await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
-        except (FileNotFoundError, OSError) as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+        except (FileNotFoundError, OSError, RegistryFull) as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
-        await _legacy_pump(ws, bridge)
-        return
 
-    # Keep-alive path: the PTY outlives this socket; reattach by token.
-    try:
-        session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
-        )
-    except PtyUnavailableError as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except (FileNotFoundError, OSError, RegistryFull) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
+        # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
+        # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
+        # emit a complete frame after replay so reconnects never reopen blank.
+        await session.attach(ws, force_redraw=not _created)
 
-    # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
-    # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
-    # emit a complete frame after replay so reconnects never reopen blank.
-    await session.attach(ws, force_redraw=not _created)
+        # --- writer loop: WebSocket → PTY master ----------------------------
+        # No reader task here: the session's drain task (spawned once per PTY,
+        # inside the registry) forwards PTY output to whichever socket is
+        # attached and rings-buffers it while detached.  On child EOF the drain
+        # closes the attached socket with 4410, which unparks ``ws.receive()``
+        # below — same half-open-socket protection the legacy pump has (#54028).
+        try:
+            while True:
+                try:
+                    msg = await ws.receive()
+                except RuntimeError:
+                    # ws.receive() after the socket is already disconnected
+                    # (e.g. closed by the drain task on process exit).
+                    break
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                raw = msg.get("bytes")
+                if raw is None:
+                    text = msg.get("text")
+                    raw = text.encode("utf-8") if isinstance(text, str) else b""
+                if not raw:
+                    continue
 
-    # --- writer loop: WebSocket → PTY master ----------------------------
-    # No reader task here: the session's drain task (spawned once per PTY,
-    # inside the registry) forwards PTY output to whichever socket is
-    # attached and rings-buffers it while detached.  On child EOF the drain
-    # closes the attached socket with 4410, which unparks ``ws.receive()``
-    # below — same half-open-socket protection the legacy pump has (#54028).
-    try:
-        while True:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:
-                # ws.receive() after the socket is already disconnected
-                # (e.g. closed by the drain task on process exit).
-                break
-            if msg.get("type") == "websocket.disconnect":
-                break
-            raw = msg.get("bytes")
-            if raw is None:
-                text = msg.get("text")
-                raw = text.encode("utf-8") if isinstance(text, str) else b""
-            if not raw:
-                continue
+                # Resize escape is consumed locally, never written to the PTY.
+                match = _RESIZE_RE.match(raw)
+                if match and match.end() == len(raw):
+                    session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                    continue
 
-            # Resize escape is consumed locally, never written to the PTY.
-            match = _RESIZE_RE.match(raw)
-            if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
-                continue
-
-            session.bridge.write(raw)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        # Detach only — the PTY keeps running for a reattach; the registry
-        # reaper closes it after the TTL (or immediately on process exit).
-        PTY_REGISTRY.detach(attach_token, ws)
+                session.bridge.write(raw)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            # Detach only — the PTY keeps running for a reattach; the registry
+            # reaper closes it after the TTL (or immediately on process exit).
+            PTY_REGISTRY.detach(attach_token, ws)
 
 
 # ---------------------------------------------------------------------------
@@ -17855,16 +17861,18 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
 
     from tui_gateway.ws import handle_ws
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
     # The authenticated identity (ticket / internal credential) was stamped
     # onto the WS object by _ws_auth_reason; carry it into the gateway
     # transport where it becomes the identity authority for privileged RPCs
     # (browser.controller.register). None on the legacy token path.
-    await handle_ws(
-        ws,
-        auth_identity=getattr(ws, "_hermes_auth_identity", None),
-        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
-    )
+    with track_ssh_isolated_ws():
+        await handle_ws(
+            ws,
+            auth_identity=getattr(ws, "_hermes_auth_identity", None),
+            subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -17899,12 +17907,14 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
-    try:
-        while True:
-            await _broadcast_event(ws.app, channel, await ws.receive_text())
-    except WebSocketDisconnect:
-        pass
+    with track_ssh_isolated_ws():
+        try:
+            while True:
+                await _broadcast_event(ws.app, channel, await ws.receive_text())
+        except WebSocketDisconnect:
+            pass
 
 
 @app.websocket("/api/events")
@@ -17927,28 +17937,30 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    from hermes_cli.ssh_isolated_liveness import track_ssh_isolated_ws
 
-    event_channels, event_lock = _get_event_state(ws.app)
-    async with event_lock:
-        event_channels.setdefault(channel, set()).add(ws)
-
-    try:
-        while True:
-            # Subscribers don't speak — the receive() just blocks until
-            # disconnect so the connection stays open as long as the
-            # browser holds it.
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
+    with track_ssh_isolated_ws():
+        event_channels, event_lock = _get_event_state(ws.app)
         async with event_lock:
-            subs = event_channels.get(channel)
+            event_channels.setdefault(channel, set()).add(ws)
 
-            if subs is not None:
-                subs.discard(ws)
+        try:
+            while True:
+                # Subscribers don't speak — the receive() just blocks until
+                # disconnect so the connection stays open as long as the
+                # browser holds it.
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            async with event_lock:
+                subs = event_channels.get(channel)
 
-                if not subs:
-                    event_channels.pop(channel, None)
+                if subs is not None:
+                    subs.discard(ws)
+
+                    if not subs:
+                        event_channels.pop(channel, None)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:
@@ -19807,6 +19819,10 @@ def start_server(
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
+    from hermes_cli.ssh_isolated_liveness import ensure_ssh_isolated_home_lock
+
+    _ssh_home_lock_fd = ensure_ssh_isolated_home_lock(ssh_session_token)
+
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
     # the `serve` path in main.py (which applies the same floor). Canonical
     # policy lives in resource_limits; #81547's motivating leak (iterdir fds)
@@ -20030,6 +20046,15 @@ def start_server(
         except (TypeError, ValueError):
             return default
 
+    from hermes_cli.ssh_isolated_liveness import ssh_isolated_ws_ping_window
+
+    _ws_ping_interval, _ws_ping_timeout = ssh_isolated_ws_ping_window(
+        is_loopback=_is_loopback,
+        ssh_session_token=ssh_session_token,
+        default_interval=_ws_ping_setting("ws_ping_interval"),
+        default_timeout=_ws_ping_setting("ws_ping_timeout"),
+    )
+
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -20046,12 +20071,12 @@ def start_server(
         # metadata without accepting spoofed X-Forwarded-* headers from every
         # caller.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
-        # Half-open detection for public binds only (see above). Loopback
-        # disables the protocol ping (None) so an event-loop stall can never
-        # trigger a false disconnect; a genuinely dead local client is still
-        # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
-        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
+        # Half-open detection: plain loopback has no network hop, so ping
+        # stays off (#53773). SSH-isolated loopback *is* a tunneled hop
+        # (#101626 — sleeping laptop, ``lastrcv`` while state.db is held),
+        # so ping stays on for that spawn only.
+        ws_ping_interval=_ws_ping_interval,
+        ws_ping_timeout=_ws_ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)
@@ -20125,6 +20150,19 @@ def start_server(
             # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
+            # SSH-isolated remotes have no local parent PID. Idle-exit after
+            # grace when the tunneled client is gone (#101626). No-op without
+            # --ssh-session-token-file.
+            from hermes_constants import get_hermes_home
+            from hermes_cli.ssh_isolated_liveness import (
+                start_ssh_isolated_idle_watchdog,
+            )
+
+            start_ssh_isolated_idle_watchdog(
+                has_ssh_token=bool((ssh_session_token or "").strip()),
+                server=server,
+                hermes_home=get_hermes_home(),
+            )
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port

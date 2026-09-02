@@ -86,3 +86,35 @@ def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):
 
         complete = _recv_until(conn, "complete", status="cancelled")
         assert complete["prompt"] == "hermes> "
+
+
+def test_console_ws_confirm_flow(console_client, monkeypatch):
+    from hermes_cli.console_engine import ConsoleResult, HermesConsoleEngine
+
+    executed_confirmed = []
+
+    def mock_execute(self, line: str, *, confirmed: bool = False):
+        if not confirmed:
+            return ConsoleResult(
+                "confirm_required",
+                command=line,
+                output="Action requires confirmation",
+            )
+        executed_confirmed.append(line)
+        return ConsoleResult("ok", output="Executed successfully", command=line)
+
+    monkeypatch.setattr(HermesConsoleEngine, "execute", mock_execute)
+
+    with console_client.websocket_connect(_url()) as conn:
+        assert conn.receive_json()["type"] == "ready"
+        conn.send_json({"type": "input", "line": "drop database"})
+
+        confirm_req = _recv_until(conn, "complete", status="confirm_required")
+        assert confirm_req["command"] == "drop database"
+
+        conn.send_json({"type": "confirm", "command": "drop database"})
+
+        complete = _recv_until(conn, "complete", status="ok")
+        assert complete["status"] == "ok"
+        assert executed_confirmed == ["drop database"]
+

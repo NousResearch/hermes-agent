@@ -1184,8 +1184,13 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
         proc = _death_supervisor
         if proc is None or proc.poll() is not None:
-            if verb == "unregister" and proc is None:
-                # Nothing was ever registered, so there is nothing to tell.
+            if not _supervised_pgids:
+                # Nothing left to cover, so there is nothing to tell -- and
+                # nothing to respawn a supervisor for. Keyed on the SET, not
+                # on the verb: after a broken-pipe write dropped the
+                # supervisor while groups were still registered, an
+                # unregister of one of them must still rebuild coverage for
+                # the survivors (review finding on #93517).
                 return
             proc = _spawn_death_supervisor()
             _death_supervisor = proc

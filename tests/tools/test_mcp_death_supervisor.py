@@ -532,6 +532,45 @@ def test_a_broken_pipe_never_propagates_into_a_live_mcp_session(monkeypatch, all
     assert mcp_tool._death_supervisor is None
 
 
+def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypatch, all_groups_alive):
+    """A lost supervisor must be replaced by the NEXT lifecycle event, whatever its verb.
+
+    Sequence from the #93517 review: two groups live, the control pipe dies
+    (write fails, supervisor dropped, set retained), then a clean teardown
+    unregisters one of them. Keying the no-spawn fast path on the verb left
+    the survivor recorded but unsupervised; it must be keyed on the set.
+    """
+    spawned = []
+
+    def _spawn():
+        fake = _FakeSupervisor()
+        spawned.append(fake)
+        return fake
+
+    monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", _spawn)
+    mcp_tool._update_death_supervisor("register", [111, 222])
+
+    class _DeadStdin:
+        def write(self, _payload):
+            raise BrokenPipeError("supervisor died")
+
+        def flush(self):
+            pass
+
+    spawned[0].stdin = _DeadStdin()
+    mcp_tool._update_death_supervisor("register", [333])  # the write fails; supervisor dropped
+    assert mcp_tool._death_supervisor is None
+    assert mcp_tool._supervised_pgids == {111, 222, 333}
+
+    mcp_tool._update_death_supervisor("unregister", [222])
+
+    assert len(spawned) == 2, "unregister after a lost supervisor did not respawn one"
+    assert sorted(spawned[1].lines()) == ["register 111", "register 333"], (
+        "the replacement did not receive the surviving groups"
+    )
+    assert mcp_tool._death_supervisor is spawned[1]
+
+
 def test_a_supervisor_that_cannot_start_is_not_fatal(monkeypatch, all_groups_alive):
     monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", lambda: None)
 

@@ -21603,26 +21603,24 @@ def main(
                         # Ensure proper exit code for automation wrappers.
                         #
                         # Kanban workers get a special case: when the run failed
-                        # purely because the provider rate-limited / exhausted
-                        # quota (not because the task itself is broken), exit with
-                        # the EX_TEMPFAIL sentinel instead of the generic 1. The
+                        # because a classified provider/service failure (rate
+                        # limit, billing, overloaded, 5xx, timeout — see
+                        # kanban_worker_exit_code_for_result), exit with the
+                        # EX_TEMPFAIL sentinel instead of the generic 1. The
                         # dispatcher's reap classifier maps that code to a
                         # ``rate_limited`` exit and releases the task back to
-                        # ``ready`` WITHOUT incrementing the failure counter, so a
-                        # 5-hour quota window can't trip the circuit breaker and
-                        # permanently block the card. Non-kanban runs keep the
-                        # plain 0/1 contract automation wrappers expect.
+                        # ``ready`` WITHOUT incrementing the failure counter.
+                        # Free-form error text is never string-matched.
+                        # Non-kanban runs keep the plain 0/1 contract.
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            if os.environ.get("HERMES_KANBAN_TASK"):
                                 try:
                                     from hermes_cli.kanban_db import (
-                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                        kanban_worker_exit_code_for_result as _rl_exit,
                                     )
-                                    _exit_code = _RL_CODE
+                                    _exit_code = _rl_exit(result)
                                 except Exception:
                                     _exit_code = 1
                         sys.exit(_exit_code)

@@ -445,6 +445,48 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # 0/1/2 codes the worker uses for success / generic failure / usage error.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# Classified FailoverReason values that are provider/service failures, not
+# implementation-quality failures. Mapped onto the EX_TEMPFAIL sentinel so
+# ``detect_crashed_workers`` requeues without burning the circuit breaker.
+# Intentionally a closed set of classifier codes — never match free-form
+# error text (an implementation bug that happens to say "overloaded" must
+# still count as a crash). Residual: unknown/auth/model_not_found/format
+# stay as ordinary failures.
+KANBAN_TRANSIENT_PROVIDER_FAILURE_REASONS = frozenset({
+    "rate_limit",
+    "billing",
+    "overloaded",
+    "server_error",
+    "timeout",
+    "upstream_rate_limit",
+})
+
+EXECUTION_POLICY_AUTHORIZED_KIND = "execution_policy_authorized"
+KNOWN_EXECUTION_POLICY_KINDS = frozenset({
+    "executor_substitution",
+    "provider_substitution",
+    "model_substitution",
+})
+
+
+def kanban_worker_exit_code_for_result(result: Optional[dict]) -> int:
+    """Map a quiet-mode turn result to a kanban worker process exit code.
+
+    Only a classified ``failure_reason`` in
+    :data:`KANBAN_TRANSIENT_PROVIDER_FAILURE_REASONS` takes the EX_TEMPFAIL
+    path. Free-form error text is never string-matched. Unclassified or
+    non-retryable reasons (unknown, auth, model_not_found, …) stay exit 1
+    and consume the implementation failure budget.
+    """
+    if not isinstance(result, dict):
+        return 0
+    if not result.get("failed"):
+        return 0
+    reason = result.get("failure_reason")
+    if reason in KANBAN_TRANSIENT_PROVIDER_FAILURE_REASONS:
+        return KANBAN_RATE_LIMIT_EXIT_CODE
+    return 1
+
 
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
@@ -4258,6 +4300,97 @@ def add_comment(
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)
+
+
+def _reject_worker_self_authorization() -> None:
+    """Workers and delegated children cannot authorize policy exceptions."""
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        raise PermissionError(
+            "kanban workers cannot authorize execution-policy exceptions"
+        )
+    _assert_not_delegated_child_mutation()
+
+
+def authorize_execution_policy_exception(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    author: str,
+    kind: str,
+    summary: str,
+    from_assignee: Optional[str] = None,
+    to_assignee: Optional[str] = None,
+    from_model: Optional[str] = None,
+    from_provider: Optional[str] = None,
+    to_model: Optional[str] = None,
+    to_provider: Optional[str] = None,
+) -> int:
+    """Record an explicit human authorization of a critical policy exception.
+
+    Distinct from operational mutation events (``assigned``,
+    ``model_override_set``). Those prove a mutation occurred; they are not
+    evidence that an authorized human approved a no-substitution exception.
+    Workers cannot call this: ``HERMES_KANBAN_TASK`` and delegated-child
+    contexts fail closed.
+    """
+    _reject_worker_self_authorization()
+    author = (author or "").strip()
+    if not author:
+        raise ValueError("author is required")
+    kind = (kind or "").strip()
+    if kind not in KNOWN_EXECUTION_POLICY_KINDS:
+        raise ValueError(
+            f"unknown execution-policy kind {kind!r}; "
+            f"expected one of {sorted(KNOWN_EXECUTION_POLICY_KINDS)}"
+        )
+    summary = (summary or "").strip()
+    if not summary:
+        raise ValueError("summary is required")
+    with write_txn(conn):
+        if not conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone():
+            raise ValueError(f"unknown task {task_id}")
+        payload = {
+            "author": author,
+            "kind": kind,
+            "summary": summary,
+            "from_assignee": from_assignee,
+            "to_assignee": to_assignee,
+            "from_model": from_model,
+            "from_provider": from_provider,
+            "to_model": to_model,
+            "to_provider": to_provider,
+        }
+        _append_event(conn, task_id, EXECUTION_POLICY_AUTHORIZED_KIND, payload)
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        return int(row[0] if row is not None else 0)
+
+
+def has_human_execution_policy_authorization(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: Optional[str] = None,
+) -> bool:
+    """True only when an explicit ``execution_policy_authorized`` event exists.
+
+    ``assigned`` / ``model_override_set`` / comments are not authorization.
+    Absent or ambiguous provenance fails closed (returns False).
+    """
+    wanted = (kind or "").strip() or None
+    for event in list_events(conn, task_id):
+        if event.kind != EXECUTION_POLICY_AUTHORIZED_KIND:
+            continue
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if not (payload.get("author") or "").strip():
+            continue
+        if not (payload.get("summary") or "").strip():
+            continue
+        if wanted is not None and payload.get("kind") != wanted:
+            continue
+        return True
+    return False
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:

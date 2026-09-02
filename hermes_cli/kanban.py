@@ -95,7 +95,44 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "routing_role": t.routing_role,
         "routing_second_opinion": t.routing_second_opinion,
         "routing_preflight": t.routing_preflight,
+        "effective_execution": {
+            "assignee": t.assignee,
+            "model_override": t.model_override,
+            "provider_override": t.provider_override,
+        },
     }
+
+
+def _format_effective_execution_lines(t: kb.Task) -> list[str]:
+    """Human lines that cannot be mistaken for the assignee profile default."""
+    if not (t.model_override or t.provider_override):
+        return []
+    model = t.model_override or "(none)"
+    provider = t.provider_override or "(profile default)"
+    return [
+        f"  effective execution: assignee={t.assignee or '-'} "
+        f"model_override={model} provider_override={provider}",
+        "    pinned override — this is NOT the assignee profile's default backend",
+    ]
+
+
+def _format_retained_override_warning(
+    task: kb.Task, new_assignee: Optional[str],
+) -> Optional[str]:
+    if not (task.model_override or task.provider_override):
+        return None
+    who = new_assignee if new_assignee is not None else task.assignee
+    model = task.model_override or "(none)"
+    provider = task.provider_override or "(profile default)"
+    return (
+        f"⚠  Effective execution identity did not follow assignee {who!r}.\n"
+        f"    Retained override: model={model} provider={provider}\n"
+        f"    This is still {model}/{provider} execution, not the new "
+        f"profile's default backend. Clear with "
+        f"`hermes kanban set-model {task.id} none` or record authorization "
+        f"with `hermes kanban authorize-exception {task.id} "
+        f"--kind executor_substitution --summary ...`."
+    )
 
 
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
@@ -210,7 +247,10 @@ def _check_dispatcher_presence(
             "Gateway is running but kanban.dispatch_in_gateway=false in "
             "config.yaml — the task will sit in 'ready' until you flip it "
             "back on and restart the gateway, OR run the legacy "
-            "standalone daemon (`hermes kanban daemon --force`)."
+            "standalone daemon (`hermes kanban daemon --force`). "
+            "Without a persistent dispatcher tick, later worker death will "
+            "not be autonomously reconciled — a dead worker can remain "
+            "status=running after this command exits.",
         )
     return (
         False,
@@ -219,8 +259,24 @@ def _check_dispatcher_presence(
         "    hermes gateway start\n"
         "The gateway hosts an embedded dispatcher (tick interval 60s by "
         "default); your task will be picked up on the next tick after "
-        "the gateway comes up."
+        "the gateway comes up. Without a persistent dispatcher, later "
+        "worker death will not be autonomously reconciled — a dead worker "
+        "can remain status=running until you start the gateway or run "
+        "another one-shot `hermes kanban dispatch`.",
     )
+
+
+def _warn_if_no_persistent_dispatcher(*, one_shot: bool = False) -> None:
+    """Tell the operator when later worker death will not be reaped."""
+    running, message = _check_dispatcher_presence()
+    if running or not message:
+        return
+    prefix = (
+        "\n⚠  This was a one-shot `hermes kanban dispatch`. "
+        if one_shot
+        else "\n⚠  "
+    )
+    print(prefix + message, file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +590,34 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Provider the model belongs to (worker is spawned with "
              "--provider <name>). Cleared together with the model.",
     )
+
+    # --- authorize-exception (durable human authorization provenance) ---
+    p_auth = sub.add_parser(
+        "authorize-exception",
+        help=(
+            "Record explicit human authorization of a critical "
+            "execution-policy exception (not inferred from assign/set-model)"
+        ),
+    )
+    p_auth.add_argument("task_id")
+    p_auth.add_argument(
+        "--kind",
+        required=True,
+        choices=sorted(kb.KNOWN_EXECUTION_POLICY_KINDS),
+        help="Exception class being authorized",
+    )
+    p_auth.add_argument(
+        "--summary",
+        required=True,
+        help="Human-readable authorization statement",
+    )
+    p_auth.add_argument("--author", default=None)
+    p_auth.add_argument("--from-assignee", default=None)
+    p_auth.add_argument("--to-assignee", default=None)
+    p_auth.add_argument("--from-model", default=None)
+    p_auth.add_argument("--from-provider", default=None)
+    p_auth.add_argument("--to-model", default=None)
+    p_auth.add_argument("--to-provider", default=None)
 
     # --- reclaim / reassign (recovery) ---
     p_reclaim = sub.add_parser(
@@ -1166,6 +1250,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "set-model": _cmd_set_model,
+            "authorize-exception": _cmd_authorize_exception,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1239,6 +1324,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "assign",
     "reclaim",
     "reassign",
+    "authorize-exception",
     "link",
     "unlink",
     "claim",
@@ -1841,7 +1927,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
-        print(f"  model:     {task.model_override}{_prov}")
+        print(f"  model:     {task.model_override}{_prov}  [override]")
+        for line in _format_effective_execution_lines(task):
+            print(line)
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1946,10 +2034,16 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         except kb.kroute.RoutingGuardError as exc:
             print(f"kanban: {exc.code}: {exc}", file=sys.stderr)
             return 2
+        task = kb.get_task(conn, args.task_id) if ok else None
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    if task is not None:
+        warning = _format_retained_override_warning(task, profile)
+        if warning:
+            print(warning, file=sys.stderr)
+            print(warning)
     return 0
 
 
@@ -1977,6 +2071,36 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_authorize_exception(args: argparse.Namespace) -> int:
+    author = args.author or _profile_author()
+    try:
+        with kb.connect_closing() as conn:
+            event_id = kb.authorize_execution_policy_exception(
+                conn,
+                args.task_id,
+                author=author,
+                kind=args.kind,
+                summary=args.summary,
+                from_assignee=getattr(args, "from_assignee", None),
+                to_assignee=getattr(args, "to_assignee", None),
+                from_model=getattr(args, "from_model", None),
+                from_provider=getattr(args, "from_provider", None),
+                to_model=getattr(args, "to_model", None),
+                to_provider=getattr(args, "to_provider", None),
+            )
+    except PermissionError as exc:
+        print(f"kanban: cannot authorize: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"Authorized {args.kind} on {args.task_id} "
+        f"by {author} (event {event_id})"
+    )
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         ok = kb.reclaim_task(
@@ -2001,6 +2125,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
             reclaim_first=bool(getattr(args, "reclaim", False)),
             reason=getattr(args, "reason", None),
         )
+        task = kb.get_task(conn, args.task_id) if ok else None
     if not ok:
         print(
             f"cannot reassign {args.task_id} "
@@ -2013,6 +2138,11 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
         f"{profile or '(unassigned)'}"
         + (" (claim reclaimed)" if getattr(args, "reclaim", False) else "")
     )
+    if task is not None:
+        warning = _format_retained_override_warning(task, profile)
+        if warning:
+            print(warning, file=sys.stderr)
+            print(warning)
     return 0
 
 
@@ -2795,6 +2925,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
+        _warn_if_no_persistent_dispatcher(one_shot=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
@@ -2831,6 +2962,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    _warn_if_no_persistent_dispatcher(one_shot=True)
     return 0
 
 

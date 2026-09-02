@@ -860,6 +860,36 @@ class TestSharedBoardPaths:
                 continue
             assert key not in env
 
+    def test_explicit_board_beats_hermes_kanban_db_pin(
+        self, tmp_path, monkeypatch
+    ):
+        # Regression test for a real data-loss incident (2026-08-17): a
+        # worker dispatched with HERMES_KANBAN_DB pinned to its own real
+        # board tried to open a DIFFERENTLY-NAMED isolated scratch board
+        # for a smoke test. Because the env pin used to beat even an
+        # explicit `board=` argument, the "isolated" board silently
+        # resolved to the worker's real board instead, and a cleanup
+        # step deleted every real task on it. An explicit board argument
+        # must always reach that board's own file, never the env pin.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "real-board.db"))
+
+        assert kb.kanban_db_path(board="scratch-test-board") == (
+            default_home / "kanban" / "boards" / "scratch-test-board" / "kanban.db"
+        )
+        assert kb.workspaces_root(board="scratch-test-board") == (
+            default_home / "kanban" / "boards" / "scratch-test-board" / "workspaces"
+        )
+        assert kb.attachments_root(board="scratch-test-board") == (
+            default_home / "kanban" / "boards" / "scratch-test-board" / "attachments"
+        )
+        # No explicit board -> the env pin still applies (dispatcher->worker
+        # handoff for ordinary, unqualified calls is unaffected).
+        assert kb.kanban_db_path() == tmp_path / "real-board.db"
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

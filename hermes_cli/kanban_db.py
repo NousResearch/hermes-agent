@@ -715,20 +715,30 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
     Resolution (highest precedence first):
 
-    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
-       back-compat and for the dispatcher→worker handoff (defense in
-       depth: dispatcher injects this into worker env so workers are
-       immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
-       :func:`get_current_board` is used.
-    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+    1. An explicit ``board`` argument always resolves to that board's own
+       DB — a caller that names a specific board (e.g. an isolated
+       scratch/test board) must actually reach it, never be silently
+       redirected. (Fixed 2026-08-17: previously ``HERMES_KANBAN_DB``
+       pre-empted even an explicit ``board`` argument, so any code that
+       opened a differently-named board while running inside a dispatched
+       worker was silently redirected to the worker's own real board —
+       a data-loss incident on the flightdeck board traced to exactly
+       this.)
+    2. ``board`` arg is None → ``HERMES_KANBAN_DB`` env var, if set, pins
+       the path directly. Honoured for back-compat and for the
+       dispatcher→worker handoff (defense in depth: dispatcher injects
+       this into worker env so workers are immune to any path-resolution
+       disagreement) — but only when the caller didn't ask for a specific
+       board.
+    3. Still None → the active board from :func:`get_current_board`.
+    4. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
-    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban.db"
@@ -738,19 +748,21 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
-    Anchored per-board so workspaces don't leak between projects.
-    ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker env.
+    Anchored per-board so workspaces don't leak between projects. An
+    explicit ``board`` argument always wins (see :func:`kanban_db_path`
+    for why). ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly
+    only when no board was explicitly requested — the dispatcher injects
+    this into worker env.
 
     ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
     that existing scratch workspaces from before the boards feature are
     preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "workspaces"
@@ -764,8 +776,10 @@ def attachments_root(board: Optional[str] = None) -> Path:
     per-board so attachments don't leak between projects. Each task gets
     its own ``<root>/.../attachments/<task_id>/`` subdirectory.
 
-    ``HERMES_KANBAN_ATTACHMENTS_ROOT`` pins the path directly (highest
-    precedence) for tests and unusual deployments.
+    An explicit ``board`` argument always wins (see :func:`kanban_db_path`
+    for why). ``HERMES_KANBAN_ATTACHMENTS_ROOT`` pins the path directly,
+    for tests and unusual deployments, only when no board was explicitly
+    requested.
 
     ``default`` uses ``<root>/kanban/attachments/``; other boards use
     ``<root>/kanban/boards/<slug>/attachments/``.
@@ -776,11 +790,11 @@ def attachments_root(board: Optional[str] = None) -> Path:
     directly. Remote backends (Docker/Modal) need this directory mounted;
     see the kanban docs.
     """
-    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "attachments"

@@ -49,6 +49,36 @@ from typing import Optional
 _MAX_INGEST_BYTES = 50 * 1024 * 1024
 
 
+def _read_host_bytes_bounded(path: Path, src: str) -> bytes:
+    """Read a host file with the ingest cap enforced DURING the read.
+
+    ``Path.read_bytes()`` materializes the whole file before ``_finalize``'s
+    size check runs, so pointing vision_analyze at a multi-GB file (or a
+    sparse file whose ``stat`` size lies low, or a FIFO/devnode that streams
+    unbounded) buffered it all into host memory first. Reading through
+    ``file.read(cap+1)`` bounds the allocation at the cap regardless of what
+    the filesystem claims the size is; the +1 byte distinguishes "exactly at
+    the cap" from "over the cap" without a stat round-trip. Same pattern as
+    the in-sandbox exec-read (``head -c cap+1``) and block/goose#11114's
+    bounded reader.
+
+    ``stat().st_size`` is still consulted first as a cheap fast-fail for
+    regular files that honestly report huge sizes — no bytes are read at all
+    in that case.
+    """
+    try:
+        st_size = path.stat().st_size
+    except OSError:
+        st_size = 0
+    if st_size > _MAX_INGEST_BYTES:
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+    with path.open("rb") as fh:
+        data = fh.read(_MAX_INGEST_BYTES + 1)
+    if len(data) > _MAX_INGEST_BYTES:
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+    return data
+
+
 class ImageResolutionError(Exception):
     def __init__(self, message: str, *, src: str = "", origin: str = ""):
         super().__init__(message)
@@ -144,7 +174,7 @@ async def resolve_image_source(
                 raise_if_read_blocked(str(host_target))
             except ValueError as exc:
                 raise SourceUnsafe(str(exc), src=s, origin="file")
-        data = await asyncio.to_thread(host_target.read_bytes)
+        data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Local backend: any path was host-readable, so a miss simply means

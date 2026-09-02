@@ -115,6 +115,79 @@ class TestLocalBackend:
         assert res.data == svg_bytes
 
 
+class TestBoundedHostRead:
+    """The host file read is bounded DURING the read (port of block/goose#11114).
+
+    Path.read_bytes() materialized the whole file before _finalize's cap
+    check, so an oversized file — or a sparse file whose leading bytes look
+    like a PNG — buffered fully into memory first."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_regular_file_rejected_without_full_read(
+        self, tmp_path, monkeypatch
+    ):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        big = tmp_path / "big.png"
+        # Sparse file: stat reports > cap but no disk is consumed.
+        with big.open("wb") as fh:
+            fh.write(PNG)
+            fh.truncate(isrc._MAX_INGEST_BYTES + 1)
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(str(big), isrc.ResolveContext())
+
+    @pytest.mark.asyncio
+    async def test_read_is_bounded_even_when_stat_lies(self, tmp_path, monkeypatch):
+        """If stat under-reports (proc-like/streaming source), the read itself
+        must stop at cap+1 and reject, not buffer unboundedly."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        img = tmp_path / "grows.png"
+        img.write_bytes(PNG)
+
+        real_stat = Path.stat
+
+        def lying_stat(self, **kw):
+            st = real_stat(self, **kw)
+            if self.name == "grows.png":
+                fake = SimpleNamespace(**{a: getattr(st, a) for a in dir(st) if a.startswith("st_")})
+                fake.st_size = 10  # claims tiny
+                return fake
+            return st
+
+        reads = []
+
+        class BoundedProbe:
+            """Wrap the opened file to record the max single read size."""
+
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, n=-1):
+                reads.append(n)
+                return self._fh.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self._fh.close()
+
+        real_open = Path.open
+
+        def probed_open(self, mode="r", *a, **kw):
+            fh = real_open(self, mode, *a, **kw)
+            if self.name == "grows.png" and "b" in mode:
+                return BoundedProbe(fh)
+            return fh
+
+        monkeypatch.setattr(Path, "stat", lying_stat)
+        monkeypatch.setattr(Path, "open", probed_open)
+        res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+        assert res.data == PNG
+        # The read must have been budgeted (cap+1), never unbounded (-1).
+        assert reads and all(n == isrc._MAX_INGEST_BYTES + 1 for n in reads)
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

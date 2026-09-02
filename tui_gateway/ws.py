@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from tui_gateway import server
+from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
@@ -65,19 +66,13 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
 def _sanitize_ws_text(text: str) -> str:
     """Return *text* that can be UTF-8 encoded for a WebSocket frame.
 
-    Python ``str`` may contain lone UTF-16 surrogates (``\\ud800``-``\\udfff``)
-    that ``json.dumps(..., ensure_ascii=False)`` will happily emit. Starlette
-    then encodes the frame as UTF-8 and raises ``UnicodeEncodeError``, which
-    used to latch the whole connection closed (#97288). Replace those
-    code points rather than dropping the connection.
+    ``json.dumps(..., ensure_ascii=False)`` happily emits lone UTF-16
+    surrogates; Starlette's ``send_text`` then raises ``UnicodeEncodeError``,
+    which used to latch the whole connection closed (#97288). Same U+FFFD
+    replacement every other Hermes transport applies.
     """
-    if not text:
-        return text
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        return text.encode("utf-8", "replace").decode("utf-8")
-    return text
+    return _sanitize_surrogates(text) if text else text
+
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler

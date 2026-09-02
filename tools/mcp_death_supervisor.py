@@ -8,6 +8,12 @@ crash), stdio MCP servers it spawned are reparented to init and keep running
 forever.  macOS has no ``PR_SET_PDEATHSIG``, so something has to outlive Hermes
 and reap them.
 
+This module is deliberately standard-library-only and must not import anything
+from ``tools/``: it runs after Hermes may already be dead, and pulling in
+``mcp_tool`` would drag the whole agent with it. The TERM -> grace -> KILL
+``killpg`` sweep in ``_reap`` therefore duplicates similar sweeps elsewhere in
+the tree on purpose.
+
 The predecessor (``mcp_stdio_watchdog.py``) solved this with one CPython
 *per MCP server*, wrapping each server command and polling ``getppid()`` every
 two seconds.  That costs ~10 MB of resident memory per server and detects death

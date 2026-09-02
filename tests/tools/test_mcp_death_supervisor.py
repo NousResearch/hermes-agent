@@ -366,6 +366,10 @@ class _FakeSupervisor:
     def poll(self):
         return 1 if self._exited else None
 
+    def wait(self, timeout=None):
+        self.waited = True
+        return 0
+
     def lines(self):
         if self.closed:
             return self._sent.splitlines()
@@ -443,6 +447,7 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
 
     mcp_tool._update_death_supervisor("unregister", [222])
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
+    assert getattr(spawned[0], "waited", False), "released supervisor was never wait()ed -> zombie until the next Popen"
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert mcp_tool._death_supervisor is None
 
@@ -506,7 +511,14 @@ def test_replay_does_not_resurrect_an_unregistered_group(monkeypatch, all_groups
     mcp_tool._update_death_supervisor("unregister", [111])
 
     assert mcp_tool._supervised_pgids == {222}
-    assert "register 111" not in replacement.lines()[-1:]
+    # 111 was legitimately replayed to the replacement (it was live when the
+    # dead supervisor was swapped out), then unregistered. What must never
+    # happen is a replay AFTER the unregister bringing it back.
+    lines = replacement.lines()
+    assert lines.index("unregister 111") > lines.index("register 111")
+    assert "register 111" not in lines[lines.index("unregister 111") :]
+    mcp_tool._update_death_supervisor("register", [333])  # any later replay/append
+    assert "register 111" not in replacement.lines()[len(lines) :]
 
 
 def test_a_broken_pipe_never_propagates_into_a_live_mcp_session(monkeypatch, all_groups_alive):

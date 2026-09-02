@@ -1228,6 +1228,14 @@ def _update_death_supervisor(verb: str, pgids) -> None:
                 proc.stdin.close()
             except (BrokenPipeError, ValueError, OSError):
                 pass
+            # Reap it, or the exited supervisor stays a zombie until the next
+            # Popen in this process (CPython only collects abandoned children
+            # opportunistically). It exits on EOF with nothing to do, so this
+            # returns promptly; the timeout keeps a wedged one from stalling us.
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - timeout or already gone; either way we drop it
+                pass
             _death_supervisor = None
 
 

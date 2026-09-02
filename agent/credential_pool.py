@@ -3774,6 +3774,12 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        # One-time heal for installs that forked this grant across profiles
+        # BEFORE the clone-strip / root-write-through existed: consolidate the
+        # profile's copy into root so the read below borrows root's grant
+        # (#100339). No-op in classic mode or once the profile is clean.
+        auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {
         entry.get("id")

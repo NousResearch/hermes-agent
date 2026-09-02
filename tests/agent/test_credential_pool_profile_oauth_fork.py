@@ -96,6 +96,12 @@ def fleet(tmp_path, monkeypatch):
         hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
         import hermes_cli.auth as auth_mod
         auth_mod._global_auth_store_cache = None
+        auth_mod._oauth_heal_clean_marks.clear()
+
+    # Process-wide notice buffer: start each test clean.
+    import hermes_cli.auth as _auth_mod
+    _auth_mod._oauth_heal_notices.clear()
+    _auth_mod._oauth_heal_clean_marks.clear()
 
     def pool_rows(home):
         p = home / "auth.json"
@@ -255,3 +261,192 @@ def test_classic_mode_persist_is_unchanged(fleet):
     sel = load_pool("anthropic").select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT1"
     assert fleet["rows"](fleet["root"])[0]["refresh_token"] == "sk-ant-ort-RT1"
+
+
+# ── C. one-time heal for installs that ALREADY forked the grant ──────────
+#
+# Fleets created on pre-fix code hold profile-local copies of the root grant
+# (verbatim --clone-all, or the old borrowed-persist). The heal runs inside
+# the profile's load_pool(): consolidate to ROOT (freshest rotation wins),
+# strip the profile copy, borrow root from then on.
+
+def _fork(fleet, name, *, rotated_to=None):
+    """Create *name* with a pre-fix style verbatim copy of root's auth.json.
+
+    ``rotated_to=N`` makes the copy the LIVE pair (RT<N>, spent RT0 server-side)
+    to emulate a profile that already refreshed on the old code.
+    """
+    pdir = _profile(fleet, name)
+    pdir.mkdir(parents=True, exist_ok=True)
+    store = json.loads((fleet["root"] / "auth.json").read_text())
+    if rotated_to is not None:
+        row = store["credential_pool"]["anthropic"][0]
+        row["access_token"] = f"sk-ant-oat01-AT{rotated_to}"
+        row["refresh_token"] = f"sk-ant-ort-RT{rotated_to}"
+        row["expires_at_ms"] = int((time.time() - 60) * 1000)  # newer, still expired
+        srv = fleet["server"]
+        srv["spent"].add("sk-ant-ort-RT0")
+        srv["valid"].discard("sk-ant-ort-RT0")
+        srv["valid"].add(f"sk-ant-ort-RT{rotated_to}")
+        srv["n"] = rotated_to
+    (pdir / "auth.json").write_text(json.dumps(store))
+    return pdir
+
+
+def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
+    """root + atlas hold spent RT0; forge already rotated to RT1 on old code."""
+    import logging
+    from agent.credential_pool import load_pool
+
+    forge = _fork(fleet, "forge", rotated_to=1)
+    atlas = _fork(fleet, "atlas")
+    assert fleet["rows"](forge)[0]["refresh_token"] == "sk-ant-ort-RT1"
+    assert fleet["rows"](atlas)[0]["refresh_token"] == "sk-ant-ort-RT0"
+
+    with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
+        fleet["use"](forge)
+        sel = load_pool("anthropic").select()
+    assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
+    # forge's live pair was adopted by ROOT, then rotated there; forge holds nothing.
+    assert fleet["rows"](forge) is None
+    assert fleet["rows"](fleet["root"])[0]["refresh_token"] == "sk-ant-ort-RT2"
+    assert fleet["rows"](fleet["root"])[0]["id"] == "abc123"
+    healed = [r.message for r in caplog.records if "consolidated forked anthropic OAuth grant" in r.message]
+    assert len(healed) == 1 and "profile forge" in healed[0] and "root updated" in healed[0]
+
+    for home in (atlas, fleet["root"], forge):
+        fleet["use"](home)
+        sel = load_pool("anthropic").select()
+        assert sel is not None and sel.access_token == "sk-ant-oat01-AT2", home
+    assert fleet["rows"](atlas) is None and fleet["rows"](forge) is None
+    # Exactly one rotation by us (RT1 -> RT2); the spent RT0 was never replayed.
+    assert [e[0] for e in fleet["server"]["log"]] == ["ROTATE"], fleet["server"]["log"]
+    # API-key rows in the profiles were not touched.
+    for home in (forge, atlas):
+        store = json.loads((home / "auth.json").read_text())
+        assert store["credential_pool"]["openai"][0]["access_token"] == "sk-static-key"
+
+
+def test_heal_is_idempotent_and_logs_once(fleet, caplog):
+    import logging
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+
+    kid = _fork(fleet, "kid")
+    fleet["use"](kid)
+    with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
+        load_pool("anthropic")
+        assert fleet["rows"](kid) is None
+        notices = consume_oauth_heal_notices()
+        assert len(notices) == 1 and "profile kid" in notices[0]
+        root_before = (fleet["root"] / "auth.json").read_text()
+        # Second and third loads: nothing to do, nothing written, nothing logged.
+        assert heal_forked_single_use_oauth_grants("anthropic") is None
+        load_pool("anthropic")
+    assert consume_oauth_heal_notices() == []
+    assert (fleet["root"] / "auth.json").read_text() == root_before
+    assert sum("consolidated forked" in r.message for r in caplog.records) == 1
+
+
+def test_heal_never_deletes_the_only_surviving_copy(fleet):
+    """Root lost its grant (user ran `hermes auth remove` at root); the profile's
+    copy is the only one left — and an independent second account stays put."""
+    from agent.credential_pool import load_pool
+
+    kid = _fork(fleet, "kid", rotated_to=1)
+    store = json.loads((fleet["root"] / "auth.json").read_text())
+    del store["credential_pool"]["anthropic"]
+    (fleet["root"] / "auth.json").write_text(json.dumps(store))
+
+    fleet["use"](kid)
+    sel = load_pool("anthropic").select()
+    assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
+    assert fleet["rows"](kid) and fleet["rows"](kid)[0]["refresh_token"] == "sk-ant-ort-RT2"
+    assert "anthropic" not in (json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"])
+
+
+def test_heal_leaves_a_different_account_alone(fleet):
+    """A profile row whose JWT identity names ANOTHER account is not root's grant."""
+    import base64
+    from agent.credential_pool import load_pool
+
+    def jwt(sub):
+        payload = base64.urlsafe_b64encode(json.dumps({"sub": sub, "exp": int(time.time()) + 3600}).encode()).rstrip(b"=")
+        return "h." + payload.decode() + ".s"
+
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    root_store["credential_pool"]["xai-oauth"] = [{
+        "id": "rootx", "auth_type": "oauth", "priority": 0, "source": "manual:device_code",
+        "access_token": jwt("alice"), "refresh_token": "xr-alice",
+    }]
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+    kid = _profile(fleet, "kid")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"xai-oauth": [
+            {"id": "kidx", "auth_type": "oauth", "priority": 0, "source": "manual:device_code",
+             "access_token": jwt("bob"), "refresh_token": "xr-bob"},
+            {"id": "kidk", "auth_type": "api_key", "priority": 1, "source": "manual",
+             "access_token": "xai-static"},
+        ]},
+    }))
+    fleet["use"](kid)
+    load_pool("xai-oauth")
+    rows = (json.loads((kid / "auth.json").read_text())["credential_pool"])["xai-oauth"]
+    assert [r["id"] for r in rows] == ["kidx", "kidk"]
+    assert json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"]["xai-oauth"][0]["refresh_token"] == "xr-alice"
+
+
+def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
+    """`hermes auth` PKCE shape: root + profile each have .anthropic_oauth.json +
+    a hermes_pkce-seeded row; the profile's copy is the rotated (live) one."""
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text())
+    store["active_provider"] = "anthropic"
+    del store["credential_pool"]["anthropic"]
+    (root / "auth.json").write_text(json.dumps(store))
+    (root / ".anthropic_oauth.json").write_text(json.dumps({
+        "accessToken": "sk-ant-oat01-AT0", "refreshToken": "sk-ant-ort-RT0",
+        "expiresAt": int((time.time() - 3600) * 1000),
+    }))
+    fleet["use"](root)
+    load_pool("anthropic")  # seeds root's hermes_pkce row from the singleton
+
+    kid = _profile(fleet, "kid")
+    kid.mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copy2(root / "auth.json", kid / "auth.json")
+    (kid / ".anthropic_oauth.json").write_text(json.dumps({
+        "accessToken": "sk-ant-oat01-AT1", "refreshToken": "sk-ant-ort-RT1",
+        "expiresAt": int((time.time() - 60) * 1000),
+    }))
+    kstore = json.loads((kid / "auth.json").read_text())
+    kstore["credential_pool"]["anthropic"][0].update(
+        access_token="sk-ant-oat01-AT1", refresh_token="sk-ant-ort-RT1",
+        expires_at_ms=int((time.time() - 60) * 1000),
+    )
+    (kid / "auth.json").write_text(json.dumps(kstore))
+    srv = fleet["server"]
+    srv["spent"].add("sk-ant-ort-RT0"); srv["valid"] = {"sk-ant-ort-RT1"}; srv["n"] = 1
+
+    fleet["use"](kid)
+    sel = load_pool("anthropic").select()
+    assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
+    assert not (kid / ".anthropic_oauth.json").exists()
+    assert fleet["rows"](kid) is None
+    assert json.loads((root / ".anthropic_oauth.json").read_text())["refreshToken"] == "sk-ant-ort-RT2"
+    fleet["use"](root)
+    sel = load_pool("anthropic").select()
+    assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
+    assert [e[0] for e in srv["log"]] == ["ROTATE"], srv["log"]
+
+
+def test_heal_is_a_noop_in_classic_mode(fleet):
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    fleet["use"](fleet["root"])
+    before = (fleet["root"] / "auth.json").read_text()
+    assert heal_forked_single_use_oauth_grants("anthropic") is None
+    assert (fleet["root"] / "auth.json").read_text() == before

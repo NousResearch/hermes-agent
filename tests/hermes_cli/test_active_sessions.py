@@ -172,6 +172,43 @@ def test_release_orphaned_leases_reclaims_only_unowned_own_pid_entries(tmp_path,
     assert orphan is not None
 
 
+def test_release_orphaned_leases_sweeps_profile_runtime_registries(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    root_lease, root_error = active_sessions.try_acquire_active_session(
+        session_id="root-orphan", surface="desktop", config={}, registry_home=root
+    )
+    profile_lease, profile_error = active_sessions.try_acquire_active_session(
+        session_id="profile-orphan",
+        surface="desktop",
+        config={},
+        registry_home=profile,
+    )
+    assert root_lease is not None and root_error is None
+    assert profile_lease is not None and profile_error is None
+
+    assert active_sessions.release_orphaned_leases(set()) == 2
+    assert active_sessions.active_session_registry_snapshot(root) == []
+    assert active_sessions.active_session_registry_snapshot(profile) == []
+
+
+def test_drop_self_orphans_spares_foreign_and_vouched_leases():
+    own = os.getpid()
+    entries = [
+        {"lease_id": "orphan", "pid": own},
+        {"lease_id": "live", "pid": own},
+        {"lease_id": "foreign", "pid": own + 1},
+    ]
+
+    assert active_sessions._drop_self_orphans(entries, None) == entries
+    assert active_sessions._drop_self_orphans(entries, {"live"}) == entries[1:]
+
+
 def test_release_under_profile_home_override_targets_acquisition_registry(
     tmp_path, monkeypatch
 ):

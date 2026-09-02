@@ -764,6 +764,17 @@ def _release_active_session_slot(session: dict | None) -> bool:
     return False
 
 
+def _own_live_lease_ids(*, exclude=None) -> set[str]:
+    """Snapshot leases still backed by this process's live session records."""
+    with _sessions_lock:
+        return {
+            str(lease.lease_id)
+            for session in _sessions.values()
+            if (lease := session.get("active_session_lease")) is not None
+            and lease is not exclude
+        }
+
+
 @contextlib.contextmanager
 def _other_runtime_lease_guard(session_id: str, session: dict):
     """Release this runtime and lock sibling ownership through the DB write."""
@@ -784,13 +795,20 @@ def _other_runtime_lease_guard(session_id: str, session: dict):
 
     last_error: Exception | None = None
     stack = contextlib.ExitStack()
+    own_live_lease_ids = _own_live_lease_ids(exclude=lease)
     for attempt in range(3):
         try:
             if lease is not None and getattr(lease, "enabled", False):
-                guard = release_active_session_liveness_guard(lease, session_id)
+                guard = release_active_session_liveness_guard(
+                    lease,
+                    session_id,
+                    own_live_lease_ids=own_live_lease_ids,
+                )
             else:
                 guard = active_session_liveness_guard(
-                    session_id, registry_home=session.get("profile_home")
+                    session_id,
+                    registry_home=session.get("profile_home"),
+                    own_live_lease_ids=own_live_lease_ids,
                 )
             active = stack.enter_context(guard)
             break
@@ -1930,12 +1948,7 @@ def _reclaim_orphaned_leases() -> None:
     try:
         from hermes_cli.active_sessions import release_orphaned_leases
 
-        with _sessions_lock:
-            live = {
-                lease.lease_id
-                for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None
-            }
+        live = _own_live_lease_ids()
         if dropped := release_orphaned_leases(live):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:

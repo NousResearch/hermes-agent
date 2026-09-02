@@ -46,10 +46,9 @@ def test_empty_body_falls_back_to_response_json_error_message():
         "nodename nor servname provided, or not known",
         "getaddrinfo failed",
         "No address associated with hostname",
-        "Network is unreachable",
     ],
 )
-def test_network_resolution_failure_explains_that_the_user_may_be_offline(
+def test_dns_resolution_failure_does_not_claim_the_device_is_offline(
     technical_message,
 ):
     error = OSError(-3, technical_message)
@@ -57,13 +56,14 @@ def test_network_resolution_failure_explains_that_the_user_may_be_offline(
     summary = AIAgent._summarize_api_error(error)
 
     assert summary == (
-        "Hermes can't reach the model provider. You may be offline. "
-        "Check your internet connection and try again."
+        "Hermes couldn't resolve the model provider hostname (DNS failure). "
+        "This does not mean the device is offline; VPN, DNS, or provider routing "
+        "may be temporarily unavailable."
     )
-    assert "name resolution" not in summary.lower()
+    assert "check your internet connection" not in summary.lower()
 
 
-def test_wrapped_dns_resolution_failure_gets_the_same_friendly_message():
+def test_wrapped_dns_resolution_failure_gets_the_same_accurate_message():
     try:
         try:
             raise OSError(-3, "Temporary failure in name resolution")
@@ -72,8 +72,21 @@ def test_wrapped_dns_resolution_failure_gets_the_same_friendly_message():
     except RuntimeError as error:
         summary = AIAgent._summarize_api_error(error)
 
-    assert "You may be offline" in summary
+    assert "DNS failure" in summary
+    assert "does not mean the device is offline" in summary
     assert "Connection error" not in summary
+
+
+def test_network_unreachable_does_not_tell_the_user_to_check_the_internet():
+    error = OSError(51, "Network is unreachable")
+
+    summary = AIAgent._summarize_api_error(error)
+
+    assert summary == (
+        "Hermes couldn't route this request to the model provider. "
+        "This does not establish that the entire internet connection is offline."
+    )
+    assert "check your internet connection" not in summary.lower()
 
 
 def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_message():

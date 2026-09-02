@@ -5043,6 +5043,30 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
 _TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision"})
 
 
+def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
+    """True when a transient error should go straight to fallback.
+
+    Compression is on the critical preflight path: a user cannot continue or
+    resume an oversized session until it compacts. Vision is on the
+    interactive path: the turn holding the image cannot answer, and because
+    turns are serialised the following user messages stall behind it. For
+    those tasks a same-provider retry on a full-budget timeout means another
+    whole ``timeout`` of wall-clock before the fallback chain runs, doubling
+    the user-visible stall (#54465).
+
+    Carve-out: a fast first-token fail (dead stream detected within the 60s
+    no-progress window, zero output seen — see ``_timeout_message``) is cheap,
+    so it keeps the normal same-provider retry; the provider is often fine
+    and only that one stream was stillborn. Mid-stream stalls and hard-ceiling
+    timeouts skip to fallback.
+    """
+    return (
+        task in _TIMEOUT_NO_RETRY_TASKS
+        and _is_timeout_error(exc)
+        and "no-progress timeout" not in str(exc)
+    )
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -10629,32 +10653,15 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # Compression is on the critical preflight path: a user cannot
-            # continue or resume an oversized session until it compacts.
-            # Vision is on the interactive path: the turn holding the image
-            # cannot answer, and because turns are serialised the following
-            # user messages stall behind it. In both cases a same-provider
-            # retry on a timeout means another full ``timeout``-long
-            # wall-clock block before the except-chain below can fall back —
-            # doubling the user-visible stall (issue #54465). Skip the
-            # same-provider retry for those tasks on a full-budget timeout and
-            # fall straight through to provider/model fallback; fast blips (a
-            # streaming-close or a 5xx) still retry, since those are cheap.
-            if task in _TIMEOUT_NO_RETRY_TASKS and _is_timeout_error(transient_err):
-                # A fast first-token fail (dead stream detected within the
-                # 60s no-progress window, zero output seen) is cheap — take
-                # the normal same-provider retry chain first; the provider
-                # is often fine and only that one stream was stillborn. A
-                # mid-stream stall or hard-ceiling timeout skips straight to
-                # fallback, because re-running a multi-minute summary on the
-                # same provider doubles the user-visible stall (#54465).
-                if "no-progress timeout" not in str(transient_err):
-                    logger.info(
-                        "Auxiliary %s: timeout on the critical path; "
-                        "skipping same-provider retry and falling back: %s",
-                        task, transient_err,
-                    )
-                    raise
+            # Critical-path tasks skip the same-provider retry on a
+            # full-budget timeout; see _should_skip_same_provider_retry.
+            if _should_skip_same_provider_retry(task, transient_err):
+                logger.info(
+                    "Auxiliary %s: timeout on the critical path; "
+                    "skipping same-provider retry and falling back: %s",
+                    task, transient_err,
+                )
+                raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):
@@ -11470,18 +11477,9 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # See call_llm(): compression and vision both sit on a critical
-            # path, so skip the same-provider retry on a full-budget timeout
-            # and fall straight through to fallback (issue #54465). Same
-            # carve-out as the sync site: a fast first-token fail (no-progress
-            # window, zero output) is cheap and still takes the retry — the
-            # async Codex adapter wraps the sync stream via to_thread, so the
-            # same TimeoutError reaches this handler.
-            if (
-                task in _TIMEOUT_NO_RETRY_TASKS
-                and _is_timeout_error(transient_err)
-                and "no-progress timeout" not in str(transient_err)
-            ):
+            # Same rule as call_llm(); the async Codex adapter wraps the sync
+            # stream via to_thread, so the same TimeoutError reaches here.
+            if _should_skip_same_provider_retry(task, transient_err):
                 logger.info(
                     "Auxiliary %s (async): timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",

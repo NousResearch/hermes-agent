@@ -116,6 +116,13 @@ logger = logging.getLogger(__name__)
 MAX_SAFE_RESUME_MESSAGES = 20_000
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
+# Auto-maintenance only VACUUMs when at least this fraction of the database
+# file is reclaimable (``PRAGMA freelist_count / PRAGMA page_count``). Below
+# it a full rewrite costs more I/O than it returns — pruning a handful of small
+# sessions on a dense multi-GB state.db should never rewrite the whole file to
+# reclaim a few MB (#54189). Composes with ``min_vacuum_interval_days``.
+AUTO_VACUUM_MIN_FREELIST_RATIO = 0.25
+
 
 def _configured_transcript_limit(key: str, fallback: int) -> int:
     """Resolve a transcript safety limit from config at call time.
@@ -16728,6 +16735,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             logger.debug("Could not read logical DB size: %s", exc)
             return None
 
+    def _freelist_ratio(self) -> Optional[float]:
+        """Fraction of database pages that are on the freelist (reclaimable).
+
+        ``PRAGMA freelist_count / PRAGMA page_count`` read over the existing
+        connection (never a byte-level probe of the live file — see
+        ``sqlite_safe_read``). This is what VACUUM would actually give back;
+        it is the gate :meth:`maybe_auto_prune_and_vacuum` uses to decide
+        whether a full rewrite pays off (#54189).
+
+        Returns None if the pragmas cannot be read (callers treat that as
+        "unknown" and fall back to the time throttle alone).
+        """
+        try:
+            with self._read_ctx() as conn:
+                if self._conn is None:
+                    return None
+                page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
+                freelist = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+            if page_count <= 0:
+                return 0.0
+            return freelist / page_count
+        except Exception as exc:
+            logger.debug("Could not read freelist ratio: %s", exc)
+            return None
+
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.
 
@@ -16792,15 +16824,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         vacuum: bool = True,
         sessions_dir: Optional[Path] = None,
         min_vacuum_interval_days: int = 30,
+        min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
     ) -> Dict[str, Any]:
         """Idempotent auto-maintenance: prune inactive sessions + optional VACUUM.
 
         Records the last run timestamp in state_meta so subsequent calls
         within ``min_interval_hours`` no-op. VACUUM has its own, typically
         longer, throttle controlled by ``min_vacuum_interval_days`` so routine
-        pruning does not repeatedly rewrite the database. Designed to be
-        called once at startup from long-lived entrypoints (CLI, gateway, cron
-        scheduler).
+        pruning does not repeatedly rewrite the database, and is additionally
+        gated on the reclaimable fraction of the file: it only runs when
+        ``PRAGMA freelist_count / PRAGMA page_count`` exceeds
+        ``min_vacuum_freelist_ratio`` (default
+        :data:`AUTO_VACUUM_MIN_FREELIST_RATIO`, 25%), so pruning a few small
+        sessions on a dense multi-GB database never triggers a full rewrite
+        (#54189). Designed to be called once at startup from long-lived
+        entrypoints (CLI, gateway, cron scheduler).
 
         When *sessions_dir* is provided, on-disk transcript files
         (``.json`` / ``.jsonl`` / ``request_dump_*``) for pruned sessions
@@ -16825,6 +16863,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           - ``"pruned"`` (int)   — number of sessions deleted
           - ``"closed"`` (int)   — stale open state-owned sessions marked ended
           - ``"vacuumed"`` (bool) — true if VACUUM ran
+          - ``"freelist_ratio"`` (float|None) — reclaimable fraction measured
+            when a VACUUM was considered (absent when it was not)
           - ``"error"`` (str, optional) — present only on failure
         """
         result: Dict[str, Any] = {
@@ -16871,13 +16911,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 respect_gateway_heartbeats=False,
             )
             result["closed"] = len(closed)
-            # Only VACUUM if we actually freed rows, and no more often than
-            # once every min_vacuum_interval_days -- a large prune (e.g. the
-            # first one to cross retention_days on a DB with tens of
-            # thousands of rows) can free enough pages that pruned > 0 fires
-            # on every subsequent startup even though a VACUUM already ran
-            # recently. VACUUM on this DB's size (FTS5 shadow tables) is not
-            # cheap -- it holds an exclusive lock for the full rewrite.
+            # Only VACUUM if we actually freed rows, no more often than once
+            # every min_vacuum_interval_days, AND only when the rewrite pays
+            # off: the reclaimable fraction of the file (freelist_count /
+            # page_count) must exceed AUTO_VACUUM_MIN_FREELIST_RATIO (#54189).
+            # A large prune (e.g. the first one to cross retention_days on a
+            # DB with tens of thousands of rows) can free enough pages that
+            # pruned > 0 fires on every subsequent startup even though a
+            # VACUUM already ran recently; and pruning one tiny session on a
+            # dense multi-GB DB would otherwise rewrite the whole file to
+            # reclaim a few MB. VACUUM on this DB's size (FTS5 shadow tables)
+            # is not cheap -- it holds an exclusive lock for the full rewrite.
+            # The time throttle says "not too often"; the ratio gate says
+            # "only when it pays off". Both must pass.
             last_vacuum_raw = self.get_meta("last_vacuum")
             vacuum_due = True
             if last_vacuum_raw:
@@ -16886,12 +16932,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     vacuum_due = True
             if vacuum and pruned > 0 and vacuum_due:
-                try:
-                    self.vacuum()
-                    result["vacuumed"] = True
-                    self.set_meta("last_vacuum", str(now))
-                except Exception as exc:
-                    logger.warning("state.db VACUUM failed: %s", exc)
+                ratio = self._freelist_ratio()
+                result["freelist_ratio"] = ratio
+                if ratio is None or ratio > min_vacuum_freelist_ratio:
+                    try:
+                        self.vacuum()
+                        result["vacuumed"] = True
+                        self.set_meta("last_vacuum", str(now))
+                    except Exception as exc:
+                        logger.warning("state.db VACUUM failed: %s", exc)
+                else:
+                    logger.debug(
+                        "state.db auto-maintenance: skipping VACUUM, only "
+                        "%.1f%% of pages reclaimable (threshold %.0f%%)",
+                        ratio * 100.0,
+                        min_vacuum_freelist_ratio * 100.0,
+                    )
 
             # Record the attempt even if pruned == 0, so we don't retry
             # every startup within the min_interval_hours window.

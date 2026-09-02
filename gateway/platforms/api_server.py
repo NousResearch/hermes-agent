@@ -1248,6 +1248,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Original 202 response per Idempotency-Key. The run status owns the
+        # lifetime, so retries after a lost HTTP response cannot start a second
+        # agent run while the gateway process is still serving the first one.
+        self._run_idempotency: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -6200,6 +6204,51 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
+        idempotency_key = request.headers.get("Idempotency-Key")
+        idempotency_fingerprint = None
+        if idempotency_key:
+            if len(idempotency_key) > 256:
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key is too long",
+                        code="invalid_idempotency_key",
+                        param="Idempotency-Key",
+                    ),
+                    status=400,
+                )
+            fingerprint_body = dict(body)
+            fingerprint_body["_resolved_session_id"] = session_id
+            fingerprint_body["_gateway_session_key"] = gateway_session_key
+            idempotency_fingerprint = _make_request_fingerprint(
+                fingerprint_body,
+                keys=sorted(fingerprint_body),
+            )
+
+        def _cached_idempotency_response():
+            if not idempotency_key:
+                return None
+            existing = self._run_idempotency.get(idempotency_key)
+            if not existing:
+                return None
+            if existing["fingerprint"] != idempotency_fingerprint:
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key was already used with different input",
+                        code="idempotency_conflict",
+                        param="Idempotency-Key",
+                    ),
+                    status=409,
+                )
+            return web.json_response(
+                dict(existing["response"]),
+                status=202,
+                headers=dict(existing["headers"]),
+            )
+
+        cached_response = _cached_idempotency_response()
+        if cached_response is not None:
+            return cached_response
+
         response_session_id = session_id
         if not conversation_history and session_id:
             try:
@@ -6215,6 +6264,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=503,
                 )
+        cached_response = _cached_idempotency_response()
+        if cached_response is not None:
+            return cached_response
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
@@ -6521,8 +6573,19 @@ class APIServerAdapter(BasePlatformAdapter):
             response_headers["X-Hermes-Session-Id"] = response_session_id
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_payload = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "status": "started",
+        }
+        if idempotency_key and idempotency_fingerprint:
+            self._run_idempotency[idempotency_key] = {
+                "fingerprint": idempotency_fingerprint,
+                "response": response_payload,
+                "headers": response_headers,
+            }
         return web.json_response(
-            {"run_id": run_id, "session_id": session_id, "status": "started"},
+            response_payload,
             status=202,
             headers=response_headers,
         )
@@ -6753,6 +6816,10 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+        live_run_ids = set(self._run_statuses)
+        for key, entry in list(self._run_idempotency.items()):
+            if entry.get("response", {}).get("run_id") not in live_run_ids:
+                self._run_idempotency.pop(key, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

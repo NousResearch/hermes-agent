@@ -282,6 +282,96 @@ class TestStartRun:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_start_reuses_run_for_the_same_idempotency_key(self, adapter):
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "crisp-event-123"}
+                async def delayed_history(*_args, **_kwargs):
+                    await asyncio.sleep(0.05)
+                    return []
+
+                with patch.object(
+                    adapter,
+                    "_conversation_history_for_session",
+                    side_effect=delayed_history,
+                ):
+                    first, second = await asyncio.gather(
+                        cli.post(
+                            "/v1/runs",
+                            json={"input": "hello", "session_id": "crisp-session"},
+                            headers=headers,
+                        ),
+                        cli.post(
+                            "/v1/runs",
+                            json={"input": "hello", "session_id": "crisp-session"},
+                            headers=headers,
+                        ),
+                    )
+                first_payload = await first.json()
+                second_payload = await second.json()
+                with patch.object(
+                    adapter,
+                    "_conversation_history_for_session",
+                    side_effect=RuntimeError("session db unavailable"),
+                ):
+                    replay = await cli.post(
+                        "/v1/runs",
+                        json={"input": "hello", "session_id": "crisp-session"},
+                        headers=headers,
+                    )
+                replay_payload = await replay.json()
+                for _ in range(40):
+                    if mock_create.call_count == 1:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert first.status == 202
+        assert second.status == 202
+        assert replay.status == 202
+        assert second_payload == first_payload
+        assert replay_payload == first_payload
+        assert mock_create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_idempotency_key_reuse_for_different_input(
+        self, adapter
+    ):
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "crisp-event-123"}
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "crisp-session"},
+                    headers=headers,
+                )
+                conflict = await cli.post(
+                    "/v1/runs",
+                    json={"input": "different", "session_id": "crisp-session"},
+                    headers=headers,
+                )
+                payload = await conflict.json()
+
+        assert first.status == 202
+        assert conflict.status == 409
+        assert payload["error"]["code"] == "idempotency_conflict"
+
+    @pytest.mark.asyncio
     async def test_start_forwards_inline_image_and_remains_stoppable(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         image_data_url = "data:image/png;base64,iVBORw0KGgo="

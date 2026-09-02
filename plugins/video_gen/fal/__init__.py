@@ -313,6 +313,28 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "negative": True,
         "seed": True,
     },
+    "wan-2.7": {
+        "display": "Wan 2.7",
+        "speed": "~60-180s",
+        "price": "premium",
+        "strengths": "Alibaba. 1080p, native/auto audio, first+last frame, 2-15s, lipsync.",
+        "tier": "premium",
+        "text_endpoint": "fal-ai/wan/v2.7/text-to-video",
+        "image_endpoint": "fal-ai/wan/v2.7/image-to-video",
+        # Wan 2.7 duration enum is 2..15 as JSON integers.
+        "duration_int": True,
+        # t2v accepts aspect_ratio; i2v derives it from the input image and
+        # declares no aspect_ratio field at all.
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("16:9", "9:16", "1:1", "4:3", "3:4"),
+        "resolutions": ("720p", "1080p"),
+        "durations": (2, 15),
+        # Audio is native/always-on (auto-generated background audio when no
+        # audio_url is given); there is no generate_audio key.
+        "audio": False,
+        "negative": True,
+        "seed": True,
+    },
     "happy-horse": {
         "display": "Happy Horse 1.0",
         "speed": "~60-120s",
@@ -806,7 +828,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Happy Horse, Grok Imagine, Gemini Omni — text-to-video & image-to-video",
+            "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Wan 2.7, Happy Horse, Grok Imagine, Gemini Omni — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",

@@ -1886,6 +1886,15 @@ body.guest-pointer-lock :is(webview, iframe) {
   margin: 0 !important;
 }
 
+/* The LazyShiki Suspense fallback is a direct <code> child. Streamdown's
+   prose reset otherwise shrinks it to 0.9em, then the highlighted Shiki DOM
+   restores the code-card typography and makes every fence grow on load. Keep
+   both render paths on the same inherited font metrics (#88151). */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki > code {
+  font-size: inherit;
+  line-height: inherit;
+}
+
 /* react-shiki nests its own `pre.shiki` inside our `.aui-shiki` Pre, so the
    code card's `[&_pre]` padding lands on both and doubles the inset. The outer
    Pre already carries the card's padding — zero the inner one. */

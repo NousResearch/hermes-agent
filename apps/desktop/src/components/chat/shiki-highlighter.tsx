@@ -105,7 +105,7 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   const chunks = useMemo(() => chunkByLines(code, CHUNK_LINES), [code])
 
   if (chunks.length === 1) {
-    return <code className="block whitespace-pre">{code}</code>
+    return <code className="whitespace-pre">{code}</code>
   }
 
   return (

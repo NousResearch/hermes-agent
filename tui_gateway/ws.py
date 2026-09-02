@@ -385,6 +385,7 @@ async def handle_ws(
     parse_errors = 0
     dispatch_crashes = 0
     send_failures = 0
+    heartbeat_pings = 0
     disconnect_reason = "not_connected"
 
     try:
@@ -523,6 +524,7 @@ async def handle_ws(
             req_method = req.get("method") if isinstance(req, dict) else None
 
             if req_method == "gateway.ping":
+                heartbeat_pings += 1
                 ok = await transport.write_async(
                     {
                         "jsonrpc": "2.0",
@@ -633,15 +635,22 @@ async def handle_ws(
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
+        if transport is not None:
+            last_inbound_ago = time.monotonic() - transport.last_inbound_at
+        else:
+            last_inbound_ago = -1.0
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d heartbeat_pings=%d "
+            "last_inbound_ago=%.1fs reaped_sessions=%d detached_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
+            heartbeat_pings,
+            last_inbound_ago,
             reaped_sessions,
             detached_sessions,
         )

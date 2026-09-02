@@ -11472,8 +11472,16 @@ async def _async_call_llm_impl(
                 raise
             # See call_llm(): compression and vision both sit on a critical
             # path, so skip the same-provider retry on a full-budget timeout
-            # and fall straight through to fallback (issue #54465).
-            if task in _TIMEOUT_NO_RETRY_TASKS and _is_timeout_error(transient_err):
+            # and fall straight through to fallback (issue #54465). Same
+            # carve-out as the sync site: a fast first-token fail (no-progress
+            # window, zero output) is cheap and still takes the retry — the
+            # async Codex adapter wraps the sync stream via to_thread, so the
+            # same TimeoutError reaches this handler.
+            if (
+                task in _TIMEOUT_NO_RETRY_TASKS
+                and _is_timeout_error(transient_err)
+                and "no-progress timeout" not in str(transient_err)
+            ):
                 logger.info(
                     "Auxiliary %s (async): timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",

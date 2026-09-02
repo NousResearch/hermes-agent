@@ -2160,6 +2160,75 @@ class TestTransientTransportRetry:
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_vision_skips_same_provider_retry_on_timeout_async(self):
+        """Async twin of the sync guard: tools/vision_tools.py drives
+        ``async_call_llm``, so the skip must hold on the async site too."""
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create = AsyncMock(
+            side_effect=_Timeout("Request timed out.")
+        )
+        expected = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(MagicMock(), "fb-model", "configured-fallback"),
+            ),
+            patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(MagicMock(), "fb-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._call_fallback_candidate_async",
+                new=AsyncMock(return_value=expected),
+            ),
+        ):
+            result = await async_call_llm(
+                task="vision", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert result == expected
+        assert primary.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_progress_timeout_still_retries_same_provider_async(self):
+        """A stillborn stream (no-progress window, zero output) is cheap: it
+        keeps the same-provider retry on the async site, mirroring sync."""
+        primary = MagicMock()
+        primary.base_url = "https://chatgpt.com/backend-api/codex"
+        primary.chat.completions.create = AsyncMock(side_effect=[
+            TimeoutError(
+                "Codex auxiliary Responses stream produced no output within "
+                "60.0s (no-progress timeout, 60.2s elapsed)"
+            ),
+            {"retried": True},
+        ])
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+        ):
+            result = await async_call_llm(
+                task="vision", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert result == {"retried": True}
+        assert primary.chat.completions.create.call_count == 2
+
     def test_non_critical_task_still_retries_same_provider_on_timeout(self):
         """The skip is scoped to critical-path tasks. Everything else keeps the
         existing one-shot same-provider retry, so this is not a blanket change.

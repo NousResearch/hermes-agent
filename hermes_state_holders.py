@@ -120,6 +120,11 @@ def _looks_like_hermes(argv: Sequence[str]) -> bool:
     )
 
 
+def canonical_sqlite_path(path: str) -> str:
+    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
+    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
+
+
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
@@ -130,15 +135,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if _IS_WINDOWS:
         return []
 
-    def _canonical(path: str) -> str:
-        clean = path.removesuffix(" (deleted)")
-        return os.path.normcase(os.path.abspath(clean))
-
     db_path_str = os.path.abspath(os.fspath(db_path))
     watched = {
-        _canonical(db_path_str),
-        _canonical(db_path_str + "-wal"),
-        _canonical(db_path_str + "-shm"),
+        canonical_sqlite_path(db_path_str),
+        canonical_sqlite_path(db_path_str + "-wal"),
+        canonical_sqlite_path(db_path_str + "-shm"),
     }
     holders: List[Tuple[int, str]] = []
     watched_ids: Set[Tuple[int, int]] = set()
@@ -190,7 +191,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                                 )
                             )
                         continue
-                    target_is_watched = _canonical(target) in watched
+                    target_is_watched = canonical_sqlite_path(target) in watched
                     try:
                         fd_stat = os.stat(fd_path)
                     except OSError as exc:
@@ -237,7 +238,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 continue
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
-                if path and _canonical(path) in watched:
+                if path and canonical_sqlite_path(path) in watched:
                     holders.append((pid, path))
     except Exception as exc:
         logger.warning(

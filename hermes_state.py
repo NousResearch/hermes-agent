@@ -4541,9 +4541,7 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
     return identities
 
 
-def _canonical_sqlite_path(path: str) -> str:
-    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
-    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
+_canonical_sqlite_path = _state_holders.canonical_sqlite_path
 
 
 def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
@@ -5072,10 +5070,6 @@ def _concrete_state_db_holder_pids(
         seen.add(pid)
         pids.append(pid)
     return pids
-
-
-_read_proc_argv = _state_holders._read_proc_argv
-_looks_like_hermes = _state_holders._looks_like_hermes
 
 
 # Lifecycle statuses surfaced by session pickers. Classification looks ONLY at

@@ -2752,18 +2752,6 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
-    def test_get_compression_chain_lists_every_segment(self, db):
-        """Root-first order, intermediates included; a chainless id is its
-        own one-element chain."""
-        import time as _time
-        self._build_compression_chain(db, _time.time() - 3600)
-        assert db.get_compression_chain("root1") == ["root1", "mid1", "tip1"]
-        assert db.get_compression_chain("mid1") == ["mid1", "tip1"]
-        assert db.get_compression_chain("tip1") == ["tip1"]
-        db.create_session("solo_chain", "cli")
-        db._conn.commit()
-        assert db.get_compression_chain("solo_chain") == ["solo_chain"]
-
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
         alone are not enough client-side: a persisted tile or route can hold

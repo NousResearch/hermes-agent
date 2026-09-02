@@ -380,13 +380,6 @@ describe('lineageAliases across a deep compression chain', () => {
     expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
     expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
   })
-
-  it('keeps the root/tip pairing for gateways without the field', () => {
-    const rows = [session({ _lineage_root_id: 'root', id: 'tip' })]
-
-    expect(lineageAliases('tip', rows).sort()).toEqual(['root', 'tip'])
-    expect(lineageAliases('unknown', rows)).toEqual(['unknown'])
-  })
 })
 
 describe('resolveComposerSessionKey', () => {

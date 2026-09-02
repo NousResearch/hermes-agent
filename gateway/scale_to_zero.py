@@ -221,13 +221,16 @@ def dashboard_client_last_seen(
     """
     import time
 
+    current = time.time() if now is None else now
     p = dashboard_client_heartbeat_path() if path is None else path
     try:
-        return os.stat(p).st_mtime
+        # Clamp to now: a wall-clock step-back (NTP) can leave the mtime in the
+        # future, which would push idle out by the step size for no reason.
+        return min(os.stat(p).st_mtime, current)
     except FileNotFoundError:
         return None
     except OSError:
-        return time.time() if now is None else now
+        return current
 
 
 def self_suspend_available(environ: Optional[dict] = None) -> bool:

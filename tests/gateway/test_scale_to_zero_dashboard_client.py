@@ -75,6 +75,17 @@ def test_last_seen_returns_raw_mtime_without_staleness_cutoff(hermes_home):
     assert s2z.dashboard_client_last_seen(now=mtime + 3600) == mtime
 
 
+def test_last_seen_future_mtime_is_clamped_to_now(hermes_home):
+    # A wall-clock step-back can leave the marker in the future; it must not
+    # extend the idle window past "now".
+    s2z.touch_dashboard_client_heartbeat()
+    p = s2z.dashboard_client_heartbeat_path()
+    future = time.time() + 600
+    os.utime(p, (future, future))
+    now = time.time()
+    assert s2z.dashboard_client_last_seen(now=now) == now
+
+
 def test_last_seen_unreadable_marker_fails_awake(hermes_home, monkeypatch):
     s2z.touch_dashboard_client_heartbeat()
 

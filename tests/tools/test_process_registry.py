@@ -2118,6 +2118,9 @@ class TestSystemdCgroupIsolation:
             argv = pr._build_systemd_scope_argv(
                 ["/bin/bash", "-lc", "true"],
                 unit_suffix="test",
+                # Memory bounds are caller-resolved since the builder
+                # stopped auto-filling them.
+                memory_max_bytes=pr._worker_memory_max_bytes(),
             )
 
         warning.assert_not_called()

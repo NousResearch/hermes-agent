@@ -299,9 +299,17 @@ def _build_systemd_scope_argv(
     Callers whose transient unit is NOT a terminal-worker sibling (e.g.
     the kanban dispatcher's per-task workers, ``hermes-kanban-<task>.scope``)
     can override the unit name, add a human-readable ``--description``, and
-    set their own memory bounds.  Omitted kwargs keep the legacy
-    terminal-worker behaviour byte-for-byte, so existing call sites are
-    unaffected.
+    set their own memory bounds.
+
+    Memory bounds are caller-resolved by design: ``memory_max_bytes`` /
+    ``memory_swap_max_bytes`` are emitted as ``MemoryMax`` / ``MemorySwapMax``
+    when positive, and OMITTED when not provided (or when a non-positive
+    value is passed).  Emitting ``MemoryMax=0`` would advertise a bound that
+    is actually "no limit" in systemd, so a computed bound of 0/None must
+    drop the property entirely rather than serialize a broken value —
+    callers that want the historical default pass
+    ``_worker_memory_max_bytes()`` themselves (the terminal-tool call sites
+    below do exactly that).
     """
     import shutil
 
@@ -311,10 +319,6 @@ def _build_systemd_scope_argv(
         # guard anyway so we never pass None into Popen.
         return shell_argv
     unit = unit_name if unit_name else f"hermes-worker-{unit_suffix}"
-    memory_max = (
-        memory_max_bytes if memory_max_bytes is not None
-        else _worker_memory_max_bytes()
-    )
     argv = [
         binary,
         "--user",
@@ -329,10 +333,10 @@ def _build_systemd_scope_argv(
     argv += [
         "--property",
         "MemoryAccounting=yes",
-        "--property",
-        f"MemoryMax={memory_max}",
     ]
-    if memory_swap_max_bytes is not None:
+    if memory_max_bytes:
+        argv += ["--property", f"MemoryMax={memory_max_bytes}"]
+    if memory_swap_max_bytes:
         argv += ["--property", f"MemorySwapMax={memory_swap_max_bytes}"]
     argv += [
         "--property",
@@ -384,6 +388,142 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     except Exception as exc:
         logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Verified scope lifecycle helpers.
+#
+# ``systemd-run --scope`` units have no main process: a scope stays active
+# while ANY process in its cgroup lives (dev servers, browsers, databases a
+# worker double-forked), and ``--collect`` only unloads the unit AFTER it
+# becomes empty.  "Is this worker really gone?" therefore cannot be answered
+# from a PID — the unit's cgroup state is the authority.  ``systemctl show
+# -p ActiveState`` reports exactly that (a scope is ``active`` iff its
+# cgroup is non-empty), which keeps the check shimmable in tests without
+# reaching into cgroupfs.
+# ---------------------------------------------------------------------------
+
+_SCOPE_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
+
+
+def _scope_unit_active_state(unit_name: str) -> str:
+    """Return ``"active"``, ``"dead"``, or ``"unknown"`` for a user unit.
+
+    ``"active"`` — the unit's cgroup holds at least one live process
+    (for scopes this is exactly "is anything of this worker alive").
+    ``"dead"`` — unit absent/inactive/failed; nothing is running in it.
+    ``"unknown"`` — systemctl missing, errored, or timed out; callers
+    must fall back to PID-based checks rather than treat this as dead.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return "unknown"
+    try:
+        result = subprocess.run(
+            [binary, "--user", "show", unit_name, "--property", "ActiveState"],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user show %s failed: %s", unit_name, exc)
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    for line in (result.stdout or b"").decode(errors="replace").splitlines():
+        if line.startswith("ActiveState="):
+            state = line.partition("=")[2].strip().lower()
+            if state in _SCOPE_ACTIVE_STATES:
+                return "active"
+            if state:
+                return "dead"
+    return "unknown"
+
+
+def _stop_systemd_unit_verified(unit_name: str) -> bool:
+    """Stop a user unit AND verify its cgroup is actually empty.
+
+    Unlike :func:`_stop_systemd_unit` (fire-and-forget, used where the
+    caller cannot act on the difference), this escalates to
+    ``systemctl kill --signal=SIGKILL`` when the unit is still active
+    after the stop, and returns True only once the unit is verified
+    dead.  A ``systemctl stop`` client timeout does NOT mean the unit
+    died: the stop job may still be running server-side, so callers
+    must treat a False return as "still stopping" — retry next tick,
+    never assume success and release bookkeeping that guards against a
+    duplicate spawn.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    if not _stop_systemd_unit(unit_name):
+        # The stop command itself failed.  Distinguish "nothing to stop"
+        # (already gone — _stop_systemd_unit returns True for that) from a
+        # genuine failure by asking the unit state directly.
+        state = _scope_unit_active_state(unit_name)
+        return state == "dead"
+    if _scope_unit_active_state(unit_name) != "active":
+        return True
+    # Still active (slow descendants, stop timeout consumed by a stubborn
+    # child).  Escalate: SIGKILL every process in the unit's cgroup, then
+    # re-verify.
+    try:
+        subprocess.run(
+            [binary, "--user", "kill", "--signal=SIGKILL", unit_name],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user kill %s failed: %s", unit_name, exc)
+        return False
+    for _ in range(5):
+        if _scope_unit_active_state(unit_name) != "active":
+            return True
+        time.sleep(0.2)
+    logger.warning(
+        "systemd unit %s still active after SIGTERM+SIGKILL escalation",
+        unit_name,
+    )
+    return False
+
+
+def _list_systemd_scope_units(pattern: str) -> Dict[str, str]:
+    """List user scope units matching *pattern* with their active state.
+
+    Returns ``{unit_name: state}`` where state is ``"active"`` or the raw
+    systemd sub/active state string (only ``"active"`` rows matter to
+    callers).  Empty dict when systemctl is unavailable or fails — a
+    listing problem must never look like "no orphaned units".
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                binary, "--user", "list-units", "--type=scope", "--all",
+                "--no-legend", "--plain", pattern,
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user list-units %s failed: %s", pattern, exc)
+        return {}
+    if result.returncode != 0:
+        return {}
+    units: Dict[str, str] = {}
+    for line in (result.stdout or b"").decode(errors="replace").splitlines():
+        cols = line.split()
+        # <unit> <load> <active> <sub> [<description>...]
+        if len(cols) >= 3 and cols[0].endswith(".scope"):
+            units[cols[0]] = cols[2].lower()
+    return units
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -1132,6 +1272,9 @@ class ProcessRegistry:
                     pty_argv = _build_systemd_scope_argv(
                         pty_argv,
                         unit_suffix=session.id,
+                        # Memory bounds are caller-resolved since the builder
+                        # stopped auto-filling them — same default as before.
+                        memory_max_bytes=_worker_memory_max_bytes(),
                     )
                     session.systemd_unit = f"hermes-worker-{session.id}.scope"
                     pty_scope_attempted = True
@@ -1212,6 +1355,9 @@ class ProcessRegistry:
             spawn_argv = _build_systemd_scope_argv(
                 shell_argv,
                 unit_suffix=unit_suffix,
+                # Memory bounds are caller-resolved since the builder
+                # stopped auto-filling them — same default as before.
+                memory_max_bytes=_worker_memory_max_bytes(),
             )
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             # CRITICAL (#70716 regression): systemd-run --scope does NOT give

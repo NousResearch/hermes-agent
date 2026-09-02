@@ -83,3 +83,117 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+# ---------------------------------------------------------------------------
+# Deferred update notice (#87444)
+# ---------------------------------------------------------------------------
+
+_NOTICE_MARKUP = (
+    "[bold yellow]⚠ 35 commits behind[/]"
+    "[dim yellow] — run [bold]hermes update[/bold] to update[/]"
+)
+
+
+def test_emit_update_notice_uses_plain_console_when_no_app_is_running():
+    """Outside the interactive loop the notice goes straight to Rich as before."""
+    from types import SimpleNamespace
+
+    printed = []
+    console = SimpleNamespace(print=lambda markup: printed.append(markup))
+
+    with patch.object(banner, "_prompt_toolkit_app_running", return_value=False):
+        banner._emit_update_notice(console, _NOTICE_MARKUP)
+
+    assert printed == [_NOTICE_MARKUP]
+
+
+def test_emit_update_notice_routes_through_cprint_while_app_is_running():
+    """With a live prompt_toolkit app the notice is pre-rendered and cprint-ed.
+
+    Regression for #87444: a bare ``console.print()`` here reaches
+    prompt_toolkit's ``StdoutProxy``, whose ``Vt100_Output.write()`` rewrites
+    every ESC to ``?``, so the warning displayed as literal ``?[1;33m…`` text.
+    """
+    from types import SimpleNamespace
+
+    emitted = []
+    console = SimpleNamespace(
+        print=lambda markup: emitted.append(("console", markup))
+    )
+
+    with (
+        patch.object(banner, "_prompt_toolkit_app_running", return_value=True),
+        patch.object(banner, "cprint", lambda line: emitted.append(("cprint", line))),
+    ):
+        banner._emit_update_notice(console, _NOTICE_MARKUP)
+
+    assert emitted, "notice was not emitted at all"
+    assert all(channel == "cprint" for channel, _ in emitted), (
+        f"expected the prompt_toolkit-safe path only, got {emitted}"
+    )
+
+    rendered = "\n".join(line for _, line in emitted)
+    assert "\x1b[" in rendered, "no real ANSI escapes — colors would be lost"
+    assert "[bold yellow]" not in rendered, "Rich markup leaked out unrendered"
+    assert "35 commits behind" in rendered
+
+
+def test_emit_update_notice_falls_back_to_console_when_cprint_fails():
+    """A broken prompt_toolkit output must not swallow the notice entirely."""
+    from types import SimpleNamespace
+
+    emitted = []
+    console = SimpleNamespace(
+        print=lambda markup: emitted.append(("console", markup))
+    )
+
+    def _boom(_line):
+        raise RuntimeError("no console screen buffer")
+
+    with (
+        patch.object(banner, "_prompt_toolkit_app_running", return_value=True),
+        patch.object(banner, "cprint", _boom),
+    ):
+        banner._emit_update_notice(console, _NOTICE_MARKUP)
+
+    assert emitted == [("console", _NOTICE_MARKUP)]
+
+
+def test_defer_update_notice_emits_through_the_ansi_safe_path():
+    """The deferred thread must not bypass ``_emit_update_notice``."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    calls = []
+    prev_started = banner._deferred_update_notice_started
+    prev_result = banner._update_result
+    prev_done = banner._update_check_done
+
+    banner._deferred_update_notice_started = False
+    banner._update_result = 35
+    banner._update_check_done = threading.Event()
+    banner._update_check_done.set()
+
+    try:
+        with (
+            patch.object(
+                banner, "_format_update_notice", lambda behind: f"MARKUP-{behind}"
+            ),
+            patch.object(
+                banner, "_emit_update_notice", lambda _c, markup: calls.append(markup)
+            ),
+        ):
+            banner._defer_update_notice(
+                SimpleNamespace(print=lambda *_a, **_k: None), max_wait=5.0
+            )
+            deadline = time.monotonic() + 5.0
+            while not calls and time.monotonic() < deadline:
+                time.sleep(0.01)
+    finally:
+        banner._deferred_update_notice_started = prev_started
+        banner._update_result = prev_result
+        banner._update_check_done = prev_done
+
+    assert calls == ["MARKUP-35"]

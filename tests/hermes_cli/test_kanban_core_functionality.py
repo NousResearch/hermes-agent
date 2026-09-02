@@ -269,6 +269,12 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    # The fingerprint gate in enforce_max_runtime refuses to signal a pid
+    # it cannot vouch for; with _pid_alive stubbed dead the identity
+    # check would (correctly) skip signalling, so vouch for the pid the
+    # way its true fingerprint would.
+    original_identity = _kb._worker_pid_identity_alive
+    _kb._worker_pid_identity_alive = lambda pid, started_at: True
 
     try:
         conn = kb.connect()
@@ -312,6 +318,7 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             conn.close()
     finally:
         _kb._pid_alive = original_alive
+        _kb._worker_pid_identity_alive = original_identity
 
 
 

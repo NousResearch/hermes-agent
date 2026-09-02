@@ -73,6 +73,19 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # is far above any realistic concurrent-live-turn working set; it exists only
 # to bound the leak from non-finalizing turns, not to limit concurrency.
 _MAX_TRACE_STATE = 256
+# Deadline for the post-turn client.flush() (_flush_bounded). flush()
+# blocks until the batch exporter drains; against a slow/unresponsive
+# Langfuse backend that is unbounded, hanging turn finalization past the
+# cron inactivity watchdog and discarding the turn's real output (#87468).
+_FLUSH_TIMEOUT_SECONDS = 30.0
+# Single-flight guard for _flush_bounded: under a sustained backend outage
+# every finalizing turn would otherwise spawn its own stuck flush thread
+# (N turns → N daemon threads, only draining when the backend recovers).
+# While one bounded flush is still pending, later turns skip spawning —
+# their queued spans ride the pending flush (the SDK exporter is a shared
+# queue, so the in-flight flush drains them once the backend answers) or
+# the next healthy flush.
+_FLUSH_IN_FLIGHT = threading.Event()
 _LANGFUSE_CLIENT = None
 # Guards _LANGFUSE_CLIENT initialization against the TOCTOU race: two
 # concurrent first callers both pass the ``is not None`` guard, both
@@ -1073,6 +1086,54 @@ def _finalize_all_traces() -> None:
                 pass
 
 
+def _flush_bounded(client: Any, timeout: Optional[float] = None) -> None:
+    """Run client.flush() on a daemon thread under a deadline.
+
+    flush() blocks until the SDK's batch exporter has pushed all queued
+    spans — unbounded against a slow or unresponsive backend. In
+    _finish_trace's finally block that hang fires the cron inactivity
+    watchdog and discards the turn's real output; the surrounding
+    ``except Exception`` was useless because a hang is not an exception
+    (#87468). A daemon thread (not a ThreadPoolExecutor, whose shutdown
+    would join the hung worker) bounds the wait; a timed-out flush keeps
+    running in the background, so export is merely delayed when the
+    backend recovers, never allowed to block finalization.
+    """
+    if timeout is None:
+        timeout = _FLUSH_TIMEOUT_SECONDS
+    if _FLUSH_IN_FLIGHT.is_set():
+        _debug(
+            "langfuse flush already in progress; coalescing (skip spawn)"
+        )
+        return
+    _FLUSH_IN_FLIGHT.set()
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            client.flush()
+        except Exception:  # pragma: no cover - fail-open, as before
+            pass
+        finally:
+            done.set()
+            _FLUSH_IN_FLIGHT.clear()
+
+    worker = threading.Thread(
+        target=_run, daemon=True, name="langfuse-flush-bounded"
+    )
+    try:
+        worker.start()
+    except Exception:
+        # Never strand the single-flight guard if the thread never ran.
+        _FLUSH_IN_FLIGHT.clear()
+        raise
+    if not done.wait(timeout):
+        _debug(
+            f"langfuse flush still running after {timeout}s; proceeding "
+            "without waiting (backend slow or unresponsive)"
+        )
+
+
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
     client = _get_langfuse()
     if client is None:
@@ -1129,10 +1190,9 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         except Exception:
             pass
     finally:
-        try:
-            client.flush()
-        except Exception:
-            pass
+        # Bounded (#87468): an unresponsive backend must not hang turn
+        # finalization — see _flush_bounded.
+        _flush_bounded(client)
 
 
 def _assistant_has_tool_calls(message: Any) -> bool:

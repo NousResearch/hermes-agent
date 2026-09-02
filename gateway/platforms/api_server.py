@@ -3857,7 +3857,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
-            self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):
@@ -3916,6 +3915,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
+            # Start the permanent run-stream sweeper only after the server has
+            # bound successfully. Retryable bind failures discard this adapter;
+            # starting the task earlier would retain every failed instance.
+            self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
             self._mark_connected()
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",

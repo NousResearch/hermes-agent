@@ -4,8 +4,10 @@ Validates that is_network_accessible() correctly classifies addresses and
 that connect() refuses to start without API_SERVER_KEY.
 """
 
+import asyncio
+import errno
 import socket
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -170,3 +172,53 @@ class TestBindMechanics:
         finally:
             await first.disconnect()
             await second.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_retryable_bind_failure_does_not_start_sweeper(self):
+        """A failed bind must not leave the permanent run sweeper alive.
+
+        Non-EADDRINUSE bind errors remain retryable, so the reconnect watcher
+        repeatedly constructs and disposes fresh adapters. Starting the
+        permanent sweeper before the bind succeeds would retain every failed
+        adapter for the lifetime of the gateway.
+        """
+        adapter = self._make_adapter(8641)
+        sweep_started = asyncio.Event()
+        sweep_release = asyncio.Event()
+
+        async def blocked_sweeper():
+            sweep_started.set()
+            await sweep_release.wait()
+
+        try:
+            with (
+                patch.object(
+                    adapter,
+                    "_sweep_orphaned_runs",
+                    new=blocked_sweeper,
+                ),
+                patch(
+                    "gateway.platforms.api_server.web.TCPSite.start",
+                    new=AsyncMock(
+                        side_effect=OSError(
+                            errno.EADDRNOTAVAIL,
+                            "address unavailable",
+                        )
+                    ),
+                ) as start,
+            ):
+                result = await adapter.connect()
+
+            await asyncio.sleep(0)
+
+            start.assert_awaited_once_with()
+            assert result is False
+            assert adapter.has_fatal_error is False
+            assert adapter._runner is None
+            assert adapter._site is None
+            assert sweep_started.is_set() is False
+            assert adapter._background_tasks == set()
+        finally:
+            sweep_release.set()
+            await adapter.cancel_background_tasks()
+            await adapter.disconnect()

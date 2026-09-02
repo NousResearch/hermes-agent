@@ -133,6 +133,16 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+DECOMPOSITION_CONSTRAINT_SAME_LINEAGE = "same-lineage/no-decomposition"
+_DECOMPOSITION_EVENT_VERSION = 1
+_DECOMPOSITION_CONSTRAINT_EVENT = "decomposition_constraint_set"
+_DECOMPOSITION_SUPERSEDED_EVENT = "decomposition_constraint_superseded"
+_DECOMPOSITION_POLICY_RECOVERED_EVENT = "decomposition_policy_recovered"
+_DECOMPOSITION_RELEVANT_KINDS = (
+    _DECOMPOSITION_CONSTRAINT_EVENT,
+    _DECOMPOSITION_SUPERSEDED_EVENT,
+    _DECOMPOSITION_POLICY_RECOVERED_EVENT,
+)
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1446,6 +1456,16 @@ CREATE TABLE IF NOT EXISTS task_events (
     kind       TEXT NOT NULL,
     payload    TEXT,
     created_at INTEGER NOT NULL
+);
+
+-- Ephemeral-but-durable decomposition lease. A crash intentionally leaves the
+-- row behind (fail closed); only the bounded operator recovery command may
+-- clear it. Constraint/supersession/recovery provenance remains in task_events.
+CREATE TABLE IF NOT EXISTS task_decomposition_reservations (
+    task_id       TEXT PRIMARY KEY,
+    token         TEXT NOT NULL UNIQUE,
+    event_cursor  INTEGER NOT NULL,
+    reserved_at   INTEGER NOT NULL
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -7197,6 +7217,300 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+@dataclass(frozen=True)
+class DecompositionReservation:
+    ok: bool
+    reason: str
+    token: Optional[str] = None
+    event_cursor: Optional[int] = None
+
+
+def _decomposition_policy_state(
+    conn: sqlite3.Connection, task_id: str
+) -> tuple[bool, int, str]:
+    """Return (denied, relevant cursor, reason), failing closed on bad events."""
+    rows = conn.execute(
+        "SELECT id, kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN (?, ?, ?) ORDER BY id",
+        (task_id, *_DECOMPOSITION_RELEVANT_KINDS),
+    ).fetchall()
+    active: dict[int, dict] = {}
+    cursor = 0
+    malformed = False
+    for row in rows:
+        prior_cursor = cursor
+        cursor = int(row["id"])
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            malformed = True
+            continue
+        if not isinstance(payload, dict) or payload.get("version") != _DECOMPOSITION_EVENT_VERSION:
+            malformed = True
+            continue
+        if row["kind"] == _DECOMPOSITION_POLICY_RECOVERED_EVENT:
+            provenance = payload.get("provenance")
+            reason = payload.get("reason")
+            if (
+                prior_cursor <= 0
+                or payload.get("recovered_through_event_id") != prior_cursor
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or not isinstance(provenance, dict)
+                or provenance.get("prior_state") != "malformed_or_ambiguous"
+            ):
+                malformed = True
+                continue
+            active.clear()
+            malformed = False
+        elif row["kind"] == _DECOMPOSITION_CONSTRAINT_EVENT:
+            if payload.get("constraint") != DECOMPOSITION_CONSTRAINT_SAME_LINEAGE:
+                malformed = True
+                continue
+            active[int(row["id"])] = payload
+        else:
+            target = payload.get("constraint_event_id")
+            if not isinstance(target, int) or target not in active:
+                malformed = True
+                continue
+            active.pop(target)
+    if malformed:
+        return True, cursor, "malformed or ambiguous decomposition policy events (fail closed)"
+    if len(active) > 1:
+        return True, cursor, "malformed or ambiguous decomposition policy events (fail closed)"
+    if active:
+        return True, cursor, "SAME-LINEAGE / NO-DECOMPOSITION constraint is active"
+    return False, cursor, ""
+
+
+def _append_decomposition_refusal_once(
+    conn: sqlite3.Connection, task_id: str, *, cursor: int, reason: str
+) -> None:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'decomposition_refused' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchall()
+    expected = {"version": 1, "policy_cursor": cursor, "reason": reason}
+    if rows:
+        try:
+            if json.loads(rows[0]["payload"]) == expected:
+                return
+        except (TypeError, json.JSONDecodeError):
+            pass
+    _append_event(conn, task_id, "decomposition_refused", expected)
+
+
+def set_decomposition_constraint(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    constraint: str,
+    reason: str,
+) -> int:
+    """Durably set the canonical operator constraint, linearized vs reserve."""
+    if constraint != DECOMPOSITION_CONSTRAINT_SAME_LINEAGE:
+        raise ValueError("unsupported decomposition constraint")
+    if not str(reason or "").strip():
+        raise ValueError("constraint reason is required")
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            raise ValueError("unknown task id")
+        if conn.execute(
+            "SELECT 1 FROM task_decomposition_reservations WHERE task_id = ?",
+            (task_id,),
+        ).fetchone():
+            raise RuntimeError("decomposition is already reserved; constraint was not set")
+        denied, _, policy_reason = _decomposition_policy_state(conn, task_id)
+        if denied:
+            raise RuntimeError(policy_reason)
+        _append_event(
+            conn,
+            task_id,
+            _DECOMPOSITION_CONSTRAINT_EVENT,
+            {
+                "version": _DECOMPOSITION_EVENT_VERSION,
+                "constraint": constraint,
+                "reason": reason.strip(),
+            },
+        )
+        return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def supersede_decomposition_constraint(
+    conn: sqlite3.Connection, task_id: str, *, reason: str
+) -> int:
+    """Remove one canonical constraint via a separate durable operator event."""
+    if not str(reason or "").strip():
+        raise ValueError("supersession reason is required")
+    with write_txn(conn):
+        if conn.execute(
+            "SELECT 1 FROM task_decomposition_reservations WHERE task_id = ?",
+            (task_id,),
+        ).fetchone():
+            raise RuntimeError("decomposition is already reserved; constraint was not superseded")
+        denied, _, policy_reason = _decomposition_policy_state(conn, task_id)
+        if not denied or not policy_reason.startswith("SAME-LINEAGE"):
+            raise RuntimeError(policy_reason or "no active SAME-LINEAGE constraint")
+        row = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+            (task_id, _DECOMPOSITION_CONSTRAINT_EVENT),
+        ).fetchone()
+        _append_event(
+            conn,
+            task_id,
+            _DECOMPOSITION_SUPERSEDED_EVENT,
+            {
+                "version": _DECOMPOSITION_EVENT_VERSION,
+                "constraint_event_id": int(row["id"]),
+                "reason": reason.strip(),
+            },
+        )
+        return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def recover_decomposition_policy(
+    conn: sqlite3.Connection, task_id: str, *, reason: str
+) -> int:
+    """Append a cursor-bound recovery for malformed/ambiguous policy history."""
+    if not str(reason or "").strip():
+        raise ValueError("policy recovery reason is required")
+    with write_txn(conn):
+        if conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone() is None:
+            raise ValueError("unknown task id")
+        if conn.execute(
+            "SELECT 1 FROM task_decomposition_reservations WHERE task_id = ?",
+            (task_id,),
+        ).fetchone():
+            raise RuntimeError(
+                "decomposition is already reserved; policy was not recovered"
+            )
+        denied, cursor, policy_reason = _decomposition_policy_state(conn, task_id)
+        if not denied or not policy_reason.startswith("malformed or ambiguous"):
+            if policy_reason.startswith("SAME-LINEAGE"):
+                raise RuntimeError(
+                    "valid active SAME-LINEAGE constraint cannot be force-cleared; "
+                    "use constraint supersede"
+                )
+            raise RuntimeError("no malformed or ambiguous policy lock to recover")
+        _append_event(
+            conn,
+            task_id,
+            _DECOMPOSITION_POLICY_RECOVERED_EVENT,
+            {
+                "version": _DECOMPOSITION_EVENT_VERSION,
+                "recovered_through_event_id": cursor,
+                "reason": reason.strip(),
+                "provenance": {
+                    "prior_state": "malformed_or_ambiguous",
+                    "authority_boundary": "non_delegated_operator_process",
+                },
+            },
+        )
+        return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def reserve_decomposition(conn: sqlite3.Connection, task_id: str) -> DecompositionReservation:
+    """Atomically check policy and uniquely reserve one decomposition attempt."""
+    with write_txn(conn):
+        task = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if task is None:
+            return DecompositionReservation(False, "unknown task id")
+        if task["status"] != "triage":
+            return DecompositionReservation(False, f"task is not in triage (status={task['status']!r})")
+        denied, cursor, reason = _decomposition_policy_state(conn, task_id)
+        if denied:
+            _append_decomposition_refusal_once(conn, task_id, cursor=cursor, reason=reason)
+            return DecompositionReservation(False, reason, event_cursor=cursor)
+        token = secrets.token_urlsafe(24)
+        try:
+            conn.execute(
+                "INSERT INTO task_decomposition_reservations "
+                "(task_id, token, event_cursor, reserved_at) VALUES (?, ?, ?, ?)",
+                (task_id, token, cursor, int(time.time())),
+            )
+        except sqlite3.IntegrityError:
+            return DecompositionReservation(False, "decomposition is already reserved")
+        return DecompositionReservation(True, "reserved", token, cursor)
+
+
+def _validate_decomposition_reservation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    token: str,
+    expected_cursor: Optional[int],
+) -> None:
+    row = conn.execute(
+        "SELECT token, event_cursor FROM task_decomposition_reservations WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    denied, cursor, reason = _decomposition_policy_state(conn, task_id)
+    if (
+        row is None
+        or not secrets.compare_digest(str(row["token"]), str(token))
+        or expected_cursor is None
+        or int(row["event_cursor"]) != int(expected_cursor)
+        or cursor != int(expected_cursor)
+        or denied
+    ):
+        raise RuntimeError(reason or "decomposition reservation/cursor is no longer valid")
+
+
+def release_decomposition_reservation(
+    conn: sqlite3.Connection, task_id: str, token: str
+) -> bool:
+    """Release only the caller's reservation token."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM task_decomposition_reservations WHERE task_id = ? AND token = ?",
+            (task_id, token),
+        )
+        return cur.rowcount == 1
+
+
+def recover_stale_decomposition_reservation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    older_than_seconds: int,
+    reason: str,
+) -> bool:
+    """Operator-only bounded crash recovery with durable audit provenance."""
+    age = int(older_than_seconds)
+    if age < 60 or age > 86400:
+        raise ValueError("older_than_seconds must be between 60 and 86400")
+    if not str(reason or "").strip():
+        raise ValueError("recovery reason is required")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT token, reserved_at FROM task_decomposition_reservations "
+            "WHERE task_id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if int(row["reserved_at"]) > now - age:
+            raise RuntimeError("decomposition reservation is not stale enough")
+        conn.execute(
+            "DELETE FROM task_decomposition_reservations WHERE task_id = ?",
+            (task_id,),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "decomposition_reservation_recovered",
+            {
+                "version": 1,
+                "reason": reason.strip(),
+                "older_than_seconds": age,
+                "reserved_at": int(row["reserved_at"]),
+            },
+        )
+        return True
+
+
 def specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7205,6 +7519,8 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    decomposition_token: Optional[str] = None,
+    decomposition_event_cursor: Optional[int] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -7226,6 +7542,10 @@ def specify_triage_task(
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
+        if decomposition_token is not None:
+            _validate_decomposition_reservation(
+                conn, task_id, decomposition_token, decomposition_event_cursor
+            )
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
@@ -7296,6 +7616,8 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    decomposition_token: Optional[str] = None,
+    decomposition_event_cursor: Optional[int] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -7380,6 +7702,14 @@ def decompose_triage_task(
     now = int(time.time())
     child_ids: list[str] = []
     with write_txn(conn):
+        if decomposition_token is not None:
+            _validate_decomposition_reservation(
+                conn, task_id, decomposition_token, decomposition_event_cursor
+            )
+        else:
+            denied, _, reason = _decomposition_policy_state(conn, task_id)
+            if denied:
+                raise RuntimeError(reason)
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",

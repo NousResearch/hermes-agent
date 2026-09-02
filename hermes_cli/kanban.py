@@ -951,6 +951,41 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_ctx.add_argument("task_id")
 
+    # --- constraint --- (authenticated non-delegated operator policy)
+    p_constraint = sub.add_parser(
+        "constraint",
+        help="Set/supersede SAME-LINEAGE / NO-DECOMPOSITION, or recover a stale decomposition reservation",
+    )
+    constraint_sub = p_constraint.add_subparsers(
+        dest="constraint_action", required=True
+    )
+    for constraint_action in ("set", "supersede"):
+        parser = constraint_sub.add_parser(
+            constraint_action,
+            help=f"{constraint_action.title()} the SAME-LINEAGE / NO-DECOMPOSITION constraint",
+        )
+        parser.add_argument("task_id")
+        parser.add_argument("constraint", choices=("same-lineage",))
+        parser.add_argument("--reason", required=True, help="Required durable operator audit reason")
+    p_recover = constraint_sub.add_parser(
+        "recover",
+        help="Audit and clear a crash-stale decomposition reservation",
+    )
+    p_recover.add_argument("task_id")
+    p_recover.add_argument(
+        "--older-than-seconds", type=int, required=True,
+        help="Required staleness threshold (60..86400 seconds)",
+    )
+    p_recover.add_argument("--reason", required=True, help="Required durable operator audit reason")
+    p_repair_policy = constraint_sub.add_parser(
+        "repair-policy",
+        help="Append a cursor-bound recovery for malformed/ambiguous decomposition policy history",
+    )
+    p_repair_policy.add_argument("task_id")
+    p_repair_policy.add_argument(
+        "--reason", required=True, help="Required durable operator audit reason"
+    )
+
     # --- specify --- (triage → todo via auxiliary LLM)
     p_specify = sub.add_parser(
         "specify",
@@ -1186,6 +1221,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "notify-list":        _cmd_notify_list,
             "notify-unsubscribe": _cmd_notify_unsubscribe,
             "context":  _cmd_context,
+            "constraint": _cmd_constraint,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
@@ -1246,6 +1282,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "notify-unsubscribe",
     "specify",
     "decompose",
+    "constraint",
     "gc",
 })
 
@@ -3253,6 +3290,50 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     # --all: succeed if at least one promotion landed; exit 1 only when
     # every candidate failed (honest signal for scripts).
     return 0 if (ok_count > 0 or not ids) else 1
+
+
+def _cmd_constraint(args: argparse.Namespace) -> int:
+    """Non-delegated operator surface for durable decomposition policy."""
+    action = args.constraint_action
+    with kb.connect_closing() as conn:
+        if action == "set":
+            kb.set_decomposition_constraint(
+                conn,
+                args.task_id,
+                constraint=kb.DECOMPOSITION_CONSTRAINT_SAME_LINEAGE,
+                reason=args.reason,
+            )
+            print(
+                f"Set SAME-LINEAGE / NO-DECOMPOSITION on {args.task_id}."
+            )
+            return 0
+        if action == "supersede":
+            kb.supersede_decomposition_constraint(
+                conn, args.task_id, reason=args.reason
+            )
+            print(
+                f"Superseded SAME-LINEAGE / NO-DECOMPOSITION on {args.task_id}."
+            )
+            return 0
+        if action == "recover":
+            recovered = kb.recover_stale_decomposition_reservation(
+                conn,
+                args.task_id,
+                older_than_seconds=args.older_than_seconds,
+                reason=args.reason,
+            )
+            if not recovered:
+                print(f"kanban: no decomposition reservation for {args.task_id}", file=sys.stderr)
+                return 1
+            print(f"Recovered stale decomposition reservation for {args.task_id}.")
+            return 0
+        if action == "repair-policy":
+            kb.recover_decomposition_policy(
+                conn, args.task_id, reason=args.reason
+            )
+            print(f"Repaired decomposition policy for {args.task_id}.")
+            return 0
+    raise ValueError(f"unknown constraint action {action!r}")
 
 
 def _cmd_decompose(args: argparse.Namespace) -> int:

@@ -57,6 +57,20 @@ test('clearBillingBlock with no arg clears any active block', () => {
   expect(dismissNotification).toHaveBeenCalledWith('billing-block:openai')
 })
 
+test('clearBillingBlock dismisses the sticky provider toast with the banner', () => {
+  setBillingBlock('s1', makeBlock({ provider: 'xai-oauth' }))
+  clearBillingBlock('s1')
+  expect($billingBlock.get()).toBeNull()
+  expect(dismissNotification).toHaveBeenCalledWith('billing-block:xai-oauth')
+})
+
+test('clearBillingBlock for a different session does not dismiss the toast', () => {
+  setBillingBlock('s1', makeBlock({ provider: 'xai-oauth' }))
+  clearBillingBlock('s2')
+  expect($billingBlock.get()).not.toBeNull()
+  expect(dismissNotification).not.toHaveBeenCalled()
+})
+
 test('runBillingRecovery routes Nous to in-app Settings, never an external link', () => {
   runBillingRecovery(makeBlock({ is_nous: true, provider: 'nous', provider_label: 'Nous Portal' }))
   expect($billingSettingsRequest.get()).toBe(1)

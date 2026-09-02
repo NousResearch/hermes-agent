@@ -12,6 +12,7 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
+import { clearBillingBlock } from '@/store/billing-block'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -393,6 +394,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Recents jump on send — not stream start, not turn resolve.
         const activity = bubbleText.trim() ? { preview: bubbleText.trim() } : undefined
         touchSessionActivity(sid, activity)
+
+        // Optimistic: drop the leftover quota wall at Enter, not only on
+        // message.start. Otherwise a post-reset send still shows the sticky
+        // "out of tokens" toast while the model is already working.
+        clearBillingBlock(sid)
 
         if (targetStoredSessionId && targetStoredSessionId !== sid) {
           touchSessionActivity(targetStoredSessionId, activity)

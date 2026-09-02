@@ -92,7 +92,40 @@ def _esecret_int(name: str, default: int) -> int:
 
 def _esecret_bool(name: str, default: bool = False) -> bool:
     """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
-    return is_truthy_value(_get_esecret(name, ""), default=default)
+    raw = str(_get_esecret(name, "")).strip()
+    return is_truthy_value(raw, default=default) if raw else default
+
+
+_SECURITY_ALIASES = {
+    "tls": "tls", "ssl": "tls", "implicit": "tls",
+    "starttls": "starttls",
+    "plain": "plain", "none": "plain",
+}
+
+
+def _normalize_security(value: Any, default: str = "tls") -> str:
+    """Map an IMAP/SMTP security setting to ``tls`` | ``starttls`` | ``plain``.
+
+    Unknown values log a warning and fall back to *default* rather than
+    failing the connection, so a typo never silently downgrades to plaintext.
+    """
+    raw = str(value or "").strip().lower().replace("-", "").replace("_", "")
+    if not raw:
+        return default
+    mode = _SECURITY_ALIASES.get(raw)
+    if mode is None:
+        logger.warning("Unknown email security mode %r; using %r", value, default)
+        return default
+    return mode
+
+
+def _tls_context(verify: bool, host: str) -> ssl.SSLContext:
+    """Verified context by default; unverified only when explicitly opted out."""
+    if verify:
+        return ssl.create_default_context()
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning("TLS verification disabled for non-loopback host %s", host)
+    return ssl._create_unverified_context()
 
 
 # Automated sender patterns — emails from these are silently ignored
@@ -558,22 +591,19 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
-        self._imap_security = (
-            _get_secret("EMAIL_IMAP_SECURITY", "")
-            or extra.get("imap_security", "")
-            or "tls"
-        ).strip().lower()
+        self._imap_security = _normalize_security(
+            _get_secret("EMAIL_IMAP_SECURITY", "") or extra.get("imap_security", "")
+        )
         self._imap_tls_verify = _esecret_bool(
             "EMAIL_IMAP_TLS_VERIFY",
             is_truthy_value(extra.get("imap_tls_verify"), default=True),
         )
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
-        self._smtp_security = (
-            _get_secret("EMAIL_SMTP_SECURITY", "")
-            or extra.get("smtp_security", "")
-            or ("tls" if self._smtp_port == 465 else "starttls")
-        ).strip().lower()
+        self._smtp_security = _normalize_security(
+            _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security", ""),
+            default="tls" if self._smtp_port == 465 else "starttls",
+        )
         self._smtp_tls_verify = _esecret_bool(
             "EMAIL_SMTP_TLS_VERIFY",
             is_truthy_value(extra.get("smtp_tls_verify"), default=True),
@@ -649,35 +679,20 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
-    @staticmethod
-    def _tls_context(verify: bool) -> ssl.SSLContext:
-        """Return a verified context unless loopback/custom TLS opts out."""
-        return ssl.create_default_context() if verify else ssl._create_unverified_context()
-
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
-        security = self._imap_security.replace("_", "-")
-        valid_modes = {
-            "tls", "ssl", "implicit", "implicit-tls",
-            "starttls", "start-tls",
-            "none", "plain", "plaintext",
-        }
-        if security not in valid_modes:
-            raise ValueError(
-                "Unsupported EMAIL_IMAP_SECURITY value: " + self._imap_security
-            )
-        if security in {"tls", "ssl", "implicit", "implicit-tls"}:
+        if self._imap_security == "tls":
             return imaplib.IMAP4_SSL(
                 self._imap_host,
                 self._imap_port,
                 timeout=30,
-                ssl_context=self._tls_context(self._imap_tls_verify),
+                ssl_context=_tls_context(self._imap_tls_verify, self._imap_host),
             )
 
         imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
-        if security in {"starttls", "start-tls"}:
+        if self._imap_security == "starttls":
             try:
-                imap.starttls(ssl_context=self._tls_context(self._imap_tls_verify))
+                imap.starttls(ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
             except Exception:
                 _close_imap(imap)
                 raise
@@ -698,28 +713,19 @@ class EmailAdapter(BasePlatformAdapter):
         Returns a connected SMTP object with TLS established — callers
         can proceed directly to ``login()``.
         """
-        ctx = self._tls_context(self._smtp_tls_verify)
         host = self._smtp_host
         port = self._smtp_port
-        security = self._smtp_security.replace("_", "-")
-        valid_modes = {
-            "tls", "ssl", "implicit", "implicit-tls",
-            "starttls", "start-tls",
-            "none", "plain", "plaintext",
-        }
-        if security not in valid_modes:
-            raise ValueError(
-                "Unsupported EMAIL_SMTP_SECURITY value: " + self._smtp_security
-            )
+        security = self._smtp_security
+        ctx = _tls_context(self._smtp_tls_verify, host)
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
             smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
             smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
-            if security in {"tls", "ssl", "implicit", "implicit-tls"}:
+            if security == "tls":
                 return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
             smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
-            if security in {"starttls", "start-tls"}:
+            if security == "starttls":
                 try:
                     smtp.starttls(context=ctx)
                 except Exception:
@@ -1505,7 +1511,6 @@ async def _standalone_send(
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
     import smtplib
-    import ssl as _ssl
     from email.mime.text import MIMEText
     from email.utils import formatdate
 
@@ -1517,25 +1522,17 @@ async def _standalone_send(
         smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):
         smtp_port = 587
-    smtp_security = (
-        _get_secret("EMAIL_SMTP_SECURITY", "")
-        or str(extra.get("smtp_security") or "")
-        or ("tls" if smtp_port == 465 else "starttls")
-    ).strip().lower().replace("_", "-")
+    smtp_security = _normalize_security(
+        _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"),
+        default="tls" if smtp_port == 465 else "starttls",
+    )
     smtp_tls_verify = _esecret_bool(
         "EMAIL_SMTP_TLS_VERIFY",
         is_truthy_value(extra.get("smtp_tls_verify"), default=True),
     )
-    valid_modes = {
-        "tls", "ssl", "implicit", "implicit-tls",
-        "starttls", "start-tls",
-        "none", "plain", "plaintext",
-    }
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
-    if smtp_security not in valid_modes:
-        return {"error": "Unsupported EMAIL_SMTP_SECURITY value: " + smtp_security}
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -1544,16 +1541,12 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        ctx = (
-            _ssl.create_default_context()
-            if smtp_tls_verify
-            else _ssl._create_unverified_context()
-        )
-        if smtp_security in {"tls", "ssl", "implicit", "implicit-tls"}:
+        ctx = _tls_context(smtp_tls_verify, smtp_host)
+        if smtp_security == "tls":
             server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx)
         else:
             server = smtplib.SMTP(smtp_host, smtp_port)
-            if smtp_security in {"starttls", "start-tls"}:
+            if smtp_security == "starttls":
                 try:
                     server.starttls(context=ctx)
                 except Exception:

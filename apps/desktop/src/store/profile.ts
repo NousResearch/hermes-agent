@@ -26,7 +26,7 @@ import {
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
-import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
+import { $profileRemoteOverrides, notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
@@ -270,8 +270,8 @@ export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 // string "omar", and every follow-up RPC dialed requestGatewayForProfile
 // ("omar") — a DIFFERENT socket than the one that created the session —
 // and 4001'd "session not found" (#94071). null = the intent dials the legacy
-// profile-only path (a v1 primary with no registry identity, or a named
-// profile pick on the explicit `local` source — see profilePickConnectionId).
+// profile-only path (a v1 primary with no registry identity, or a pick on the
+// `local` source of a profile with a remote override — see profilePickConnectionId).
 export const $newChatConnectionId = atom<null | string>(null)
 
 /** Capture the registry source a new-chat profile intent lands on — by
@@ -284,14 +284,10 @@ export function captureNewChatSource(connectionId: null | string = activeGateway
 /**
  * The registry source a PROFILE PICK dials, mirroring activateOnCurrentSource:
  * a live remote registry source keeps its connection id. Named picks on the
- * explicit `local` source (and the window primary) take the legacy
- * profile-only path (null) so the main process can resolve a per-profile
- * remote override before falling back to a local backend (#94166).
- *
- * Default on that same `local` source is different: it is also the window
- * primary's profile key. The legacy door would activate the remote primary on
- * a VPS-primary desktop, and Bots would show the VPS as Current Gateway.
- * Keep Default on `local` so This-device home stays on This device.
+ * explicit `local` source stay on This-device `local` unless the profile has a
+ * remote override — then they take the legacy profile-only path (null) so the
+ * main process can resolve that override before falling back to a local
+ * backend (#94166). Default on `local` likewise stays on This device.
  */
 function profilePickConnectionId(profile?: string): null | string {
   const connectionId = activeGatewayConnectionId()
@@ -303,7 +299,7 @@ function profilePickConnectionId(profile?: string): null | string {
   if (connectionId === LOCAL_CONNECTION_ID) {
     const key = normalizeProfileKey(profile ?? $newChatProfile.get())
 
-    return key === 'default' ? LOCAL_CONNECTION_ID : null
+    return $profileRemoteOverrides.get()[key] ? null : LOCAL_CONNECTION_ID
   }
 
   return null
@@ -859,11 +855,9 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the
 // active gateway's list, so a pick made while a remote registry source is live
-// names one of THAT source's profiles and must keep its connection id. Named
-// picks on the primary and explicit "local" source stay on the legacy
-// profile-only path so the main process can resolve a per-profile remote
-// override before falling back to a local backend. Default on `local` stays
-// on that source — see profilePickConnectionId.
+// names one of THAT source's profiles and must keep its connection id. Picks
+// on the primary, and picks of a profile with a remote override, stay on the
+// legacy profile-only path — see profilePickConnectionId.
 function activateOnCurrentSource(target: string): Promise<void> {
   const connectionId = profilePickConnectionId(target)
 

@@ -23,6 +23,7 @@ import {
   newSessionInProfile,
   selectProfile
 } from '@/store/profile'
+import { $profileRemoteOverrides } from '@/store/profile-remote-override'
 import {
   $activeSessionId,
   $connection,
@@ -396,6 +397,7 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     $newChatProfile.set(null)
     $newChatRoute.set(null)
     $newChatConnectionId.set(null)
+    $profileRemoteOverrides.set({})
     _resetSessionOwnerHintsForTests({ storage: true })
   })
 
@@ -507,16 +509,17 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expect($newChatConnectionId.get()).toBe(SOURCE_ID)
   })
 
-  it('keeps the legacy profile door when boot published `local` on the active primary gateway', async () => {
-    // The published identity survives the reload, but a pick on the explicit
-    // local source is still a legacy profile pick (per-profile remote
-    // overrides resolve through getConnection), so the draft's owner is the
+  it('keeps the legacy profile door when boot published `local` and the picked profile has a remote override', async () => {
+    // The published identity survives the reload, but a pick of a profile
+    // WITH a per-profile remote override is still a legacy profile pick (the
+    // override resolves through getConnection), so the draft's owner is the
     // v1 profile socket, never the registry entry local::omar.
     const primary = makePrimary()
 
     setPrimaryGateway(primary as never, 'default')
     setConnection({ connectionId: 'local', mode: 'local', profile: 'default' } as never)
     expect(activeGatewayConnectionId()).toBe('local')
+    $profileRemoteOverrides.set({ omar: { host: 'vps.example', url: 'https://vps.example' } })
 
     selectProfile('omar')
 
@@ -706,6 +709,10 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     ownerPort = V1_PORT
     mintedRuntimeId = LEGACY_RUNTIME_ID
     mintedStoredId = LEGACY_STORED_ID
+    // This is the #94166 guard: only a profile WITH a remote override keeps
+    // the legacy profile-only door on the explicit `local` source. Without
+    // an override the pick would dial the registry entry conn:local::omar.
+    $profileRemoteOverrides.set({ omar: { host: 'vps.example', url: 'https://vps.example' } })
     selectProfile('omar')
     expect($newChatProfile.get()).toBe('omar')
     expect($newChatRoute.get()).toBeNull()
@@ -776,5 +783,84 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expect($sessions.get().find(session => sessionMatchesStoredId(session, LEGACY_STORED_ID))).toMatchObject({
       profile: 'omar'
     })
+  })
+
+  it('a named pick without a remote override on the explicit `local` source keeps the registry owner: create and both turns ride the ONE conn:local::omar socket', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+
+    // Active registry source: `local` (This device), on its default profile.
+    await ensureGatewayAgent('local', 'default')
+    expect(activeGatewayConnectionId()).toBe('local')
+
+    // No remote override for omar: the pick dials the registry entry
+    // conn:local::omar, never the v1 profile door (#94166 only applies to
+    // profiles that carry an override).
+    selectProfile('omar')
+    expect($newChatProfile.get()).toBe('omar')
+    expect($newChatRoute.get()).toBeNull()
+    await waitFor(() => expect(activeGatewayProfileKey()).toBe('omar'))
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($newChatConnectionId.get()).toBe('local')
+
+    const omarSocket = sockets.find(socket => socket.connectUrl?.includes(`:${OMAR_PORT}`))
+    expect(
+      omarSocket,
+      `no socket dialed port ${OMAR_PORT}; dialed: ${sockets.map(s => s.connectUrl).join(', ')}`
+    ).toBeDefined()
+    expect(activeGateway()).toBe(omarSocket as never)
+    expect(sockets.some(socket => socket.connectUrl?.includes(`:${V1_PORT}`))).toBe(false)
+
+    const desktop = window.hermesDesktop!
+    expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+
+    // Ambient dispatcher: session traffic must ride the routed socket, never it.
+    const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create' || sessionScoped(params)) {
+        throw new Error(`session traffic must not use ambient dispatcher: ${method}`)
+      }
+
+      return (activeGateway() as unknown as MockGateway).request(method, params)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness ambientRequest={ambientRequest as never} onReady={h => (handle = h)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await expect(handle!.submitText('first prompt')).resolves.toBe(true)
+    await waitFor(() => expect($activeSessionId.get()).toBe(RUNTIME_ID))
+    await settleTurn(handle!)
+    await expect(handle!.submitText('second prompt')).resolves.toBe(true)
+
+    // The registry entry conn:local::omar minted AND owns the runtime.
+    expect(runtimeOwner).toBe(omarSocket)
+    expect(calls(omarSocket!).filter(method => method === 'session.create')).toHaveLength(1)
+    expect(
+      omarSocket!.request.mock.calls
+        .filter(call => call[0] === 'prompt.submit')
+        .map(call => (call[1] as { text: string }).text)
+    ).toEqual(['first prompt', 'second prompt'])
+
+    // Owner hint + tagged optimistic row for the stored id — the exact state
+    // that keeps the tile's owner ladder populated.
+    expect(getSessionOwnerHint(STORED_ID)).toEqual({ connectionId: 'local', profile: 'omar' })
+    expect($sessions.get().find(session => sessionMatchesStoredId(session, STORED_ID))).toMatchObject({
+      connection_id: 'local',
+      profile: 'omar'
+    })
+
+    // Nothing session-scoped reached the primary or any other socket; no REST probe.
+    expect(calls(primary).filter(method => method === 'session.create' || method === 'prompt.submit')).toEqual([])
+
+    for (const socket of sockets) {
+      if (socket !== omarSocket) {
+        expect(
+          socket.request.mock.calls.filter(call => sessionScoped(call[1]) || call[0] === 'session.create')
+        ).toEqual([])
+      }
+    }
+
+    expect(vi.mocked(getSession)).not.toHaveBeenCalled()
   })
 })

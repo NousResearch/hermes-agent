@@ -303,7 +303,10 @@ def _default_preset() -> dict[str, Any]:
         "aggregator_temperature": None,
         "reference_timeout": DEFAULT_MOA_REFERENCE_TIMEOUT,
         "degraded_reference_policy": "loud",
-        "max_tokens": 4096,
+        # None = uncapped: parameter omitted → the model's real maximum,
+        # matching the runtime loop's documented contract (a hardcoded 4096
+        # truncated long syntheses and was deliberately removed there).
+        "max_tokens": None,
         "reference_max_tokens": None,
         "fanout": "user_turn",
         "enabled": True,
@@ -343,7 +346,10 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "degraded_reference_policy": _coerce_degraded_reference_policy(
             raw.get("degraded_reference_policy")
         ),
-        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Missing/null = uncapped, exactly like the runtime contract: the
+        # old 4096 coercion silently reintroduced a cap the loop had
+        # deliberately removed (#89227). Explicit values pass through.
+        "max_tokens": _coerce_int_or_none(raw.get("max_tokens")),
         # Optional cap on how much each reference ADVISOR may generate per turn.
         # None (default) = uncapped: advisors write full-length advice, matching
         # prior behavior so existing presets are unchanged. Set a value (e.g.

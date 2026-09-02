@@ -921,6 +921,79 @@ def test_request_review_own_worker_handoff_skips_prewrite_teardown(
         assert _events(conn, tid, kind="crashed") == []
 
 
+def test_request_review_own_worker_handoff_parent_reopened_demotes(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass 9 (AG): a parent reopened while the child's scope drained.
+    The reopen invalidation had to defer the running child (stop
+    unconfirmed), so the deferred review handoff is all that still holds
+    the row — and its parent gate refuses the review flip. Refusing
+    used to fall through to the generic crash reclaim, whose retry
+    status restored ready/review and left the child spawnable under the
+    reopened parent. The refusal must instead demote to todo (the
+    ancestor-reopen outcome) with a discard event carrying the payload
+    for audit."""
+    monkeypatch.delenv("HERMES_KANBAN_SCOPE", raising=False)
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="w")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?", (parent,),
+            )
+        child = kb.create_task(conn, title="child", assignee="w")
+        kb.link_tasks(conn, parent, child)
+        claimed = kb.claim_task(conn, child)
+        assert claimed is not None
+        scope = _arm_live_third_party_worker(conn, child)
+        monkeypatch.setenv("HERMES_KANBAN_SCOPE", scope)
+
+        # The child's own worker defers its review handoff (scope still
+        # holds the caller — the transition waits for the drain).
+        assert kb.request_review(
+            conn, child, summary="done building", force=True,
+        ) is True
+        assert _events(conn, child, kind="own_worker_handoff")
+
+        # The parent is reopened while the scope drains: the reopen
+        # sweep cannot verify the child's stop, so it defers the child
+        # instead of retracting it — the marker still owns the row.
+        monkeypatch.setattr(
+            kb, "request_worker_scope_stop", lambda *a, **k: False,
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ?", (parent,),
+            )
+        kb.invalidate_descendants_for_parent_reopen(conn, parent, author="dan")
+        assert kb.get_task(conn, child).status == "running"
+
+        # The drain completes: the handoff's parent gate refuses — the
+        # row must demote to todo, never land ready/review beside the
+        # reopened parent, and never go through the crash reclaim.
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+        monkeypatch.setattr(kb, "request_worker_scope_stop", lambda *a, **k: True)
+        monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "dead")
+        kb.detect_crashed_workers(conn)
+
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_scope FROM tasks "
+            "WHERE id = ?", (child,),
+        ).fetchone()
+        assert row["status"] == "todo"
+        assert row["claim_lock"] is None
+        assert row["worker_scope"] is None
+        assert _events(conn, child, kind="review_requested") == []
+        assert _events(conn, child, kind="crashed") == []
+        assert _events(conn, child, kind="reclaimed") == []
+        discarded = _events(conn, child, kind="own_worker_handoff_discarded")
+        assert len(discarded) == 1
+        kind, payload = discarded[0]
+        assert payload["reason"] == "parents_unsatisfied"
+        assert payload["handoff"] == "review_requested"
+        assert "done building" in (payload["handoff_payload"]["summary"] or "")
+        assert _last_run(conn, child)["outcome"] == "reclaimed"
+
+
 def _arm_live_reviewer_row(conn, tid: str) -> str:
     """Review claimed by a live scoped reviewer: running run whose
     ``claimed`` event carries ``source_status='review'``."""

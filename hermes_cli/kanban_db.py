@@ -9780,7 +9780,11 @@ def _apply_pending_own_worker_handoff(
     lane instead of crash-requeueing — no ``crashed`` event, no protocol
     violation, no failure count. CAS on the marker's run id: a row that
     moved on (requeued, adopted, reopened) keeps its new state and the
-    marker stays inert history.
+    marker stays inert history. The one deliberate divergence: a
+    ``review_requested`` marker whose parents are no longer satisfied is
+    NOT inert — the row is demoted to ``todo`` (the ancestor-reopen
+    outcome) so it can never respawn beside a reopened parent, and the
+    payload is preserved in a discard event for audit (pass 9, AG).
     """
     if run_id is None:
         return False
@@ -9814,9 +9818,51 @@ def _apply_pending_own_worker_handoff(
             return False
         if kind == "review_requested":
             if not _parents_satisfied(conn, task_id):
-                # An ancestor reopened while the scope drained — the
-                # reopen invalidation owns the row now.
-                return False
+                # An ancestor reopened while the scope drained. The
+                # ancestor-reopen invalidation cannot retract this run —
+                # it holds the marker past its own worker's exit — and
+                # returning False here would drop the row into the
+                # generic reclaim, whose _retry_status_for_run restores
+                # ready/review beside a reopened parent (pass 9, AG).
+                # Close it the way the reopen invalidation would:
+                # demote to todo, never back to a spawnable lane, with
+                # the discarded handoff payload kept in the event for
+                # audit.
+                cur = conn.execute(
+                    "UPDATE tasks "
+                    "SET status = 'todo', claim_lock = NULL, "
+                    "    claim_expires = NULL, worker_pid = NULL, "
+                    "    worker_pid_started_at = NULL, "
+                    "    worker_registered_at = NULL, worker_scope = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND current_run_id = ?",
+                    (task_id, int(run_id)),
+                )
+                if cur.rowcount != 1:
+                    return False
+                new_run = _end_run(
+                    conn, task_id,
+                    outcome="reclaimed", status="todo",
+                    summary=(
+                        "own-worker handoff discarded: a parent reopened "
+                        "while the scope drained"
+                    ),
+                )
+                _append_event(
+                    conn, task_id, "own_worker_handoff_discarded",
+                    {
+                        "reason": "parents_unsatisfied",
+                        "handoff": kind,
+                        "handoff_payload": payload,
+                    },
+                    run_id=new_run,
+                )
+                _log.info(
+                    "kanban: discarded deferred %s handoff for %s (run %s) "
+                    "— a parent reopened while the scope drained; row "
+                    "demoted to todo", kind, task_id, run_id,
+                )
+                return True
             reviewer = payload.get("reviewer")
             assignee_sql = ", assignee = ?" if reviewer else ""
             params: tuple[Any, ...] = (

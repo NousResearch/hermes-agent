@@ -230,3 +230,112 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
         assert failures == 0
         assert "descendant_invalidated" in kinds
         assert n_comments >= 1
+
+
+# ---------------------------------------------------------------------------
+# Gate B pass 4, finding N: the Phase 0 stop verdict is bound to the
+# probed run identity — a run replaced between the probe and the
+# demotion transaction must never be demoted on the old verdict
+# ---------------------------------------------------------------------------
+
+
+def _arm_scoped_running_descendant(conn, child_id, *, pid=424242, started=55,
+                                   scope="old-run.scope"):
+    host = kb._claimer_id().split(":", 1)[0]
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET claim_lock = ?, claim_expires = 9999999999, "
+            "worker_pid = ?, worker_pid_started_at = ?, "
+            "worker_registered_at = 1, worker_scope = ? WHERE id = ?",
+            (f"{host}:{pid}", pid, started, scope, child_id),
+        )
+
+
+def test_scoped_descendant_run_replaced_between_probe_and_demotion_is_skipped(
+    conn, monkeypatch,
+):
+    """A concurrent retry replaces the descendant's run between the
+    Phase 0 stop probe and the write transaction. The confirmed-empty
+    verdict belonged to the OLD run's cgroup; the NEW worker must stay
+    running untouched and wait for the next pass to re-probe it."""
+    parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent_id)
+    child_id = kb.create_task(
+        conn, title="scoped child", assignee="builder", parents=[parent_id],
+    )
+    assert kb.claim_task(conn, child_id) is not None
+    _arm_scoped_running_descendant(conn, child_id)
+    host = kb._claimer_id().split(":", 1)[0]
+
+    def replace_run_during_probe(unit_name, *, task_id=None, **_kw):
+        assert unit_name == "old-run.scope"
+        # The retry lands mid-probe: old run replaced by a new scoped run.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET current_run_id = 99001, "
+                "claim_lock = ?, worker_pid = 424243, "
+                "worker_pid_started_at = 56, worker_registered_at = 1, "
+                "worker_scope = 'new-run.scope' WHERE id = ?",
+                (f"{host}:424243", child_id),
+            )
+        return True  # the OLD scope's cgroup is confirmed empty
+
+    monkeypatch.setattr(kb, "request_worker_scope_stop", replace_run_during_probe)
+
+    _reopen_parent_directly(conn, parent_id)
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent_id, author="operator",
+    )
+
+    row = conn.execute(
+        "SELECT status, current_run_id, worker_pid, worker_scope, claim_lock "
+        "FROM tasks WHERE id = ?",
+        (child_id,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["current_run_id"] == 99001
+    assert row["worker_pid"] == 424243
+    assert row["worker_scope"] == "new-run.scope"
+    assert row["claim_lock"] is not None
+    assert result["invalidated"] == []
+    assert result["terminations"] == []
+    assert [
+        e for e in kb.list_events(conn, child_id)
+        if e.kind == "descendant_invalidated"
+    ] == []
+    run = kb.latest_run(conn, child_id)
+    assert run is not None and run.outcome is None  # no run closed underneath
+
+
+def test_scoped_descendant_with_stable_identity_demotes_after_verified_stop(
+    conn, monkeypatch,
+):
+    """Control: when the probed identity still matches inside the
+    transaction, a confirmed-empty scope demotes in-txn with no kill."""
+    parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent_id)
+    child_id = kb.create_task(
+        conn, title="scoped child", assignee="builder", parents=[parent_id],
+    )
+    assert kb.claim_task(conn, child_id) is not None
+    _arm_scoped_running_descendant(conn, child_id)
+    monkeypatch.setattr(
+        kb, "request_worker_scope_stop", lambda *a, **k: True,
+    )
+
+    _reopen_parent_directly(conn, parent_id)
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent_id, author="operator",
+    )
+
+    row = conn.execute(
+        "SELECT status, worker_scope, claim_lock FROM tasks WHERE id = ?",
+        (child_id,),
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert row["worker_scope"] is None
+    assert row["claim_lock"] is None
+    assert [e["id"] for e in result["invalidated"]] == [child_id]
+    assert result["terminations"] == []
+    run = kb.latest_run(conn, child_id)
+    assert run is not None and run.outcome == "reclaimed"

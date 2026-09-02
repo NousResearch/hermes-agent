@@ -7401,7 +7401,12 @@ def invalidate_descendants_for_parent_reopen(
     # ``scope_stopping`` marked) and the crash-cleanup path requeues it
     # once the verified-stop service lands the kill. Runs before the
     # write transaction so the stop probe never sits inside it.
+    # The probed run identity (current_run_id + worker fingerprint) is
+    # captured here and re-compared inside the transaction: a concurrent
+    # retry can replace the descendant's run between the two phases, and
+    # a stop verdict about the OLD run must never demote the NEW one.
     deferred: set[str] = set()
+    probed_identity: dict[str, tuple[Any, Any, Any]] = {}
     scoped_rows = conn.execute(
         """
         WITH RECURSIVE descendants(id) AS (
@@ -7411,7 +7416,8 @@ def invalidate_descendants_for_parent_reopen(
             FROM task_links l
             JOIN descendants d ON d.id = l.parent_id
         )
-        SELECT t.id, t.claim_lock, t.worker_pid, t.worker_scope
+        SELECT t.id, t.claim_lock, t.worker_pid, t.worker_scope,
+               t.current_run_id, t.worker_pid_started_at
         FROM descendants d
         JOIN tasks t ON t.id = d.id
         WHERE t.status = 'running' AND t.worker_scope IS NOT NULL
@@ -7419,6 +7425,12 @@ def invalidate_descendants_for_parent_reopen(
         (task_id,),
     ).fetchall()
     for row in scoped_rows:
+        probed_identity[row["id"]] = (
+            row["current_run_id"],
+            row["worker_pid"],
+            row["worker_pid_started_at"],
+            row["worker_scope"],
+        )
         if request_worker_scope_stop(
             row["worker_scope"], task_id=row["id"],
         ):
@@ -7466,6 +7478,30 @@ def invalidate_descendants_for_parent_reopen(
             if row["id"] in deferred:
                 # Scoped descendant whose stop is unconfirmed — kept
                 # running with its claim by Phase 0; nothing to demote.
+                continue
+            if (
+                previous_status == "running"
+                and row["worker_scope"]
+                and probed_identity.get(row["id"]) != (
+                    row["current_run_id"],
+                    row["worker_pid"],
+                    row["worker_pid_started_at"],
+                    row["worker_scope"],
+                )
+            ):
+                # The run was replaced (or first appeared) after the
+                # Phase 0 probe: the confirmed-empty verdict belonged to
+                # the previous run's cgroup, not this worker's. Skip the
+                # demotion — the row stays running and the next
+                # reconcile/invalidate pass re-probes the new scope.
+                _log.info(
+                    "kanban: descendant %s of reopened %s changed runs "
+                    "between the stop probe and the demotion (run %s -> "
+                    "%s) — left running for the next pass",
+                    row["id"], task_id,
+                    probed_identity.get(row["id"], (None,))[0],
+                    row["current_run_id"],
+                )
                 continue
             resume_status = "ready"
             run_id = None

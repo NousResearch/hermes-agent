@@ -483,3 +483,98 @@ class TestInstallSpecs:
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Post-install bytecode warm (#100461)
+# ---------------------------------------------------------------------------
+
+
+class TestWarmInstalledBytecode:
+    """A pip/uv install leaves ``.py`` sources with no ``__pycache__``.
+
+    Whoever imports next pays the whole compile, and for a lazily installed
+    backend that is the foreground of a user request. These tests pin that
+    the installer pays it instead.
+    """
+
+    @staticmethod
+    def _package(tmp_path):
+        pkg = tmp_path / "zzzfakepkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (pkg / "mod.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+        return pkg
+
+    def test_compiles_the_installed_package(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+
+        assert not list(pkg.rglob("*.pyc"))
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert len(list(pkg.rglob("*.pyc"))) == 2
+
+    def test_honors_dont_write_bytecode(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+        monkeypatch.setattr(ld.sys, "dont_write_bytecode", True)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert not list(pkg.rglob("*.pyc"))
+
+    def test_compile_failure_never_propagates(self, tmp_path, monkeypatch):
+        # An unwritable tree (read-only mount, --target on a sealed image)
+        # must not turn a successful install into a failed one.
+        def boom(spec, target):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(ld, "_installed_dist_roots", boom)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)  # no exception
+
+    def test_dist_roots_resolve_from_metadata_not_the_spec_name(self):
+        # The import name is read off the distribution's own file list, so
+        # specs whose package name differs from their module name still warm.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots, "pytest is a test dependency and must resolve"
+        assert all(r.is_dir() for r in roots)
+        assert any(list(r.glob("*.py")) for r in roots)
+
+    def test_unknown_distribution_resolves_to_nothing(self):
+        assert ld._installed_dist_roots("zzz-not-installed==9.9", None) == set()
+
+
+class TestInstallWarmsBytecode:
+    """The warm runs on install success, and only on success."""
+
+    @staticmethod
+    def _install(monkeypatch, returncode):
+        calls = []
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.resolve_uv", lambda *a, **kw: "uv", raising=False
+        )
+
+        class _Completed:
+            def __init__(self):
+                self.returncode = returncode
+                self.stdout = "out"
+                self.stderr = "err"
+
+        monkeypatch.setattr(ld.subprocess, "run", lambda *a, **kw: _Completed())
+        monkeypatch.setattr(
+            ld, "_warm_installed_bytecode",
+            lambda specs, target: calls.append((specs, target)),
+        )
+        result = ld._venv_pip_install(("zzzfake==1.0",))
+        return result, calls
+
+    def test_success_warms_once_with_the_installed_specs(self, monkeypatch):
+        result, calls = self._install(monkeypatch, 0)
+        assert result.success is True
+        assert calls == [(("zzzfake==1.0",), None)]
+
+    def test_failed_install_does_not_warm(self, monkeypatch):
+        result, calls = self._install(monkeypatch, 1)
+        assert result.success is False
+        assert calls == []

@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/clarification — answer an exact pending clarification
 - POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -116,6 +117,12 @@ class _ArtifactScopeFacade:
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
+
+_RUN_CLARIFY_PROMPT_VERSION = 1
+_RUN_CLARIFY_MAX_QUESTION_CHARS = 2000
+_RUN_CLARIFY_MAX_CHOICE_CHARS = 500
+_RUN_CLARIFY_MAX_RESPONSE_CHARS = 2000
+_RUN_CLARIFY_REQUEST_ID_RE = re.compile(r"^clarify_[0-9a-f]{32}$")
 
 
 def _approval_event_choices(
@@ -1721,7 +1728,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # "cancelled" — an unbounded window, not the old ~5s hard-timeout
             # wait. Excluding it here undercounts active_api_runs for the
             # whole duration of a cooperative stop.
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            if status.get("status") in {
+                "queued",
+                "running",
+                "waiting_for_approval",
+                "waiting_for_clarification",
+                "stopping",
+            }
         )
         process_depth = 0
         active_delegations = 0
@@ -2935,6 +2948,8 @@ class APIServerAdapter(BasePlatformAdapter):
         confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
         room_execution_policy: Optional[Dict[str, Any]] = None,
+        clarify_callback=None,
+        enable_clarify: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2968,6 +2983,11 @@ class APIServerAdapter(BasePlatformAdapter):
         session ``/model`` override, disables the global fallback model
         chain, and fails closed if the locked provider's credentials cannot
         be resolved.
+
+        ``enable_clarify`` is reserved for the Runs lifecycle, whose typed,
+        request-bound HTTP response route can safely satisfy the callback.
+        Other API surfaces remain headless even when their configured toolset
+        would otherwise include ``clarify``.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -3200,7 +3220,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = set(_get_platform_tools(user_config, "api_server"))
+        if enable_clarify:
+            enabled_toolsets.add("clarify")
+        enabled_toolsets = sorted(enabled_toolsets)
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
@@ -3246,6 +3269,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "clarify_callback": clarify_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -3468,8 +3492,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_steer": True,
                 "run_approval_response": True,
+                "run_clarification_response": True,
+                "run_clarification_request_binding": True,
+                "run_clarification_prompt_version": _RUN_CLARIFY_PROMPT_VERSION,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "clarification_events": True,
                 "session_resources": True,
                 "model_options": True,
                 "session_chat": True,
@@ -3523,6 +3551,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_clarification": {
+                    "method": "POST",
+                    "path": "/v1/runs/{run_id}/clarification",
+                },
                 "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
@@ -7662,6 +7694,32 @@ class APIServerAdapter(BasePlatformAdapter):
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         return _api_runs._set_run_status(self, run_id, status, **fields)
 
+    def _set_awaiting_user(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        awaiting: bool,
+        status: Optional[str] = None,
+        **fields: Any,
+    ) -> None:
+        """Stamp process-local + pollable awaiting_user for a run/session."""
+        if awaiting:
+            self._session_awaiting_user[session_id] = True
+        else:
+            self._session_awaiting_user.pop(session_id, None)
+        current_status = (
+            status
+            if status is not None
+            else self._run_statuses.get(run_id, {}).get("status", "running")
+        )
+        self._set_run_status(
+            run_id,
+            current_status,
+            awaiting_user=bool(awaiting),
+            **fields,
+        )
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         return _api_runs._make_run_event_callback(
             self,
@@ -7803,6 +7861,14 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/approval — resolve a pending approval."""
         return await _api_runs._handle_run_approval(
+            self,
+            request,
+            _api_server=sys.modules[__name__],
+        )
+
+    async def _handle_run_clarification(self, request: "web.Request") -> "web.Response":
+        """Answer one exact, run-bound clarification request."""
+        return await _api_runs._handle_run_clarification(
             self,
             request,
             _api_server=sys.modules[__name__],

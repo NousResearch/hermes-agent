@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import suppress
@@ -12,9 +13,13 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+
+# RequestKey landed in newer aiohttp; keep `web` usable when it is missing.
+try:
+    from aiohttp.web_request import RequestKey
+except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 
@@ -78,6 +83,41 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # Active approval session key for each run_id. The approval core resolves
     # requests by session key, while API clients address them by run_id.
     self._run_approval_sessions: Dict[str, str] = {}
+    # Clarify requests use the same per-run isolation rule as approvals, but
+    # remain a separate primitive and response endpoint.
+    self._run_clarify_sessions: Dict[str, str] = {}
+
+
+def _normalized_request_profile(_api_server) -> str:
+    """Return the URL-selected profile principal for this request."""
+    profile = _api_server._api_request_profile.get()
+    if not profile or profile == "default":
+        return "default"
+    return str(profile)
+
+
+def _run_profile_forbidden(
+    self,
+    run_id: str,
+    *,
+    _api_server,
+) -> "web.Response | None":
+    """Fail closed when this request's profile does not own the run."""
+    _openai_error = _api_server._openai_error
+
+    status = self._run_statuses.get(run_id)
+    if status is None:
+        return web.json_response(
+            _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+            status=404,
+        )
+    owner = str(status.get("request_profile") or "default")
+    if owner != _normalized_request_profile(_api_server):
+        return web.json_response(
+            _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+            status=404,
+        )
+    return None
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -86,6 +126,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
+        ("POST", "/v1/runs/{run_id}/clarification", self._handle_run_clarification),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
     ]
@@ -423,6 +464,10 @@ async def _handle_runs(
     _publish_turn_process_ownership = _api_server._publish_turn_process_ownership
     _redact_api_error_text = _api_server._redact_api_error_text
     _request_agent_overrides = _api_server._request_agent_overrides
+    redact_sensitive_text = _api_server.redact_sensitive_text
+    _RUN_CLARIFY_PROMPT_VERSION = _api_server._RUN_CLARIFY_PROMPT_VERSION
+    _RUN_CLARIFY_MAX_QUESTION_CHARS = _api_server._RUN_CLARIFY_MAX_QUESTION_CHARS
+    _RUN_CLARIFY_MAX_CHOICE_CHARS = _api_server._RUN_CLARIFY_MAX_CHOICE_CHARS
 
     # Long-term memory scope header (see chat_completions for details).
     gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -625,6 +670,7 @@ async def _handle_runs(
     # concurrent runs can intentionally share them, and resolving an
     # approval for one run must not unblock another run's dangerous command.
     approval_session_key = run_id
+    clarify_session_key = run_id
     ephemeral_system_prompt = instructions
     loop = asyncio.get_running_loop()
     q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -632,6 +678,7 @@ async def _handle_runs(
     self._run_streams[run_id] = q
     self._run_streams_created[run_id] = created_at
     self._run_approval_sessions[run_id] = approval_session_key
+    self._run_clarify_sessions[run_id] = clarify_session_key
 
     event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -662,6 +709,8 @@ async def _handle_runs(
         created_at=created_at,
         session_id=session_id,
         model=body.get("model", self._model_name),
+        awaiting_user=False,
+        request_profile=_normalized_request_profile(_api_server),
     )
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
@@ -678,6 +727,7 @@ async def _handle_runs(
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
             self._run_approval_sessions.pop(run_id, None)
+            self._run_clarify_sessions.pop(run_id, None)
             self._run_statuses.pop(run_id, None)
             self._run_owners.pop(run_id, None)
             if outcome == "conflict":
@@ -730,6 +780,100 @@ async def _handle_runs(
                     last_event="run.cancelled",
                 )
                 return
+
+            def _clarify_callback(
+                question: str,
+                choices,
+                multi_select: bool = False,
+            ) -> str:
+                from tools import clarify_gateway
+
+                safe_question = str(
+                    redact_sensitive_text(str(question or ""), force=True) or ""
+                )[:_RUN_CLARIFY_MAX_QUESTION_CHARS]
+                safe_choices = None
+                if choices:
+                    safe_choices = [
+                        str(redact_sensitive_text(str(choice), force=True) or "")[
+                            :_RUN_CLARIFY_MAX_CHOICE_CHARS
+                        ]
+                        for choice in list(choices)[:4]
+                    ]
+                allow_multi = bool(multi_select) and bool(safe_choices)
+                request_id = f"clarify_{uuid.uuid4().hex}"
+                clarify_gateway.register(
+                    clarify_id=request_id,
+                    session_key=clarify_session_key,
+                    question=safe_question,
+                    choices=safe_choices,
+                    multi_select=allow_multi,
+                )
+                prompt: Dict[str, Any] = {
+                    "version": _RUN_CLARIFY_PROMPT_VERSION,
+                    "type": "choice" if safe_choices else "text",
+                    "question": safe_question,
+                }
+                if safe_choices:
+                    prompt["choices"] = [
+                        {"id": f"choice-{index}", "label": label}
+                        for index, label in enumerate(safe_choices, start=1)
+                    ]
+                    prompt["multi_select"] = allow_multi
+
+                def _publish_clarify() -> None:
+                    if (
+                        run_id in self._stopping_run_ids
+                        or clarify_gateway.get_pending_by_id(
+                            request_id,
+                            session_key=clarify_session_key,
+                        )
+                        is None
+                    ):
+                        return
+                    if self._run_streams.get(run_id) is not q:
+                        clarify_gateway.clear_session(clarify_session_key)
+                        return
+                    self._set_run_status(
+                        run_id,
+                        "waiting_for_clarification",
+                        last_event="clarify.request",
+                        awaiting_user=True,
+                    )
+                    _put_event_if_active({
+                        "event": "clarify.request",
+                        "run_id": run_id,
+                        "request_id": request_id,
+                        "timestamp": time.time(),
+                        "prompt": prompt,
+                    })
+
+                try:
+                    loop.call_soon_threadsafe(_publish_clarify)
+                except RuntimeError:
+                    clarify_gateway.clear_session(clarify_session_key)
+                    return "[clarify prompt could not be delivered]"
+                timeout = clarify_gateway.get_clarify_timeout()
+                response = clarify_gateway.wait_for_response(
+                    request_id,
+                    timeout=float(timeout),
+                )
+                if not response:
+                    def _clear_awaiting_on_timeout() -> None:
+                        if self._run_statuses.get(run_id, {}).get("awaiting_user"):
+                            self._set_run_status(
+                                run_id,
+                                "running",
+                                last_event="clarify.timeout",
+                                awaiting_user=False,
+                            )
+
+                    try:
+                        loop.call_soon_threadsafe(_clear_awaiting_on_timeout)
+                    except RuntimeError:
+                        pass
+                    return f"[user did not respond within {int(timeout / 60)}m]"
+                return response
+
             with self._profile_scope(request_profile):
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -743,6 +887,8 @@ async def _handle_runs(
                     route=route,
                     room_dispatch=room_dispatch,
                     room_execution_policy=room_execution_policy,
+                    clarify_callback=_clarify_callback,
+                    enable_clarify=True,
                 )
             self._active_run_agents[run_id] = agent
 
@@ -1016,6 +1162,16 @@ async def _handle_runs(
             self._active_run_agents.pop(run_id, None)
             self._active_run_tasks.pop(run_id, None)
             self._run_approval_sessions.pop(run_id, None)
+            try:
+                from tools.clarify_gateway import clear_session
+
+                clear_session(clarify_session_key)
+            except Exception:
+                pass
+            self._run_clarify_sessions.pop(run_id, None)
+            cur = self._run_statuses.get(run_id)
+            if cur is not None:
+                cur["awaiting_user"] = False
             self._stopping_run_ids.discard(run_id)
             self._release_run_owner_if_forgotten(run_id)
 
@@ -1309,6 +1465,241 @@ async def _handle_run_approval(
     })
 
 
+async def _handle_run_clarification(
+    self,
+    request: "web.Request",
+    *,
+    _api_server,
+) -> "web.Response":
+    """Answer one exact, run-bound clarification request."""
+    _openai_error = _api_server._openai_error
+    _RUN_CLARIFY_REQUEST_ID_RE = _api_server._RUN_CLARIFY_REQUEST_ID_RE
+    _RUN_CLARIFY_MAX_RESPONSE_CHARS = _api_server._RUN_CLARIFY_MAX_RESPONSE_CHARS
+
+    auth_err = self._check_run_auth(request, permission="approve")
+    if auth_err:
+        return auth_err
+
+    run_id = request.match_info["run_id"]
+    owned_err = _run_profile_forbidden(self, run_id, _api_server=_api_server)
+    if owned_err:
+        return owned_err
+    if not self._request_owns_run(request, run_id):
+        return web.json_response(
+            _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+            status=404,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(_openai_error("Invalid JSON"), status=400)
+    if not isinstance(body, dict):
+        return web.json_response(_openai_error("JSON body must be an object"), status=400)
+
+    request_id = body.get("request_id")
+    if not isinstance(request_id, str) or not _RUN_CLARIFY_REQUEST_ID_RE.fullmatch(
+        request_id
+    ):
+        return web.json_response(
+            _openai_error(
+                "Invalid clarification request_id",
+                code="invalid_clarification_request_id",
+            ),
+            status=400,
+        )
+    response = body.get("response")
+    if not isinstance(response, dict):
+        return web.json_response(
+            _openai_error(
+                "Clarification response must be an object",
+                code="invalid_clarification_response",
+            ),
+            status=400,
+        )
+
+    clarify_session_key = self._run_clarify_sessions.get(run_id)
+    if not clarify_session_key:
+        return web.json_response(
+            _openai_error(
+                f"Run has no active clarification session: {run_id}",
+                code="clarification_not_active",
+            ),
+            status=409,
+        )
+    from tools import clarify_gateway
+
+    pending = clarify_gateway.get_pending_by_id(
+        request_id,
+        session_key=clarify_session_key,
+    )
+    if pending is None:
+        return web.json_response(
+            _openai_error(
+                "Clarification is stale, unknown, resolved, or belongs to another run",
+                code="clarification_not_pending",
+            ),
+            status=409,
+        )
+
+    response_type = response.get("type")
+    pending_choices = list(pending.get("choices") or [])
+    pending_multi = bool(pending.get("multi_select"))
+
+    def _choice_index(choice_id: Any) -> int:
+        match = re.fullmatch(r"choice-([1-4])", str(choice_id or ""))
+        if not match:
+            return -1
+        return int(match.group(1)) - 1
+
+    if response_type == "choice":
+        if pending_multi:
+            return web.json_response(
+                _openai_error(
+                    "Multi-select clarification requires response.type 'choices'",
+                    code="invalid_clarification_response_type",
+                ),
+                status=400,
+            )
+        choice_id = response.get("choice_id")
+        index = _choice_index(choice_id)
+        if index < 0 or index >= len(pending_choices):
+            return web.json_response(
+                _openai_error(
+                    "Invalid clarification choice_id",
+                    code="invalid_clarification_choice",
+                ),
+                status=400,
+            )
+        answer = str(pending_choices[index])
+        response_summary: Dict[str, Any] = {
+            "type": "choice",
+            "choice_id": choice_id,
+        }
+    elif response_type == "choices":
+        if not pending_multi:
+            return web.json_response(
+                _openai_error(
+                    "Clarification is not multi-select; use response.type 'choice'",
+                    code="invalid_clarification_response_type",
+                ),
+                status=400,
+            )
+        choice_ids = response.get("choice_ids")
+        if not isinstance(choice_ids, list) or not choice_ids:
+            return web.json_response(
+                _openai_error(
+                    "Multi-select clarification requires a non-empty choice_ids list",
+                    code="invalid_clarification_choice",
+                ),
+                status=400,
+            )
+        if len(choice_ids) > len(pending_choices):
+            return web.json_response(
+                _openai_error(
+                    "Too many clarification choice_ids",
+                    code="invalid_clarification_choice",
+                ),
+                status=400,
+            )
+        selected_labels: List[str] = []
+        seen_ids: set[str] = set()
+        for raw_id in choice_ids:
+            choice_id = str(raw_id or "")
+            if choice_id in seen_ids:
+                return web.json_response(
+                    _openai_error(
+                        "Duplicate clarification choice_id",
+                        code="invalid_clarification_choice",
+                    ),
+                    status=400,
+                )
+            index = _choice_index(choice_id)
+            if index < 0 or index >= len(pending_choices):
+                return web.json_response(
+                    _openai_error(
+                        "Invalid clarification choice_id",
+                        code="invalid_clarification_choice",
+                    ),
+                    status=400,
+                )
+            seen_ids.add(choice_id)
+            selected_labels.append(str(pending_choices[index]))
+        answer = json.dumps(selected_labels, ensure_ascii=False)
+        response_summary = {
+            "type": "choices",
+            "choice_ids": [str(cid) for cid in choice_ids],
+        }
+    elif response_type == "text":
+        text_value = response.get("text")
+        if not isinstance(text_value, str) or not text_value.strip():
+            return web.json_response(
+                _openai_error(
+                    "Clarification text must be a non-empty string",
+                    code="invalid_clarification_response",
+                ),
+                status=400,
+            )
+        if len(text_value) > _RUN_CLARIFY_MAX_RESPONSE_CHARS:
+            return web.json_response(
+                _openai_error(
+                    "Clarification text exceeds "
+                    f"{_RUN_CLARIFY_MAX_RESPONSE_CHARS} characters",
+                    code="clarification_text_too_long",
+                ),
+                status=400,
+            )
+        answer = text_value.strip()
+        response_summary = {"type": "text"}
+    else:
+        return web.json_response(
+            _openai_error(
+                "Clarification response type must be 'choice', 'choices', or 'text'",
+                code="invalid_clarification_response_type",
+            ),
+            status=400,
+        )
+
+    if not clarify_gateway.resolve_gateway_clarify(
+        request_id,
+        answer,
+        session_key=clarify_session_key,
+    ):
+        return web.json_response(
+            _openai_error(
+                "Clarification is no longer pending",
+                code="clarification_not_pending",
+            ),
+            status=409,
+        )
+
+    self._set_run_status(
+        run_id,
+        "running",
+        last_event="clarify.responded",
+        awaiting_user=False,
+    )
+    q = self._run_streams.get(run_id)
+    event = {
+        "event": "clarify.responded",
+        "run_id": run_id,
+        "request_id": request_id,
+        "timestamp": time.time(),
+        **response_summary,
+    }
+    if q is not None:
+        try:
+            q.put_nowait(event)
+        except Exception:
+            pass
+    return web.json_response({
+        "object": "hermes.run.clarification_response",
+        "run_id": run_id,
+        "request_id": request_id,
+        **response_summary,
+    })
+
+
 async def _handle_steer_run(
     self,
     request: "web.Request",
@@ -1439,7 +1830,12 @@ async def _handle_stop_run(
             status=409,
         )
 
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+    self._set_run_status(
+        run_id,
+        "stopping",
+        last_event="run.stopping",
+        awaiting_user=False,
+    )
     self._stopping_run_ids.add(run_id)
 
     if agent is not None:
@@ -1455,6 +1851,15 @@ async def _handle_stop_run(
         _reap_disconnected_agent_processes(
             agent, source="api_server_run_stop"
         )
+
+    clarify_session_key = self._run_clarify_sessions.get(run_id)
+    if clarify_session_key:
+        try:
+            from tools.clarify_gateway import clear_session
+
+            clear_session(clarify_session_key)
+        except Exception:
+            pass
 
     return web.json_response({"run_id": run_id, "status": "stopping"})
 
@@ -1497,6 +1902,14 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
             self._active_run_agents.pop(run_id, None)
             self._active_run_tasks.pop(run_id, None)
             self._run_approval_sessions.pop(run_id, None)
+            clarify_session_key = self._run_clarify_sessions.pop(run_id, None)
+            if clarify_session_key:
+                try:
+                    from tools.clarify_gateway import clear_session
+
+                    clear_session(clarify_session_key)
+                except Exception:
+                    pass
             self._stopping_run_ids.discard(run_id)
         self._release_run_owner_if_forgotten(run_id)
 

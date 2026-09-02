@@ -502,6 +502,62 @@ running.
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
 
+### POST /v1/runs/\{run_id\}/clarification
+
+When the agent needs a missing detail, the event stream emits a bounded,
+secret-redacted `clarify.request` with a stable `request_id` and a versioned
+prompt. Choice prompts use server-issued IDs:
+
+```json
+{
+  "event": "clarify.request",
+  "run_id": "run_abc123",
+  "request_id": "clarify_0123456789abcdef0123456789abcdef",
+  "prompt": {
+    "version": 1,
+    "type": "choice",
+    "question": "Which environment should I use?",
+    "choices": [
+      {"id": "choice-1", "label": "Staging"},
+      {"id": "choice-2", "label": "Production"}
+    ],
+    "multi_select": false
+  }
+}
+```
+
+Answer that exact request with a choice ID:
+
+```json
+{
+  "request_id": "clarify_0123456789abcdef0123456789abcdef",
+  "response": {"type": "choice", "choice_id": "choice-1"}
+}
+```
+
+When `prompt.multi_select` is `true`, answer with one or more server-issued IDs:
+
+```json
+{
+  "request_id": "clarify_0123456789abcdef0123456789abcdef",
+  "response": {
+    "type": "choices",
+    "choice_ids": ["choice-1", "choice-2"]
+  }
+}
+```
+
+For an open question, send
+`{"type": "text", "text": "your answer"}`. Unknown, stale, already answered,
+or cross-run request IDs fail closed. A `clarify` tool call with a `questions`
+array is decomposed into sequential `clarify.request` events on the same run;
+answer each `request_id` before the next prompt is emitted. While a
+clarification is pending, `GET /v1/runs/{run_id}` reports
+`status: waiting_for_clarification` and `awaiting_user: true` (cleared on
+answer, timeout, or `/stop`). Check `run_clarification_response` and
+`run_clarification_request_binding` in `/v1/capabilities` before showing this
+UI.
+
 ## Jobs API (background scheduled work)
 
 The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.

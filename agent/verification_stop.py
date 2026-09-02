@@ -3,11 +3,17 @@
 This module is intentionally policy-only. It never runs checks itself; it turns
 the passive verification ledger into a bounded follow-up when the model tries to
 finish immediately after editing code without fresh evidence.
+
+When the model still claims tests/checks passed after that budget is exhausted
+(or on the interim candidate), ``qualify_unverified_claim`` appends a footer so
+the over-claim cannot stand as the delivered answer. Default remains off
+(``verify_on_stop``).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -313,4 +319,108 @@ def build_verify_on_stop_nudge(
     )
 
 
-__all__ = ["build_verify_on_stop_nudge", "verify_on_stop_enabled"]
+# ---------------------------------------------------------------------------
+# Claim gate: do not let "tests passed" stand without ledger evidence.
+# ---------------------------------------------------------------------------
+
+UNVERIFIED_CLAIM_FOOTER_MARK = "⚠️ Verification status:"
+
+_SUCCESS_CLAIM_RE = re.compile(
+    r"(?is)(?:"
+    r"\btests?\s+passed\b"
+    r"|\ball\s+tests\s+pass(?:ed)?\b"
+    r"|\b(?:test\s+)?suite\s+(?:is\s+)?green\b"
+    r"|\bchecks?\s+passed\b"
+    r"|\bci\s+(?:is\s+)?green\b"
+    r"|\bverification\s+passed\b"
+    r"|\bfully\s+verified\b"
+    r"|\bverified\s+in\s+(?:prod|production)\b"
+    r"|\bstatus\s*:\s*done\b"
+    r"|\bimplemented\s+and\s+verified\b"
+    r"|\bi(?:'ve| have)?\s+verified\b"
+    r"|\bwork\s+is\s+(?:fully\s+)?verified\b"
+    r")"
+)
+
+_ALREADY_LABELED_RE = re.compile(
+    r"(?is)(?:"
+    r"\bnot\s+verified\b"
+    r"|\bunverified\b"
+    r"|\bcould\s+not\s+verify\b"
+    r"|\bcannot\s+verify\b"
+    r"|\bcan'?t\s+verify\b"
+    r"|\bverification\s+is\s+not\s+possible\b"
+    r"|\bno\s+(?:fresh\s+)?passing\s+verification\b"
+    r"|\bdid\s+not\s+(?:run|execute)\s+(?:the\s+)?tests\b"
+    r"|\btests?\s+(?:were\s+)?not\s+run\b"
+    r"|\bconcrete\s+blocker\b"
+    r"|"
+    + re.escape(UNVERIFIED_CLAIM_FOOTER_MARK)
+    + r")"
+)
+
+
+def claims_verification_success(text: str | None) -> bool:
+    """True when the assistant text asserts tests/checks/verification passed."""
+    if not text:
+        return False
+    return bool(_SUCCESS_CLAIM_RE.search(text))
+
+
+def already_labels_unverified(text: str | None) -> bool:
+    """True when the text already admits the work is unverified or blocked."""
+    if not text:
+        return False
+    return bool(_ALREADY_LABELED_RE.search(text))
+
+
+def qualify_unverified_claim(
+    text: str,
+    *,
+    session_id: str | None,
+    changed_paths: Iterable[str],
+) -> str:
+    """Append a footer when a success-claim is not backed by the ledger.
+
+    No-ops when there is no claim, the agent already labeled a blocker, there
+    are no verifiable code edits, the ledger is ``passed``, or the footer is
+    already present. Never invents a workspace or upgrades a targeted check
+    into ``repo green``.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+    if UNVERIFIED_CLAIM_FOOTER_MARK in text:
+        return text
+    if not claims_verification_success(text):
+        return text
+    if already_labels_unverified(text):
+        return text
+
+    paths = sorted({str(p) for p in _filter_verifiable_paths(changed_paths)})
+    if not paths:
+        return text
+
+    snapshot = _verification_snapshot(session_id=session_id, changed_paths=paths)
+    if snapshot is None:
+        return text
+    status, _facts = snapshot
+    if str(status.get("status") or "unverified") == "passed":
+        return text
+
+    state = str(status.get("status") or "unverified")
+    footer = (
+        f"{UNVERIFIED_CLAIM_FOOTER_MARK} {state}. "
+        "This turn edited code without fresh passing verification evidence. "
+        "Wording above that says tests or checks passed is not backed by the ledger."
+    )
+    return text.rstrip() + "\n\n" + footer
+
+
+__all__ = [
+    "UNVERIFIED_CLAIM_FOOTER_MARK",
+    "already_labels_unverified",
+    "build_verify_on_stop_nudge",
+    "claims_verification_success",
+    "qualify_unverified_claim",
+    "verify_on_stop_enabled",
+]

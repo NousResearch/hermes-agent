@@ -248,3 +248,121 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+
+
+# ---------------------------------------------------------------------------
+# P0 claim gate: success wording without ledger evidence cannot stand.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("All tests passed.", True),
+        ("STATUS: DONE — checks passed.", True),
+        ("I've verified the fix in production.", True),
+        ("The suite is green.", True),
+        ("Patched the helper and left a note.", False),
+        ("I have not verified this.", False),
+        ("", False),
+    ],
+)
+def test_claims_verification_success(text, expected):
+    from agent.verification_stop import claims_verification_success
+
+    assert claims_verification_success(text) is expected
+
+
+def test_qualify_appends_footer_when_claim_lacks_ledger(tmp_path, monkeypatch):
+    from agent.verification_stop import (
+        UNVERIFIED_CLAIM_FOOTER_MARK,
+        qualify_unverified_claim,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    out = qualify_unverified_claim(
+        "All tests passed.",
+        session_id="s1",
+        changed_paths=[changed],
+    )
+    assert UNVERIFIED_CLAIM_FOOTER_MARK in out
+    assert "All tests passed." in out
+    assert "not backed by the ledger" in out
+
+
+def test_qualify_skips_when_ledger_passed(tmp_path, monkeypatch):
+    from agent.verification_stop import (
+        UNVERIFIED_CLAIM_FOOTER_MARK,
+        qualify_unverified_claim,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    text = "All tests passed."
+    assert qualify_unverified_claim(
+        text, session_id="s1", changed_paths=[changed]
+    ) == text
+    assert UNVERIFIED_CLAIM_FOOTER_MARK not in text
+
+
+def test_qualify_skips_labeled_blocker(tmp_path, monkeypatch):
+    from agent.verification_stop import qualify_unverified_claim
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    text = "I could not verify this. Concrete blocker: no test runner."
+    assert qualify_unverified_claim(
+        text, session_id="s1", changed_paths=[changed]
+    ) == text
+
+
+def test_qualify_skips_doc_only_edits(tmp_path, monkeypatch):
+    from agent.verification_stop import (
+        UNVERIFIED_CLAIM_FOOTER_MARK,
+        qualify_unverified_claim,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    doc = str(tmp_path / "README.md")
+    text = "All tests passed."
+    out = qualify_unverified_claim(text, session_id="s1", changed_paths=[doc])
+    assert out == text
+    assert UNVERIFIED_CLAIM_FOOTER_MARK not in out
+
+
+def test_qualify_is_idempotent(tmp_path, monkeypatch):
+    from agent.verification_stop import qualify_unverified_claim
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    once = qualify_unverified_claim(
+        "All tests passed.",
+        session_id="s1",
+        changed_paths=[changed],
+    )
+    twice = qualify_unverified_claim(
+        once, session_id="s1", changed_paths=[changed]
+    )
+    assert once == twice
+    assert once.count("⚠️ Verification status:") == 1
+

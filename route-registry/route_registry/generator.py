@@ -59,6 +59,16 @@ from typing import Any
 
 import yaml
 
+# Config-tree reader. Route-registry reads ONLY config trees it is given
+# (a temp copy or an explicit --target-root it owns) to build migration
+# plans — never the live user ~/.hermes/config.yaml for behavior. Using
+# hermes_cli.config.load_config() here would read the WRONG tree (the live
+# HERMES_HOME instead of the target copy being planned), so raw parsing of
+# the owned target tree is intentional and correct.
+def _read_yaml(path: Path) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
 # Provider account IDs that are not yet provisioned as live Hermes providers.
 # Emission for these is structurally impossible (hermes: null) — enforced, not assumed.
 UNPROVISIONED_ACCOUNTS = {"xkiro/free", "xkiro/pro-plus", "b-ai/1", "b-ai/2", "b-ai/3", "b-ai/4", "b-ai/5"}
@@ -450,8 +460,7 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
         cfg = profile_dir / "config.yaml"
         if not cfg.exists():
             continue
-        with open(cfg, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
+        doc = _read_yaml(cfg)
         surf_name = profile_dir.name
         surf = surfaces_by_name.get(surf_name)
         if surf is None:
@@ -510,8 +519,7 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
     target_cfg_path = tmp_home / "config.yaml"
     target_pools: dict[str, Any] = {}
     if target_cfg_path.exists():
-        with open(target_cfg_path, encoding="utf-8") as fh:
-            target_doc = yaml.safe_load(fh) or {}
+        target_doc = _read_yaml(target_cfg_path)
         target_pools = target_doc.get("credential_pool_strategies") or {}
     for provider in sorted(emitted_groups):
         accounts = emitted_groups[provider]

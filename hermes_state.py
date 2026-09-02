@@ -10979,13 +10979,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Write a title, enforcing provenance precedence.
 
         ``source`` is one of ``TITLE_SOURCE_{DERIVED,LLM,USER}``. A ``user``
-        write is authoritative except for a canonical Bot Chat identity. An
-        automatic write (``derived``/``llm``) lands only when the row is
-        untitled or the stored title has strictly lower authority, so the
-        instant ``derived`` title upgrades to ``llm`` exactly once and neither
-        can ever overwrite a name the user typed. Re-running the titler on an
-        already-``llm`` row is a no-op, which is what stops a session renaming
-        itself.
+        write always lands — an explicit rename is authoritative. An automatic
+        write (``derived``/``llm``) lands only when the row is untitled or the
+        stored title has strictly lower authority, so the instant ``derived``
+        title upgrades to ``llm`` exactly once and neither can ever overwrite a
+        name the user typed. Re-running the titler on an already-``llm`` row is
+        a no-op, which is what stops a session renaming itself. The one thing
+        no writer may do is move a hidden canonical Bot Chat off its title.
 
         The read and the write are one compare-and-swap inside a single
         transaction, so a manual ``/title`` racing an in-flight generation
@@ -11010,7 +11010,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # surface funnels through (gateway session.title, /title, CLI
             # rename, REST). Hidden is the discriminator: canonical chats are
             # born hidden; an ordinary visible session a user happens to call
-            # "Bot Chat" stays freely renameable.
+            # "Bot Chat" stays freely renameable. Provenance-blind: an
+            # automatic llm write outranks a derived title, so the auto-titler
+            # would otherwise rename the row too (#99517) — it no-ops instead.
             if (
                 (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
                 and bool(current["hidden"])

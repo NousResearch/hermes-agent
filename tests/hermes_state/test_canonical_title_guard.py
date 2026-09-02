@@ -72,6 +72,9 @@ def test_auto_titler_still_cannot_touch_the_canonical_row(db):
 
 
 def test_auto_titler_cannot_rename_derived_canonical_bot_chat(db):
+    # #99517: the guard must be provenance-blind. A derived (rank 0) canonical
+    # title loses to an llm (rank 1) auto-title on precedence alone, so the
+    # identity check — not precedence — has to stop the write.
     db.create_session("derived", source="desktop")
     assert db._set_session_title(
         "derived",
@@ -91,6 +94,8 @@ def test_auto_titler_cannot_rename_derived_canonical_bot_chat(db):
 
 
 def test_auto_titler_can_rename_visible_derived_bot_chat(db):
+    # Control: hidden is still the discriminator — a visible session that
+    # merely carries the text "Bot Chat" upgrades derived -> llm as usual.
     db.create_session("visible", source="desktop")
     assert db._set_session_title(
         "visible",

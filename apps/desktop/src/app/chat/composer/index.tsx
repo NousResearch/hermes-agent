@@ -33,6 +33,7 @@ import {
   type QueueEditState,
   slashArgStage
 } from './composer-utils'
+import { EDITOR_SUPPRESSION_ATTRS } from './autofill-suppression'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
@@ -1019,12 +1020,9 @@ export function ChatBar({
            autofill algorithm only applies to input/select/textarea, so
            autoComplete= is not even defined for contentEditable — WebKit
            sniffs the element anyway. `data-1p-ignore` and
-           `data-lpignore="true"` tell 1Password/LastPass to stand down on the
            same field; they are inert in Safari but keep the whole suppression
            contract in one place. */
-        data-1p-ignore=""
-        data-composer-rich-input=""
-        data-lpignore="true"
+        {...EDITOR_SUPPRESSION_ATTRS}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}

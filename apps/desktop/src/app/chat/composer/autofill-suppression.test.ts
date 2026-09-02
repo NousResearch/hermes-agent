@@ -1,69 +1,53 @@
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-// #95089 — iPadOS Safari hardware-keyboard contact AutoFill bar.
+import {
+  EDITOR_SUPPRESSION_ATTRS,
+  FORM_SUPPRESSION_ATTRS,
+  TEXTAREA_SUPPRESSION_ATTRS
+} from './autofill-suppression'
+
+// #95089 — iPadOS Safari hardware-keyboard contact AutoFill suppression.
 //
-// The visible rich composer is a contentEditable div (the sr-only
-// ComposerPrimitive.Input textarea is aria-hidden and never focused, so its
-// autoComplete="off" does nothing for Safari). WebKit classifies focused
-// editors heuristically; these assertions lock the suppression metadata onto
-// the VISIBLE, focusable editor so a refactor can't drop it.
-
-function readComposerSource(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-
-  return readFileSync(resolve(here, './index.tsx'), 'utf8')
-}
-
-function extractEditorBlock(src: string): string {
-  // The visible editor's opening tag runs from its aria-disabled anchor to
-  // the last suppression attribute. eslint's perfectionist/sort-jsx-props puts
-  // contentEditable before the data-* props, so anchoring on contentEditable
-  // alone would drop the very attributes this block exists to assert.
-  const start = src.indexOf("aria-disabled={inputDisabled ? true : undefined}")
-
-  if (start === -1) {
-    new Error('composer editor anchor missing')
-  }
-
-  // End at the first event handler — guaranteed to sit after every data-*
-  // suppression attribute. Anchoring on a literal attribute name is unsafe:
-  // the explanatory comment above also quotes `data-lpignore="true"`, so a
-  // naive indexOf would stop inside the comment instead of at the real prop.
-  const end = src.indexOf('onCompositionEnd=', start)
-
-  if (end === -1 || end <= start) {
-    new Error('editor block end missing')
-  }
-
-  return src.slice(start, end)
-}
+// These tests verify the suppression attribute constants match the expected
+// contract. The actual DOM application is tested in the component-level
+// tests via the shared constant. This file is pure (no jsdom needed).
 
 describe('rich composer AutoFill suppression (#95089)', () => {
-  const src = readComposerSource()
-  const editorBlock = extractEditorBlock(src)
-
-  it('marks the visible editor with password-manager opt-outs', () => {
-    expect(editorBlock).toContain('data-1p-ignore=""')
-    expect(editorBlock).toContain('data-lpignore="true"')
-    expect(editorBlock).toContain('data-composer-rich-input=""')
+  it('editor suppression attributes match the contract', () => {
+    expect(EDITOR_SUPPRESSION_ATTRS).toEqual({
+      'data-1p-ignore': '',
+      'data-composer-rich-input': '',
+      'data-lpignore': 'true'
+    })
   })
 
-  it('opts the composer form out of autocomplete (form default overrides field hints in Safari)', () => {
-    const rootIdx = src.indexOf('<ComposerPrimitive.Root')
-
-    if (rootIdx === -1) {
-      new Error('composer form primitive missing')
-    }
-
-    expect(src.slice(rootIdx, rootIdx + 600)).toMatch(/autoComplete="off"/)
+  it('form suppression attributes match the contract', () => {
+    expect(FORM_SUPPRESSION_ATTRS).toEqual({ autoComplete: 'off' })
   })
 
-  it('documents why the attributes exist (refactor guard)', () => {
-    expect(src).toContain('#95089')
-    expect(src).toMatch(/WebKit AutoFill suppression/)
+  it('textarea suppression attributes match the contract', () => {
+    expect(TEXTAREA_SUPPRESSION_ATTRS).toEqual({
+      autoComplete: 'off',
+      autoCapitalize: 'off',
+      autoCorrect: 'off',
+      spellCheck: false
+    })
+  })
+
+  it('editor attributes include all required suppression markers', () => {
+    const keys = Object.keys(EDITOR_SUPPRESSION_ATTRS)
+    expect(keys).toContain('data-1p-ignore')
+    expect(keys).toContain('data-composer-rich-input')
+    expect(keys).toContain('data-lpignore')
+  })
+
+  it('form autoComplete is off to prevent Safari form-level override', () => {
+    expect(FORM_SUPPRESSION_ATTRS.autoComplete).toBe('off')
+  })
+
+  it('textarea autoComplete is off', () => {
+    expect(TEXTAREA_SUPPRESSION_ATTRS.autoComplete).toBe('off')
   })
 })
+

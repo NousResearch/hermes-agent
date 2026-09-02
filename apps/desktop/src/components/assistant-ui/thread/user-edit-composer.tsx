@@ -44,6 +44,7 @@ import {
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
+import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
@@ -817,9 +818,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               /* WebKit AutoFill suppression (#95089) — same contract as the
                  main composer's rich editor in chat/composer/index.tsx. */
-              data-1p-ignore=""
-              data-composer-rich-input=""
-              data-lpignore="true"
+              {...EDITOR_SUPPRESSION_ATTRS}
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}

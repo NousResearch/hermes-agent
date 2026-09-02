@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from decimal import Decimal
+
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
 
@@ -3538,7 +3540,12 @@ class TestRunConversation:
         """NS-503: consecutive zero-output-token empties with identical
         model/provider/finish_reason are deterministic (unsignaled refusal)
         — the loop must stop re-billing the full input after the second
-        attempt instead of burning the whole retry budget."""
+        attempt instead of burning the whole retry budget.
+
+        Pinned to a *priced* streak: the skip exists to avoid repeat
+        charges, and since #89213 a streak with no known cost keeps its
+        full retry budget instead (see the companion test below).
+        """
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         zero_usage = {
@@ -3555,6 +3562,10 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch(
+                "agent.empty_response_guard._estimate_attempt_cost",
+                return_value=Decimal("1.10"),
+            ),
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
@@ -3562,6 +3573,43 @@ class TestRunConversation:
         # 1 original + 1 retry: the second identical zero-output empty
         # proves determinism, remaining retries are skipped.
         assert result["api_calls"] == 2
+
+    def test_unpriced_empty_streak_keeps_full_retry_budget(self, agent):
+        """#89213: the same zero-output streak on a route with no known
+        cost (local/self-hosted endpoint) must NOT be treated as
+        deterministic — there are no repeat charges to avoid, and the
+        empties are recoverable on a later attempt."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        zero_usage = {
+            "prompt_tokens": 25_900,
+            "completion_tokens": 0,
+            "total_tokens": 25_900,
+        }
+        empty_resp = _mock_response(
+            content=None, finish_reason="stop", usage=zero_usage
+        )
+        recovered = _mock_response(content="recovered", finish_reason="stop")
+        # Two empties then a success: the guard must not cut the retry
+        # that recovers the turn.
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp,
+            empty_resp,
+            recovered,
+        ]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch(
+                "agent.empty_response_guard._estimate_attempt_cost",
+                return_value=None,
+            ),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["final_response"] == "recovered"
+        assert result["api_calls"] == 3
 
     def test_guard_disabled_via_config_restores_legacy_retries(self, agent):
         """NS-503: agent.empty_response_guard.enabled: false in config.yaml

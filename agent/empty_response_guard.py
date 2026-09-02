@@ -23,7 +23,9 @@ Two independent guards, both failing OPEN to today's behaviour:
    different model may behave differently). Attempts with missing usage
    or ``output_tokens > 0`` (model generated *something* — think-block
    stripping, whitespace, flaky decoding) never classify as deterministic
-   and keep the full retry budget.
+   and keep the full retry budget. Streaks with no known cost keep it too:
+   the skip exists to avoid repeat charges, so with nothing to save it can
+   only forfeit a recoverable turn.
 
 2. **Cost-aware retry budget** — when the estimated input cost of a
    single empty attempt exceeds the configured threshold (default
@@ -234,15 +236,24 @@ def record_empty_attempt(agent: Any, *, finish_reason: str, response: Any) -> No
 def deterministic_empty(agent: Any) -> bool:
     """True when the current streak looks deterministic.
 
-    Requires >= 2 consecutive attempts, ALL with usage present, zero
-    output tokens, and an identical (model, provider, finish_reason)
-    signature. Any attempt with missing usage or non-zero output keeps
-    this False (fail open — transients deserve their retries).
+    Requires a streak with a known cost plus >= 2 consecutive attempts,
+    ALL with usage present, zero output tokens, and an identical (model,
+    provider, finish_reason) signature. Any attempt with missing usage or
+    non-zero output — or a streak with no known cost — keeps this False
+    (fail open — transients deserve their retries).
     """
     if not guard_enabled(agent):
         return False
     attempts = getattr(agent, _ATTEMPTS_ATTR, None) or []
     if len(attempts) < 2:
+        return False
+    # Skipping retries only ever pays for itself by avoiding repeat charges
+    # (see the module docstring). When the streak carries no known cost —
+    # local/self-hosted endpoints, unpriced models, included routes — there is
+    # nothing to save, so discarding the remaining budget can only cost the
+    # user a turn that the next attempt would have recovered. Fail open, the
+    # same way the cost-aware budget guard already does on unknown pricing.
+    if streak_cost_usd(agent) is None:
         return False
     first = attempts[0]
     return all(

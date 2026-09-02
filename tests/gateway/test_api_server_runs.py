@@ -246,10 +246,40 @@ class TestStartRun:
                     await asyncio.sleep(0.05)
 
         assert mock_history.await_args_list == [
-            call("crisp-session"),
-            call("crisp-session"),
+            call("crisp-session", fail_closed=True),
+            call("crisp-session", fail_closed=True),
         ]
         assert captured_histories == [[], stored_history]
+
+    @pytest.mark.asyncio
+    async def test_start_fails_closed_when_session_history_cannot_be_read(
+        self, adapter
+    ):
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(
+                    adapter,
+                    "_conversation_history_for_session",
+                    new_callable=AsyncMock,
+                    side_effect=OSError("database unavailable"),
+                ) as mock_history,
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second", "session_id": "crisp-session"},
+                )
+                payload = await resp.json()
+
+        assert resp.status == 503
+        assert payload["error"]["code"] == "session_history_unavailable"
+        mock_history.assert_awaited_once_with(
+            "crisp-session",
+            fail_closed=True,
+        )
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_forwards_inline_image_and_remains_stoppable(self, auth_adapter):

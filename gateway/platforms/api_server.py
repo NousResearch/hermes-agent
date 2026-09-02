@@ -3046,14 +3046,23 @@ class APIServerAdapter(BasePlatformAdapter):
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
 
-    async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+    async def _conversation_history_for_session(
+        self,
+        session_id: str,
+        *,
+        fail_closed: bool = False,
+    ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
+            if fail_closed:
+                raise RuntimeError("session_db_unavailable")
             return []
         try:
             return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
+            if fail_closed:
+                raise
             return []
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
@@ -6193,7 +6202,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         response_session_id = session_id
         if not conversation_history and session_id:
-            conversation_history = await self._conversation_history_for_session(session_id)
+            try:
+                conversation_history = await self._conversation_history_for_session(
+                    session_id,
+                    fail_closed=True,
+                )
+            except Exception:
+                return web.json_response(
+                    _openai_error(
+                        "Session history unavailable",
+                        code="session_history_unavailable",
+                    ),
+                    status=503,
+                )
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated

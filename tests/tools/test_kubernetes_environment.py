@@ -1337,6 +1337,91 @@ def test_unknown_exit_status_is_reported_as_failure(monkeypatch):
     assert "status unavailable" in result["output"]
 
 
+def test_cancelled_exec_poisoned_running_pod_is_recycled_then_replaced(monkeypatch):
+    """A cancelled foreground exec can leave a Running pod whose later execs
+    close without a status channel. The exact poisoned pod must be recycled,
+    then the normal next-command path provisions one replacement."""
+    api = MagicMock()
+    running = _pod_with()
+    running.metadata.uid = "pod-a-uid"
+    api.read_namespaced_pod.return_value = running
+    env = _make_k8s_env(monkeypatch, [("", 0)], api=api)
+    pod_a = PodRef("hermes", "hermes-ws-abc", "workspace", uid="pod-a-uid")
+    pod_b = PodRef("hermes", "hermes-ws-abc", "workspace", uid="pod-b-uid")
+    with env._lock:
+        env._pod_ref = pod_a
+
+    long_running = _FakeWSClient(
+        open_cycles=10_000, returncode=None, update_sleep=0.01)
+    opened = threading.Event()
+    streams = iter([
+        long_running,                    # cancelled foreground exec
+        _FakeWSClient(returncode=0),     # marker-targeted cancellation pass
+        _FakeWSClient(returncode=None),  # next normal exec: poisoned status
+        _FakeWSClient(returncode=None),  # bounded raw health probe
+        _FakeWSClient(returncode=0),     # replacement snapshot bootstrap
+        _FakeWSClient(stdout="ok", returncode=0),
+    ])
+
+    def _stream(*args, **kwargs):
+        client = next(streams)
+        if client is long_running:
+            opened.set()
+        return client
+
+    monkeypatch.setattr("kubernetes.stream.stream", _stream)
+    handle = env._run_bash("sleep 3600")
+    assert opened.wait(5)
+    handle.kill()
+    assert handle.wait(timeout=5) == 130
+
+    failed = env.execute("printf poisoned", bounded_capture=True)
+    assert "status unavailable" in failed["output"]
+    env._provisioner.destroy.assert_called_once_with(pod_a)
+    assert env._pod_ref is None
+
+    env._provisioner.ensure.reset_mock()
+    env._provisioner.ensure.return_value = pod_b
+    recovered = env.execute("printf ok", bounded_capture=True)
+    env._provisioner.ensure.assert_called_once_with(task_id="abc")
+    assert env._pod_ref == pod_b
+    assert "ok" in recovered["output"]
+
+
+def test_ambiguous_status_with_successful_probe_preserves_running_pod(monkeypatch):
+    """One lost status channel must not wipe a healthy emptyDir workspace."""
+    api = MagicMock()
+    running = _pod_with()
+    running.metadata.uid = "healthy-uid"
+    api.read_namespaced_pod.return_value = running
+    env = _make_k8s_env(monkeypatch, [("", 0)], api=api)
+    healthy = PodRef(
+        "hermes", "hermes-ws-abc", "workspace", uid="healthy-uid")
+    with env._lock:
+        env._pod_ref = healthy
+
+    streams = iter([
+        _FakeWSClient(returncode=None),
+        _FakeWSClient(returncode=0),
+        _FakeWSClient(stdout="still here", returncode=0),
+    ])
+    monkeypatch.setattr(
+        "kubernetes.stream.stream", lambda *args, **kwargs: next(streams))
+    env._provisioner.ensure.reset_mock()
+
+    failed = env.execute("printf ambiguous", bounded_capture=True)
+    assert "status unavailable" in failed["output"]
+    assert env._pod_ref == healthy
+    env._provisioner.destroy.assert_not_called()
+    env._provisioner.ensure.assert_not_called()
+
+    continued = env.execute("printf 'still here'", bounded_capture=True)
+    assert continued["returncode"] == 0
+    assert "still here" in continued["output"]
+    assert env._pod_ref == healthy
+    env._provisioner.ensure.assert_not_called()
+
+
 def test_exec_capture_raises_instead_of_reading_a_running_returncode(monkeypatch):
     env = _make_k8s_env(monkeypatch, [("", 0)])
     stuck = _FakeWSClient(open_cycles=10_000, returncode=None, update_sleep=0.05)
@@ -2815,8 +2900,10 @@ def test_cancel_kills_the_remote_process_tree(monkeypatch):
     completion while the model is told it stopped and re-runs it."""
     env = _make_k8s_env(monkeypatch, [("", 0)])
     execs: list[list[str]] = []
-    monkeypatch.setattr(env, "_exec_capture",
-                        lambda cmd, timeout=60: (execs.append(cmd) or ("", 0)))
+    monkeypatch.setattr(
+        env, "_exec_capture",
+        lambda cmd, timeout=60, **kwargs: (execs.append(cmd) or ("", 0)),
+    )
     client = _FakeWSClient(open_cycles=10_000)
     monkeypatch.setattr("kubernetes.stream.stream", lambda *a, **kw: client)
 
@@ -2829,6 +2916,10 @@ def test_cancel_kills_the_remote_process_tree(monkeypatch):
     assert kill_cmds, "cancel() issued no kill — the remote process survives"
     assert any("HERMES_EXEC_" in part for c in kill_cmds for part in c), (
         "the kill must target THIS exec's marker, not every process in the pod"
+    )
+    assert not any("kill -TERM -$(" in str(part)
+                   for command in kill_cmds for part in command), (
+        "a shared PID namespace makes process-group membership unsafe to assume"
     )
 
 

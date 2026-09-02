@@ -19,6 +19,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Imported for real (NOT via patch.dict(sys.modules)): a sys.modules patch
+# would evict every module first-imported inside its window on exit,
+# leaving later tests with split-brain duplicates of tui_gateway.entry /
+# hermes_cli.mcp_startup whose module globals nobody else reads.
+import run_agent
+
 import tui_gateway.server as server
 
 
@@ -29,9 +35,6 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
     class _Agent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
-
-    fake_run_agent = MagicMock()
-    fake_run_agent.AIAgent = _Agent
 
     resolution = MagicMock()
     resolution.used_fallback = False
@@ -47,7 +50,11 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
     }
 
     with (
-        patch.dict("sys.modules", {"run_agent": fake_run_agent}),
+        patch.object(run_agent, "AIAgent", _Agent),
+        # _make_agent waits on MCP discovery; running the real wait would
+        # initialize the process-wide discovery state under this test run's
+        # HERMES_HOME and pollute later profile-scoped discovery tests.
+        patch("hermes_cli.mcp_startup.wait_for_mcp_discovery"),
         patch.object(server, "_load_service_tier", return_value=tier),
         patch.object(server, "_resolve_startup_runtime", return_value=(model, "openrouter")),
         patch.object(server, "_resolve_runtime_with_fallback", return_value=resolution),
@@ -86,7 +93,7 @@ def test_no_tier_sends_no_overrides():
 
 def test_anthropic_flex_sends_nothing():
     """Anthropic has no flex equivalent — must not fall back to speed=fast."""
-    kwargs = _build("flex", model="claude-opus-4-6")
+    kwargs = _build("flex", model="claude-opus-4-8")
 
     assert not kwargs.get("request_overrides")
 

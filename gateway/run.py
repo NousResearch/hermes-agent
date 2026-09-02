@@ -392,8 +392,12 @@ async def run_codex_hygiene_compaction(
     count_before = getattr(compressor, "compression_count", 0)
     try:
         await asyncio.wait_for(
+            # copy_context().run: keep the caller's profile secret scope /
+            # HERMES_HOME override in the worker (multiplex_profiles) — same
+            # class as the detached-agent hygiene path below.
             loop.run_in_executor(
                 None,
+                copy_context().run,
                 lambda: agent._compress_context(
                     history,
                     "",
@@ -21305,8 +21309,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_commit_fence = CompressionCommitFence(
                                         total_ceiling_seconds=_hyg_total_ceiling_seconds
                                     )
+                                    # Default executor (NOT self._get_executor):
+                                    # a fence-cancelled hung summary must never
+                                    # occupy one of the gateway's agent-work
+                                    # slots. But it MUST run inside the caller's
+                                    # contextvars: under multiplex_profiles the
+                                    # profile secret scope / HERMES_HOME override
+                                    # live in ContextVars, and a bare
+                                    # run_in_executor worker starts with an empty
+                                    # Context — the summary model's
+                                    # get_secret(<PROVIDER>_API_KEY) then fails
+                                    # closed (UnscopedSecretError) and every
+                                    # hygiene compaction silently degrades to a
+                                    # lossy truncation (#100849 bundle).
                                     _hyg_future = loop.run_in_executor(
                                         None,
+                                        copy_context().run,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,

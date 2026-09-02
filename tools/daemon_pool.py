@@ -16,16 +16,16 @@ exit hook insists on joining.
   - the interpreter's non-daemon thread join at shutdown skips them.
 
 Semantics are otherwise identical (initializer/initargs, work queue,
-idle-thread reuse) and, since #95119, so is context propagation:
-``submit`` snapshots the submitting context with ``copy_context()`` and
-runs each work item inside it, matching stdlib ``ThreadPoolExecutor``.
-That matters because some bundled CPython runtime builds omit stdlib's
-context propagation entirely, which silently drops contextvar-based state
-(profile secret scope, HERMES_HOME override) in pool workers — e.g. the
-context-compression timeout fence resolved auxiliary provider keys with
-``UnscopedSecretError`` under the multiplexed gateway.  Use it for any
-pool whose work is best-effort or
-independently interruptible and must never hold the process open:
+idle-thread reuse), plus context propagation: ``submit`` snapshots the
+submitting context with ``copy_context()`` and runs each work item inside
+it.  Stdlib ``ThreadPoolExecutor`` only does this from Python 3.14; on the
+3.11-3.13 runtimes Hermes ships, a bare pool worker starts with an EMPTY
+Context and silently drops contextvar-based state (profile secret scope,
+HERMES_HOME override) — under the multiplexed gateway a credential read in
+such a worker fails closed with ``UnscopedSecretError``.  Propagating by
+default makes every consumer safe even when it forgets
+``propagate_context_to_thread``.  Use it for any pool whose work is
+best-effort or independently interruptible and must never hold the process open:
 concurrent tool execution, background memory sync, catalog fan-out,
 subagent timeout wrappers.  Do NOT use it for work that must complete
 before exit (durable writes) — those belong on foreground threads with
@@ -49,17 +49,14 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     def submit(self, fn, /, *args, **kwargs):
         """Submit a callable, propagating the caller's contextvars.
 
-        Stdlib ``ThreadPoolExecutor`` snapshots the submitting context with
-        ``copy_context()`` and runs each work item inside it, so pool
-        workers inherit contextvar state such as the multiplexed profile
-        secret scope.  Some bundled CPython runtime builds strip that
-        propagation from the stdlib executor (their ``_WorkItem.run`` calls
-        the callable directly), which broke auxiliary LLM key resolution
-        from the context-compression timeout fence with
-        ``UnscopedSecretError``.  Restore the stdlib behavior explicitly so
-        the daemon pool behaves identically on every runtime; on runtimes
-        that already propagate, the inner ``ctx.run`` re-applies the same
-        immutable context and is a no-op.
+        Python 3.14's ``ThreadPoolExecutor`` snapshots the submitting
+        context with ``copy_context()`` and runs each work item inside it;
+        3.11-3.13 (the runtimes Hermes ships) do not, so a pool worker
+        starts with an empty Context and loses the multiplexed profile
+        secret scope / HERMES_HOME override.  Do it here unconditionally so
+        the daemon pool behaves identically on every runtime; on 3.14+ the
+        inner ``ctx.run`` re-applies the same immutable context and is a
+        no-op.
         """
         ctx = copy_context()
 

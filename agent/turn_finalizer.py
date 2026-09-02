@@ -126,6 +126,15 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _clone_background_review_messages(messages):
+    """Copy the review input without aliasing the live transcript."""
+    # Import lazily: conversation_loop imports this module during turn
+    # finalization, so a module-level import would create a cycle.
+    from agent.conversation_loop import _clone_message_for_send
+
+    return [_clone_message_for_send(message) for message in messages]
+
+
 def finalize_turn(
     agent,
     *,
@@ -810,8 +819,14 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         try:
+            # The review fork sanitizes and repairs its private transcript in
+            # place.  A shallow list copy would leave the message dicts (and
+            # nested tool-call/content containers) shared with the live
+            # foreground transcript, allowing the review to mutate the
+            # representation that was just persisted and break prefix-cache
+            # parity on the next turn.
             agent._spawn_background_review(
-                messages_snapshot=list(messages),
+                messages_snapshot=_clone_background_review_messages(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )

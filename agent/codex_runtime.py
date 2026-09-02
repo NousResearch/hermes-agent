@@ -933,8 +933,15 @@ def run_codex_app_server_turn(
         and (should_review_memory or should_review_skills)
     ):
         try:
+            # Keep the review fork's in-place transcript normalization from
+            # mutating the live foreground messages after persistence.  A
+            # shallow list copy still aliases nested tool-call/content data,
+            # which can make the next rebuilt request diverge from the cached
+            # prefix.
+            from agent.turn_finalizer import _clone_background_review_messages
+
             agent._spawn_background_review(
-                messages_snapshot=list(messages),
+                messages_snapshot=_clone_background_review_messages(messages),
                 review_memory=should_review_memory,
                 review_skills=should_review_skills,
             )

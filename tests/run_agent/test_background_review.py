@@ -461,6 +461,27 @@ def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch
     assert agent._active_children == []
 
 
+def test_background_review_snapshot_isolated_from_live_nested_messages():
+    """A review must not mutate the persisted/live transcript through aliases."""
+    original = [{
+        "role": "assistant",
+        "content": [{"type": "text", "text": "answer"}],
+        "tool_calls": [{
+            "id": "call-1",
+            "function": {"name": "read_file", "arguments": '{"path":"x"}'},
+        }],
+    }]
+
+    from agent.turn_finalizer import _clone_background_review_messages
+
+    snapshot = _clone_background_review_messages(original)
+    snapshot[0]["content"][0]["text"] = "review mutation"
+    snapshot[0]["tool_calls"][0]["function"]["arguments"] = "{}"
+
+    assert original[0]["content"][0]["text"] == "answer"
+    assert original[0]["tool_calls"][0]["function"]["arguments"] == '{"path":"x"}'
+
+
 def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypatch):
     """The outer production wrapper waits before same-session instrumentation."""
     review_entered = threading.Event()

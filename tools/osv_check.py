@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import threading
 import time
 import urllib.request
@@ -39,6 +38,12 @@ _TIMEOUT = 10  # seconds
 # `hermes mcp test` processes (and gateway restarts) reuse a warm verdict
 # instead of re-querying OSV. Expiry is stored as absolute wall-clock time so
 # it survives process restarts and monotonic-clock skew.
+#
+# Trade-off: persisting *clean* verdicts means a MAL advisory published right
+# after a clean query is noticed at TTL expiry (<= 1h by default) instead of
+# at the next process start. The window is the same one the in-process cache
+# already accepted; it just now spans restarts. Lower OSV_CHECK_CACHE_TTL to
+# tighten it.
 _CACHE_TTL_S = float(os.getenv("OSV_CHECK_CACHE_TTL", "3600"))
 _CACHE_MAX_ENTRIES = 256
 _cache: dict = {}
@@ -140,12 +145,11 @@ def _save_disk_cache() -> None:
     data = {"version": _DISK_CACHE_VERSION, "entries": entries}
 
     try:
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=path.parent, prefix=path.name + ".tmp-"
-        )
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        os.replace(tmp_path, path)
+        # Shared atomic writer (temp file + fsync + rename); mkstemp's 0600
+        # is kept on create, so verdicts never sit in a world-readable file.
+        from utils import atomic_write_text
+
+        atomic_write_text(path, json.dumps(data))
     except Exception as exc:
         logger.debug("Failed to save OSV disk cache to %s: %s", path, exc)
 

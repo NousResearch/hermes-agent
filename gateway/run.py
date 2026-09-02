@@ -6076,6 +6076,26 @@ class TurnRunner:
                 if ctx._run_still_current():
                     _stts_consumer_ref.on_delta(text)
 
+        async def _emit_commentary_delivery_hook(
+            delivered_text: str,
+            platform_message_id: Optional[str],
+        ) -> None:
+            await ctx._hooks_ref.emit("agent:commentary", {
+                "platform": ctx.source.platform.value if ctx.source.platform else "",
+                "user_id": ctx.source.user_id,
+                "chat_id": ctx.source.chat_id or "",
+                "thread_id": (
+                    str(getattr(ctx.source, "thread_id", None))
+                    if getattr(ctx.source, "thread_id", None) else ""
+                ),
+                "chat_type": getattr(ctx.source, "chat_type", "") or "",
+                "session_id": ctx.session_id,
+                "response": delivered_text,
+                "event_message_id": (
+                    str(platform_message_id) if platform_message_id is not None else ""
+                ),
+            })
+
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
@@ -6088,7 +6108,7 @@ class TurnRunner:
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
                 return
-            safe_schedule_threadsafe(
+            _commentary_fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send(
                     ctx._status_chat_id,
                     display_text,
@@ -6098,6 +6118,29 @@ class TurnRunner:
                 logger=logger,
                 log_message="interim_assistant_callback scheduling error",
             )
+            if _commentary_fut is None:
+                return
+
+            # Only emit the agent:commentary hook once the platform has
+            # confirmed delivery — hook consumers (logging/audit mirrors)
+            # need the exact text the user actually saw, not every
+            # attempted send.
+            def _emit_commentary_hook_on_delivery(fut, _text=display_text) -> None:
+                try:
+                    res = fut.result()
+                except Exception:
+                    return
+                if not getattr(res, "success", False):
+                    return
+                safe_schedule_threadsafe(
+                    _emit_commentary_delivery_hook(
+                        _text, getattr(res, "message_id", None)
+                    ),
+                    ctx._loop_for_step,
+                    logger=logger,
+                    log_message="agent:commentary hook scheduling error",
+                )
+            _commentary_fut.add_done_callback(_emit_commentary_hook_on_delivery)
 
         turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
 

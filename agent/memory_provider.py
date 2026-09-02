@@ -82,6 +82,20 @@ MAX_MEMORY_OBSERVATION_NODES = 4096
 MAX_MEMORY_OBSERVATION_OPERATION_NODES = (
     MAX_MEMORY_OBSERVATIONS * MAX_MEMORY_OBSERVATION_NODES
 )
+# Operation-wide cap on the total number of candidate observations the manager
+# is willing to *inspect* (pull via next() and validate) across every provider
+# in one prefetch. The per-payload and operation node caps only fire once a
+# freeze call runs — wrong-type or invalid-metadata candidates fail their
+# validation guard before freeze and consume no node budget at all, so an
+# unbounded or infinite malformed iterable could still force unbounded
+# next()/logging work. This cap decrements for every candidate the manager
+# pulls (valid, malformed, or peeked for truncation), stops the tail once
+# exhausted, and emits at most one truncation warning. Set to a small strict
+# multiple of MAX_MEMORY_OBSERVATIONS so a well-behaved provider filling the
+# accepted prefix (plus the count/bytes look-ahead) never trips it, while a
+# pathological tail is bounded well below the point where per-candidate log
+# spam becomes a problem.
+MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES = MAX_MEMORY_OBSERVATIONS * 4
 
 
 class _FrozenDict(dict):

@@ -3968,6 +3968,9 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         chat_type: Optional[str] = None,
         chat_id: Optional[str] = None,
+        *,
+        is_bot: bool = False,
+        thread_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Return whether ``user_id`` is on the allowlist, if a check is configured.
 
@@ -3975,6 +3978,11 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        ``is_bot`` / ``thread_id`` are forwarded as keywords only when set, so
+        the gateway callback can apply its bot policy (``*_ALLOW_BOTS``) and
+        thread-level profile routes while legacy three-positional callbacks
+        keep working unchanged.
 
         Only the literal booleans are propagated. A callback that returns
         anything else is treated as "unknown" rather than coerced with
@@ -3984,8 +3992,13 @@ class BasePlatformAdapter(ABC):
         """
         if not user_id or self._authorization_check is None:
             return None
+        extra: Dict[str, Any] = {}
+        if is_bot:
+            extra["is_bot"] = True
+        if thread_id is not None:
+            extra["thread_id"] = thread_id
         try:
-            result = self._authorization_check(user_id, chat_type, chat_id)
+            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
             if result is True:
                 return True
             if result is False:

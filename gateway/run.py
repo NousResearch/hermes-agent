@@ -17793,11 +17793,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``profile_name`` binds the callback to the secondary adapter's own
         multiplex profile, so its ``SessionSource`` resolves that profile's
         secret scope instead of falling back to the active profile.
+
+        For the shared primary adapter under ``multiplex_profiles``
+        (``profile_name`` is None) the callback mirrors the inbound message
+        path exactly: the chat's ``profile_routes`` match is stamped on the
+        source so the routed profile's pairing store is consulted, while the
+        allowlist/gate reads stay under the transport (launch) home via
+        ``_is_user_authorized_for_source`` — the same split
+        ``_make_default_profile_message_handler`` applies. Without this an
+        inline-button caller approved only in the routed profile's pairing
+        store was denied (#86296), because the adapter's callback source was
+        never route-stamped.
         """
+        multiplex = bool(getattr(self.config, "multiplex_profiles", False))
+        transport_home = (
+            Path(get_hermes_home()) if multiplex and profile_name is None else None
+        )
+
         def check(
             user_id: str,
             chat_type: Optional[str] = None,
             chat_id: Optional[str] = None,
+            *,
+            is_bot: bool = False,
+            thread_id: Optional[str] = None,
         ) -> bool:
             if not user_id:
                 return False
@@ -17806,9 +17825,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id=chat_id or "",
                 chat_type=chat_type or "group",
                 user_id=user_id,
+                thread_id=thread_id,
+                is_bot=bool(is_bot),
                 profile=profile_name,
             )
-            return self._is_user_authorized(source)
+            # Same in-process transport provenance ``build_source`` retains, so
+            # adapter-level policy reads (config.yaml group_allowed_chats,
+            # allow_from) resolve the receiving adapter even once the routed
+            # profile is stamped below.
+            registry = (
+                (getattr(self, "_profile_adapters", None) or {}).get(profile_name)
+                if profile_name
+                else getattr(self, "adapters", None)
+            ) or {}
+            adapter = registry.get(platform)
+            if adapter is not None:
+                source._transport_adapter_ref = _weakref.ref(adapter)
+            if transport_home is None:
+                return self._is_user_authorized(source)
+            source._authorization_profile_home = transport_home
+            from gateway.profile_routing import ProfileRouteRejected
+
+            try:
+                source.profile = self._profile_name_for_source(source)
+            except ProfileRouteRejected:
+                # Same fail-closed outcome as the ingress gate in
+                # ``_handle_message`` for a route to an unserved profile.
+                return False
+            return self._is_user_authorized_for_source(source)
         return check
 
 

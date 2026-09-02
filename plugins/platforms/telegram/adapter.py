@@ -1233,6 +1233,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 normalized_user_id,
                 chat_type=normalized_chat_type,
                 chat_id=str(chat_id or normalized_user_id),
+                thread_id=str(thread_id) if thread_id is not None else None,
             )
             if injected is not None:
                 return injected
@@ -1285,6 +1286,9 @@ class TelegramAdapter(BasePlatformAdapter):
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
+        # Carry the bot flag so the runner's ``*_ALLOW_BOTS`` policy branch is
+        # reachable from this prefilter, exactly as it is for ``build_source``.
+        is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
         user_name = (
             str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
             or None
@@ -1330,6 +1334,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_id,
+            is_bot=is_bot,
         )
 
     def _source_from_reaction_for_auth(self, update):
@@ -1411,14 +1416,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if source.chat_type != "dm":
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        # The bound-handler ``__self__`` is None under multiplex (the handler is
+        # a profile closure); ``gateway_runner`` is injected on every adapter
+        # by ``GatewayRunner._create_adapter`` and survives that wrapping.
+        runner = getattr(
+            getattr(self, "_message_handler", None), "__self__", None
+        ) or getattr(self, "gateway_runner", None)
         behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
         if callable(behavior_fn):
             try:
                 return (
                     behavior_fn(
                         Platform.TELEGRAM,
-                        profile=getattr(source, "profile", None),
+                        profile=getattr(source, "profile", None)
+                        or getattr(self, "_owner_profile", None),
                     )
                     == "pair"
                 )
@@ -1511,6 +1522,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         user_id,
                         chat_type=source.chat_type,
                         chat_id=source.chat_id,
+                        is_bot=source.is_bot,
+                        thread_id=source.thread_id,
                     )
                     if has_callback
                     else None

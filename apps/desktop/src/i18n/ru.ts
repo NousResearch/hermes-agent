@@ -593,6 +593,8 @@ export const ru = defineLocale({
       embedsOff: 'Выкл',
       embedsReset: count =>
         `Сбросить ${count} ${RU_NOUN(count, 'разрешённый сервис', 'разрешённых сервиса', 'разрешённых сервисов')}`,
+      resumeLastSessionTitle: 'Открывать последний чат при запуске',
+      resumeLastSessionDesc: 'Продолжайте с того места, где остановились. Выключите, чтобы всегда начинать с нового чата.',
       product: 'Продукт',
       productDesc: 'Дружелюбная активность инструментов с краткими сводками.',
       technical: 'Технический',

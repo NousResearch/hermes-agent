@@ -8877,6 +8877,10 @@ class _ScopeStopRequest:
 
 _scope_stop_lock = threading.Lock()
 _scope_stop_pending: dict[str, _ScopeStopRequest] = {}
+# The unit the service thread is CURRENTLY stopping (popped from pending,
+# mid verified-stop). Tracked so a draining join can report it: a unit in
+# flight is as "still stopping" as one still queued (finding I).
+_scope_stop_inflight: Optional[str] = None
 _scope_stop_confirmed: set[str] = set()
 _scope_stop_attempts: dict[str, int] = {}
 _scope_stop_warned: set[str] = set()
@@ -8893,13 +8897,19 @@ def _scope_stop_service_loop() -> None:
 
 def _drain_scope_stop_requests() -> None:
     """Run every queued verified stop (service thread; inline in tests)."""
+    global _scope_stop_inflight
     while True:
         with _scope_stop_lock:
             if not _scope_stop_pending:
                 return
             unit = next(iter(_scope_stop_pending))
             request = _scope_stop_pending.pop(unit)
-        verified = _stop_kanban_worker_scope(unit)
+            _scope_stop_inflight = unit
+        try:
+            verified = _stop_kanban_worker_scope(unit)
+        finally:
+            with _scope_stop_lock:
+                _scope_stop_inflight = None
         with _scope_stop_lock:
             if verified:
                 _scope_stop_confirmed.add(unit)
@@ -8985,24 +8995,40 @@ def request_worker_scope_stop(
 
 
 def join_scope_stop_service(timeout: float) -> list[str]:
-    """Wait for the background service (shutdown path). Returns the units
-    still pending or in flight once the budget expires, so the caller can
-    log exactly what it leaves to the next gateway's adoption sweep."""
-    thread = _scope_stop_thread
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=timeout)
-    with _scope_stop_lock:
-        return list(_scope_stop_pending)
+    """Wait for the background service to DRAIN (shutdown path). Returns
+    the units still pending or in flight once the budget expires, so the
+    caller can log exactly what it leaves to the next gateway's adoption
+    sweep.
+
+    The service thread runs for the life of the process, so "joined"
+    means DRAINED, not thread-exit: a plain ``Thread.join`` would always
+    burn the full timeout even with nothing left to stop. The wait ends
+    the moment the queue is empty AND no stop is mid-flight.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _scope_stop_lock:
+            pending = list(_scope_stop_pending)
+            inflight = _scope_stop_inflight
+        if not pending and inflight is None:
+            return []
+        if time.monotonic() >= deadline:
+            if inflight and inflight not in pending:
+                pending.append(inflight)
+            return pending
+        time.sleep(0.05)
 
 
 def reset_scope_stop_service_for_tests() -> None:
     """Drop all service state. Production unit names are unique per
     attempt so state never needs resetting there; tests reuse ids."""
+    global _scope_stop_inflight
     with _scope_stop_lock:
         _scope_stop_pending.clear()
         _scope_stop_confirmed.clear()
         _scope_stop_attempts.clear()
         _scope_stop_warned.clear()
+        _scope_stop_inflight = None
 
 
 def _mark_run_scope_stopping(

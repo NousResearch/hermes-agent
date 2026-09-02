@@ -2687,6 +2687,105 @@ def test_shutdown_budget_expiry_logs_leftovers_and_releases(
     assert unit in warnings[0].getMessage()
 
 
+def test_join_scope_stop_service_reports_inflight_unit(
+    shims, monkeypatch,
+):
+    """I: a unit mid verified-stop (popped off the queue, still being
+    stopped on the service thread) is reported by a draining join — an
+    in-flight stop is as "still stopping" as one still queued, and the
+    old return (pending only) omitted it."""
+    import threading
+
+    gate = threading.Event()
+    real_stop = kb._stop_kanban_worker_scope
+
+    def wedged_stop(unit):
+        gate.wait(timeout=10.0)
+        return real_stop(unit)
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", wedged_stop)
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    unit = kb._kanban_worker_scope_unit("t_inflight", 1)
+    shims.write_unit(unit, [shims.sleeper()])
+    try:
+        assert not kb.request_worker_scope_stop(unit)
+        leftover = kb.join_scope_stop_service(timeout=0.5)
+        # Whichever side of the pop the service thread is on, the unit
+        # must be reported: queued OR in flight.
+        assert unit in leftover
+    finally:
+        gate.set()
+        kb.join_scope_stop_service(timeout=5.0)
+        kb.reset_scope_stop_service_for_tests()
+
+
+def test_join_scope_stop_service_returns_fast_when_drained(shims):
+    """I: "joined" means DRAINED, not thread-exit. The service thread is
+    immortal (daemon for the process lifetime), so a plain Thread.join
+    always burned the full timeout; an empty queue must return
+    immediately."""
+    t0 = time.monotonic()
+    assert kb.join_scope_stop_service(timeout=5.0) == []
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_shutdown_single_budget_bounds_both_joins(
+    shims, conn, kanban_home, monkeypatch, caplog,
+):
+    """I: base + N x per-unit is a CEILING on the whole stop. The old
+    code joined the wedged worker for the full budget and THEN stacked a
+    whole extra per-unit drain timeout for the service join — nearly
+    double the stated budget. One deadline now bounds both joins."""
+    import asyncio
+    import logging
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_hbudget", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.1)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.1,
+    )
+
+    gate = threading.Event()
+    timings: dict[str, float] = {}
+
+    def wedged_stop(c):
+        timings["stop_entered"] = time.time()
+        gate.wait(timeout=10.0)  # worse than any budget
+        return []
+
+    monkeypatch.setattr(kb, "stop_all_scoped_workers", wedged_stop)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(Harness()._kanban_dispatcher_watcher())
+        gate.set()  # let the daemon thread finish for teardown
+
+    warnings = [r for r in caplog.records if "still stopping" in r.message]
+    assert warnings, "expected the leftover-units warning"
+    # budget = 0.1 base + 1 unit x (0.1 bound + 2.0 margin) = 2.2 s. The
+    # old stacked joins cost ~budget + per-unit + margin = ~4.3 s; the
+    # single deadline costs the budget alone.
+    assert "stop_entered" in timings
+    elapsed = warnings[0].created - timings["stop_entered"]
+    assert elapsed <= 3.0, f"shutdown stop took {elapsed:.1f}s (budget 2.2s)"
+
+
 # ---------------------------------------------------------------------------
 # Migration from the pre-isolation schema
 # ---------------------------------------------------------------------------

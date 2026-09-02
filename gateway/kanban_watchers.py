@@ -1706,14 +1706,15 @@ class GatewayKanbanWatchersMixin:
             scoped worker this host still claims — verified teardown of
             the whole cgroup, not a pid kill — before the gateway exits.
 
-            Runs on a daemon thread with a join bounded by the units' OWN
-            deadlines (each verified stop is capped per unit in
+            Runs on a daemon thread with a join bounded by ONE deadline
+            covering the whole stop (pre-scan + worker join + service
+            drain; each verified stop is capped per unit in
             tools.process_registry), so a wedged ``systemctl`` cannot hang
             gateway shutdown AND the dispatcher lock is not released while
-            cleanup is still inside its budget (review finding g). When the
-            budget does expire, exactly what was left is logged before the
-            lock goes; the next gateway's adoption sweep re-adopts or
-            reclaims it.
+            cleanup is still inside its budget (review findings g + I).
+            When the budget does expire, exactly what was left — pending
+            AND in-flight units — is logged before the lock goes; the next
+            gateway's adoption sweep re-adopts or reclaims it.
             """
             try:
                 cfg = _load_config()
@@ -1792,6 +1793,14 @@ class GatewayKanbanWatchersMixin:
             # Wait for the pre-scan so the budget scales with the real
             # work instead of a flat 15 s: base covers the board scans,
             # each expected unit adds its own verified-stop deadline.
+            # The pre-scan wait is INSIDE that budget: one deadline from
+            # the moment the thread started bounds BOTH joins below, so
+            # the stated budget is a ceiling on the whole shutdown stop,
+            # not a per-join allowance stacked on top of each other
+            # (review finding I — the old code joined the worker for the
+            # full budget and THEN added a whole per-unit timeout for
+            # the service drain, up to double the stated budget).
+            shutdown_started = time.monotonic()
             collected.wait(timeout=_SHUTDOWN_STOP_BASE_SECONDS)
             try:
                 from tools.process_registry import SCOPE_STOP_VERIFY_BOUND_SECONDS
@@ -1801,12 +1810,13 @@ class GatewayKanbanWatchersMixin:
             budget = _SHUTDOWN_STOP_BASE_SECONDS + len(expected) * (
                 SCOPE_STOP_VERIFY_BOUND_SECONDS + 2.0
             )
-            worker.join(timeout=budget)
+            deadline = shutdown_started + budget
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
             # Tick-queued verified stops must not outlive the lock either:
-            # drain the background service (same per-unit bound) before
-            # the caller releases the dispatcher lock.
+            # drain the background service within the SAME deadline
+            # before the caller releases the dispatcher lock.
             leftover = _kb.join_scope_stop_service(
-                timeout=SCOPE_STOP_VERIFY_BOUND_SECONDS + 2.0
+                timeout=max(0.0, deadline - time.monotonic())
             )
             if worker.is_alive() or leftover:
                 still_running = sorted(

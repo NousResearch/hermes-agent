@@ -95,10 +95,10 @@ export default {
   description:
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
-    // The user's own roster folders. Read once at register; every mutation
-    // writes through `persistBotSections`.
-    void loadBotSections()
     setPluginCtx(ctx)
+    // The user's own roster sections. Read once at register; every mutation
+    // writes through.
+    loadBotSections()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()

@@ -1,51 +1,100 @@
-import { describe, expect, it } from 'vitest'
+/**
+ * User sections — the three invariants that make membership-on-the-bot safe:
+ * filing persists through `saveBotMeta` (so it rides profile sync), every row
+ * lands in exactly one block with the remainder as Unassigned, and deleting a
+ * section returns its bots to Unassigned rather than losing them.
+ */
 
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { saveBotMeta, storage } = vi.hoisted(() => ({
+  saveBotMeta: vi.fn<(bot: { name: string }, patch: Record<string, unknown>) => Promise<unknown>>(),
+  storage: new Map<string, unknown>()
+}))
+
+vi.mock('./data', async () => {
+  const { atom } = await import('nanostores')
+  const $botMeta = atom<Record<string, { sectionId?: null | string }>>({})
+
+  saveBotMeta.mockImplementation(async (bot: { name: string }, patch: Record<string, unknown>) => {
+    $botMeta.set({ ...$botMeta.get(), [bot.name]: { ...$botMeta.get()[bot.name], ...patch } })
+
+    return { serverOutcome: 'persisted', serverPersisted: true }
+  })
+
+  return { $botMeta, saveBotMeta }
+})
+
+vi.mock('./routing', () => ({
+  botRosterMeta: (bot: { name: string }, meta: Record<string, unknown>) => meta[bot.name]
+}))
+
+vi.mock('./shared', () => ({
+  getPluginCtx: () => ({
+    storage: {
+      get: (key: string, fallback: unknown) => (storage.has(key) ? storage.get(key) : fallback),
+      set: (key: string, value: unknown) => storage.set(key, value)
+    }
+  })
+}))
+
+import { $botMeta } from './data'
+import type { RosterRow } from './types'
 import {
-  botDragPayload,
+  $botSections,
+  createBotSection,
+  deleteBotSection,
   groupRowsBySection,
-  normalizeBotSections,
-  readBotDragPayload,
+  loadBotSections,
+  moveBotsToSection,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 
-const bot = (name: string) => ({ name }) as never
+const bot = (name: string) => ({ name }) as RosterRow
+const row = (name: string) => ({ bot: bot(name), kind: 'bot' as const })
 
-describe('user sections model', () => {
-  it('normalizes: drops blanks and duplicates, defaults a name, keeps only an explicit icon=false', () => {
-    const out = normalizeBotSections([
-      { id: 'a', name: 'Clients' },
-      { id: 'a', name: 'dupe' },
-      { id: '', name: 'blank' },
-      { id: 'b', name: '   ' },
-      { id: 'c', name: 'Bare', icon: false },
-      { id: 'd', name: 'On', icon: true },
-      null,
-      'junk'
-    ])
+beforeEach(() => {
+  storage.clear()
+  $botMeta.set({})
+  $botSections.set([])
+  saveBotMeta.mockClear()
+})
 
-    expect(out).toEqual([
-      { id: 'a', name: 'Clients' },
-      { id: 'b', name: 'Section' },
-      { id: 'c', name: 'Bare', icon: false },
-      { id: 'd', name: 'On' }
-    ])
+describe('user sections', () => {
+  it('filing writes one sectionId per bot through saveBotMeta and survives a reload', async () => {
+    const section = createBotSection('Clients', [bot('nanox'), bot('scout')])!
+
+    // Membership rides the bot's own meta write (profile ui_meta), one per bot.
+    await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(2))
+    expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id })
+
+    // A no-op move (already there) writes nothing.
+    await moveBotsToSection([bot('nanox')], section.id)
+    expect(saveBotMeta).toHaveBeenCalledTimes(2)
+
+    // The section record itself persists in plugin storage.
+    $botSections.set([])
+    loadBotSections()
+    expect($botSections.get()).toEqual([{ id: section.id, name: 'Clients' }])
   })
 
-  it('groups every row exactly once, unknown sections fall to Unassigned, Unassigned is last', () => {
-    const rows = [
-      { bot: bot('nanox'), kind: 'bot' },
-      { bot: bot('scout'), kind: 'bot' },
-      { bot: bot('ghost'), kind: 'bot' },
-      { kind: 'group', name: 'Room' }
-    ] as never[]
+  it('groups every row exactly once; unknown or missing sections fall to Unassigned, drawn last', () => {
+    const rows = [row('nanox'), row('scout'), row('ghost'), { kind: 'group' as const, name: 'Room' }]
 
     const meta = {
       nanox: { sectionId: 'sec-clients' },
       scout: { sectionId: 'sec-workforce' },
       ghost: { sectionId: 'sec-deleted' }
-    } as never
+    }
 
-    const blocks = groupRowsBySection(rows, [{ id: 'sec-clients', name: 'Clients' }, { id: 'sec-workforce', name: 'Workforce' }], meta)
+    const blocks = groupRowsBySection(
+      rows,
+      [
+        { id: 'sec-clients', name: 'Clients' },
+        { id: 'sec-workforce', name: 'Workforce' }
+      ],
+      meta
+    )
 
     expect(blocks.map(b => [b.key, b.rows.length])).toEqual([
       ['section:sec-clients', 1],
@@ -53,12 +102,22 @@ describe('user sections model', () => {
       [UNASSIGNED_SECTION_KEY, 2]
     ])
     expect(blocks.flatMap(b => b.rows)).toHaveLength(rows.length)
+    expect(groupRowsBySection(rows, [], meta)).toEqual([{ id: null, key: UNASSIGNED_SECTION_KEY, name: '', rows }])
   })
 
-  it('drag payload round-trips and a foreign drop yields no keys', () => {
-    expect(readBotDragPayload(botDragPayload(['a', 'b']))).toEqual(['a', 'b'])
-    expect(readBotDragPayload('not json')).toEqual([])
-    expect(readBotDragPayload(JSON.stringify({ nope: 1 }))).toEqual([])
-    expect(readBotDragPayload(JSON.stringify(['ok', 3, '', null]))).toEqual(['ok'])
+  it('deleting a section returns its bots to Unassigned, and undo refiles them', async () => {
+    const section = createBotSection('Clients', [bot('nanox')])!
+    createBotSection('Team')
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+
+    const { members, undo } = deleteBotSection(section.id, [bot('nanox'), bot('scout')])
+
+    expect(members).toEqual([bot('nanox')])
+    expect($botSections.get().map(s => s.name)).toEqual(['Team'])
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBeNull())
+
+    undo()
+    expect($botSections.get().map(s => s.name)).toEqual(['Clients', 'Team'])
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
   })
 })

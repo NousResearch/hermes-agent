@@ -65,18 +65,7 @@ import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
-import {
-  $botPickAnchor,
-  $botPicked,
-  $botSections,
-  $draggingBots,
-  $renamingSection,
-  BOT_DRAG_MIME,
-  botDragPayload,
-  botSectionId,
-  createBotSection,
-  moveBotsToSection
-} from './user-sections'
+import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
@@ -96,10 +85,12 @@ interface BotRowProps {
   onDelete: (bot: RosterRow) => void
   onEdit: (bot: RosterRow) => void
   onGroup: (bot: RosterRow) => void
+  /** Opens the New section dialog; the bot is filed into it on create. */
+  onNewSection: (bot: RosterRow) => void
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowProps) {
+export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const activeProfile = useValue(host.state.profile)
@@ -222,68 +213,14 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)
 
-  // MULTI-SELECT AND DRAG live on the row button itself: it already takes
-  // pointer events, so the click that opens the bot, the cmd/shift click that
-  // picks it, and the drag that files it are one element's gestures. A PLAIN
-  // click clears the selection, which is what every list on the platform does.
+  // DRAG lives on the row button itself: it already takes pointer events, so
+  // the click that opens the bot and the drag that files it are one element's
+  // gestures. The drag carries the roster key under a private MIME type, so
+  // only a section block can accept it.
   const rosterKey = botRosterKey(bot)
-  const picked = useValue($botPicked)
-  const isPicked = picked.includes(rosterKey)
   const sections = useValue($botSections)
+  const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
-
-  const onRowClick = (event: React.MouseEvent) => {
-    // SHIFT-CLICK RANGE SELECT, anchored at the last plain or cmd-click, the
-    // way Finder and Mail anchor a range: a second shift-click grows or shrinks
-    // the SAME range instead of re-anchoring wherever the pointer happens to be.
-    if (event.shiftKey) {
-      event.preventDefault()
-      event.stopPropagation()
-
-      // DOCUMENT ORDER, not roster order. The roster renders grouped into
-      // section blocks (and gateway sections above those), so two rows adjacent
-      // in the flat list can be pages apart on screen. The rendered rows are
-      // the only source that cannot disagree with what the user saw.
-      const keys = Array.from(
-        event.currentTarget.closest('[data-slot="bots-roster"]')?.querySelectorAll('[data-roster-key]') ?? []
-      ).map(node => String((node as HTMLElement).dataset.rosterKey || ''))
-
-      const anchorKey = $botPickAnchor.get()
-      const anchorIdx = anchorKey ? keys.indexOf(anchorKey) : -1
-      const targetIdx = keys.indexOf(rosterKey)
-
-      if (anchorIdx === -1 || targetIdx === -1) {
-        $botPicked.set([rosterKey])
-        $botPickAnchor.set(rosterKey)
-
-        return
-      }
-
-      const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx]
-
-      $botPicked.set(keys.slice(lo, hi + 1))
-
-      return
-    }
-
-    if (event.metaKey || event.ctrlKey) {
-      event.preventDefault()
-      event.stopPropagation()
-      $botPicked.set(isPicked ? picked.filter(key => key !== rosterKey) : [...picked, rosterKey])
-      $botPickAnchor.set(rosterKey)
-
-      return
-    }
-
-    $botPicked.set([])
-    $botPickAnchor.set(rosterKey)
-    open()
-  }
-
-  // What a section action applies to: the multi-selection when this row is in
-  // it, otherwise just this row. Never a selection this row is not part of.
-  const targets = (): RosterRow[] =>
-    isPicked ? $lastRoster.get().filter(row => picked.includes(botRosterKey(row))) : [bot]
 
   const row = (
     <RowButton
@@ -292,21 +229,18 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         isActive && 'bg-(--ui-row-active-background)',
-        isPicked && 'bg-(--ui-row-active-background) ring-1 ring-(--ui-accent)/60'
+        // The row being dragged fades in place; the browser's drag image is
+        // the row itself, so the ghost under the pointer is the full row.
+        dragging && 'opacity-40'
       )}
       data-roster-key={rosterKey}
       draggable
-      onClick={onRowClick}
-      onDragEnd={() => $draggingBots.set([])}
+      onClick={open}
+      onDragEnd={() => $draggingBot.set(null)}
       onDragStart={event => {
-        // Drag the whole multi-selection when this row is part of it — the
-        // same rule `targets()` uses for the section submenu, so the two
-        // gestures can never disagree about what "this" means.
-        const keys = isPicked && picked.length ? picked : [rosterKey]
-
-        event.dataTransfer.setData(BOT_DRAG_MIME, botDragPayload(keys))
+        event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
         event.dataTransfer.effectAllowed = 'move'
-        $draggingBots.set(keys)
+        $draggingBot.set(rosterKey)
       }}
       onPointerEnter={warm}
     >
@@ -478,41 +412,27 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
             this is a one-field write and no list anywhere has to be kept in
             sync with it. */}
         <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            {isPicked && picked.length > 1 ? `Move ${picked.length} bots to…` : 'Move to section…'}
-          </ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
           <ContextMenuSubContent>
             {sections.map(section => (
               <ContextMenuItem
                 disabled={section.id === currentSectionId}
                 key={section.id}
-                onSelect={() => {
-                  moveBotsToSection(targets(), section.id)
-                  $botPicked.set([])
-                }}
+                onSelect={() => void moveBotsToSection([bot], section.id)}
               >
+                <Codicon className="mr-1.5" name="folder" />
                 {section.name}
               </ContextMenuItem>
             ))}
             {sections.length ? <ContextMenuSeparator /> : null}
-            <ContextMenuItem
-              onSelect={() => {
-                const section = createBotSection('New section', targets())
-
-                $botPicked.set([])
-                $renamingSection.set(section.id)
-              }}
-            >
-              New section…
+            <ContextMenuItem onSelect={() => onNewSection(bot)}>
+              <Codicon className="mr-1.5" name="new-folder" />
+              {b.sections.newSectionEllipsis}
             </ContextMenuItem>
             {currentSectionId ? (
-              <ContextMenuItem
-                onSelect={() => {
-                  moveBotsToSection(targets(), null)
-                  $botPicked.set([])
-                }}
-              >
-                Unassigned
+              <ContextMenuItem onSelect={() => void moveBotsToSection([bot], null)}>
+                <Codicon className="mr-1.5" name="inbox" />
+                {b.sections.removeFromSection}
               </ContextMenuItem>
             ) : null}
           </ContextMenuSubContent>

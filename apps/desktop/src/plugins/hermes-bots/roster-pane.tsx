@@ -82,17 +82,16 @@ import { backfillMessagingProtocol } from './soul'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
   $botSections,
-  $renamingSection,
-  BOT_DRAG_MIME,
+  $draggingBot,
   createBotSection,
   deleteBotSection,
   groupRowsBySection,
   moveBotSection,
   moveBotsToSection,
-  readBotDragPayload,
+  renameBotSection,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
-import { UserSectionHeader } from './user-sections-ui'
+import { SectionDropZone, SectionNameDialog, useEscapeCancelsBotDrag, UserSectionHeader } from './user-sections-ui'
 
 /** Last source inventory returned by the desktop-wide agent roster. */
 const $lastSources = atom<GatewaySource[]>([])
@@ -265,10 +264,16 @@ export function BotsPane() {
   // it is not part of the shared RosterRow model, so it rides as an extra here.
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
-  // Which section block the pointer is over mid-drag, by section key. One
-  // value, not a per-block flag: only one block can be hovered at a time.
-  const [dropTarget, setDropTarget] = useState<null | string>(null)
   const userSections = useValue($botSections)
+  const dragging = useValue($draggingBot)
+  useEscapeCancelsBotDrag()
+
+  // The one name dialog serves both New section (optionally filing the bot
+  // whose menu opened it) and Rename.
+  const [sectionDialog, setSectionDialog] = useState<
+    null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  >(null)
+
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
@@ -556,6 +561,7 @@ export function BotsPane() {
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
+      onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
     />
   )
@@ -572,87 +578,93 @@ export function BotsPane() {
     />
   )
 
+  const removeSection = (id: string) => {
+    const name = userSections.find(section => section.id === id)?.name || ''
+    const { members, undo } = deleteBotSection(id, roster)
+
+    // No confirmation: nothing is lost (the bots fall back to Unassigned) and
+    // the toast's Undo puts the section and its members back.
+    host.notify({
+      action: { label: b.sections.undo, onClick: undo },
+      durationMs: 8_000,
+      kind: 'info',
+      message: b.sections.deleted(name, members.length)
+    })
+  }
+
   // USER SECTIONS — composed with the gateway sections, not instead of them.
-  // When the roster is showing more than one connection the gateway headings
-  // still own the top level (that axis answers "where does this run", which no
-  // folder name can); user sections group the flat list.
-  const renderUserSections = () => {
-    // Nothing filed yet, and no folders made: draw the plain list rather than
-    // one "Unassigned" heading over the whole roster, which tells you nothing.
+  // The gateway headings own the top level whenever the roster shows more
+  // than one connection (that axis answers "where does this run", which no
+  // folder name can, and a bot's membership lives in its profile on THAT
+  // gateway); user sections group the rows INSIDE each connection bucket,
+  // indented under it, and group the flat list when there is only one.
+  // `keyPrefix` keeps row keys unique across the gateway buckets.
+  type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
+
+  const renderUserSections = (rows: UserSectionRow[], keyPrefix = '') => {
+    // No sections made: the plain list, exactly as before this feature.
     if (!userSections.length) {
-      return rosterRows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot)))
+      return rows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, keyPrefix)))
     }
 
+    const nested = Boolean(keyPrefix)
+    const blocks = groupRowsBySection(rows, userSections, allMeta)
+
     return (
-      groupRowsBySection(rosterRows, userSections, allMeta)
+      blocks
         // An empty Unassigned is not worth a heading; an empty NAMED section
         // is, because it is somewhere the user made and is about to drop into.
-        .filter(block => block.id || block.rows.length)
+        // Inside a gateway bucket the same empty section would repeat under
+        // every connection, so there it only appears while a drag is in flight
+        // (as the drop target it exists for); the row menu files into it
+        // regardless.
+        .filter(block => block.rows.length || (block.id && (!nested || dragging)))
         .map(block => {
-          const key = block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY
+          const key = `${keyPrefix}${block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY}`
           const collapsed = rosterSectionCollapsed(key)
+          const order = userSections.findIndex(section => section.id === block.id)
 
           return (
-            <div
-              className={cn(
-                'min-w-0 rounded-md transition-colors',
-                dropTarget === key && 'bg-(--ui-accent)/10 ring-1 ring-(--ui-accent)/50'
-              )}
+            <SectionDropZone
+              isSource={Boolean(dragging) && block.rows.some(row => row.kind !== 'group' && botRosterKey(row.bot) === dragging)}
               key={key}
-              onDragLeave={event => {
-                // Only clear when the pointer leaves the BLOCK, not when it
-                // crosses between the rows inside it — dragleave fires on every
-                // child boundary, which otherwise strobes the highlight.
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                  setDropTarget(null)
-                }
-              }}
-              onDragOver={event => {
-                if (!event.dataTransfer.types.includes(BOT_DRAG_MIME)) {
-                  return
-                }
+              nested={nested}
+              onDropBot={rosterKey => {
+                const bot = roster.find(row => botRosterKey(row) === rosterKey)
 
-                // preventDefault is what MAKES this a drop target — without it
-                // the browser refuses the drop and the cursor stays "no entry".
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
-                setDropTarget(key)
-              }}
-              onDrop={event => {
-                const keys = readBotDragPayload(event.dataTransfer.getData(BOT_DRAG_MIME))
-
-                setDropTarget(null)
-
-                if (!keys.length) {
-                  return
-                }
-
-                event.preventDefault()
                 // `block.id` is null for Unassigned, which is exactly the value
                 // moveBotsToSection wants for "clear the assignment".
-                moveBotsToSection(
-                  roster.filter(row => keys.includes(botRosterKey(row))),
-                  block.id
-                )
+                if (bot) {
+                  void moveBotsToSection([bot], block.id)
+                }
               }}
             >
               <UserSectionHeader
+                canMoveDown={order >= 0 && order < userSections.length - 1}
+                canMoveUp={order > 0}
                 collapsed={collapsed}
                 count={block.rows.length}
                 id={block.id}
                 name={block.name}
-                onDelete={() => block.id && deleteBotSection(block.id, roster)}
+                onDelete={() => block.id && removeSection(block.id)}
                 onMove={delta => block.id && moveBotSection(block.id, delta)}
+                onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name })}
                 onToggle={() => toggleRosterSection(key)}
               />
-              {collapsed ? null : (
+              {collapsed ? null : block.rows.length ? (
                 <div className="grid min-w-0 gap-0.5">
                   {block.rows.map(row =>
                     row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, `${key}:`)
                   )}
                 </div>
+              ) : (
+                // Empty section: a quiet dashed slot that says what it is for,
+                // and doubles as a roomy drop target.
+                <div className="mx-1 mb-1 rounded-md border border-dashed border-(--ui-stroke-secondary) px-2 py-2 text-center text-[0.6875rem] text-(--ui-text-quaternary)">
+                  {b.sections.emptyHint}
+                </div>
               )}
-            </div>
+            </SectionDropZone>
           )
         })
     )
@@ -671,7 +683,9 @@ export function BotsPane() {
           option={section.option}
         />
         {collapsed ? null : (
-          <div className="grid min-w-0 gap-0.5">{section.rows.map(row => renderBotRow(row.bot, `${section.id}:`))}</div>
+          <div className="grid min-w-0 gap-0.5">
+            {renderUserSections(section.rows, `${section.id}:`)}
+          </div>
         )}
       </div>
     )
@@ -750,17 +764,10 @@ export function BotsPane() {
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  const section = createBotSection('New section')
-
-                  // Straight into the rename: a folder you cannot name at the
-                  // moment you make it is a folder called "New section".
-                  $renamingSection.set(section.id)
-                }}
-              >
-                <Codicon className="mr-1.5" name="folder" />
-                New section
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>
+                <Codicon className="mr-1.5" name="new-folder" />
+                {b.sections.newSection}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -936,7 +943,7 @@ export function BotsPane() {
                   sortedGroupRows.length ? renderGroupChatSection() : null,
                   ...gatewaySections.sections.map(renderGatewaySection)
                 ].filter(Boolean)
-              : renderUserSections()}
+              : renderUserSections(rosterRows)}
             {showHiddenSection ? (
               <div
                 className="mt-1 border-t border-(--ui-stroke-tertiary) pt-1"
@@ -990,6 +997,23 @@ export function BotsPane() {
         open={groupCreateOpen} // Full multi-source roster: group chats can seat bots from other
         // registered connections — their turns route to their own machines.
         roster={roster}
+      />
+      <SectionNameDialog
+        initialName={sectionDialog?.mode === 'rename' ? sectionDialog.name : ''}
+        mode={sectionDialog?.mode === 'rename' ? 'rename' : 'create'}
+        onOpenChange={open => {
+          if (!open) {
+            setSectionDialog(null)
+          }
+        }}
+        onSubmit={name => {
+          if (sectionDialog?.mode === 'rename') {
+            renameBotSection(sectionDialog.id, name)
+          } else {
+            createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
+          }
+        }}
+        open={Boolean(sectionDialog)}
       />
       <EditProfileDialog
         bot={editing}

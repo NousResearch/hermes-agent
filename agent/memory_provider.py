@@ -61,6 +61,15 @@ MAX_MEMORY_OBSERVATION_STRING_CHARS = 4096
 MAX_MEMORY_OBSERVATION_BYTES = 16 * 1024
 MAX_MEMORY_OBSERVATION_BATCH_BYTES = 64 * 1024
 MAX_MEMORY_OBSERVATION_FIELD_CHARS = 128
+# Global cap on the total number of JSON nodes visited while freezing a single
+# observation payload. Per-container width and per-payload depth are bounded
+# individually, but their product (64**6) is not: without an aggregate budget
+# a well-formed-looking width/depth combination can force explosive traversal
+# and allocation before the encoded-byte check has a chance to reject it. The
+# limit is picked to comfortably exceed any payload that could fit under
+# MAX_MEMORY_OBSERVATION_BYTES while still terminating pathological trees
+# during recursion rather than after full expansion.
+MAX_MEMORY_OBSERVATION_NODES = 4096
 
 
 class _FrozenDict(dict):
@@ -153,10 +162,32 @@ class MemoryPrefetchResult:
         )
 
 
-def _freeze_json_value(value: Any, *, depth: int = 0) -> Any:
-    """Validate and recursively freeze one JSON-safe observation value."""
+def _freeze_json_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    budget: Optional[List[int]] = None,
+) -> Any:
+    """Validate and recursively freeze one JSON-safe observation value.
+
+    This helper is intentionally private: providers return ordinary JSON
+    values, while the manager owns the trust boundary and emits the frozen
+    representation only after validation.
+
+    ``budget`` is a shared mutable counter (a single-element list) tracking
+    the number of JSON nodes still allowed for this payload. It is decremented
+    on every entry so that pathological width/depth combinations (each
+    container individually under MAX_MEMORY_OBSERVATION_ITEMS, but nested
+    such that their product explodes) fail during recursion rather than
+    after the whole structure has been materialized.
+    """
+    if budget is None:
+        budget = [MAX_MEMORY_OBSERVATION_NODES]
     if depth > MAX_MEMORY_OBSERVATION_DEPTH:
         raise ValueError("observation payload is too deeply nested")
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ValueError("observation payload has too many nodes")
     if value is None or isinstance(value, (bool, int, str)):
         if isinstance(value, str) and len(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload string is too long")
@@ -172,12 +203,14 @@ def _freeze_json_value(value: Any, *, depth: int = 0) -> Any:
         for key, child in value.items():
             if not isinstance(key, str) or len(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
                 raise ValueError("observation payload object keys must be bounded strings")
-            frozen[key] = _freeze_json_value(child, depth=depth + 1)
+            frozen[key] = _freeze_json_value(child, depth=depth + 1, budget=budget)
         return _FrozenDict(frozen)
     if isinstance(value, list):
         if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
             raise ValueError("observation payload array has too many items")
-        return tuple(_freeze_json_value(child, depth=depth + 1) for child in value)
+        return tuple(
+            _freeze_json_value(child, depth=depth + 1, budget=budget) for child in value
+        )
     raise TypeError("observation payload must contain only JSON-safe values")
 
 

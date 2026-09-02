@@ -6750,6 +6750,60 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
+def _resolve_request_review_reviewer(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reviewer: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the reviewer for :func:`request_review` — shared by the
+    synchronous transition and the deferred own-worker handoff (pass 8,
+    V) so both fail identically on missing re-review provenance.
+
+    Returns ``(canonical_reviewer_or_None, error_reason_or_None)``: an
+    explicit reviewer wins, otherwise re-review reuses the reviewer
+    provenance persisted by the latest ``changes_requested`` event.
+    """
+    if reviewer is not None:
+        return _canonical_assignee(reviewer), None
+    changes_run = conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'changes_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    changes_event = None
+    if changes_run is not None:
+        changes_event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? "
+            "AND kind = 'changes_requested' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, int(changes_run["id"])),
+        ).fetchone()
+    try:
+        changes_payload = (
+            json.loads(changes_event["payload"])
+            if changes_event and changes_event["payload"]
+            else {}
+        )
+    except (json.JSONDecodeError, TypeError):
+        changes_payload = {}
+    prior_reviewer = (
+        changes_payload.get("reviewer")
+        if isinstance(changes_payload, dict)
+        else None
+    )
+    if changes_run is not None:
+        if not isinstance(prior_reviewer, str) or not prior_reviewer.strip():
+            return None, (
+                "re-review has no durable reviewer provenance (the "
+                "latest changes_requested event is missing or "
+                "malformed); pass reviewer= explicitly"
+            )
+        return _canonical_assignee(prior_reviewer), None
+    return None, None
+
+
 def request_review(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6795,7 +6849,7 @@ def request_review(
     # the detached post-commit stop retire the scope.
     snapshot = conn.execute(
         "SELECT status, claim_lock, current_run_id, worker_pid, "
-        "worker_pid_started_at, worker_scope "
+        "worker_pid_started_at, worker_scope, assignee "
         "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
@@ -6842,15 +6896,84 @@ def request_review(
                 "stopped (scope still draining); retry once the teardown "
                 "completes",
             )
+    if (
+        snapshot is not None
+        and caller_is_worker
+        and snapshot["status"] == "running"
+        and snapshot["worker_scope"]
+        and snapshot["current_run_id"] is not None
+        and (
+            force
+            or (
+                expected_run_id is not None
+                and int(snapshot["current_run_id"]) == int(expected_run_id)
+            )
+        )
+        and _parents_satisfied(conn, task_id)
+        and _kanban_scope_state(snapshot["worker_scope"]) != "dead"
+    ):
+        # Pass 8 (V): the own worker's scope necessarily still holds the
+        # caller, so a pre-write verified stop is impossible by
+        # construction — and writing the spawnable ``review`` row before
+        # the scope drains is exactly the shape the third-party contract
+        # forbids. Defer the whole transition: the marker carries the
+        # handoff, the verified-stop sweep applies it once the cgroup is
+        # empty, and the worker may simply exit after a True return.
+        reviewer, reviewer_error = _resolve_request_review_reviewer(
+            conn, task_id, reviewer,
+        )
+        if reviewer_error is not None:
+            return _ret(False, reviewer_error)
+        _defer_own_worker_handoff(
+            conn, task_id, snapshot["worker_scope"],
+            {
+                "handoff": "review_requested",
+                "implementer": snapshot["assignee"],
+                "reviewer": reviewer,
+                "summary": summary,
+                "metadata": metadata,
+            },
+            claim_lock=snapshot["claim_lock"],
+        )
+        request_worker_scope_stop(
+            snapshot["worker_scope"], task_id=task_id, conn=conn,
+        )
+        return _ret(
+            True,
+            "review handoff deferred: the row flips to review once this "
+            "worker's scope drains (the verified-stop sweep applies it)",
+        )
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id, worker_scope "
+            "SELECT assignee, status, claim_lock, current_run_id, "
+            "worker_scope, worker_pid, worker_pid_started_at "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
             return _ret(False, "task not found")
+        if (
+            snapshot is not None
+            and snapshot["status"] == "running"
+            and snapshot["claim_lock"] is not None
+            and (
+                int(snapshot["current_run_id"] or 0)
+                != int(trow["current_run_id"] or 0)
+                or snapshot["worker_pid"] != trow["worker_pid"]
+                or snapshot["worker_pid_started_at"]
+                != trow["worker_pid_started_at"]
+            )
+        ):
+            # Pass 8 (V): a force handoff verified/stopped the SNAPSHOT's
+            # worker; if a newer run took the row before this write, the
+            # spawnable flip must not clear ITS claim. No-op — the caller
+            # retries against the new run.
+            return _ret(
+                False,
+                "task changed hands during the handoff (a newer run "
+                "started); retry",
+            )
         # Refuse to clear a live worker's claim without proof of ownership
         # (expected_run_id) or an explicit human override (force=True).
         if (
@@ -6866,45 +6989,11 @@ def request_review(
                 "override) instead of clearing the live run's claim",
             )
         implementer = trow["assignee"]
-        if reviewer is None:
-            changes_run = conn.execute(
-                "SELECT id FROM task_runs "
-                "WHERE task_id = ? AND outcome = 'changes_requested' "
-                "ORDER BY id DESC LIMIT 1",
-                (task_id,),
-            ).fetchone()
-            changes_event = None
-            if changes_run is not None:
-                changes_event = conn.execute(
-                    "SELECT payload FROM task_events "
-                    "WHERE task_id = ? AND run_id = ? "
-                    "AND kind = 'changes_requested' "
-                    "ORDER BY id DESC LIMIT 1",
-                    (task_id, int(changes_run["id"])),
-                ).fetchone()
-            try:
-                changes_payload = (
-                    json.loads(changes_event["payload"])
-                    if changes_event and changes_event["payload"]
-                    else {}
-                )
-            except (json.JSONDecodeError, TypeError):
-                changes_payload = {}
-            prior_reviewer = (
-                changes_payload.get("reviewer")
-                if isinstance(changes_payload, dict)
-                else None
-            )
-            if changes_run is not None:
-                if not isinstance(prior_reviewer, str) or not prior_reviewer.strip():
-                    return _ret(
-                        False,
-                        "re-review has no durable reviewer provenance (the "
-                        "latest changes_requested event is missing or "
-                        "malformed); pass reviewer= explicitly",
-                    )
-                reviewer = prior_reviewer
-        reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        reviewer, reviewer_error = _resolve_request_review_reviewer(
+            conn, task_id, reviewer,
+        )
+        if reviewer_error is not None:
+            return _ret(False, reviewer_error)
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -6979,6 +7068,61 @@ def request_review(
     return _ret(True)
 
 
+def _review_handoff_provenance(
+    conn: sqlite3.Connection,
+    task_id: str,
+    current_run_id: int,
+) -> tuple[Optional[str], Optional[str]]:
+    """The claimed-from-review + implementer checks for
+    :func:`request_changes` — shared by the synchronous transition and
+    the deferred own-worker handoff (pass 8, V).
+
+    Returns ``(implementer, error_reason_or_None)`` with exactly the
+    errors the transaction would raise, so a deferral never accepts a
+    request the synchronous path would refuse.
+    """
+    claimed_event = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(current_run_id)),
+    ).fetchone()
+    try:
+        claimed_payload = (
+            json.loads(claimed_event["payload"])
+            if claimed_event and claimed_event["payload"]
+            else {}
+        )
+    except (json.JSONDecodeError, TypeError):
+        claimed_payload = {}
+    if not isinstance(claimed_payload, dict):
+        claimed_payload = {}
+    if claimed_payload.get("source_status") != "review":
+        return None, "active run was not claimed from review"
+    requested_event = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if requested_event is None:
+        return None, "no prior review_requested event"
+    try:
+        requested_payload = (
+            json.loads(requested_event["payload"])
+            if requested_event["payload"]
+            else {}
+        )
+    except (json.JSONDecodeError, TypeError):
+        requested_payload = {}
+    if not isinstance(requested_payload, dict):
+        requested_payload = {}
+    implementer = requested_payload.get("implementer")
+    if not isinstance(implementer, str) or not implementer.strip():
+        return None, "review handoff has no valid implementer provenance"
+    return implementer, None
+
+
 def request_changes(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7010,7 +7154,7 @@ def request_changes(
     # refuse never tears a live worker down for nothing.
     snapshot = conn.execute(
         "SELECT status, claim_lock, current_run_id, worker_pid, "
-        "worker_pid_started_at, worker_scope "
+        "worker_pid_started_at, worker_scope, assignee "
         "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
@@ -7075,61 +7219,86 @@ def request_changes(
                 "verified stopped (scope still draining); retry once the "
                 "teardown completes",
             )
+    if (
+        snapshot is not None
+        and caller_is_worker
+        and snapshot["status"] == "running"
+        and snapshot["worker_scope"]
+        and snapshot["current_run_id"] is not None
+        and expected_run_id is not None
+        and int(snapshot["current_run_id"]) == int(expected_run_id)
+        and _kanban_scope_state(snapshot["worker_scope"]) != "dead"
+    ):
+        # Pass 8 (V): the reviewer's own scope still holds the caller,
+        # so the spawnable rework write must wait for the verified stop.
+        # Defer the whole transition (the marker carries it; the
+        # verified-stop sweep applies it once the cgroup is empty) and
+        # fail fast on any precondition the transaction would raise — a
+        # deferral must never accept a request that would be refused.
+        implementer, provenance_error = _review_handoff_provenance(
+            conn, task_id, snapshot["current_run_id"],
+        )
+        if provenance_error is not None:
+            return False, provenance_error
+        reviewer = snapshot["assignee"]
+        if isinstance(reviewer, str) and reviewer.strip():
+            reviewer = _canonical_assignee(reviewer)
+        else:
+            reviewer = None
+        _defer_own_worker_handoff(
+            conn, task_id, snapshot["worker_scope"],
+            {
+                "handoff": "changes_requested",
+                "reason": reason,
+                "implementer": implementer,
+                "reviewer": reviewer,
+            },
+            claim_lock=snapshot["claim_lock"],
+        )
+        request_worker_scope_stop(
+            snapshot["worker_scope"], task_id=task_id, conn=conn,
+        )
+        return True, implementer
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id, worker_scope "
+            "SELECT status, assignee, current_run_id, worker_scope, "
+            "worker_pid, worker_pid_started_at "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
+        if (
+            snapshot is not None
+            and snapshot["status"] == "running"
+            and snapshot["claim_lock"] is not None
+            and (
+                int(snapshot["current_run_id"] or 0)
+                != int(task_row["current_run_id"] or 0)
+                or snapshot["worker_pid"] != task_row["worker_pid"]
+                or snapshot["worker_pid_started_at"]
+                != task_row["worker_pid_started_at"]
+            )
+        ):
+            # Pass 8 (V): the Phase 0 teardown verified the SNAPSHOT's
+            # reviewer; a newer run that took the row before this write
+            # must not have its claim cleared by the rework flip.
+            return False, (
+                "task changed hands during the handoff (a newer run "
+                "started); retry"
+            )
         current_run_id = task_row["current_run_id"]
         if task_row["status"] != "running" or current_run_id is None:
             return False, "task is not in an active review run"
         if expected_run_id is not None and int(current_run_id) != int(expected_run_id):
             return False, "run_id mismatch"
 
-        claimed_event = conn.execute(
-            "SELECT payload FROM task_events "
-            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
-            "ORDER BY id DESC LIMIT 1",
-            (task_id, int(current_run_id)),
-        ).fetchone()
-        try:
-            claimed_payload = (
-                json.loads(claimed_event["payload"])
-                if claimed_event and claimed_event["payload"]
-                else {}
-            )
-        except (json.JSONDecodeError, TypeError):
-            claimed_payload = {}
-        if not isinstance(claimed_payload, dict):
-            claimed_payload = {}
-        if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
-
-        requested_event = conn.execute(
-            "SELECT payload FROM task_events "
-            "WHERE task_id = ? AND kind = 'review_requested' "
-            "ORDER BY id DESC LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if requested_event is None:
-            return False, "no prior review_requested event"
-        try:
-            requested_payload = (
-                json.loads(requested_event["payload"])
-                if requested_event["payload"]
-                else {}
-            )
-        except (json.JSONDecodeError, TypeError):
-            requested_payload = {}
-        if not isinstance(requested_payload, dict):
-            requested_payload = {}
-        implementer = requested_payload.get("implementer")
-        if not isinstance(implementer, str) or not implementer.strip():
-            return False, "review handoff has no valid implementer provenance"
+        implementer, provenance_error = _review_handoff_provenance(
+            conn, task_id, current_run_id,
+        )
+        if provenance_error is not None:
+            return False, provenance_error
         reviewer = task_row["assignee"]
         if isinstance(reviewer, str) and reviewer.strip():
             reviewer = _canonical_assignee(reviewer)
@@ -9480,6 +9649,180 @@ commit."""
         )
 
 
+def _defer_own_worker_handoff(
+    conn: sqlite3.Connection,
+    task_id: str,
+    scope: str,
+    handoff: dict,
+    *,
+    claim_lock: Optional[str],
+) -> None:
+    """Durably defer an own-worker terminal handoff (pass 8, V).
+
+    The run's own worker cannot verify its scope dead before its
+    terminal ``review``/``ready`` write — the caller is alive inside the
+    cgroup — so writing the spawnable row first (the pre-V behaviour)
+    exposed the review/ready lane beside a still-draining scope. The
+    whole transition is instead recorded here and applied by the crash
+    sweep once the verified stop lands
+    (:func:`_apply_pending_own_worker_handoff`). The claim is held and
+    extended like any other deferral so nothing respawns beside it.
+    """
+    now = int(time.time())
+    grace = now + RECLAIM_DEFER_GRACE_SECONDS
+    with write_txn(conn, allow_nested=True):
+        run_id = _current_run_id(conn, task_id)
+        already = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind = 'own_worker_handoff' "
+            "  AND run_id IS ? LIMIT 1",
+            (task_id, run_id),
+        ).fetchone()
+        if already is None:
+            _append_event(
+                conn, task_id, "own_worker_handoff",
+                {"scope": scope, **handoff},
+                run_id=run_id,
+            )
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (grace, task_id, claim_lock),
+        )
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                (grace, run_id),
+            )
+
+
+def _apply_pending_own_worker_handoff(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+) -> bool:
+    """Flip a drained run's row per its deferred own-worker handoff.
+
+    Called by the crash sweep's teardown phase once the run's scope is
+    verified empty: the worker already did its paperwork (the
+    ``own_worker_handoff`` marker), so the row moves to its requested
+    lane instead of crash-requeueing — no ``crashed`` event, no protocol
+    violation, no failure count. CAS on the marker's run id: a row that
+    moved on (requeued, adopted, reopened) keeps its new state and the
+    marker stays inert history.
+    """
+    if run_id is None:
+        return False
+    marker = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'own_worker_handoff' "
+        "  AND run_id IS ? ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    if marker is None:
+        return False
+    try:
+        payload = json.loads(marker["payload"]) if marker["payload"] else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("handoff")
+    if kind not in ("review_requested", "changes_requested"):
+        return False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "running"
+            or int(row["current_run_id"] or 0) != int(run_id)
+        ):
+            return False
+        if kind == "review_requested":
+            if not _parents_satisfied(conn, task_id):
+                # An ancestor reopened while the scope drained — the
+                # reopen invalidation owns the row now.
+                return False
+            reviewer = payload.get("reviewer")
+            assignee_sql = ", assignee = ?" if reviewer else ""
+            params: tuple[Any, ...] = (
+                (reviewer, task_id, int(run_id))
+                if reviewer
+                else (task_id, int(run_id))
+            )
+            cur = conn.execute(
+                "UPDATE tasks "
+                "SET status = 'review', claim_lock = NULL, "
+                "    claim_expires = NULL, worker_pid = NULL, "
+                "    worker_pid_started_at = NULL, "
+                "    worker_registered_at = NULL, worker_scope = NULL"
+                + assignee_sql
+                + " WHERE id = ? AND status = 'running' "
+                "  AND current_run_id = ?",
+                params,
+            )
+            if cur.rowcount != 1:
+                return False
+            lines = (payload.get("summary") or "").strip().splitlines()
+            new_run = _end_run(
+                conn, task_id,
+                outcome="review_requested", status="review",
+                summary=payload.get("summary"),
+                metadata=payload.get("metadata"),
+            )
+            _append_event(
+                conn, task_id, "review_requested",
+                {
+                    "summary": lines[0][:400] if lines else None,
+                    "implementer": payload.get("implementer"),
+                    "reviewer": reviewer,
+                    "deferred_handoff": True,
+                },
+                run_id=new_run,
+            )
+        else:
+            implementer = payload.get("implementer")
+            if not isinstance(implementer, str) or not implementer.strip():
+                return False
+            new_status = _landing_status_after_parents(conn, task_id)
+            cur = conn.execute(
+                "UPDATE tasks "
+                "SET status = ?, assignee = COALESCE(?, assignee), "
+                "    claim_lock = NULL, claim_expires = NULL, "
+                "    worker_pid = NULL, worker_pid_started_at = NULL, "
+                "    worker_registered_at = NULL, worker_scope = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND current_run_id = ?",
+                (new_status, implementer, task_id, int(run_id)),
+            )
+            if cur.rowcount != 1:
+                return False
+            new_run = _end_run(
+                conn, task_id,
+                outcome="changes_requested", status=new_status,
+                summary=payload.get("reason"),
+            )
+            _append_event(
+                conn, task_id, "changes_requested",
+                {
+                    "reason": payload.get("reason"),
+                    "implementer": implementer,
+                    "reviewer": payload.get("reviewer"),
+                    "status": new_status,
+                    "deferred_handoff": True,
+                },
+                run_id=new_run,
+            )
+        _log.info(
+            "kanban: applied deferred %s handoff for %s (run %s) after "
+            "verified scope teardown", kind, task_id, run_id,
+        )
+        return True
+
+
 def _handoff_caller_is_worker(
     row: Any,
     *,
@@ -11223,7 +11566,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
         rows = conn.execute(
             "SELECT id, worker_pid, worker_pid_started_at, "
             "       worker_registered_at, worker_scope, "
-            "       claim_lock, started_at, assignee "
+            "       claim_lock, started_at, assignee, current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -11346,6 +11689,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 "claim_lock": row["claim_lock"],
                 "assignee": row["assignee"],
                 "worker_scope": row["worker_scope"],
+                "current_run_id": row["current_run_id"],
                 "kind": kind,
                 "code": code,
                 "error_text": error_text,
@@ -11367,6 +11711,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             scope, task_id=entry["id"], conn=conn,
         ):
             _mark_run_scope_stopping(conn, entry["id"], scope)
+            continue
+        if scope and _apply_pending_own_worker_handoff(
+            conn, entry["id"], entry["current_run_id"],
+        ):
+            # Pass 8 (V): this run's own worker deferred its terminal
+            # handoff into the marker — applying it replaces the crash
+            # requeue entirely (no ``crashed`` event, no protocol
+            # violation accounting, no failure count).
             continue
         close_rows.append(entry)
 

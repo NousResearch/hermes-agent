@@ -806,12 +806,84 @@ def test_request_review_third_party_verified_stop_allows_handoff(
         assert detached == []
 
 
+def test_request_review_force_handoff_races_newer_run(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The force handoff's verified stop covers only the SNAPSHOT's
+    worker. If a newer run takes the row inside that teardown window
+    (exactly what the verified stop's wall-clock buys), the spawnable
+    review flip no-ops instead of clearing the NEW run's claim — the
+    pass 8 (V) snapshot identity guard."""
+    monkeypatch.delenv("HERMES_KANBAN_SCOPE", raising=False)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="raced handoff", assignee="w")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        _arm_live_third_party_worker(conn, tid)
+
+        def _verified_stop_with_takeover(unit, **kwargs):
+            # The verified stop takes real wall-clock; the dispatcher
+            # re-arms the row mid-teardown: a fresh run with a new
+            # worker takes over while the OLD scope is still draining.
+            new_pid = 4194305
+            host = kb._claimer_id().split(":", 1)[0]
+            with kb.write_txn(conn):
+                conn.execute(
+                    "INSERT INTO task_runs "
+                    "(task_id, status, claim_lock, claim_expires, "
+                    " worker_pid, started_at) "
+                    "VALUES (?, 'running', ?, ?, ?, ?)",
+                    (tid, f"{host}:{new_pid}", int(time.time()) + 300,
+                     new_pid, int(time.time())),
+                )
+                new_run = conn.execute(
+                    "SELECT id FROM task_runs WHERE task_id = ? "
+                    "ORDER BY id DESC LIMIT 1", (tid,),
+                ).fetchone()["id"]
+                conn.execute(
+                    "UPDATE tasks SET current_run_id = ?, worker_pid = ?, "
+                    "worker_pid_started_at = ?, worker_scope = NULL "
+                    "WHERE id = ?",
+                    (new_run, new_pid, int(time.time()), tid),
+                )
+            return True
+
+        monkeypatch.setattr(
+            kb, "request_worker_scope_stop", _verified_stop_with_takeover,
+        )
+
+        ok, reason = kb.request_review(
+            conn, tid, summary="dash", force=True, with_reason=True,
+        )
+
+        assert ok is False
+        assert reason is not None and "changed hands" in reason
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["claim_lock"] is not None
+        assert row["worker_pid"] == 4194305
+        assert _events(conn, tid, kind="review_requested") == []
+        # The newer run was never closed by the stale handoff.
+        new_run = conn.execute(
+            "SELECT status, outcome FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert new_run["status"] == "running"
+        assert new_run["outcome"] is None
+
+
 def test_request_review_own_worker_handoff_skips_prewrite_teardown(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The run's OWN worker (pinned scope env) hands off without a
-    pre-write teardown — stopping it here would kill the caller before
-    its write commits — and still fires the detached post-commit stop."""
+    """The run's OWN worker (pinned scope env) never tears itself down
+    pre-write — and pass 8 (V) goes further: a scoped own-worker handoff
+    cannot verify its own scope dead (the caller is alive inside it), so
+    the spawnable ``review`` write DEFERS. The transition is recorded as
+    an ``own_worker_handoff`` marker and the crash sweep flips the row
+    once the verified stop lands."""
     detached: list = []
     monkeypatch.setattr(
         kb, "_stop_scope_after_worker_exit",
@@ -831,10 +903,22 @@ def test_request_review_own_worker_handoff_skips_prewrite_teardown(
 
         ok = kb.request_review(conn, tid, summary="done", force=True)
 
+        # Deferred: accepted, but the row never flipped beside the live
+        # scope and no detached stop fires at request time.
         assert ok is True
         assert teardown_calls == []
+        assert kb.get_task(conn, tid).status == "running"
+        assert detached == []
+        assert _events(conn, tid, kind="own_worker_handoff")
+
+        # The sweep applies it once the teardown verifies.
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+        monkeypatch.setattr(kb, "request_worker_scope_stop", lambda *a, **k: True)
+        monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "dead")
+        kb.detect_crashed_workers(conn)
         assert kb.get_task(conn, tid).status == "review"
-        assert detached == [scope]
+        assert _events(conn, tid, kind="review_requested")
+        assert _events(conn, tid, kind="crashed") == []
 
 
 def _arm_live_reviewer_row(conn, tid: str) -> str:
@@ -907,7 +991,9 @@ def test_request_changes_own_worker_handoff_skips_prewrite_teardown(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The reviewer's OWN close (scope env pinned) never tears itself
-    down pre-write and still fires the detached post-commit stop."""
+    down pre-write — and pass 8 (V) defers the whole rework transition:
+    the spawnable ready write waits for the verified stop, recorded as
+    an ``own_worker_handoff`` marker the crash sweep applies."""
     detached: list = []
     monkeypatch.setattr(
         kb, "_stop_scope_after_worker_exit",
@@ -928,7 +1014,20 @@ def test_request_changes_own_worker_handoff_skips_prewrite_teardown(
             conn, tid, reason="done", expected_run_id=run_id,
         )
 
+        # Deferred: accepted, but the row never flipped beside the live
+        # scope and no detached stop fires at request time.
         assert ok is True
+        assert implementer == "w"
         assert teardown_calls == []
+        assert kb.get_task(conn, tid).status == "running"
+        assert detached == []
+        assert _events(conn, tid, kind="own_worker_handoff")
+
+        # The sweep applies it once the teardown verifies.
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+        monkeypatch.setattr(kb, "request_worker_scope_stop", lambda *a, **k: True)
+        monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "dead")
+        kb.detect_crashed_workers(conn)
         assert kb.get_task(conn, tid).status != "running"
-        assert detached == [scope]
+        assert _events(conn, tid, kind="changes_requested")
+        assert _events(conn, tid, kind="crashed") == []

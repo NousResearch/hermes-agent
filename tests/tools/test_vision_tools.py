@@ -135,6 +135,29 @@ class TestHandleVisionAnalyze:
                 # Clean up the coroutine to avoid RuntimeWarning
                 result.close()
 
+    @pytest.mark.asyncio
+    async def test_aux_prompt_preserves_question_and_untrusted_data_boundary(self):
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool",
+                new_callable=AsyncMock,
+                return_value=json.dumps({"success": True}),
+            ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
+        ):
+            await _handle_vision_analyze({
+                "image_url": "https://example.com/img.png",
+                "question": "Which total is larger?",
+            })
+
+        prompt = mock_tool.await_args.args[1]
+        assert "Which total is larger?" in prompt
+        assert "vision_analyze" in prompt
+        assert "untrusted visual data" in prompt
+
 
     @pytest.mark.asyncio
     async def test_model_resolution_config_then_env_then_default(self):

@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 from run_agent import AIAgent
@@ -133,6 +133,44 @@ class TestPrepareMessagesForNonVision:
         assert out[1]["content"] == "ack"
         assert isinstance(out[2]["content"], str)
         assert "[Image: thing]" in out[2]["content"]
+
+    def test_user_text_is_forwarded_as_image_analysis_intent(self):
+        agent = _make_agent()
+        with patch.object(
+            agent,
+            "_describe_image_for_anthropic_fallback",
+            return_value="[Image: evidence]",
+        ) as describe:
+            agent._preprocess_anthropic_content(IMG_PARTS_USER_MSG["content"], "user")
+
+        assert describe.call_args.args[2] == "What's in this image?"
+
+    def test_fallback_cache_separates_intent_and_role(self):
+        agent = _make_agent()
+        response = '{"success": true, "analysis": "visible evidence"}'
+        with patch(
+            "tools.vision_tools.vision_analyze_tool",
+            new_callable=AsyncMock,
+            return_value=response,
+        ) as vision:
+            first = agent._describe_image_for_anthropic_fallback(
+                "https://example.com/shared.png", "user", "Read the total",
+            )
+            cached = agent._describe_image_for_anthropic_fallback(
+                "https://example.com/shared.png", "user", "Read the total",
+            )
+            agent._describe_image_for_anthropic_fallback(
+                "https://example.com/shared.png", "user", "Find the error",
+            )
+            agent._describe_image_for_anthropic_fallback(
+                "https://example.com/shared.png", "assistant", "Read the total",
+            )
+
+        assert first == cached
+        assert vision.await_count == 3
+        prompts = [call.kwargs["user_prompt"] for call in vision.await_args_list]
+        assert any("Read the total" in prompt for prompt in prompts)
+        assert any("Find the error" in prompt for prompt in prompts)
 
 
 # ─── _model_supports_vision ──────────────────────────────────────────────────

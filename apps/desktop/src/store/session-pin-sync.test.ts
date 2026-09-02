@@ -133,6 +133,25 @@ describe('watchSessionPins remote pull', () => {
     expect(patch).toHaveBeenCalledWith('cron-pin', false, 'jobs')
   })
 
+  it('routes a cross-slice unpin to the active profile', async () => {
+    $activeGatewayProfile.set('work')
+
+    try {
+      $sessions.set([row('shared', { pinned: true, profile: 'default' })])
+      $messagingSessions.set([row('shared', { pinned: true, profile: 'work', source: 'photon' })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['shared'])
+      patch.mockClear()
+
+      $pinnedSessionIds.set([])
+      await flush()
+
+      expect(patch).toHaveBeenCalledWith('shared', false, 'work')
+    } finally {
+      $activeGatewayProfile.set('default')
+    }
+  })
+
   it('adopts a pin another app made', async () => {
     $sessions.set([row('remote', { pinned: true })])
     await flush()

@@ -77,11 +77,24 @@ function publishUnconfirmed(): void {
 }
 
 function profileFor(pinId: string): null | string | undefined {
-  return loadedSessionRows().find(row => sessionMatchesStoredId(row, pinId))?.profile
+  return loadedRowFor(pinId)?.profile
 }
 
 function loadedSessionRows(): SessionInfo[] {
   return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+}
+
+/**
+ * The row a stored pin id resolves to, across every slice. Same tie-break as
+ * `rowsByPinId`: when two profiles share the id, the write must target the
+ * row the pull adopted — the active gateway's — or an unpin PATCHes the other
+ * profile and the next page re-adopts the pin.
+ */
+function loadedRowFor(pinId: string): SessionInfo | undefined {
+  const rows = loadedSessionRows().filter(row => sessionMatchesStoredId(row, pinId))
+  const gateway = normalizeProfileKey($activeGatewayProfile.get())
+
+  return rows.find(row => normalizeProfileKey(row.profile) === gateway) ?? rows[0]
 }
 
 /**
@@ -259,7 +272,7 @@ function reconcileInner(): void {
   // Flush whatever we can resolve now; unresolved ids (row not loaded yet)
   // retry on the next loaded-session slice change.
   for (const id of [...pending]) {
-    const row = loadedSessionRows().find(entry => sessionMatchesStoredId(entry, id))
+    const row = loadedRowFor(id)
 
     if (!row) {
       continue

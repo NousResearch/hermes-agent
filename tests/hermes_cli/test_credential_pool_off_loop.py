@@ -154,6 +154,22 @@ class TestExchangeSingleFlight:
         assert len(errors) == 5
         assert any("recently failed" in e for e in errors)
 
+    def test_negative_cache_short_circuits_before_taking_the_lock(self, monkeypatch):
+        """While one exchange holds the lock, a caller whose fingerprint is
+        already in the failure cache must raise immediately rather than park
+        an executor thread behind the holder."""
+        fp = copilot_auth._token_fingerprint("ghu_" + "z" * 30)
+        copilot_auth._exchange_failure_cache[fp] = time.time() + 60
+        lock = copilot_auth._exchange_lock_for(fp)
+        lock.acquire()  # simulate an in-flight holder
+        try:
+            started = time.monotonic()
+            with pytest.raises(ValueError, match="recently failed"):
+                copilot_auth.exchange_copilot_token("ghu_" + "z" * 30)
+            assert time.monotonic() - started < 0.5
+        finally:
+            lock.release()
+
 
 # ---------------------------------------------------------------------------
 # web_server credential-pool handlers off the loop
@@ -186,7 +202,7 @@ async def test_list_credential_pool_keeps_loop_responsive(monkeypatch):
     from hermes_cli import web_server
 
     def slow_read(*args, **kwargs):
-        time.sleep(0.2)
+        time.sleep(0.5)
         return {}
 
     monkeypatch.setattr(auth_mod, "read_credential_pool", slow_read)
@@ -206,4 +222,6 @@ async def test_list_credential_pool_keeps_loop_responsive(monkeypatch):
     await web_server.list_credential_pool()
     stop.set()
     await t
-    assert max(gaps) < 0.1, f"event loop stalled for {max(gaps) * 1000:.0f} ms"
+    # 0.25 s threshold vs a 0.5 s blocking read: a regression (read on the
+    # loop) trips it by 2x, while runner-noise descheduling would need >200 ms.
+    assert max(gaps) < 0.25, f"event loop stalled for {max(gaps) * 1000:.0f} ms"

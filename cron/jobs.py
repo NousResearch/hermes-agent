@@ -2329,6 +2329,69 @@ def _validate_job_mode_invariants(
         raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
 
+def _is_valid_default_delivery(value: str) -> bool:
+    """Whether *value* is an acceptable ``cron.default_delivery`` setting.
+
+    Accepts the same tokens ``cron.scheduler._resolve_delivery_targets`` does
+    at fire time: ``origin``, ``local``, ``all``, known platform names, and
+    comma-separated combinations (``platform:target`` prefixes included). A
+    value that doesn't match resolves to no delivery target at fire time —
+    validating it here catches a typo'd platform name before every unattended
+    cron job it applies to silently loses its output.
+    """
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        return False
+    try:
+        from cron.scheduler import _is_known_delivery_platform
+    except Exception:
+        return value in ("origin", "local")
+    for part in parts:
+        platform_name = part.split(":", 1)[0].lower()
+        if platform_name in ("origin", "local", "all"):
+            continue
+        if not _is_known_delivery_platform(platform_name):
+            return False
+    return True
+
+
+def _resolve_default_delivery(origin: Optional[Dict[str, Any]]) -> str:
+    """Resolve the profile-level default cron delivery target.
+
+    ``cron.default_delivery`` lets a profile opt out of the historical
+    origin-chat default. This is useful for web/UI-first profiles where a stale
+    messaging origin (for example Discord) must never receive unattended cron
+    completions. Explicit per-job ``deliver`` values still win.
+
+    An unrecognized ``cron.default_delivery`` value (typo'd platform name,
+    stray text) is rejected rather than stored — it would otherwise resolve to
+    no delivery target for every job that relies on the default, dropping
+    output silently at fire time with no signal back to the user.
+    """
+    fallback = "origin" if origin else "local"
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        raw_default = (
+            cron_cfg.get("default_delivery") if isinstance(cron_cfg, dict) else None
+        )
+        configured = str(raw_default).strip() if raw_default is not None else ""
+        if configured:
+            if _is_valid_default_delivery(configured):
+                return configured
+            logger.warning(
+                "Ignoring invalid cron.default_delivery=%r (not a known delivery "
+                "target); falling back to %s",
+                configured,
+                fallback,
+            )
+    except Exception as exc:
+        logger.debug("Failed to resolve cron.default_delivery: %s", exc)
+    return fallback
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -2434,9 +2497,10 @@ def create_job(
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
-    # Default delivery to origin if available, otherwise local
+    # Default delivery follows the profile policy when configured, otherwise
+    # preserves the historical origin-if-available / local fallback.
     if deliver is None:
-        deliver = "origin" if origin else "local"
+        deliver = _resolve_default_delivery(origin)
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()

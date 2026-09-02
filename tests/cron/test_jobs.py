@@ -457,6 +457,83 @@ class TestJobCRUD:
         assert job["deliver"] == "origin"
 
 
+class TestDefaultDeliveryPolicy:
+    """``cron.default_delivery`` overrides the origin-if-available fallback.
+
+    Regression coverage for a routing bug: a job created without an explicit
+    ``deliver`` used to always fall back to ``origin`` (or ``local`` with no
+    origin), ignoring any profile-level delivery preference — so a profile
+    that set a default delivery target still had unattended cron output land
+    on the legacy origin platform.
+    """
+
+    def test_config_default_overrides_origin_fallback(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"default_delivery": "telegram"}},
+        )
+        job = create_job(
+            prompt="Test", schedule="30m",
+            origin={"platform": "discord", "chat_id": "123"},
+        )
+        assert job["deliver"] == "telegram"
+
+    def test_config_default_applies_without_origin(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"default_delivery": "local"}},
+        )
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["deliver"] == "local"
+
+    def test_explicit_deliver_wins_over_config_default(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"default_delivery": "telegram"}},
+        )
+        job = create_job(
+            prompt="Test", schedule="30m",
+            origin={"platform": "discord", "chat_id": "123"},
+            deliver="slack",
+        )
+        assert job["deliver"] == "slack"
+
+    def test_no_config_preserves_historical_fallback(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["deliver"] == "local"
+
+    def test_invalid_config_default_falls_back_and_warns(
+        self, tmp_cron_dir, monkeypatch, caplog
+    ):
+        """An unrecognized ``cron.default_delivery`` value must not be stored
+        as-is — it would resolve to no delivery target at fire time and
+        silently drop the job's output. It should be rejected with a warning
+        and the historical fallback used instead."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"default_delivery": "not-a-real-platform"}},
+        )
+        with caplog.at_level("WARNING", logger="cron.jobs"):
+            job = create_job(
+                prompt="Test", schedule="30m",
+                origin={"platform": "discord", "chat_id": "123"},
+            )
+        assert job["deliver"] == "origin"
+        assert "not-a-real-platform" in caplog.text
+
+    def test_multi_target_config_default_accepted(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"default_delivery": "origin,telegram"}},
+        )
+        job = create_job(
+            prompt="Test", schedule="30m",
+            origin={"platform": "discord", "chat_id": "123"},
+        )
+        assert job["deliver"] == "origin,telegram"
+
+
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")

@@ -671,6 +671,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5000, f"resume failed: {e}")
             cwd = profile_resume_cwd or _default_session_cwd()
             record = _deferred_session_record(
+                sid,
                 target,
                 cols=cols,
                 cwd=cwd,
@@ -738,6 +739,7 @@ def _(rid, params: dict) -> dict:
             model_override = overrides.get("model_override") or {}
             cwd = profile_resume_cwd or _default_session_cwd()
             record = _deferred_session_record(
+                sid,
                 target,
                 cols=cols,
                 cwd=cwd,
@@ -833,6 +835,7 @@ def _(rid, params: dict) -> dict:
             model_override = overrides.get("model_override") or {}
             cwd = profile_resume_cwd or _default_session_cwd()
             record = _deferred_session_record(
+                sid,
                 target,
                 cols=cols,
                 cwd=cwd,

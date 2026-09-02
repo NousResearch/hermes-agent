@@ -47,9 +47,17 @@ def _hermes_ensure_own_tab():
         # re-attaches to the first shared page) re-pins automatically,
         # while agent-driven tab switches mid-session are left alone.
         from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
+        _dpid = _bipc.pid_path(_name).read_text().strip()
     except Exception:
-        _dpid = "0"
+        _dpid = ""
+    if not _dpid:
+        try:
+            from browser_harness.helpers import _send as _bsend
+            _dpid = str(_bsend({"meta": "ping"}).get("pid") or "")
+        except Exception:
+            pass
+    if not _dpid:
+        return  # daemon unreachable: pinning would fail too
     _uid = _os.getuid() if hasattr(_os, "getuid") else 0
     _marker = _os.path.join(
         _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
@@ -70,6 +78,135 @@ def _hermes_ensure_own_tab():
         pass
 _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
+"""
+
+# Preamble prepended to EVERY browser_exec call. The harness exposes only a
+# destructive drain_events() for CDP events and never tells the model about
+# it, so console/network reading was impossible; and cdp()'s second
+# positional is session_id, which the model reliably fills with a params
+# dict. Everything here is Hermes-side (browser_harness is a third-party
+# package): stdlib pre-imports, a cdp() guard, and an event journal in the
+# workspace that console_logs()/network_log() read from.
+_HELPERS_PREAMBLE = """\
+# hermes: stdlib pre-imports + console/network journal + cdp() guard
+import re, json, csv, os, sys, time, datetime, collections
+from pathlib import Path
+
+def _hermes_wrap_cdp(_raw):
+    def cdp(method, session_id=None, **params):
+        if isinstance(session_id, dict):  # cdp('X.y', {...}) -> params
+            params = {**session_id, **params}
+            session_id = None
+        elif session_id is not None and not isinstance(session_id, str):
+            raise TypeError(
+                "cdp(method, session_id=None, **params): session_id must be a "
+                "CDP session id string; pass CDP params as keyword arguments"
+            )
+        return _raw(method, session_id, **params)
+    cdp.__doc__ = _raw.__doc__
+    return cdp
+cdp = _hermes_wrap_cdp(cdp)
+del _hermes_wrap_cdp
+
+def _hermes_events_path():
+    import tempfile as _tf
+    ws = os.environ.get("BH_AGENT_WORKSPACE")
+    if ws:
+        return os.path.join(ws, "browser_events.jsonl")
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    name = os.environ.get("BU_NAME", "default")
+    return os.path.join(_tf.gettempdir(), "hermes-bu-events-%s-%s.jsonl" % (uid, name))
+
+def _hermes_flush_events():
+    # ponytail: daemon buffer is a 500-event deque shared by every reader;
+    # journal to disk so events survive across browser_exec calls.
+    try:
+        evs = drain_events()
+    except Exception:
+        return
+    if not evs:
+        return
+    try:
+        with open(_hermes_events_path(), "a") as f:
+            for e in evs:
+                f.write(json.dumps(e, default=str) + "\\n")
+    except OSError:
+        pass
+
+def _hermes_read_events(clear=False):
+    _hermes_flush_events()
+    path = _hermes_events_path()
+    out = []
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+        if clear:
+            open(path, "w").close()
+    except OSError:
+        pass
+    return out
+
+def _hermes_remote_text(obj):
+    if not isinstance(obj, dict):
+        return str(obj)
+    if "value" in obj:
+        return obj["value"] if isinstance(obj["value"], str) else json.dumps(obj["value"])
+    return obj.get("description") or obj.get("unserializableValue") or obj.get("type", "")
+
+def console_logs(clear=False, contains=None):
+    \"\"\"Console messages + uncaught exceptions captured so far, oldest first.
+    Returns [{level, text, url, line, ts}]. clear=True empties the journal.\"\"\"
+    out = []
+    for e in _hermes_read_events(clear):
+        m, p = e.get("method"), e.get("params", {})
+        if m == "Runtime.consoleAPICalled":
+            frame = (p.get("stackTrace") or {}).get("callFrames") or [{}]
+            out.append({
+                "level": p.get("type", "log"),
+                "text": " ".join(_hermes_remote_text(a) for a in p.get("args", [])),
+                "url": frame[0].get("url", ""), "line": frame[0].get("lineNumber"),
+                "ts": p.get("timestamp"),
+            })
+        elif m == "Runtime.exceptionThrown":
+            d = p.get("exceptionDetails", {})
+            out.append({
+                "level": "error",
+                "text": _hermes_remote_text(d.get("exception")) or d.get("text", ""),
+                "url": d.get("url", ""), "line": d.get("lineNumber"),
+                "ts": p.get("timestamp"),
+            })
+    if contains:
+        out = [c for c in out if contains in c["text"]]
+    return out
+
+def network_log(clear=False, contains=None):
+    \"\"\"Requests captured so far, oldest first: [{url, method, status, mime, type, requestId}].
+    clear=True empties the journal.\"\"\"
+    reqs = collections.OrderedDict()
+    for e in _hermes_read_events(clear):
+        m, p = e.get("method"), e.get("params", {})
+        rid = p.get("requestId")
+        if m == "Network.requestWillBeSent":
+            r = p.get("request", {})
+            reqs[rid] = {"url": r.get("url"), "method": r.get("method"), "status": None,
+                         "mime": None, "type": p.get("type"), "requestId": rid}
+        elif m == "Network.responseReceived" and rid in reqs:
+            r = p.get("response", {})
+            reqs[rid].update(status=r.get("status"), mime=r.get("mimeType"))
+        elif m == "Network.loadingFailed" and rid in reqs:
+            reqs[rid]["error"] = p.get("errorText")
+    out = list(reqs.values())
+    if contains:
+        out = [r for r in out if contains in (r["url"] or "")]
+    return out
+
+import atexit as _hermes_atexit
+_hermes_atexit.register(_hermes_flush_events)
+del _hermes_atexit
 """
 
 _DEFAULT_TIMEOUT_S = 300
@@ -796,6 +933,7 @@ def browser_exec(
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    code = _HELPERS_PREAMBLE + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
@@ -873,7 +1011,9 @@ def browser_exec(
 # The tool description is the CLI's skill, fetched from browser-use skill
 _HEADER_BASE = (
     "Drive a real web browser via the Browser Use CLI: `code` runs as full "
-    "Python (stdlib available) with pre-imported browser helpers; stdout "
+    "Python (re/json/csv/os/sys/time/datetime/collections/Path are "
+    "pre-imported; `import` any other stdlib module yourself) with "
+    "pre-imported browser helpers; stdout "
     "comes back in the result. Start `code` with a one-line comment "
     "describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the "
@@ -973,7 +1113,17 @@ _HELPERS_DIGEST = (
     "a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks "
     "viewport coordinates, capture_screenshot() saves and prints a "
-    "screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
+    "screenshot path. TABS: list_tabs() -> [{targetId,url,title}], "
+    "current_tab(), switch_tab(targetId) attaches to a tab, close_tab(targetId). "
+    "DEVTOOLS: console_logs(contains=None, clear=False) -> "
+    "[{level,text,url,line}] console messages and uncaught exceptions "
+    "captured since the last clear (Runtime is always enabled — no setup); "
+    "network_log(contains=None, clear=False) -> [{url,method,status,mime}] "
+    "requests captured so far (Network is always enabled); call wait(1) "
+    "after triggering activity before reading either. cdp(method, "
+    "session_id=None, **params) is raw CDP — params MUST be keyword args: "
+    "cdp('DOM.getDocument', depth=-1); the 2nd positional is a CDP "
+    "sessionId string (rarely needed; the attached tab is the default). "
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's "
     "role/name/backendDOMNodeId (filter in Python before printing; it is "
     "thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) gives "

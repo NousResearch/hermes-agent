@@ -5,6 +5,8 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 """
 
 import contextlib
+import os
+import re
 
 from typing import Optional
 from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
@@ -771,6 +773,359 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
     return custom_provider_map
 
 
+
+def _select_custom_provider(title):
+    """Show a menu to pick one saved custom provider from any config schema.
+
+    Returns ``(normalized_entry, schema, ref, config_dict)`` on selection,
+    or ``None`` if the user cancels or no providers exist.
+
+    *schema* is ``"legacy"`` (entry lives in ``custom_providers`` list) or
+    ``"providers"`` (entry lives in the keyed ``providers`` dict).
+    *ref* is the list index for legacy entries or the dict key for v12 entries.
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config
+
+    cfg = load_config()
+    entries = get_compatible_custom_providers(cfg)
+    if not entries:
+        print("No custom providers configured.")
+        return None
+
+    choices = []
+    for entry in entries:
+        name = entry.get("name", "unnamed")
+        url = entry.get("base_url", "")
+        short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+        choices.append(f"{name} ({short_url})")
+    choices.append("Cancel")
+
+    idx = _prompt_provider_choice(choices, title=title)
+    if idx is None or not 0 <= idx < len(entries):
+        print("No change.")
+        return None
+
+    selected = entries[idx]
+    provider_key = (selected.get("provider_key") or "").strip()
+
+    if provider_key:
+        from hermes_cli.config import find_provider_entry
+
+        stored_key, raw_entry = find_provider_entry(cfg.get("providers"), provider_key)
+        if raw_entry is not None:
+            return selected, "providers", stored_key, cfg
+    else:
+        sel_name = (selected.get("name") or "").strip()
+        sel_url = (selected.get("base_url") or "").rstrip("/")
+        legacy_list = cfg.get("custom_providers") or []
+        for i, raw in enumerate(legacy_list):
+            if not isinstance(raw, dict):
+                continue
+            raw_name = (raw.get("name") or "").strip()
+            raw_url = (
+                raw.get("base_url")
+                or raw.get("baseUrl")
+                or raw.get("url")
+                or raw.get("api")
+                or ""
+            ).rstrip("/")
+            if raw_name == sel_name and raw_url == sel_url:
+                return selected, "legacy", i, cfg
+
+    print("The selected provider is no longer present in config.yaml. No change.")
+    return None
+
+
+def _parse_context_length_input(raw, fallback=None):
+    """Parse a human-entered context-length string (e.g. ``"128k"``, ``"32768"``).
+
+    Returns an ``int`` on success, *fallback* on empty/invalid input.
+    """
+    if not raw:
+        return fallback
+    try:
+        value = int(raw.replace(",", "").replace("k", "000").replace("K", "000"))
+        return value if value > 0 else fallback
+    except ValueError:
+        print(f"Invalid context length: {raw} — keeping previous value.")
+        return fallback
+
+
+def _get_context_length(models_dict, model_name):
+    """Read context_length for *model_name* from a provider's ``models`` dict."""
+    if not isinstance(models_dict, dict) or not model_name:
+        return None
+    info = models_dict.get(model_name)
+    return info.get("context_length") if isinstance(info, dict) else None
+
+
+def _verify_changed_endpoint(
+    old_url,
+    new_url,
+    api_key="",
+    *,
+    api_mode="",
+    request_headers=None,
+):
+    """Re-probe a changed endpoint and return the URL that actually worked."""
+    if old_url.rstrip("/") == new_url.rstrip("/"):
+        return new_url
+    if re.search(r"\{[^}]+\}", new_url):
+        print("\nEndpoint URL contains an unresolved template; skipping verification.")
+        return new_url
+
+    from hermes_cli.models import probe_api_models
+
+    print("\nVerifying updated endpoint...")
+    probe = probe_api_models(
+        api_key,
+        new_url,
+        api_mode=api_mode or None,
+        request_headers=request_headers,
+    )
+    if probe.get("used_fallback") and probe.get("resolved_base_url"):
+        resolved_url = probe["resolved_base_url"]
+        print(
+            f"Endpoint verification worked at {probe['resolved_base_url']}/models, "
+            "not the exact URL entered. Saving the working base URL instead."
+        )
+        return resolved_url
+    if probe.get("models") is not None:
+        print(
+            f"Verified endpoint via {probe.get('probed_url')} "
+            f"({len(probe.get('models') or [])} model(s) visible)"
+        )
+    else:
+        print(
+            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
+            "Hermes will still save it."
+        )
+    return new_url
+
+
+def _edit_custom_provider(config):
+    """Let the user edit a saved custom provider in config.yaml.
+
+    Handles both legacy ``custom_providers`` list entries and v12+
+    ``providers`` dict entries. Preserves per-model metadata (e.g.
+    ``supports_vision``) when changing model name or context length.
+    """
+    from urllib.parse import urlparse
+
+    from hermes_cli.config import (
+        custom_endpoint_key_env,
+        find_provider_entry,
+        get_env_value,
+        read_raw_config,
+        save_config,
+        save_env_value,
+    )
+    from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+    from hermes_cli.secret_prompt import masked_secret_prompt
+
+    del config  # Selection reloads the latest config before editing it.
+    # line_input resolves through hermes_cli.main at call time so test
+    # monkeypatches on that facade keep intercepting (same pattern as _model_flow_*).
+    import hermes_cli.main as _main_facade
+    line_input = getattr(_main_facade, "line_input")
+    print("Edit a custom provider:\n")
+    result = _select_custom_provider("Select provider to edit:")
+    if result is None:
+        return
+    normalized, schema, ref, cfg = result
+
+    old_name = normalized.get("name", "")
+    old_base_url = normalized.get("base_url", "")
+    old_model = normalized.get("model", "")
+    old_models = (
+        normalized.get("models")
+        if isinstance(normalized.get("models"), dict)
+        else {}
+    )
+
+    if schema == "providers":
+        providers = cfg.get("providers")
+        raw_entry = providers.get(ref) if isinstance(providers, dict) else None
+    else:
+        legacy_list = cfg.get("custom_providers")
+        raw_entry = (
+            legacy_list[ref]
+            if isinstance(legacy_list, list) and 0 <= ref < len(legacy_list)
+            else None
+        )
+    if not isinstance(raw_entry, dict):
+        print("The selected provider is no longer present in config.yaml. No change.")
+        return
+
+    raw_cfg = read_raw_config()
+    if schema == "providers":
+        _, stored_entry = find_provider_entry(raw_cfg.get("providers"), ref)
+    else:
+        stored_list = raw_cfg.get("custom_providers")
+        stored_entry = (
+            stored_list[ref]
+            if isinstance(stored_list, list) and 0 <= ref < len(stored_list)
+            else None
+        )
+    if not isinstance(stored_entry, dict):
+        stored_entry = raw_entry
+
+    configured_key_env = str(
+        stored_entry.get("key_env")
+        or stored_entry.get("api_key_env")
+        or stored_entry.get("keyEnv")
+        or stored_entry.get("apiKeyEnv")
+        or normalized.get("key_env")
+        or ""
+    ).strip()
+    raw_api_key = str(
+        stored_entry.get("api_key") or stored_entry.get("apiKey") or ""
+    ).strip()
+    env_ref = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", raw_api_key)
+    if not configured_key_env and env_ref:
+        configured_key_env = env_ref.group(1)
+    existing_api_key = str(normalized.get("api_key") or "").strip()
+    if not existing_api_key and configured_key_env:
+        existing_api_key = get_env_value(configured_key_env) or os.getenv(
+            configured_key_env, ""
+        )
+
+    print(f"Editing: {old_name}")
+    print("Press Enter to keep current value, or type a new value.\n")
+
+    try:
+        new_name = line_input(f"  Name [{old_name}]: ").strip() or old_name
+        new_base_url = (
+            line_input(f"  Base URL [{old_base_url}]: ").strip() or old_base_url
+        )
+        key_state = "configured" if existing_api_key or configured_key_env else "none"
+        entered_api_key = masked_secret_prompt(
+            f"  API key [{key_state}; blank keeps current]: "
+        ).strip()
+        new_model = (
+            line_input(f"  Model [{old_model or 'none'}]: ").strip() or old_model
+        )
+        target_context_length = _get_context_length(old_models, new_model)
+        ctx_display = (
+            str(target_context_length) if target_context_length else "auto-detect"
+        )
+        raw_context = line_input(f"  Context length [{ctx_display}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    parsed_url = urlparse(new_base_url)
+    unresolved_url_template = bool(re.search(r"\{[^}]+\}", new_base_url))
+    if not unresolved_url_template and (
+        parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc
+    ):
+        print(f"Invalid URL: {new_base_url} (must be a complete http(s) URL)")
+        return
+
+    effective_api_key = entered_api_key or existing_api_key
+    new_base_url = _verify_changed_endpoint(
+        old_base_url,
+        new_base_url,
+        effective_api_key,
+        api_mode=str(normalized.get("api_mode") or ""),
+        request_headers=normalized.get("extra_headers"),
+    )
+    parsed_url = urlparse(new_base_url)
+    new_context_length = _parse_context_length_input(
+        raw_context,
+        fallback=target_context_length,
+    )
+
+    def _replace_aliases(aliases, canonical_key, value):
+        for alias in aliases:
+            raw_entry.pop(alias, None)
+        raw_entry[canonical_key] = value
+
+    if new_name != old_name:
+        raw_entry["name"] = new_name
+    if new_base_url != old_base_url:
+        _replace_aliases(
+            ("base_url", "baseUrl", "url", "api"),
+            "api" if schema == "providers" else "base_url",
+            new_base_url,
+        )
+    if new_model != old_model:
+        _replace_aliases(
+            ("model", "default_model", "defaultModel"),
+            "default_model" if schema == "providers" else "model",
+            new_model,
+        )
+
+    plaintext_api_key = bool(raw_api_key and env_ref is None)
+    key_to_save = entered_api_key or (existing_api_key if plaintext_api_key else "")
+    saved_key_env = ""
+    if key_to_save:
+        saved_key_env = configured_key_env
+        if not saved_key_env:
+            identity = parsed_url.hostname or "custom"
+            if parsed_url.port:
+                identity = f"{identity}_{parsed_url.port}"
+            saved_key_env = custom_endpoint_key_env(identity)
+        save_env_value(saved_key_env, key_to_save)
+        for key in (
+            "api_key",
+            "apiKey",
+            "api_key_env",
+            "apiKeyEnv",
+            "keyEnv",
+        ):
+            raw_entry.pop(key, None)
+        raw_entry["key_env"] = saved_key_env
+        action = "saved" if entered_api_key else "moved from config.yaml"
+        print(f"  API key {action} to .env as {saved_key_env}")
+
+    raw_models = raw_entry.get("models")
+    if not isinstance(raw_models, dict):
+        raw_models = dict(old_models)
+
+    if new_model and new_context_length is not None:
+        target_meta = raw_models.get(new_model)
+        if not isinstance(target_meta, dict):
+            target_meta = {}
+        target_meta["context_length"] = new_context_length
+        raw_models[new_model] = target_meta
+
+    if raw_models:
+        raw_entry["models"] = raw_models
+    elif "models" in raw_entry and isinstance(raw_entry.get("models"), dict):
+        raw_entry.pop("models", None)
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        active_provider = str(model_cfg.get("provider") or "").strip().lower()
+        aliases = custom_provider_aliases(
+            old_name,
+            str(ref) if schema == "providers" else "",
+        )
+        is_active = active_provider in aliases
+        if schema == "legacy":
+            active_url = str(model_cfg.get("base_url") or "").rstrip("/")
+            is_active = is_active or (
+                active_provider == "custom" and active_url == old_base_url.rstrip("/")
+            )
+            if is_active and active_provider != "custom":
+                model_cfg["provider"] = custom_provider_slug(new_name)
+            if is_active and new_base_url != old_base_url:
+                model_cfg["base_url"] = new_base_url
+            if is_active and saved_key_env:
+                model_cfg["api_key"] = f"${{{saved_key_env}}}"
+        elif is_active:
+            model_cfg["provider"] = custom_provider_slug(new_name, str(ref))
+        if (
+            is_active
+            and new_model != old_model
+            and model_cfg.get("default") == old_model
+        ):
+            model_cfg["default"] = new_model
+
+    save_config(cfg)
+    print(f'\nUpdated "{new_name}" in custom providers.')
+
 def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict[str, str],
                                 custom_provider_map: dict[str, dict[str, str]]) -> tuple[list[tuple[str, str, list[str]]], int]:
     """Rows for the ``hermes model`` provider picker plus the pre-selected index. Canonical providers
@@ -825,6 +1180,8 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
              bool(active) and key == active)
 
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
+    if custom_provider_map:
+        ordered.append(("edit-custom", "Edit a saved custom provider", []))
     if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))
     ordered.append(("aux-config", "Configure auxiliary models...", []))

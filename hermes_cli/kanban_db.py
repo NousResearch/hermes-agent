@@ -9163,6 +9163,52 @@ def _worker_pid_start_time(pid: int) -> Optional[int]:
         return None
 
 
+# Legacy rows (no spawn fingerprint) get a membership check against the
+# run's started_at: a worker cannot have been running before its run
+# existed.  The tolerance covers int-second truncation and minor clock
+# skew between the run row write and the process spawn.
+_LEGACY_PID_START_TOLERANCE_SECONDS = 15
+
+
+def _worker_pid_epoch_start(pid: int) -> Optional[float]:
+    """Epoch start time of *pid*, or None.
+
+    Unlike :func:`_worker_pid_start_time` — the opaque, per-platform
+    fingerprint recorded at spawn — this is a comparable wall-clock
+    timestamp (psutil's ``create_time``), so it can be checked against
+    run ``started_at`` values.  None when the process is gone or its
+    start time cannot be read.
+    """
+    try:
+        import psutil
+
+        return psutil.Process(int(pid)).create_time()
+    except Exception:
+        return None
+
+
+def _legacy_pid_belongs_to_run(
+    pid: int, run_started_at: Optional[int]
+) -> bool:
+    """Membership gate for legacy rows without a start-time fingerprint.
+
+    A worker is spawned at or after its run row's ``started_at``; a live
+    process that was already running before that (outside the tolerance
+    above) therefore cannot be the run's worker — it is an unrelated
+    process that merely carries a recycled pid number.  True when the
+    pid plausibly belongs to the run, INCLUDING when the check cannot
+    run at all (psutil unavailable, process already gone): the gate
+    refines legacy handling, it must never regress it below what the
+    bare-pid kill already guaranteed.
+    """
+    if run_started_at is None:
+        return True
+    started = _worker_pid_epoch_start(pid)
+    if started is None:
+        return True
+    return started >= int(run_started_at) - _LEGACY_PID_START_TOLERANCE_SECONDS
+
+
 def _worker_pid_identity_alive(pid: int, started_at: Optional[int]) -> bool:
     """True when *pid* is alive AND is the same process we spawned.
 
@@ -9517,8 +9563,24 @@ def enforce_max_runtime(
                     "unrelated process — not signalling; reclaiming",
                     tid, pid,
                 )
-        # Legacy rows without a fingerprint keep the bare-pid kill (no
-        # better signal exists for them).
+        elif pid_started is None and not _legacy_pid_belongs_to_run(
+            pid, row["active_started_at"],
+        ):
+            # Legacy row with no spawn fingerprint: the live pid was
+            # running BEFORE this run existed, so it cannot be this
+            # run's worker — an unrelated process inherited the pid
+            # number.  Reclaim without signalling it.
+            skip_signals = True
+            pid_reused = _pid_alive(pid)
+            if pid_reused:
+                _log.warning(
+                    "kanban: task %s max-runtime pid %s predates the run "
+                    "— unrelated process; not signalling; reclaiming",
+                    tid, pid,
+                )
+        # Legacy rows whose pid plausibly belongs to the run (and rows
+        # with a matching fingerprint) keep the bare-pid kill — no
+        # better signal exists for them.
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.

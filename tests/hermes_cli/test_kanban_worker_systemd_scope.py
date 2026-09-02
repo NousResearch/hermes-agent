@@ -1669,6 +1669,75 @@ def test_enforce_max_runtime_never_signals_a_recycled_pid(shims, conn):
     assert payload.get("pid_reused") is True
 
 
+def test_enforce_max_runtime_legacy_row_with_predating_pid_not_signalled(
+    shims, conn, monkeypatch
+):
+    """B (finding, legacy half): a row written before the fingerprint
+    column existed has no pid identity to check — but a live process
+    that was running BEFORE the run started cannot be that run's worker,
+    so the pid must not be signalled; the run still times out."""
+    pid = shims.sleeper()  # stands in for the unrelated impostor
+    tid = _max_runtime_row(conn, pid, None, pid_started_at=None)
+    started = conn.execute(
+        "SELECT COALESCE(r.started_at, t.started_at) AS s "
+        "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.id = ?",
+        (tid,),
+    ).fetchone()["s"]
+    # The live pid began long before the run row existed.
+    monkeypatch.setattr(
+        kb, "_worker_pid_epoch_start",
+        lambda _pid: float(started) - 3600.0,
+    )
+    signals: list[tuple[int, int]] = []
+
+    def recording_kill(p, s):
+        signals.append((p, s))
+
+    assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
+    assert signals == []
+    assert kb._pid_alive(pid)  # the impostor was never touched
+    payload = _timed_out_payload(conn, tid)
+    assert payload.get("pid_reused") is True
+
+
+def test_enforce_max_runtime_legacy_row_matching_start_still_killed(
+    shims, conn
+):
+    """B, control case: a legacy row whose live pid started AFTER the run
+    began (the normal case — worker spawned at run start) still gets the
+    bare-pid timeout; the gate must not regress legacy handling."""
+    pid = shims.sleeper()
+    tid = _max_runtime_row(conn, pid, None, pid_started_at=None)
+
+    assert kb.enforce_max_runtime(conn) == [tid]
+    assert not kb._pid_alive(pid)  # teardown verified, not assumed
+    payload = _timed_out_payload(conn, tid)
+    assert payload.get("pid") == pid
+    assert "pid_reused" not in payload
+
+
+def test_enforce_max_runtime_legacy_row_unreadable_start_still_killed(
+    shims, conn, monkeypatch
+):
+    """B: when the epoch-start check cannot run at all (psutil missing,
+    exotic process), the gate steps aside — refusing to time out legacy
+    rows would be worse than the bare-pid kill it replaced."""
+    pid = shims.stubborn_sleeper()
+    tid = _max_runtime_row(conn, pid, None, pid_started_at=None)
+    monkeypatch.setattr(kb, "_worker_pid_epoch_start", lambda _pid: None)
+    signals: list[tuple[int, int]] = []
+
+    def recording_kill(p, s):
+        signals.append((p, s))
+        os.kill(p, s)
+
+    assert kb.enforce_max_runtime(conn, signal_fn=recording_kill) == [tid]
+    assert (pid, signal.SIGTERM) in signals
+    assert (pid, signal.SIGKILL) in signals  # stubborn: escalation fired
+    assert not kb._pid_alive(pid)  # teardown verified, not assumed
+
+
 def test_reclaim_task_stops_worker_scope(shims, conn):
     """Operator reclaim of a scoped worker stops its scope too."""
     pid = shims.sleeper()

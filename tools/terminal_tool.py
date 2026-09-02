@@ -372,6 +372,62 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
     )
 
 
+def _mount_spec_has_host_source(mount_spec: str) -> bool:
+    """Return True when a ``--mount`` spec bind-mounts a host path.
+
+    Parses the comma-separated key=value form (``type=bind,source=/host,...``)
+    and returns True only for bind mounts whose source is a host path. Named
+    volumes (``type=volume``) and tmpfs mounts never expose host files.
+    """
+    if not isinstance(mount_spec, str):
+        return False
+    parts: dict = {}
+    for pair in mount_spec.split(","):
+        if "=" in pair:
+            key, _, value = pair.partition("=")
+            parts[key.strip().lower()] = value.strip()
+    if parts.get("type", "bind") != "bind":
+        return False
+    source = parts.get("source") or parts.get("src")
+    return bool(source) and _docker_volume_uses_host_path(source)
+
+
+def _extra_args_expose_host_path(extra_args) -> bool:
+    """Return True when raw run args carry a host bind/volume mount.
+
+    ``extra_args`` are passed verbatim to the runtime (``docker run`` /
+    ``container run``), so a user can smuggle a host mount past the structured
+    ``*_volumes`` lists via ``--mount type=bind,source=/host,...`` or
+    ``-v /host:/container``. Such mounts must be treated as host access or the
+    approval guard would skip for a container that can reach host files.
+    """
+    args = [a for a in (extra_args or []) if isinstance(a, str)]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg == "--mount" and nxt is not None:
+            if _mount_spec_has_host_source(nxt):
+                return True
+            i += 2
+            continue
+        if arg.startswith("--mount="):
+            if _mount_spec_has_host_source(arg[len("--mount="):]):
+                return True
+            i += 1
+            continue
+        if arg in ("-v", "--volume") and nxt is not None:
+            if _docker_volume_uses_host_path(nxt):
+                return True
+            i += 2
+            continue
+        for prefix in ("-v=", "--volume="):
+            if arg.startswith(prefix) and _docker_volume_uses_host_path(arg[len(prefix):]):
+                return True
+        i += 1
+    return False
+
+
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a local container exposes user-selected host paths.
 
@@ -380,15 +436,23 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """
     env_type = config.get("env_type")
     if env_type == "apple_container":
-        return any(
-            _docker_volume_uses_host_path(volume)
-            for volume in config.get("apple_container_volumes", [])
+        return (
+            any(
+                _docker_volume_uses_host_path(volume)
+                for volume in config.get("apple_container_volumes", [])
+            )
+            or _extra_args_expose_host_path(
+                config.get("apple_container_extra_args")
+            )
         )
     if env_type != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    return (
+        any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+        or _extra_args_expose_host_path(config.get("docker_extra_args"))
+    )
 
 
 def _check_all_guards(command: str, env_type: str,

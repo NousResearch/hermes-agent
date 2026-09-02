@@ -372,6 +372,39 @@ class TestDockerHostBindApproval:
             {"env_type": "apple_container",
              "apple_container_volumes": ["/tmp:/workspace/host"]}) is True
 
+    def test_extra_args_host_mount_detection(self):
+        """Host bind mounts smuggled via *_extra_args are treated as host access."""
+        # Docker: --mount bind of a host path (split and '=' forms).
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker",
+             "docker_extra_args": ["--mount",
+                                   "type=bind,source=/home/u/data,target=/data"]}) is True
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker",
+             "docker_extra_args": ["--mount=type=bind,source=/tmp,target=/x"]}) is True
+        # Docker: -v / --volume host bind mounts.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_extra_args": ["-v", "/tmp:/hosttmp"]}) is True
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_extra_args": ["--volume=/srv:/data"]}) is True
+        # Named volume / tmpfs / non-bind mounts never count as host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker",
+             "docker_extra_args": ["--mount", "type=volume,source=myvol,target=/data"]}) is False
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker",
+             "docker_extra_args": ["--mount", "type=tmpfs,target=/scratch"]}) is False
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_extra_args": ["--network", "none"]}) is False
+        # Apple Container: same gap closed for apple_container_extra_args.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "apple_container",
+             "apple_container_extra_args": ["--mount",
+                                            "type=bind,source=/Users/aji,target=/workspace"]}) is True
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "apple_container",
+             "apple_container_extra_args": ["--shm-size", "1g"]}) is False
+
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A

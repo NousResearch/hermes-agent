@@ -10258,7 +10258,12 @@ def _dispatch_once_locked(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+            claimed.branch_name = (
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{claimed.id}"
+            )
+            set_branch_name(conn, claimed.id, claimed.branch_name)
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -10385,7 +10390,12 @@ def _dispatch_once_locked(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+            claimed.branch_name = (
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{claimed.id}"
+            )
+            set_branch_name(conn, claimed.id, claimed.branch_name)
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory

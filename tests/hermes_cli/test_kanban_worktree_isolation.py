@@ -126,5 +126,96 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+@pytest.mark.parametrize("lane", ["ready", "review"])
+def test_first_dispatch_spawn_receives_resolved_worktree_branch(
+    kanban_home, tmp_path, monkeypatch, lane
+):
+    """The first worker sees the same fallback branch persisted for its task."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        kb,
+        "_resolve_worktree_workspace",
+        lambda task, **_kwargs: (workspace, f"wt/{task.id}"),
+    )
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    captured = {}
+
+    def spawn(task, workspace):
+        captured["branch_name"] = task.branch_name
+        captured["workspace"] = workspace
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title=f"{lane} worktree",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(workspace),
+        )
+        if lane == "review":
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+            conn.commit()
+
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+        persisted = kb.get_task(conn, tid)
+
+    expected_branch = f"wt/{tid}"
+    assert result.spawned == [(tid, "worker", captured["workspace"])]
+    assert persisted is not None
+    assert persisted.branch_name == expected_branch
+    assert captured["branch_name"] == expected_branch
+    assert Path(captured["workspace"]) == workspace
+
+
+@pytest.mark.parametrize("lane", ["ready", "review"])
+def test_dispatch_does_not_invent_branch_for_directory_workspace(
+    kanban_home, tmp_path, monkeypatch, lane
+):
+    """Only worktree tasks receive branch metadata at spawn time."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    captured = {}
+
+    def spawn(task, _workspace):
+        captured["branch_name"] = task.branch_name
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title=f"{lane} directory",
+            assignee="worker",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        if lane == "review":
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+            conn.commit()
+
+        kb.dispatch_once(conn, spawn_fn=spawn)
+        persisted = kb.get_task(conn, tid)
+
+    assert persisted is not None
+    assert persisted.branch_name is None
+    assert captured["branch_name"] is None
+
+
 
 

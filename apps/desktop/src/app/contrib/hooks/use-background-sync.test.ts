@@ -41,7 +41,13 @@ vi.mock('@/hermes', async importOriginal => ({
   getLatestSessionMessages: vi.fn()
 }))
 
+vi.mock('@/store/projects', async importOriginal => ({
+  ...(await importOriginal()),
+  refreshProjectTree: vi.fn(async () => undefined)
+}))
+
 const { getLatestSessionMessages } = await import('@/hermes')
+const { refreshProjectTree } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
@@ -563,6 +569,16 @@ describe('active transcript refresh', () => {
     })
 
     expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes the project tree on a sessions.changed tick, alongside the sessions list (#100354)', async () => {
+    $changeEventsAvailable.set(true)
+
+    renderSync(vi.fn(async () => undefined))
+
+    act(() => notifySessionsChanged())
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })
 

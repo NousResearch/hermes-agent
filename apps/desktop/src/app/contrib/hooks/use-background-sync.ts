@@ -9,6 +9,7 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
+import { refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -729,6 +730,11 @@ export function useBackgroundSync({
       lastRunAt = Date.now()
       void refreshSessions()
       void refreshMessagingSessions()
+      // The project tree is a grouping of the same stored rows, so a session
+      // created/deleted/renamed/re-homed outside this window goes stale in the
+      // Projects sidebar without this (#100354). refreshProjectTree() keeps the
+      // cached tree on failure, so a not-yet-ready backend costs nothing.
+      void refreshProjectTree()
       requestActiveTranscriptRefresh(true)
       // Bot canonical chats live in workspace tiles, never in the main-pane
       // selection — without this they never see background deliveries

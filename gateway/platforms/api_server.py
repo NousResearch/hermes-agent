@@ -1814,6 +1814,43 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    def _parse_session_id_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract and validate the ``X-Hermes-Session-Id`` header."""
+        raw = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not raw:
+            return None, None
+
+        if not self._api_key:
+            logger.warning(
+                "Session continuation via X-Hermes-Session-Id rejected: "
+                "no API key configured.  Set API_SERVER_KEY to enable "
+                "session continuity."
+            )
+            return None, web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+
+        from gateway.session import _is_path_unsafe
+
+        if re.search(r'[\r\n\x00]', raw) or _is_path_unsafe(raw):
+            return None, web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None, web.json_response(
+                {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        return raw, None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -3724,37 +3761,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id, session_id_err = self._parse_session_id_header(request)
+        if session_id_err is not None:
+            return session_id_err
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
-                )
-                return web.json_response(
-                    _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
-                    ),
-                    status=403,
-                )
-            # Sanitize: reject control characters that could enable header
-            # injection, and path-traversal-shaped IDs that would escape the
-            # sessions directory when interpolated into on-disk artifact
-            # filenames (session snapshots, request dumps). Mirrors the native
-            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return web.json_response(
-                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
-                    status=400,
-                )
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
@@ -6049,8 +6059,42 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
+        input_messages: List[Dict[str, Any]] = []
+        if isinstance(raw_input, str):
+            input_messages = [{"role": "user", "content": raw_input}]
+        elif isinstance(raw_input, list):
+            for idx, item in enumerate(raw_input):
+                if isinstance(item, str):
+                    input_messages.append({"role": "user", "content": item})
+                elif isinstance(item, dict):
+                    if "content" not in item:
+                        return web.json_response(
+                            _openai_error(
+                                "Input message objects must include a 'content' field",
+                                code="invalid_input_item",
+                                param=f"input[{idx}]",
+                            ),
+                            status=400,
+                        )
+                    try:
+                        content = _normalize_multimodal_content(item.get("content", ""))
+                    except ValueError as exc:
+                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                    input_messages.append({"role": item.get("role", "user"), "content": content})
+                else:
+                    return web.json_response(
+                        _openai_error(
+                            "Input array items must be strings or message objects",
+                            code="invalid_input_item",
+                            param=f"input[{idx}]",
+                        ),
+                        status=400,
+                    )
+        else:
+            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+
+        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         instructions = body.get("instructions")
@@ -6058,7 +6102,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -6072,7 +6116,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                try:
+                    entry_content = _normalize_multimodal_content(entry["content"])
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -6088,19 +6136,49 @@ class APIServerAdapter(BasePlatformAdapter):
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
         # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-            for msg in raw_input[:-1]:
-                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
-                        content = " ".join(
-                            part.get("text", "") for part in content
-                            if isinstance(part, dict) and part.get("type") == "text"
-                        )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+        if not conversation_history and len(input_messages) > 1:
+            for msg in input_messages[:-1]:
+                if msg.get("role") and _content_has_visible_payload(msg.get("content")):
+                    conversation_history.append(msg)
 
-        session_id = body.get("session_id") or stored_session_id
+        provided_session_id, session_id_err = self._parse_session_id_header(request)
+        if session_id_err is not None:
+            return session_id_err
+        raw_body_session_id = body.get("session_id")
+        if raw_body_session_id is not None and not isinstance(raw_body_session_id, str):
+            return web.json_response(
+                _openai_error(
+                    "Body session_id must be a string",
+                    code="invalid_session_id",
+                    param="session_id",
+                ),
+                status=400,
+            )
+        body_session_id = raw_body_session_id.strip() if raw_body_session_id else None
+        if body_session_id:
+            from gateway.session import _is_path_unsafe
+
+            if (
+                re.search(r'[\r\n\x00]', body_session_id)
+                or _is_path_unsafe(body_session_id)
+                or len(body_session_id) > self._MAX_SESSION_HEADER_LEN
+            ):
+                return web.json_response(
+                    _openai_error("Invalid session ID", code="invalid_session_id"),
+                    status=400,
+                )
+        if provided_session_id and body_session_id:
+            if body_session_id != provided_session_id:
+                return web.json_response(
+                    _openai_error(
+                        "X-Hermes-Session-Id does not match body session_id",
+                        code="session_id_mismatch",
+                        param="session_id",
+                    ),
+                    status=400,
+                )
+
+        session_id = provided_session_id or body_session_id or stored_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -6414,11 +6492,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
-        )
+        response_headers = {"X-Hermes-Session-Id": str(session_id)}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(
-            {"run_id": run_id, "status": "started"},
+            {"run_id": run_id, "session_id": session_id, "status": "started"},
             status=202,
             headers=response_headers,
         )

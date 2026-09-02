@@ -146,6 +146,279 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_start_normalizes_text_parts_without_changing_history(self, adapter):
+        app = _create_runs_app(adapter)
+        captured = {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    captured.update(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "hello"},
+                                    {"type": "text", "text": "there"},
+                                ],
+                            }
+                        ],
+                        "conversation_history": [
+                            {"role": "user", "content": "prior question"},
+                            {"role": "assistant", "content": "prior answer"},
+                        ],
+                    },
+                )
+                assert resp.status == 202
+                for _ in range(40):
+                    if captured:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured["user_message"] == "hello\nthere"
+        assert captured["conversation_history"] == [
+            {"role": "user", "content": "prior question"},
+            {"role": "assistant", "content": "prior answer"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_start_forwards_inline_image_and_remains_stoppable(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        image_data_url = "data:image/png;base64,iVBORw0KGgo="
+        image_input = [
+            {"type": "text", "text": "Ce arata captura?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_url, "detail": "high"},
+            },
+        ]
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    captured.update(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=task_id,
+                    )
+                    return _original_slow_run(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=task_id,
+                    )
+
+                _original_slow_run = mock_agent.run_conversation.side_effect
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": " crisp-session ",
+                    },
+                    json={
+                        "input": [{"role": "user", "content": image_input}],
+                        "session_id": "crisp-session",
+                    },
+                )
+                data = await resp.json()
+
+                assert resp.status == 202
+                assert data["session_id"] == "crisp-session"
+                assert resp.headers["X-Hermes-Session-Id"] == "crisp-session"
+                run_id = data["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+
+                request_headers = {
+                    "Authorization": "Bearer sk-secret",
+                    "X-Hermes-Session-Id": "crisp-session",
+                }
+                status_resp = await cli.get(
+                    f"/v1/runs/{run_id}", headers=request_headers
+                )
+                status = await status_resp.json()
+                assert status["session_id"] == "crisp-session"
+
+                stop_resp = await cli.post(
+                    f"/v1/runs/{run_id}/stop", headers=request_headers
+                )
+                assert stop_resp.status == 200
+
+        assert captured == {
+            "user_message": image_input,
+            "conversation_history": [],
+            "task_id": "crisp-session",
+        }
+        mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_image_data_url(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "read this"},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": "data:text/plain;base64,aGVsbG8="
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                )
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "unsupported_content_type"
+        assert payload["error"]["param"] == "input[0].content"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid_item", [42, {"role": "user"}])
+    async def test_start_rejects_invalid_input_array_items(self, adapter, invalid_item):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {"role": "user", "content": "valid first message"},
+                            invalid_item,
+                        ]
+                    },
+                )
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_input_item"
+        assert payload["error"]["param"] == "input[1]"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_session_header_body_mismatch(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "header-session",
+                    },
+                    json={"input": "hello", "session_id": "body-session"},
+                )
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "session_id_mismatch"
+        assert auth_adapter._run_streams == {}
+        assert auth_adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_unsafe_session_header(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "../../other-session",
+                    },
+                    json={"input": "hello"},
+                )
+
+        assert resp.status == 400
+        assert auth_adapter._run_streams == {}
+        assert auth_adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_unsafe_body_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "../../other-session"},
+                )
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_session_id"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_string_body_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": 123},
+                )
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_session_id"
+        assert payload["error"]["param"] == "session_id"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_session_header_requires_api_key_configuration(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"X-Hermes-Session-Id": "crisp-session"},
+                    json={"input": "hello"},
+                )
+
+        assert resp.status == 403
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async
@@ -374,7 +647,9 @@ class TestRunStatus:
                     "/v1/runs",
                     json={"input": "hello", "session_id": "space-session"},
                 )
+                assert resp.headers["X-Hermes-Session-Id"] == "space-session"
                 data = await resp.json()
+                assert data["session_id"] == "space-session"
                 run_id = data["run_id"]
 
                 for _ in range(20):

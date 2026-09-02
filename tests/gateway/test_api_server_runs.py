@@ -11,7 +11,7 @@ Covers:
 import asyncio
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
@@ -196,6 +196,60 @@ class TestStartRun:
             {"role": "user", "content": "prior question"},
             {"role": "assistant", "content": "prior answer"},
         ]
+
+    @pytest.mark.asyncio
+    async def test_start_reloads_session_history_for_repeated_session(self, adapter):
+        app = _create_runs_app(adapter)
+        captured_histories = []
+        stored_history = [
+            {"role": "user", "content": "prior question"},
+            {"role": "assistant", "content": "prior answer"},
+        ]
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(
+                    adapter,
+                    "_conversation_history_for_session",
+                    new_callable=AsyncMock,
+                ) as mock_history,
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_history.side_effect = [[], stored_history]
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    captured_histories.append(list(conversation_history))
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                first_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "first", "session_id": "crisp-session"},
+                )
+                second_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second", "session_id": "crisp-session"},
+                )
+
+                assert first_resp.status == 202
+                assert second_resp.status == 202
+
+                for _ in range(40):
+                    if len(captured_histories) == 2:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert mock_history.await_args_list == [
+            call("crisp-session"),
+            call("crisp-session"),
+        ]
+        assert captured_histories == [[], stored_history]
 
     @pytest.mark.asyncio
     async def test_start_forwards_inline_image_and_remains_stoppable(self, auth_adapter):

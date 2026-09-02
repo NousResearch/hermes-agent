@@ -174,6 +174,36 @@ def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
     assert os.environ.get("ANTHROPIC_API_KEY") is None
 
 
+def test_single_profile_scoped_load_keeps_override_behavior(tmp_path, monkeypatch):
+    """Without multiplex, a scoped load keeps its historical override behaviour.
+
+    Ported from #77970 (@DonShelly): the guard must key on the multiplex flag,
+    not on the home override alone -- single-profile ``-p`` runs still load.
+    """
+    from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.delenv("HERMES_TEST_SHARED_ADAPTER_CONFIG", raising=False)
+    other_home = tmp_path / "other"
+    other_home.mkdir()
+    (other_home / ".env").write_text("HERMES_TEST_SHARED_ADAPTER_CONFIG=second\n")
+
+    was_active = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(False)
+    home_token = set_hermes_home_override(other_home)
+    try:
+        loaded = env_loader.load_hermes_dotenv(hermes_home=other_home)
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+        reset_hermes_home_override(home_token)
+
+    try:
+        assert os.environ.get("HERMES_TEST_SHARED_ADAPTER_CONFIG") == "second"
+        assert (other_home / ".env") in loaded
+    finally:
+        os.environ.pop("HERMES_TEST_SHARED_ADAPTER_CONFIG", None)
+
+
 def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
     tmp_path, monkeypatch
 ):

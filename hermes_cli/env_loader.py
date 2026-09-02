@@ -51,6 +51,10 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
+# Routed profile homes whose dotenv load was skipped under multiplex, so the
+# skip is logged once per home rather than on every lazy import mid-turn.
+_SCOPED_SKIP_LOGGED: set[str] = set()
+
 
 def _known_hermes_env_keys() -> set[str]:
     """Return the combined set of known Hermes env-var keys.
@@ -501,6 +505,16 @@ def load_hermes_dotenv(
     from hermes_constants import get_hermes_home_override
 
     if is_multiplex_active() and get_hermes_home_override() is not None:
+        home_key = str(home_path.resolve())
+        if home_key not in _SCOPED_SKIP_LOGGED:
+            _SCOPED_SKIP_LOGGED.add(home_key)
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "multiplex: skipping process-global dotenv load for routed "
+                "profile home %s (credentials resolve via the profile scope)",
+                home_path,
+            )
         if load_external_secrets:
             from hermes_cli import _early_recovery
 

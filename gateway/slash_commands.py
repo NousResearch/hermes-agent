@@ -3079,8 +3079,6 @@ class GatewaySlashCommandsMixin:
             set_current_session_key,
         )
 
-        loop = asyncio.get_running_loop()
-
         def _dispatch():
             token = set_current_session_key(quick_key)
             try:
@@ -3091,7 +3089,10 @@ class GatewaySlashCommandsMixin:
                 reset_current_session_key(token)
 
         try:
-            result = await loop.run_in_executor(None, _dispatch)
+            # _run_in_executor_with_context, not a bare hop: the reviewer
+            # subagent is spawned from the worker and inherits its context,
+            # so a bare hop would run it under the launch home / no secret scope.
+            result = await self._run_in_executor_with_context(_dispatch)
         except ValueError as exc:
             return str(exc)
         except Exception as exc:
@@ -6016,11 +6017,12 @@ class GatewaySlashCommandsMixin:
         is written to the session transcript out-of-band, so message
         alternation is preserved.
         """
-        loop = asyncio.get_running_loop()
         try:
             from agent.skill_commands import reload_skills
 
-            result = await loop.run_in_executor(None, reload_skills)
+            # _run_in_executor_with_context, not a bare hop: the rescan walks
+            # get_hermes_home()/skills, a contextvar override under multiplex.
+            result = await self._run_in_executor_with_context(reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)

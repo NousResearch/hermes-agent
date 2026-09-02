@@ -960,6 +960,113 @@ class TestLoopTickWitness:
             assert not errors, errors
 
 
+class TestLoopTickTcpWitness:
+    """Non-POSIX arm: the producer publishes ``loop_tick_tcp_port`` and the
+    consumer probes 127.0.0.1:<port> instead of the AF_UNIX node. The
+    two-witness contract must hold identically over TCP."""
+
+    @staticmethod
+    def _tcp_answerer():
+        """A loopback listener that answers b"1" — the armed, dispatching loop."""
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        stop = threading.Event()
+
+        def serve():
+            srv.settimeout(0.1)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                try:
+                    conn.sendall(b"1")
+                finally:
+                    conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        return srv.getsockname()[1], stop, srv
+
+    @staticmethod
+    def _write_tcp_heartbeat(home, pid, port, age_s=0.0):
+        write_loop_heartbeat(
+            pid=pid,
+            home=home,
+            extra={"loop_tick_socket": True, "loop_tick_tcp_port": port},
+        )
+        if age_s:
+            path = get_loop_heartbeat_path(home)
+            stamp = time.time() - age_s
+            os.utime(path, (stamp, stamp))
+
+    def test_stale_file_with_answering_tcp_witness_is_alive(self, tmp_path):
+        """#90502 shape over TCP: a stalled write must not kill a live loop."""
+        port, stop, srv = self._tcp_answerer()
+        try:
+            self._write_tcp_heartbeat(tmp_path, 4343, port, age_s=600.0)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(4343, home=tmp_path)
+                == gateway_cli.GATEWAY_LOOP_ALIVE
+            )
+        finally:
+            stop.set()
+            srv.close()
+
+    def test_stale_file_with_silent_tcp_witness_is_wedged(self, tmp_path):
+        """Armed TCP witness that never answers across the window: WEDGED."""
+        silent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)  # accepts but never sends
+        try:
+            port = silent.getsockname()[1]
+            self._write_tcp_heartbeat(tmp_path, 4344, port, age_s=600.0)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(
+                    4344, home=tmp_path, tick_timeout=0.2, tick_gap_s=0.05
+                )
+                == gateway_cli.GATEWAY_LOOP_WEDGED
+            )
+        finally:
+            silent.close()
+
+    def test_fresh_file_with_silent_tcp_witness_is_unknown(self, tmp_path):
+        """Fresh file + silent TCP witness: an off-loop write landed after a
+        freeze — not proof of liveness, never destructive authority."""
+        silent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)
+        try:
+            port = silent.getsockname()[1]
+            self._write_tcp_heartbeat(tmp_path, 4345, port)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(
+                    4345, home=tmp_path, tick_timeout=0.2
+                )
+                == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            )
+        finally:
+            silent.close()
+
+    def test_garbage_tcp_port_falls_back_to_socket_contract(self, tmp_path):
+        """A non-numeric port must not be treated as an armed witness."""
+        write_loop_heartbeat(
+            pid=4346,
+            home=tmp_path,
+            extra={"loop_tick_socket": False, "loop_tick_tcp_port": "nope"},
+        )
+        path = get_loop_heartbeat_path(tmp_path)
+        stamp = time.time() - 600.0
+        os.utime(path, (stamp, stamp))
+        # loop_tick_socket=False + no usable TCP port: witness could not be
+        # armed, staleness is not proof -> UNKNOWN, never WEDGED.
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(4346, home=tmp_path)
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )
+
+
 def test_default_probe_budget_stays_inside_query_tier():
     """The module doc pins the worst-case wedge-suspected probe at ~3.4s,
     'far inside the 10s query tier'. Assert the strike-count math so

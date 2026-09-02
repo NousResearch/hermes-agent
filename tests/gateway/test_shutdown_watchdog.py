@@ -124,9 +124,10 @@ def short_home():
 
 
 @pytest.mark.asyncio
-async def test_loop_tick_witness_skipped_intentionally_on_windows(
+async def test_loop_tick_witness_arms_over_tcp_on_windows(
     short_home, caplog, monkeypatch
 ):
+    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback."""
     tmp_path = short_home
     # Pretend the platform is Windows as seen from the module under test.
     # A plain monkeypatch of the global os.name would flip pathlib.Path
@@ -154,7 +155,7 @@ async def test_loop_tick_witness_skipped_intentionally_on_windows(
     ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
         payload = await _run_heartbeat_until_payload(tmp_path)
 
-    # (a) the witness server was never attempted
+    # (a) the AF_UNIX server was never attempted
     assert start_unix_server_calls == []
     # (b) no warning about an unavailable tick socket
     assert not [
@@ -163,8 +164,11 @@ async def test_loop_tick_witness_skipped_intentionally_on_windows(
         if r.levelname == "WARNING"
         and "Loop tick socket unavailable" in r.getMessage()
     ]
-    # (c) the fail-safe flag is still recorded
-    assert payload["loop_tick_socket"] is False
+    # (c) the witness is armed over TCP and the port is published
+    assert payload["loop_tick_socket"] is True
+    assert 0 < int(payload["loop_tick_tcp_port"]) <= 65535
+    # (d) the POSIX socket node was never created
+    assert not list(tmp_path.glob("**/gateway.loop-tick.*.sock"))
 
 
 @pytest.mark.asyncio

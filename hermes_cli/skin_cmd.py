@@ -54,19 +54,41 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     else:
         # Built-in (or missing): fork into an editable copy that keeps its full
         # palette, under a fresh name so the built-in stays intact for revert.
-        from hermes_cli.skin_engine import load_skin
-
-        resolved = load_skin(name)
         target = f"{name}-custom"
         path = _skins_dir() / f"{target}.yaml"
-        data = {
-            "name": target,
-            "description": f"{name} + custom {key}",
-            "colors": dict(resolved.colors),
-            "branding": dict(resolved.branding),
-            "tool_prefix": resolved.tool_prefix,
-        }
+        if path.exists():
+            try:
+                data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                print(
+                    f"✗ cannot read existing skin fork {display_hermes_home()}/skins/{target}.yaml: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if not isinstance(data, dict):
+                print(
+                    f"✗ existing skin fork {display_hermes_home()}/skins/{target}.yaml is empty or not a mapping",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            from hermes_cli.skin_engine import load_skin
 
+            resolved = load_skin(name)
+            data = {
+                "name": target,
+                "description": f"{name} + custom {key}",
+                "colors": dict(resolved.colors),
+                "branding": dict(resolved.branding),
+                "tool_prefix": resolved.tool_prefix,
+            }
+
+    if isinstance(data, dict) and "colors" in data and not isinstance(data["colors"], dict):
+        print(
+            f"✗ skin file {display_hermes_home()}/skins/{path.name} has a non-mapping colors section",
+            file=sys.stderr,
+        )
+        return 1
     if not isinstance(data.get("colors"), dict):
         data["colors"] = {}
     data["colors"][key] = value

@@ -55,6 +55,107 @@ def test_set_forks_a_builtin_without_inventing_a_background():
     assert (get_hermes_home() / "config.yaml").read_text().find("default-custom") != -1
 
 
+def test_set_reuses_an_existing_builtin_fork_without_resetting_it():
+    fork = _skins() / "default-custom.yaml"
+    fork.write_text(
+        'name: default-custom\n'
+        'description: my settled terminal\n'
+        'colors:\n'
+        '  background: "#111111"\n'
+        '  ui_tool: "#00AAAA"\n'
+        'branding:\n'
+        '  greeting: keep-me\n',
+        encoding="utf-8",
+    )
+    _activate("default")
+
+    assert skin_cmd._skin_set("banner_title", "#FFFF00", None) == 0
+
+    data = yaml.safe_load(fork.read_text(encoding="utf-8"))
+    assert data["colors"]["banner_title"] == "#FFFF00"
+    assert data["colors"]["background"] == "#111111"
+    assert data["colors"]["ui_tool"] == "#00AAAA"
+    assert data["description"] == "my settled terminal"
+    assert data["branding"] == {"greeting": "keep-me"}
+    assert "default-custom" in (get_hermes_home() / "config.yaml").read_text()
+
+
+def test_set_explicit_builtin_reuses_fork_and_preserves_non_color_fields():
+    (_skins() / "oasis.yaml").write_text(
+        'name: oasis\ncolors:\n  background: "#08201f"\n', encoding="utf-8"
+    )
+    _activate("oasis")
+    fork = _skins() / "default-custom.yaml"
+    fork.write_text(
+        "name: default-custom\n"
+        "description: my settled terminal\n"
+        "colors:\n"
+        '  background: "#111111"\n'
+        "branding:\n"
+        "  greeting: keep-me\n"
+        'tool_prefix: "=> "\n'
+        "spinner_interval_ms: 40\n",
+        encoding="utf-8",
+    )
+    expected = yaml.safe_load(fork.read_text(encoding="utf-8"))
+    expected["colors"]["ui_tool"] = "#00FFFF"
+
+    assert skin_cmd._skin_set("ui_tool", "#00FFFF", "default") == 0
+
+    assert yaml.safe_load(fork.read_text(encoding="utf-8")) == expected
+    assert "default-custom" in (get_hermes_home() / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize("contents", ["", "[]", "!!!"], ids=["empty", "non-mapping", "invalid"])
+def test_set_does_not_rebuild_an_invalid_existing_builtin_fork(contents, capsys):
+    fork = _skins() / "default-custom.yaml"
+    fork.write_text(contents, encoding="utf-8")
+    _activate("default")
+    config_before = (get_hermes_home() / "config.yaml").read_text()
+
+    assert skin_cmd._skin_set("ui_tool", "#00FFFF", None) == 1
+    assert fork.read_text(encoding="utf-8") == contents
+    assert (get_hermes_home() / "config.yaml").read_text() == config_before
+    assert "default-custom" in capsys.readouterr().err
+
+
+def test_set_does_not_rewrite_a_non_mapping_colors_fork(capsys):
+    fork = _skins() / "default-custom.yaml"
+    fork.write_text("colors: []\n", encoding="utf-8")
+    _activate("default")
+    config_before = (get_hermes_home() / "config.yaml").read_text()
+
+    assert skin_cmd._skin_set("ui_tool", "#00FFFF", None) == 1
+    assert fork.read_text(encoding="utf-8") == "colors: []\n"
+    assert (get_hermes_home() / "config.yaml").read_text() == config_before
+    err = capsys.readouterr().err
+    assert "non-mapping colors section" in err
+    assert "default-custom.yaml" in err
+
+
+def test_set_does_not_rewrite_a_non_mapping_colors_user_skin(capsys):
+    skin = _skins() / "oasis.yaml"
+    skin.write_text("colors: []\n", encoding="utf-8")
+    _activate("oasis")
+    config_before = (get_hermes_home() / "config.yaml").read_text()
+
+    assert skin_cmd._skin_set("ui_tool", "#00FFFF", None) == 1
+    assert skin.read_text(encoding="utf-8") == "colors: []\n"
+    assert (get_hermes_home() / "config.yaml").read_text() == config_before
+    assert "non-mapping colors section" in capsys.readouterr().err
+
+
+def test_set_still_bootstraps_a_fork_without_a_colors_section():
+    fork = _skins() / "default-custom.yaml"
+    fork.write_text("name: default-custom\n", encoding="utf-8")
+    _activate("default")
+
+    assert skin_cmd._skin_set("ui_tool", "#00FFFF", None) == 0
+
+    data = yaml.safe_load(fork.read_text(encoding="utf-8"))
+    assert data["colors"] == {"ui_tool": "#00FFFF"}
+
+
 def test_set_rejects_non_hex():
     _activate("default")
     assert skin_cmd._skin_set("ui_tool", "teal", None) == 1

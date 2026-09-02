@@ -1325,16 +1325,96 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+# ---------------------------------------------------------------------------
+# Multiplex isolation for the lark_oapi WebSocket client (#73779)
+# ---------------------------------------------------------------------------
+#
+# ``lark_oapi.ws.client`` keeps the asyncio loop used by ``Client.start()``
+# and every coroutine it spawns in a *module-level global* (``loop``), and
+# Hermes also monkey-patches ``websockets.connect`` on the shared
+# ``websockets`` module to inject per-adapter ping settings. In multiplex
+# mode every profile runs its own WS client on a dedicated thread, so the N
+# threads overwrite each other's module globals (last-write-wins): a client
+# ends up scheduling tasks on a sibling profile's loop ("Future attached to
+# a different loop" crashes) or binds to the wrong loop at construction time
+# and goes deaf from the start.
+#
+# The fix installs process-wide, thread-dispatching shims exactly once:
+#
+#   * ``ws_client_module.loop`` becomes a proxy that forwards every attribute
+#     access to the loop registered by the *current thread*. All SDK reads of
+#     the global happen on the thread that owns the loop (``start()`` blocks
+#     in ``run_until_complete`` and every ``create_task`` callback runs on
+#     the loop's own thread), so each profile transparently sees its own
+#     loop. Threads that never registered one (single-profile installs, CLI)
+#     fall back to the SDK's original module loop.
+#   * ``websockets.connect`` becomes a single dispatcher that merges the
+#     per-thread ping overrides registered by the calling profile, so
+#     profiles no longer race over the global patch or restore each other's
+#     hooks while a sibling is still connected.
+
+_WS_ISOLATION_LOCK = threading.Lock()
+_WS_ISOLATION_INSTALLED = False
+# Per-WS-thread registration: ``.loop`` (the thread's asyncio loop) and
+# ``.connect_kwargs`` (websockets.connect overrides, e.g. ping settings).
+_ws_isolation_state = threading.local()
+
+
+class _ThreadLocalLoopProxy:
+    """Forwards attribute access to the current thread's registered loop."""
+
+    def __init__(self, fallback: Any) -> None:
+        self._fallback = fallback
+
+    def _target(self) -> Any:
+        return getattr(_ws_isolation_state, "loop", None) or self._fallback
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target(), name)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ThreadLocalLoopProxy target={self._target()!r}>"
+
+
+def _install_lark_ws_isolation(ws_client_module: Any) -> None:
+    """Install the thread-dispatching shims once per process (idempotent)."""
+    global _WS_ISOLATION_INSTALLED
+    with _WS_ISOLATION_LOCK:
+        if _WS_ISOLATION_INSTALLED:
+            return
+
+        ws_client_module.loop = _ThreadLocalLoopProxy(ws_client_module.loop)
+
+        real_connect = ws_client_module.websockets.connect
+
+        def _dispatch_connect(*args: Any, **kwargs: Any) -> Any:
+            overrides = getattr(_ws_isolation_state, "connect_kwargs", None) or {}
+            for key, value in overrides.items():
+                kwargs.setdefault(key, value)
+            return real_connect(*args, **kwargs)
+
+        # Keep ``inspect.signature(websockets.connect)`` honest: the SDK's
+        # ``_ws_connect_kwargs()`` probes the real signature to decide whether
+        # the installed websockets generation supports the ``proxy`` kwarg.
+        _dispatch_connect.__wrapped__ = real_connect
+        _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
+        ws_client_module.websockets.connect = _dispatch_connect
+        _WS_ISOLATION_INSTALLED = True
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local event loop."""
+    """Run the official Lark WS client in its own thread-local event loop.
+
+    In multiplex mode several profiles run this concurrently; the shims
+    installed by ``_install_lark_ws_isolation`` make each thread see its own
+    loop and connect overrides (see the isolation comment block above).
+    """
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    ws_client_module.loop = loop
     adapter._ws_thread_loop = loop
 
-    original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
@@ -1346,12 +1426,15 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
-        if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
-            kwargs["ping_interval"] = adapter._ws_ping_interval
-        if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
-            kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return original_connect(*args, **kwargs)
+    connect_overrides: Dict[str, Any] = {}
+    if adapter._ws_ping_interval is not None:
+        connect_overrides["ping_interval"] = adapter._ws_ping_interval
+    if adapter._ws_ping_timeout is not None:
+        connect_overrides["ping_timeout"] = adapter._ws_ping_timeout
+
+    _install_lark_ws_isolation(ws_client_module)
+    _ws_isolation_state.loop = loop
+    _ws_isolation_state.connect_kwargs = connect_overrides
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1360,7 +1443,6 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
-    ws_client_module.websockets.connect = _connect_with_overrides
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
@@ -1369,7 +1451,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     except Exception:
         pass
     finally:
-        ws_client_module.websockets.connect = original_connect
+        _ws_isolation_state.loop = None
+        _ws_isolation_state.connect_kwargs = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -1520,6 +1603,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sdk_executor_closing = False
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
+        self._ws_supervisor: Optional[asyncio.Task] = None
+        self._ws_restart_backoff = 5.0
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner: Optional[Any] = None
@@ -1826,6 +1911,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
+            if self._connection_mode == "websocket":
+                # Supervised reconnect (#73779): the WS thread can die without
+                # any external signal; keep a watcher alive for as long as this
+                # adapter is supposed to be connected.
+                self._ws_supervisor = asyncio.ensure_future(
+                    self._supervise_websocket_thread()
+                )
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             # Plugin-registered native handlers (lark_oapi client).
@@ -1841,6 +1933,9 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        if self._ws_supervisor is not None:
+            self._ws_supervisor.cancel()
+            self._ws_supervisor = None
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -4958,6 +5053,52 @@ class FeishuAdapter(BasePlatformAdapter):
                     exc,
                 )
                 await asyncio.sleep(wait_seconds)
+
+    async def _supervise_websocket_thread(self) -> None:
+        """Restart the WS client thread if it dies while the adapter is up.
+
+        ``lark_oapi``'s ``start()`` blocks forever on a healthy connection
+        and only returns on fatal errors. Before this watcher existed the
+        executor future was awaited solely by ``disconnect()``, so a dead
+        thread left the profile silently deaf until a gateway restart
+        (#73779). Watch the future and, on unexpected exit, rebuild the
+        client with capped exponential backoff.
+        """
+        backoff = initial_backoff = float(self._ws_restart_backoff)
+        last_dead: Optional[asyncio.Future] = None
+        while self._running:
+            ws_future = self._ws_future
+            if ws_future is None:
+                return
+            try:
+                await asyncio.shield(ws_future)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            # Deliberate disconnect paths nil ``_ws_client`` / ``_running``
+            # before the thread exits; only restart when the link is still
+            # expected to be up.
+            if not self._running or self._ws_client is None:
+                return
+            if ws_future is not last_dead:
+                logger.error(
+                    "[Feishu] WebSocket client thread exited unexpectedly; "
+                    "restarting in %.0fs",
+                    backoff,
+                )
+                last_dead = ws_future
+            await asyncio.sleep(backoff)
+            if not self._running:
+                return
+            try:
+                await self._connect_websocket()
+                backoff = initial_backoff
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] WebSocket restart failed (retrying): %s", exc
+                )
+                backoff = min(backoff * 2, 60.0)
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:

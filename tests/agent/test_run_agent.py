@@ -2948,7 +2948,7 @@ class TestHandleMaxIterations:
                     }
                 ],
                 "_reasoning_route": reasoning_route_fingerprint(
-                    agent.provider, agent.model, agent.base_url
+                    agent.provider, agent.model, agent.base_url, agent.api_mode
                 ),
             },
         ]
@@ -2997,7 +2997,7 @@ class TestHandleMaxIterations:
                 ],
                 "anthropic_content_blocks": hidden_blocks,
                 "_reasoning_route": reasoning_route_fingerprint(
-                    agent.provider, agent.model, agent.base_url
+                    agent.provider, agent.model, agent.base_url, agent.api_mode
                 ),
             },
             {
@@ -7181,7 +7181,7 @@ class TestReasoningReplayForStrictProviders:
             "reasoning": "summary reasoning",
             "reasoning_content": "provider-native scratchpad",
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
         }
         tool_result = {"role": "tool", "tool_call_id": "c1", "content": "ok"}
@@ -7286,7 +7286,7 @@ class TestReasoningReplayForStrictProviders:
                     "content": "visible answer",
                     "reasoning": "CURRENT_ROUTE_TRACE",
                     "_reasoning_route": reasoning_route_fingerprint(
-                        agent.provider, agent.model, agent.base_url
+                        agent.provider, agent.model, agent.base_url, agent.api_mode
                     ),
                 },
                 {"role": "user", "content": "continue"},
@@ -7321,7 +7321,7 @@ class TestReasoningReplayForStrictProviders:
             "content": "The visible answer.",
             "reasoning": "SYNTHETIC_REASONING_MARKER",
             "_reasoning_route": reasoning_route_fingerprint(
-                agent.provider, agent.model, agent.base_url
+                agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
         }
         agent.client.chat.completions.create.return_value = _mock_response(
@@ -7348,7 +7348,10 @@ class TestReasoningReplayForStrictProviders:
         final_assistant = result["messages"][-1]
 
         assert final_assistant["_reasoning_route"] == reasoning_route_fingerprint(
-            "custom", "Qwen/Qwen3.8-27B", "http://127.0.0.1:18080/v1"
+            "custom",
+            "Qwen/Qwen3.8-27B",
+            "http://127.0.0.1:18080/v1",
+            agent.api_mode,
         )
 
 

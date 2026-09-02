@@ -69,15 +69,12 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
     charge) when route facts are unavailable."""
     try:
-        compressor = getattr(agent, "context_compressor", None)
-        if bool(getattr(compressor, "replay_historical_reasoning", False)):
-            return True
-        if getattr(agent, "_reasoning_replay_field", None):
-            return True
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
         from agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
-            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
+            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url")),
+            reasoning_replay_field=reasoning_replay_field_for_api(agent),
         )
     except Exception:
         return True

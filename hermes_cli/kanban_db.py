@@ -386,6 +386,19 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# Hard ceiling on how long the stale-claim sweep may keep re-extending a
+# claim held by a pending own-worker handoff whose scope never verifies
+# dead (pass 9, AF). ``_defer_own_worker_handoff`` grants only one
+# RECLAIM_DEFER_GRACE_SECONDS window, and the TTL sweep runs BEFORE
+# crash detection — a drain outlasting the grace used to fall into the
+# generic stale reclaim, silently discarding the worker's requested
+# review/changes transition. Under this ceiling the sweep re-extends the
+# claim while the stop is in progress; at it the handoff is APPLIED (the
+# worker itself already exited when it deferred, so at most lingering
+# descendants share the draining cgroup, and the orphan audit reaps
+# those) instead of being dropped forever.
+_OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS = RECLAIM_DEFER_GRACE_SECONDS * 5
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -5245,6 +5258,13 @@ def release_stale_claims(
                 )
             continue
 
+        # Pass 9 (AF): a pending own-worker handoff must never be eaten
+        # by the generic stale reclaim — this sweep runs BEFORE crash
+        # detection, so without this branch a drain outlasting the defer
+        # grace silently dropped the worker's requested transition.
+        if _handle_stale_own_worker_handoff(conn, row, now=now):
+            continue
+
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
@@ -9872,6 +9892,92 @@ def _apply_pending_own_worker_handoff(
             "verified scope teardown", kind, task_id, run_id,
         )
         return True
+
+
+def _handle_stale_own_worker_handoff(
+    conn: sqlite3.Connection,
+    row: Any,
+    *,
+    now: int,
+) -> bool:
+    """Stale-sweep branch for a run with a pending own-worker handoff.
+
+    ``release_stale_claims`` runs BEFORE ``detect_crashed_workers``, and
+    a deferred handoff extends the claim only by one defer grace — a
+    scope drain outlasting it used to fall into the generic stale
+    reclaim here, ending the run as ``reclaimed`` and silently dropping
+    the worker's requested review/changes transition (pass 9, AF).
+
+    Contract per the deferred marker instead:
+
+    * scope verified dead (or the marker outlived
+      ``_OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS``) — apply the handoff;
+      the row lands in its requested lane with the payload intact and
+      the generic reclaim never sees it;
+    * stop still in progress under the ceiling — re-extend the claim
+      like any live-worker hold, so the marker survives to a later tick.
+
+    Returns True when the row was handled (apply or extension); False
+    when there is no pending marker for this run or the handoff could
+    not be applied (row moved on, payload unusable) — the caller then
+    falls through to the ordinary stale-claim handling.
+    """
+    run_id = row["current_run_id"]
+    if run_id is None:
+        return False
+    marker = conn.execute(
+        "SELECT payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'own_worker_handoff' "
+        "  AND run_id IS ? ORDER BY id DESC LIMIT 1",
+        (row["id"], int(run_id)),
+    ).fetchone()
+    if marker is None:
+        return False
+    scope = row["worker_scope"]
+    scope_dead = (not scope) or request_worker_scope_stop(
+        scope, task_id=row["id"],
+    )
+    drain_age = now - int(marker["created_at"])
+    if not scope_dead and drain_age < _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS:
+        # Still draining inside the ceiling: hold the claim (the marker
+        # must outlive its single defer grace), exactly like a live
+        # worker would, and let a later tick re-check.
+        grace = now + RECLAIM_DEFER_GRACE_SECONDS
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ? AND claim_expires IS NOT NULL "
+                "  AND claim_expires < ?",
+                (grace, row["id"], row["claim_lock"], now),
+            )
+            if cur.rowcount != 1:
+                return False
+            current_run = _current_run_id(conn, row["id"])
+            if current_run is not None:
+                conn.execute(
+                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    (grace, current_run),
+                )
+            _append_event(
+                conn, row["id"], "claim_extended",
+                {
+                    "reason": "own_worker_handoff_draining",
+                    "scope": scope,
+                    "claim_expires_was": int(row["claim_expires"]),
+                    "claim_expires_now": grace,
+                    "drain_age": drain_age,
+                },
+                run_id=current_run,
+            )
+        return True
+    if not scope_dead:
+        _log.warning(
+            "kanban: applying deferred own-worker handoff for %s (run %s) "
+            "at the %ds drain ceiling — the scope stop never confirmed",
+            row["id"], run_id, _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS,
+        )
+    return _apply_pending_own_worker_handoff(conn, row["id"], run_id)
 
 
 def _handoff_caller_is_worker(

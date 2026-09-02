@@ -1879,6 +1879,163 @@ def test_release_stale_claims_stops_worker_scope(shims, conn):
     assert row["worker_scope"] is None
 
 
+def _deferred_handoff_row(shims, conn, unit, *, handoff, tid):
+    """A running row whose own worker deferred a terminal handoff and
+    exited (pass 9, AF scratch state): claim held by this host, worker
+    pid already gone, defer grace expired."""
+    launcher = subprocess.Popen(["true"])
+    launcher.wait()
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    kb._defer_own_worker_handoff(
+        conn, tid, unit, handoff, claim_lock=kb._claimer_id(),
+    )
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (launcher.pid, kb._worker_pid_start_time(launcher.pid), now,
+         unit, now - 60, now, tid),
+    )
+    conn.commit()
+
+
+def test_release_stale_claims_applies_pending_own_worker_handoff(shims, conn):
+    """Pass 9 (AF): the TTL sweep runs BEFORE crash detection, and a
+    deferred own-worker handoff extends the claim only by one defer
+    grace — a scope drain outlasting it used to fall into the generic
+    stale reclaim here, silently dropping the worker's requested review
+    transition. The stale path must re-extend the claim while the stop
+    is in progress and apply the handoff itself once the scope is
+    verified dead: the row lands in review with the payload intact and
+    is never reclaimed."""
+    straggler = shims.sleeper()  # descendant keeping the drain running
+    unit = kb._kanban_worker_scope_unit("t_stalehandoff", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_deactivating(unit)  # stop job mid-drain: never confirms
+    tid = kb.create_task(conn, title="stale handoff", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "review_requested", "implementer": "w",
+            "reviewer": "r", "summary": "done building",
+            "metadata": {"pr": 42},
+        },
+        tid=tid,
+    )
+
+    # Tick 1: the grace expired but the drain is still in progress —
+    # the claim is re-extended behind the marker, nothing reclaimed.
+    assert kb.release_stale_claims(conn) == 0
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["claim_expires"] > int(time.time())
+    ext = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='claim_extended' ORDER BY id DESC",
+        (tid,),
+    ).fetchone()
+    assert ext is not None
+    assert json.loads(ext["payload"])["reason"] == "own_worker_handoff_draining"
+
+    # Tick 2: the drain completes — scope verified dead, so the sweep
+    # applies the deferred handoff (row to review, payload intact),
+    # never the generic reclaim.
+    shims.clear_deactivating(unit)
+    conn.execute(
+        "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+        (int(time.time()) - 60, tid),
+    )
+    conn.commit()
+    assert kb.release_stale_claims(conn) == 0  # applied, not reclaimed
+    row = conn.execute(
+        "SELECT status, assignee, claim_lock, worker_scope FROM tasks "
+        "WHERE id=?", (tid,),
+    ).fetchone()
+    assert row["status"] == "review"
+    assert row["assignee"] == "r"  # reviewer carried by the payload
+    assert row["claim_lock"] is None
+    assert row["worker_scope"] is None
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='review_requested' ORDER BY id DESC",
+        (tid,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    assert payload["deferred_handoff"] is True
+    assert payload["implementer"] == "w"
+    assert payload["reviewer"] == "r"
+    assert "done building" in (payload["summary"] or "")
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["n"] == 0
+
+
+def test_release_stale_claims_own_worker_handoff_ceiling_applies_handoff(
+    shims, conn,
+):
+    """Pass 9 (AF): a permanently wedged stop (killproof scope) must not
+    pin the row behind the marker forever. Once the handoff outlives the
+    drain ceiling the stale sweep APPLIES it — the worker itself already
+    exited when it deferred, so only descendants share the wedged cgroup
+    (the orphan audit reaps those) — rather than discarding the
+    transition to a generic reclaim."""
+    straggler = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_ceiling", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_killproof(unit)  # stop job wedged server-side, forever
+    tid = kb.create_task(conn, title="ceiling handoff", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "changes_requested", "implementer": "w",
+            "reviewer": "r", "reason": "redo the edges",
+        },
+        tid=tid,
+    )
+    # No live worker pid and a stale heartbeat: the generic live-scope
+    # extension stands down, so the handoff branch owns the row. Age the
+    # marker past the drain ceiling.
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET worker_pid=NULL, worker_pid_started_at=NULL, "
+        "last_heartbeat_at=? WHERE id=?",
+        (now - 7200, tid),
+    )
+    conn.execute(
+        "UPDATE task_events SET created_at=? "
+        "WHERE task_id=? AND kind='own_worker_handoff'",
+        (now - kb._OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS - 1, tid),
+    )
+    conn.commit()
+
+    assert kb.release_stale_claims(conn) == 0  # applied, not reclaimed
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"  # changes_requested landed per payload
+    assert row["claim_lock"] is None
+    assert row["worker_scope"] is None
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='changes_requested' ORDER BY id DESC",
+        (tid,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    assert payload["deferred_handoff"] is True
+    assert payload["reason"] == "redo the edges"
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["n"] == 0
+
+
 def test_crash_cleanup_defers_until_scope_stop_verified(shims, conn):
     """Crash reclamation of a scoped run waits for the VERIFIED scope
     stop (Gate B review, crash-cleanup ordering): a deactivating unit

@@ -1843,14 +1843,34 @@ class GatewayStreamConsumer(ToolTimerMixin):
                         # finishThinkingStream: use a placeholder if needed.
                         if not current_update_visible:
                             close_text = self._accumulated or "✅"
-                            self._final_response_sent = await self._send_or_edit(
+                            # _send_or_edit owns the tri-state settlement:
+                            # it sets _final_response_sent / _final_content_
+                            # delivered internally (INDETERMINATE keeps
+                            # response_sent=True but content_delivered=False).
+                            # Do NOT overwrite those flags from the bool return
+                            # here — the bool is True for INDETERMINATE (to
+                            # suppress duplicate fallback), so setting
+                            # _final_content_delivered=True from it would leak an
+                            # indeterminate settlement back to "delivered" and
+                            # the gateway would skip its whole-response fallback.
+                            await self._send_or_edit(
                                 close_text, finalize=True,
                             )
-                            if self._final_response_sent:
-                                self._final_content_delivered = True
                         else:
+                            # The got_done tick already ran the finalize
+                            # _send_or_edit above (line ~1734, finalize=True,
+                            # is_turn_final=True) and it OWNS the tri-state
+                            # settlement: it set _final_response_sent /
+                            # _final_content_delivered itself (INDETERMINATE
+                            # keeps response_sent=True, content_delivered=False).
+                            # Unconditionally hard-setting both flags True here
+                            # would overwrite that tri-state and leak an
+                            # indeterminate settlement back to "delivered",
+                            # making the gateway skip its whole-response
+                            # fallback (the P0 leak). Trust the already-set
+                            # flags; the frame was visible so response_sent is
+                            # necessarily already True.
                             self._final_response_sent = True
-                            self._final_content_delivered = True
                     elif self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)

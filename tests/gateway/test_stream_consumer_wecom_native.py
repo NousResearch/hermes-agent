@@ -1133,3 +1133,136 @@ class TestNativeCommentaryPreservesAccumulated:
             f"pre-commentary prefix lost (the bug): {final_text!r}"
         )
         assert "finished (exit 0)." in final_text
+
+
+class TestNativeIndeterminateThroughRun:
+    """P0 regression: an INDETERMINATE finalize must survive the full
+    ``consumer.run()`` finalization path as a tri-state result — NOT be
+    overwritten back to "delivered".
+
+    The bug: the native-stream got_done branch in ``run()`` used to do
+    ``ok = await self._send_or_edit(...); if ok: self._final_content_
+    delivered = True``.  ``_send_or_edit`` returns truthy for INDETERMINATE
+    (to suppress the duplicate fallback), so that caller re-set
+    ``_final_content_delivered=True`` — leaking an unconfirmed delivery back
+    to confirmed and making the gateway skip its whole-response fallback.
+
+    These tests drive the WHOLE run() loop (not just _send_or_edit()) with an
+    adapter whose finalize frame returns ``StreamFrameResult.INDETERMINATE``
+    and assert the tri-state survives: response_sent=True (don't retry),
+    content_delivered=False (unconfirmed → gateway fallback still owed), and
+    exactly one finalize frame reached the wire (no duplicate).
+    """
+
+    def _make_indeterminate_finalize_adapter(self):
+        """BasePlatformAdapter subclass whose finalize frame settles
+        INDETERMINATE (the poisoned-ACK / final-fence-timeout case), while
+        seed and mid-stream frames succeed normally."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from plugins.platforms.wecom.adapter import StreamFrameResult
+
+        IndeterminateAdapter = type(
+            "IndeterminateFinalizeAdapter",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "SUPPORTS_MESSAGE_EDITING": False,
+                "SUPPORTS_NATIVE_STREAMING": True,
+            },
+        )
+        IndeterminateAdapter.__abstractmethods__ = frozenset()
+        adapter = IndeterminateAdapter.__new__(IndeterminateAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        adapter.frames = []
+        adapter.supports_native_streaming = (
+            lambda chat_type=None, metadata=None: True
+        )
+
+        async def _send_stream_frame(
+            text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
+        ):
+            adapter.frames.append({
+                "text": text, "finalize": finalize,
+                "chat_id": chat_id, "reply_to": reply_to,
+            })
+            if finalize:
+                # The finalize frame settles INDETERMINATE: the bytes reached
+                # the wire but the ACK channel could not confirm delivery.
+                return StreamFrameResult.INDETERMINATE
+            return True
+        adapter.send_stream_frame = _send_stream_frame
+
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="fallback_msg"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_finalize_through_run_keeps_content_undelivered(self):
+        """Through run(): INDETERMINATE finalize → final_response_sent=True,
+        final_content_delivered=False, and no duplicate fallback send()."""
+        adapter = self._make_indeterminate_finalize_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        consumer.on_delta("A full assistant answer that will be finalized.")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # THE KEY TRI-STATE ASSERTIONS (through the whole run() path):
+        assert consumer.final_response_sent is True, (
+            "frame was sent — consumer must not retry/duplicate"
+        )
+        assert consumer.final_content_delivered is False, (
+            "INDETERMINATE delivery is unconfirmed — run() must NOT overwrite "
+            "the tri-state back to delivered (the P0 leak)"
+        )
+
+        # Exactly one finalize frame reached the wire — no duplicate finalize.
+        finalize_frames = [f for f in adapter.frames if f["finalize"]]
+        assert len(finalize_frames) == 1, (
+            f"expected exactly one finalize frame, got {len(finalize_frames)}"
+        )
+
+        # INDETERMINATE is truthy, so native streaming stayed on and the
+        # consumer did NOT do its own fallback proactive send() (the gateway
+        # owns the whole-response fallback, keyed on content_delivered=False).
+        assert adapter.send.await_count == 0, (
+            "consumer must not self-fallback on INDETERMINATE — the gateway's "
+            "whole-response fallback owns that, gated on content_delivered"
+        )
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_empty_turn_through_run_keeps_content_undelivered(self):
+        """The tool-only / empty-turn native-close branch (line ~1818,
+        ``if not current_update_visible``) also must not leak INDETERMINATE
+        back to delivered.  No text is produced, so got_done takes the empty
+        native close path with the '✅' placeholder."""
+        adapter = self._make_indeterminate_finalize_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="",
+            edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        # No on_delta — a tool-only turn with no text output.
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.03)
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is False, (
+            "empty-turn native-close with INDETERMINATE must not overwrite "
+            "content_delivered back to True"
+        )
+        assert adapter.send.await_count == 0

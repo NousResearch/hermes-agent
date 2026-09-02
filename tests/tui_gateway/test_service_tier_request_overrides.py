@@ -21,6 +21,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+# Imported for real (NOT via patch.dict(sys.modules)): a sys.modules patch
+# would evict every module first-imported inside its window on exit,
+# leaving later tests with split-brain duplicates of tui_gateway.entry /
+# hermes_cli.mcp_startup whose module globals nobody else reads.
+import run_agent
+
 import tui_gateway.server as server
 
 
@@ -31,9 +37,6 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
     class _Agent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
-
-    fake_run_agent = MagicMock()
-    fake_run_agent.AIAgent = _Agent
 
     resolution = MagicMock()
     resolution.used_fallback = False
@@ -49,7 +52,11 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
     }
 
     with (
-        patch.dict("sys.modules", {"run_agent": fake_run_agent}),
+        patch.object(run_agent, "AIAgent", _Agent),
+        # _make_agent waits on MCP discovery; running the real wait would
+        # initialize the module-level discovery state under this test run's
+        # HERMES_HOME and pollute later profile-scoped discovery tests.
+        patch("hermes_cli.mcp_startup.wait_for_mcp_discovery"),
         patch.object(server, "_load_service_tier", return_value=tier),
         patch.object(server, "_resolve_startup_runtime", return_value=(model, "openrouter")),
         patch.object(server, "_resolve_runtime_with_fallback", return_value=resolution),
@@ -75,7 +82,7 @@ def test_priority_from_config_reaches_request_overrides():
 
 def test_anthropic_priority_sends_speed_not_service_tier():
     """Anthropic Fast Mode uses ``speed``; the resolver must pick per provider."""
-    kwargs = _build("priority", model="claude-opus-4-6")
+    kwargs = _build("priority", model="claude-opus-4-8")
 
     assert kwargs["request_overrides"] == {"speed": "fast"}
 
@@ -133,7 +140,7 @@ def test_typed_fast_on_sends_the_tier():
 def test_typed_fast_on_uses_provider_appropriate_key():
     """Anthropic uses `speed`, not `service_tier` — and must not carry both."""
     agent = SimpleNamespace(
-        model="claude-opus-4-6",
+        model="claude-opus-4-8",
         service_tier=None,
         request_overrides={"service_tier": "priority"},
     )

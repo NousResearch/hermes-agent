@@ -400,3 +400,23 @@ def test_describe_auto_unknown_profile_is_still_404(client):
     assert (
         client.post("/api/profiles/nope/describe-auto", json={}).status_code == 404
     )
+
+
+# ── PUT /api/profiles/{name}/model — config.yaml read-modify-write ───────────
+
+
+def test_update_profile_model_runs_off_loop(client, monkeypatch, loop_probe):
+    seen, probe = loop_probe
+    from hermes_cli.web_routers import profiles as router_mod
+
+    def fake_write_model(profile_dir, provider, model):
+        probe("write_profile_model")
+
+    monkeypatch.setattr(router_mod, "_write_profile_model", fake_write_model)
+
+    resp = client.put(
+        "/api/profiles/demo/model", json={"provider": "openrouter", "model": "x/y"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert_off_loop(seen, "write_profile_model")

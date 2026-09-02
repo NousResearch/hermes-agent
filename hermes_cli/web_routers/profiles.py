@@ -12,7 +12,6 @@ late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 ``monkeypatch.setattr(web_server, "_helper", ...)`` keep working.
 """
 
-import asyncio  # noqa: F401 — used by handlers
 import copy
 import functools
 import inspect
@@ -935,7 +934,7 @@ async def get_active_profile_endpoint():
             current = "default"
         return {"active": active, "current": current}
 
-    return await asyncio.get_running_loop().run_in_executor(None, _run)
+    return await run_in_threadpool(_run)
 
 
 @router.post("/api/profiles/active")
@@ -953,7 +952,7 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     try:
         # set_active_profile() stats the target profile, creates the state
         # directory and writes active_profile through a temp file + replace.
-        await asyncio.get_running_loop().run_in_executor(None, _run)
+        await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1035,7 +1034,7 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
         # _stop_gateway_process() poll that delete does, then renames the
         # profile directory, rewrites the Honcho host blocks and regenerates
         # the wrapper script.
-        path = await asyncio.get_running_loop().run_in_executor(None, _run)
+        path = await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
@@ -1081,7 +1080,7 @@ async def delete_profile_endpoint(name: str):
         # gateway is up — which this path announces as "⚠ Gateway is running
         # — it will be stopped" — therefore parks the loop for a full ten
         # seconds, and the desktop's WebSocket ready-probe gives up at ten.
-        path = await asyncio.get_running_loop().run_in_executor(None, _run)
+        path = await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1104,7 +1103,7 @@ async def get_profile_soul(name: str):
         return soul_path.read_text(encoding="utf-8")
 
     try:
-        content = await asyncio.get_running_loop().run_in_executor(None, _run)
+        content = await run_in_threadpool(_run)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
     if content is _MISSING:
@@ -1141,7 +1140,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         # atomic_write_text() writes a temp file, fsyncs it and replaces the
         # original — three syscalls that block for as long as the filesystem
         # takes to durably commit the persona document.
-        await asyncio.get_running_loop().run_in_executor(None, _run)
+        await run_in_threadpool(_run)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
@@ -1170,7 +1169,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     try:
         # write_profile_meta() reads profile.yaml, merges the new keys and
         # writes the document back out.
-        await asyncio.get_running_loop().run_in_executor(None, _run)
+        await run_in_threadpool(_run)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/description failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1190,7 +1189,8 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
     try:
-        _write_profile_model(profile_dir, provider, model)
+        # _write_profile_model() reads and rewrites the profile's config.yaml.
+        await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/model failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1221,7 +1221,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
         # call_llm() — a synchronous provider round-trip with a 60 s ceiling,
         # six times the desktop's WebSocket disconnect threshold. Held on the
         # loop it stalls every other dashboard request for that whole window.
-        outcome = await asyncio.get_running_loop().run_in_executor(None, _run)
+        outcome = await run_in_threadpool(_run)
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1256,11 +1256,9 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
 
-    loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: profiles_mod.export_profile(name, output, extra_files=body.extra_files or None),
+        result = await run_in_threadpool(
+            profiles_mod.export_profile, name, output, extra_files=body.extra_files or None
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1280,11 +1278,9 @@ async def import_profile_endpoint(body: ProfileImport):
     if not archive:
         raise HTTPException(status_code=400, detail="archive path is required")
 
-    loop = asyncio.get_running_loop()
     try:
-        profile_dir = await loop.run_in_executor(
-            None,
-            lambda: profiles_mod.import_profile(archive, name=(body.name or "").strip() or None),
+        profile_dir = await run_in_threadpool(
+            profiles_mod.import_profile, archive, name=(body.name or "").strip() or None
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1335,7 +1331,7 @@ async def get_profile_desktop_overlay(name: str):
         return _json.loads(overlay_path.read_text(encoding="utf-8"))
 
     try:
-        overlay = await asyncio.get_running_loop().run_in_executor(None, _run)
+        overlay = await run_in_threadpool(_run)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")
     # _MISSING rather than None: an overlay file holding the document ``null``

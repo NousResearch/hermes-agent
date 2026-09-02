@@ -200,9 +200,23 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       }
     : null
 
+  let ownerCommitted = false
+
+  const commitRosterBot = () => {
+    if (ownerCommitted) {
+      return
+    }
+
+    // One synchronous owner handoff. The SDK invokes this immediately before
+    // a newly opened session navigates; an already-open tab invokes it after
+    // focus succeeds. Until then every visible owner surface stays on the
+    // previously committed bot.
+    setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
+    saveSelectedRosterBot(bot)
+    ownerCommitted = true
+  }
+
   haptic('tap')
-  saveSelectedRosterBot(bot)
-  setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
   const dismissedGroup = dismissGroupChatForBotOpen()
 
   if (!dismissedGroup) {
@@ -244,6 +258,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // The canonical chat is on screen: no source activation, no registry
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
+    commitRosterBot()
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
 
     return true
@@ -268,7 +283,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   }
 
   try {
-    const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
+    const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration(), commitRosterBot)
 
     if (generation !== getBotOpenGeneration()) {
       return false
@@ -282,6 +297,9 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       // durable registry row, and matching focus against the registry id
       // alone released this claim on the first click of every compressed
       // Bot Chat.
+      // Older SDKs ignore onWorkspaceCommit; commit here as the compatibility
+      // fallback after their open promise succeeds.
+      commitRosterBot()
       $openBotChat.set({
         key,
         openedRegistryId: opened.registryId,
@@ -309,6 +327,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     return false
   }
 
+  commitRosterBot()
   $openBotChat.set({
     key,
     openedRegistryId: ''

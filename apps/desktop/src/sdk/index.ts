@@ -35,6 +35,7 @@ import {
 import {
   $workspaceMode,
   $workspaceOwnerKey,
+  getWorkspaceScopeRevision,
   setWorkspaceScope as publishWorkspaceScope,
   setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
@@ -346,6 +347,11 @@ export interface PluginOpenSessionOptions {
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
+  /** Runs in the same synchronous commit as a Bot workspace handoff, after
+   *  the new owner scope is published and before its session navigates. A
+   *  caller with local selection stores can update them without exposing an
+   *  async frame where the sidebar and center name different owners. */
+  onWorkspaceCommit?: () => void
   profile?: null | string
   route?: PluginProfileRoute
   workspaceMode?: WorkspaceMode
@@ -817,6 +823,8 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
+    const initialWorkspaceScopeRevision = getWorkspaceScopeRevision()
+    let workspaceScopeCommitted = options.workspaceMode !== 'bots'
 
     // A new wake owns the syncing affordance — a lingering badge from an
     // earlier paint-first wake must not survive into this one.
@@ -848,18 +856,12 @@ export const host = {
 
     const expectHistory = options.expectHistory ?? false
 
-    if (options.workspaceMode === 'bots') {
-      publishWorkspaceScope(
-        'bots',
-        options.workspaceOwnerKey ?? null,
-        ownerRoute ? { kind: 'route', route: ownerRoute } : null
-      )
-    }
-
     const openingStillCurrent = () =>
       generation === openSessionGeneration &&
       (options.workspaceMode !== 'bots' ||
-        ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
+        (workspaceScopeCommitted
+          ? $workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)
+          : getWorkspaceScopeRevision() === initialWorkspaceScopeRevision))
 
     const plan = planPluginOpenSession({
       activeProfile: $activeGatewayProfile.get(),
@@ -929,6 +931,20 @@ export const host = {
 
       if (!openingStillCurrent()) {
         throw new Error('Session open was superseded by a newer selection.')
+      }
+
+      // Commit the owner only once its backend is ready and the core open can
+      // follow synchronously. Publishing this before the dial made the Bot
+      // row, center, routines and `+` target describe two different owners
+      // for the whole remote-activation window.
+      if (options.workspaceMode === 'bots') {
+        publishWorkspaceScope(
+          'bots',
+          options.workspaceOwnerKey ?? null,
+          ownerRoute ? { kind: 'route', route: ownerRoute } : null
+        )
+        workspaceScopeCommitted = true
+        options.onWorkspaceCommit?.()
       }
 
       // Only a cross-connection (explicit route) open forces the all-profiles
@@ -1225,7 +1241,14 @@ export const host = {
     workspaceOwnerKey: string,
     isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
     onlyStoredIds?: readonly string[]
-  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
+  ): null | string => {
+    // A direct re-front is a newer navigation intent even when it returns to
+    // the owner already committed in workspace scope. Cancel a slow wake for
+    // another bot so it cannot land after this click and steal the center.
+    openSessionGeneration += 1
+
+    return focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds)
+  },
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

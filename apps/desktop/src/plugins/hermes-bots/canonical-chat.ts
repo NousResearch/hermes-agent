@@ -81,7 +81,8 @@ export function isCanonicalChatOnScreen(
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,
-  summary: CanonicalChatRow
+  summary: CanonicalChatRow,
+  onWorkspaceCommit: (() => void) | null = null
 ): Promise<string> {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
@@ -132,6 +133,7 @@ async function openStoredBotChat(
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    ...(onWorkspaceCommit ? { onWorkspaceCommit } : {}),
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
     retryHydrationTimeoutOnce: true,
@@ -236,6 +238,7 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
 
 interface CreateCanonicalChatOptions {
   kickoff?: boolean
+  onWorkspaceCommit?: (() => void) | null
   openingStillCurrent?: (() => boolean) | null
 }
 
@@ -289,7 +292,7 @@ function kickoffText(): string {
  *  rail in a bot chat until the next click re-opened it scoped. */
 export function createCanonicalChat(
   owner: RosterRow | string,
-  { kickoff = false, openingStillCurrent = null }: CreateCanonicalChatOptions = {}
+  { kickoff = false, onWorkspaceCommit = null, openingStillCurrent = null }: CreateCanonicalChatOptions = {}
 ): Promise<null | string> {
   const { bot, name, key, route } = botOwner(owner)
   const inflight = canonicalCreations.get(key)
@@ -307,6 +310,7 @@ export function createCanonicalChat(
       profile: name,
       intent: 'main',
       keepAllProfilesScope: route ? true : false,
+      ...(onWorkspaceCommit ? { onWorkspaceCommit } : {}),
       workspaceMode: 'bots',
       workspaceOwnerKey: botWorkspaceOwnerKey(bot),
       tabTitle: CANONICAL_CHAT_TITLE
@@ -339,7 +343,7 @@ export function createCanonicalChat(
       if (typeof host.openSession === 'function' && canNavigate()) {
         // The exact-lookup gateway reports the compression-lineage tip as
         // resolved_id; open the tip, the registry row stays the identity.
-        await openStoredBotChat(owner, existing.resolved_id || existing.id, existing)
+        await openStoredBotChat(owner, existing.resolved_id || existing.id, existing, onWorkspaceCommit)
       }
 
       return existing.id
@@ -402,7 +406,7 @@ export function createCanonicalChat(
             // round-trip after the user clicked another bot, and every sibling
             // open here is staleness-probed for exactly that reason.
             if (typeof host.openSession === 'function' && canNavigate()) {
-              await openStoredBotChat(owner, winner.resolved_id || winner.id, winner)
+              await openStoredBotChat(owner, winner.resolved_id || winner.id, winner, onWorkspaceCommit)
             }
 
             return winner.id
@@ -484,7 +488,8 @@ export function createCanonicalChat(
  *  bot's chat opens without re-homing Desktop's chrome. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
-  openingStillCurrent: (() => boolean) | null = null
+  openingStillCurrent: (() => boolean) | null = null,
+  onWorkspaceCommit: (() => void) | null = null
 ): Promise<{ openedId: string; registryId: string } | null> {
   const existing = await findExistingCanonicalChat(owner)
 
@@ -494,7 +499,7 @@ export async function openBotCanonicalChat(
     }
 
     const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing)
+    await openStoredBotChat(owner, openedId, existing, onWorkspaceCommit)
 
     // Both identities matter downstream: the durable registry row names the
     // chat; the resolved lineage tip is what actually takes session focus.
@@ -507,6 +512,7 @@ export async function openBotCanonicalChat(
   }
 
   const created = await createCanonicalChat(owner, {
+    onWorkspaceCommit,
     openingStillCurrent
   })
 

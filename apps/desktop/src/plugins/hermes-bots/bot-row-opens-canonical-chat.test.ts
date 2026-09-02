@@ -28,7 +28,7 @@ vi.mock('./canonical-chat', () => ({
 }))
 
 const { host } = await import('@hermes/plugin-sdk')
-const { $openBotChat, $selectedBot } = await import('./bot-state')
+const { $openBotChat, $selectedBot, $selectedRosterKey } = await import('./bot-state')
 const { openRosterBot, trackInboundActivity } = await import('./roster-actions')
 const { $selectedStoredSessionId } = await import('@/store/session')
 
@@ -40,6 +40,7 @@ beforeEach(() => {
   openBotCanonicalChat.mockResolvedValue({ openedId: 'bot-chat-tip', registryId: 'bot-chat' })
   $openBotChat.set(null)
   $selectedBot.set('')
+  $selectedRosterKey.set('')
 })
 
 describe('a row click lands on the canonical chat, never a remembered side tab', () => {
@@ -79,16 +80,43 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
 
     await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
 
-    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function))
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function), expect.any(Function))
     expect($openBotChat.get()?.openedSessionId).toBe('bot-chat-tip')
+  })
+
+  it('commits the roster owner only after its canonical chat owns the center', async () => {
+    let releaseSource!: () => void
+
+    const sourceReady = new Promise<void>(resolve => {
+      releaseSource = resolve
+    })
+
+    prepareBotSource.mockReturnValueOnce(sourceReady)
+    $selectedBot.set('omega')
+    $selectedRosterKey.set('local::omega')
+
+    const opening = openRosterBot(canonicalBot)
+
+    await vi.waitFor(() => expect(prepareBotSource).toHaveBeenCalledOnce())
+    expect($selectedBot.get()).toBe('omega')
+    expect($selectedRosterKey.get()).toBe('local::omega')
+
+    releaseSource()
+    await expect(opening).resolves.toBe(true)
+    expect($selectedBot.get()).toBe('alpha')
+    expect($selectedRosterKey.get()).toBe('local::alpha')
   })
 
   it('a failed open records no claim', async () => {
     openBotCanonicalChat.mockRejectedValueOnce(new Error('gateway away'))
+    $selectedBot.set('omega')
+    $selectedRosterKey.set('local::omega')
 
     await expect(openRosterBot(bot)).resolves.toBe(false)
 
     expect($openBotChat.get()).toBeNull()
+    expect($selectedBot.get()).toBe('omega')
+    expect($selectedRosterKey.get()).toBe('local::omega')
   })
 })
 

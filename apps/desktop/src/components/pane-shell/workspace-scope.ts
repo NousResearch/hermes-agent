@@ -46,6 +46,15 @@ export type WorkspaceNewSessionTarget =
 /** Sessions uses its established ambient behavior (`null`). */
 export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
 
+// Monotonic semantic-scope token. Async navigation captures this before it
+// dials another owner and commits only if no intervening workspace action
+// changed the surface. Equivalent scope publications stay true no-ops.
+let workspaceScopeRevision = 0
+
+export function getWorkspaceScopeRevision(): number {
+  return workspaceScopeRevision
+}
+
 /** Display name per exact owner key, published by the workspace that owns the
  *  key (Bot Mode: the roster's display name). Presentation only — never a
  *  session title, which for a canonical Bot Chat is an identity the backend
@@ -121,6 +130,8 @@ export function setWorkspaceScope(
   ) {
     return false
   }
+
+  workspaceScopeRevision += 1
 
   batch(() => {
     $workspaceMode.set(mode)

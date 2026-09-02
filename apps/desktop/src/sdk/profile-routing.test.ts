@@ -59,6 +59,7 @@ vi.mock('@/store/session-states', async () => {
     $stalledSessionIds: atom([]),
     $workingSessionIds: atom([]),
     dropTilesForProfile: vi.fn(),
+    focusWorkspaceOwnerSessionTile: vi.fn(),
     sessionTileDelegate: vi.fn(() => null)
   }
 })
@@ -151,12 +152,13 @@ const {
   $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
+  focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } = await import('@/store/session-states')
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 
-const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
+const { $workspaceOwnerKey, setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
 const {
   $activeSessionId,
@@ -636,6 +638,76 @@ describe('profile-aware plugin session opens', () => {
     })
   })
 
+  it('keeps the current Bot owner committed while the next owner is still dialing', async () => {
+    let releaseDial: (() => void) | undefined
+    const timeline: string[] = []
+
+    vi.mocked(openGatewayForAgent).mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          releaseDial = resolve
+        })
+    )
+    vi.mocked(openSessionCore).mockImplementationOnce(() => {
+      timeline.push('open')
+    })
+    setWorkspaceScope('bots', 'bot:source-a::alpha')
+
+    const opening = host.openSession('beta-chat', {
+      route: {
+        connectionId: 'source-b',
+        mode: 'remote',
+        profile: 'beta',
+        targetProfile: 'beta'
+      },
+      onWorkspaceCommit: () => timeline.push('commit'),
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:source-b::beta'
+    })
+
+    await vi.waitFor(() => expect(openGatewayForAgent).toHaveBeenCalledOnce())
+    expect($workspaceOwnerKey.get()).toBe('bot:source-a::alpha')
+    expect(timeline).toEqual([])
+
+    releaseDial?.()
+    await opening
+    expect($workspaceOwnerKey.get()).toBe('bot:source-b::beta')
+    expect(timeline).toEqual(['commit', 'open'])
+    expect(openSessionCore).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a late wake steal focus after the user re-fronts the current Bot', async () => {
+    let releaseDial: (() => void) | undefined
+
+    vi.mocked(openGatewayForAgent).mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          releaseDial = resolve
+        })
+    )
+    vi.mocked(focusWorkspaceOwnerSessionTile).mockReturnValueOnce('alpha-chat')
+    setWorkspaceScope('bots', 'bot:source-a::alpha')
+
+    const opening = host.openSession('beta-chat', {
+      route: {
+        connectionId: 'source-b',
+        mode: 'remote',
+        profile: 'beta',
+        targetProfile: 'beta'
+      },
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:source-b::beta'
+    })
+
+    await vi.waitFor(() => expect(openGatewayForAgent).toHaveBeenCalledOnce())
+    expect(host.focusOpenWorkspaceSession('bot:source-a::alpha')).toBe('alpha-chat')
+    releaseDial?.()
+
+    await expect(opening).rejects.toThrow(/superseded/i)
+    expect($workspaceOwnerKey.get()).toBe('bot:source-a::alpha')
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
   it('finishes hydration on the focused Bot tile without moving the Sessions gateway', async () => {
     const route = {
       connectionId: 'source-a',
@@ -714,6 +786,7 @@ describe('profile-aware plugin session opens', () => {
           releaseDial = resolve
         })
     )
+    setWorkspaceScope('bots', 'bot:source-a::alpha')
 
     const opening = host.openSession('late-bot-chat', {
       awaitHydration: true,

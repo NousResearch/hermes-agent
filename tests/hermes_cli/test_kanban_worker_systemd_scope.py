@@ -1158,6 +1158,80 @@ def test_unregistered_past_grace_fails_as_spawn_failed(shims, conn):
     assert run is not None and run.outcome == "spawn_failed"
 
 
+def test_registration_race_mid_stop_keeps_task_running(shims, conn, monkeypatch):
+    """F (new a), the race: the worker registers BETWEEN the sweep's
+    snapshot and its verified stop. The write-lock re-check plus the CAS
+    in the failure record keep the row running — no spawn_failed, no
+    failure counted, the registration survives."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_race", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(
+        conn, scope=unit, pid=os.getpid(),
+        started_delta=-kb.WORKER_REGISTRATION_GRACE_SECONDS - 300,
+    )
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    # The worker's first heartbeat lands while the sweep is stopping the
+    # scope — exactly the review's snapshot-vs-stop window.
+    real_stop = kb.request_worker_scope_stop
+
+    def register_then_stop(unit_name, *, task_id=None):
+        kb.register_worker_pid(
+            conn, task_id, expected_run_id=run_id, pid=pid,
+        )
+        return real_stop(unit_name, task_id=task_id)
+
+    monkeypatch.setattr(kb, "request_worker_scope_stop", register_then_stop)
+
+    assert kb.fail_unregistered_workers(conn) == []
+    row = conn.execute(
+        "SELECT status, consecutive_failures, worker_pid, "
+        "       worker_registered_at FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["consecutive_failures"] == 0
+    assert row["worker_pid"] == pid  # the registration was not overwritten
+    assert row["worker_registered_at"] is not None
+    run = kb.latest_run(conn, tid)
+    assert run.outcome is None  # the open run was never closed as failed
+
+
+def test_reregistration_same_pid_new_fingerprint_rejected(
+    shims, conn, monkeypatch,
+):
+    """F (new a), the reused pid: a second registration presenting the
+    SAME numeric pid but a DIFFERENT start fingerprint is the kernel
+    having recycled the number — rejected with a log, and the recorded
+    registration is left exactly as the real worker wrote it."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_reuse", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(conn, scope=unit, pid=os.getpid())
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    fingerprints = iter([111, 222, 111])
+    monkeypatch.setattr(
+        kb, "_worker_pid_start_time", lambda _pid: next(fingerprints),
+    )
+
+    assert kb.register_worker_pid(conn, tid, expected_run_id=run_id, pid=pid)
+    assert not kb.register_worker_pid(
+        conn, tid, expected_run_id=run_id, pid=pid,
+    )  # same pid number, new fingerprint — a recycled pid, not our worker
+    row = conn.execute(
+        "SELECT worker_pid_started_at FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()
+    assert row["worker_pid_started_at"] == 111
+    # A true re-registration (same pid, same fingerprint) stays accepted.
+    assert kb.register_worker_pid(conn, tid, expected_run_id=run_id, pid=pid)
+
+
 def test_unscoped_rows_are_normalized_not_failed(shims, conn):
     """Unscoped running rows (plain spawns — and every legacy row from
     before the isolation feature, which are unscoped by definition) get

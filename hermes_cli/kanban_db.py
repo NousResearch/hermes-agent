@@ -9081,17 +9081,35 @@ def register_worker_pid(
             if int(row["current_run_id"]) != int(expected_run_id):
                 return False
         first_registration = row["worker_registered_at"] is None
-        if (
-            not first_registration
-            and row["worker_pid"] is not None
-            and int(row["worker_pid"]) != real_pid
-            and _worker_pid_identity_alive(
+        if not first_registration and row["worker_pid"] is not None:
+            if int(row["worker_pid"]) == real_pid:
+                # Same numeric pid: the start-time fingerprint MUST match.
+                # A mismatch means the worker died and the kernel handed
+                # its pid to an unrelated process (or a stale worker from
+                # a previous boot) — reject rather than let it inherit
+                # the registration (review finding a).
+                if (
+                    row["worker_pid_started_at"] is not None
+                    and started is not None
+                    and int(row["worker_pid_started_at"]) != int(started)
+                ):
+                    _log.warning(
+                        "kanban: task %s re-registration for pid %s with a "
+                        "different start fingerprint (recorded %s, new %s) "
+                        "— rejected as a reused pid",
+                        task_id, real_pid,
+                        row["worker_pid_started_at"], started,
+                    )
+                    return False
+            elif _worker_pid_identity_alive(
                 row["worker_pid"], row["worker_pid_started_at"],
-            )
-        ):
-            # A different, still-alive pid already owns this attempt —
-            # do not let a stray process overwrite it.
-            return False
+            ):
+                # A different, still-alive pid already owns this attempt —
+                # do not let a stray process overwrite it.
+                return False
+            # A different, DEAD pid: superseded launcher/worker (adoption
+            # rewrote the claim, a reclaim killed it) — the new worker
+            # may take over the registration.
         conn.execute(
             "UPDATE tasks SET worker_pid = ?, worker_pid_started_at = ?, "
             "worker_registered_at = ? WHERE id = ? AND status = 'running'",
@@ -9855,6 +9873,20 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
         started = row["run_started_at"] or row["started_at"]
         if started is None or (now - int(started)) < WORKER_REGISTRATION_GRACE_SECONDS:
             continue  # still inside the launch grace window
+        # Registration-race guard (review finding a), first half: the
+        # snapshot above is a moment in time. Re-read under the write
+        # lock so a worker that registered since the snapshot survives
+        # this sweep — its scope must not be stopped on stale evidence.
+        with write_txn(conn):
+            fresh = conn.execute(
+                "SELECT status, worker_registered_at FROM tasks "
+                "WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            if fresh is None or fresh["status"] != "running":
+                continue  # a terminal path already moved the row on
+            if fresh["worker_registered_at"] is not None:
+                continue  # registered since the snapshot — it is alive
         if not request_worker_scope_stop(scope, task_id=row["id"]):
             continue  # stop unconfirmed — retry next tick
         _record_spawn_failure(
@@ -9865,7 +9897,24 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
                 "launch failed or the worker wedged before its first "
                 "activity"
             ),
+            require_worker_unregistered=True,
         )
+        # Second half of the race guard: a worker can register WHILE the
+        # verified stop runs. The CAS inside the failure record aborted
+        # in that case (no failure counted, bookkeeping untouched) —
+        # detect it and leave the row alone; adoption and the crash
+        # sweep own it from here.
+        fresh = conn.execute(
+            "SELECT worker_registered_at FROM tasks WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+        if fresh is not None and fresh["worker_registered_at"] is not None:
+            _log.info(
+                "kanban: task %s worker registered while its "
+                "unregistered-worker stop ran — leaving it running",
+                row["id"],
+            )
+            continue
         failed.append(row["id"])
         _log.warning(
             "kanban: task %s scoped worker never registered within %ss "
@@ -10571,6 +10620,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    require_worker_unregistered: bool = False,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -10614,6 +10664,12 @@ def _record_task_failure(
     ``detect_crashed_workers``, which resolves the per-task
     ``max_retries`` override against the violation streak itself. The
     failure is still counted into ``consecutive_failures``.
+
+    ``require_worker_unregistered=True`` adds the snapshot-race guard
+    (review finding a): the spawn-path UPDATEs also require
+    ``worker_registered_at IS NULL``, and a CAS miss (a worker registered
+    between the caller's snapshot and this txn) aborts with no failure
+    counted — the worker is alive and owns the row.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -10648,15 +10704,23 @@ def _record_task_failure(
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "worker_pid_started_at = NULL, "
                     "worker_registered_at = NULL, worker_scope = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready', 'review')",
+                    "WHERE id = ? AND status IN ('running', 'ready', 'review')"
+                    + (
+                        " AND worker_registered_at IS NULL"
+                        if require_worker_unregistered else ""
+                    ),
                     (failures, error[:500], task_id),
                 )
+                if require_worker_unregistered and cur.rowcount != 1:
+                    # A worker registered between the caller's snapshot
+                    # and this txn — it is alive and owns the row.
+                    return False
             else:
                 # Timeout/crash path: source phase already restored with claim
                 # cleared; just flip to blocked + update
@@ -10700,15 +10764,24 @@ def _record_task_failure(
             # Below threshold.
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "worker_pid_started_at = NULL, "
                     "worker_registered_at = NULL, worker_scope = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
+                    "WHERE id = ? AND status = 'running'"
+                    + (
+                        " AND worker_registered_at IS NULL"
+                        if require_worker_unregistered else ""
+                    ),
                     (retry_status, failures, error[:500], task_id),
                 )
+                if require_worker_unregistered and cur.rowcount != 1:
+                    # Same snapshot-race guard as the breaker branch: a
+                    # worker registered mid-flight — it is alive and
+                    # owns the row.
+                    return False
             else:
                 # Timeout/crash path: caller already restored the source phase.
                 conn.execute(
@@ -10748,6 +10821,7 @@ def _record_spawn_failure(
     error: str,
     *,
     failure_limit: int = None,
+    require_worker_unregistered: bool = False,
 ) -> bool:
     return _record_task_failure(
         conn, task_id, error,
@@ -10755,6 +10829,7 @@ def _record_spawn_failure(
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        require_worker_unregistered=require_worker_unregistered,
     )
 
 

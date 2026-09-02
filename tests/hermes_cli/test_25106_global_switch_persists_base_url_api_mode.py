@@ -137,5 +137,29 @@ def _run_apply(monkeypatch, result, persist_global=True):
     return saved
 
 
+def test_global_switch_persists_key_env(monkeypatch):
+    """#88989: --global must write model.key_env so the previous provider's
+    env-var name cannot stay in config.yaml and 401 the next request."""
+    result = _make_result()
+    result.key_env = "DEEPSEEK_API_KEY"
+    result.target_provider = "deepseek"
+    result.new_model = "deepseek-v4-flash"
+    saved = _run_switch(monkeypatch, result, cmd="/model deepseek-v4-flash --global")
+
+    assert saved["model.key_env"] == "DEEPSEEK_API_KEY"
+    assert "model.api_key" not in saved
+
+
+def test_global_switch_clears_stale_key_env(monkeypatch):
+    saved = _run_switch(monkeypatch, _make_result())
+    assert saved["model.key_env"] is None
+
+
+def test_picker_global_switch_persists_key_env(monkeypatch):
+    result = _make_result()
+    result.key_env = "AGNES_API_KEY"
+    saved = _run_apply(monkeypatch, result, persist_global=True)
+    assert saved["model.key_env"] == "AGNES_API_KEY"
+    assert "model.api_key" not in saved
 
 

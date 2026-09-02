@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -29,6 +30,7 @@ interface EndpointForm {
   baseUrl: string
   contextLength: string
   discoverModels: boolean
+  headers: string
   id: string
   makeDefault: boolean
   model: string
@@ -40,10 +42,48 @@ const EMPTY_FORM: EndpointForm = {
   baseUrl: '',
   contextLength: '',
   discoverModels: true,
+  headers: '',
   id: '',
   makeDefault: true,
   model: '',
   name: ''
+}
+
+function headersToText(headers: Record<string, string> | undefined): string {
+  if (!headers) {
+    return ''
+  }
+
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n')
+}
+
+function parseHeaders(text: string): Record<string, string> {
+  const headers: Record<string, string> = {}
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue
+    }
+
+    const separator = trimmed.indexOf(':')
+
+    if (separator <= 0) {
+      continue
+    }
+
+    const name = trimmed.slice(0, separator).trim()
+    const value = trimmed.slice(separator + 1).trim()
+
+    if (name) {
+      headers[name] = value
+    }
+  }
+
+  return headers
 }
 
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
@@ -52,6 +92,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
     discoverModels: endpoint.discover_models,
+    headers: headersToText(endpoint.extra_headers),
     id: endpoint.id,
     makeDefault: Boolean(endpoint.is_current),
     model: endpoint.model,
@@ -61,6 +102,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
 
 function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
+  const headers = parseHeaders(form.headers)
 
   return {
     id: form.id.trim() || undefined,
@@ -70,6 +112,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     api_key: form.apiKey.trim() || undefined,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
+    extra_headers: headers,
     make_default: form.makeDefault,
     models: models?.length ? models : undefined
   }
@@ -355,6 +398,18 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 type="password"
                 value={form.apiKey}
               />
+            </label>
+            <label className="grid gap-1.5 text-xs text-muted-foreground">
+              Custom Headers
+              <Textarea
+                className="resize-y font-mono text-[0.75rem]"
+                onChange={event => setForm(current => ({ ...current, headers: event.target.value }))}
+                placeholder={'One per line, e.g.\nX-Team-ID: hermes\nAuthorization: Bearer <token>'}
+                value={form.headers}
+              />
+              <span className="text-[0.65rem]">
+                Sent with every request to this endpoint. Leave blank for none.
+              </span>
             </label>
             <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
               <label className="flex items-center gap-2">

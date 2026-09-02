@@ -72,6 +72,16 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
 }
 
+type TileTranscriptTarget = { ownerRoute?: SessionProfileRoute; storedSessionId: string; runtimeId?: string }
+
+/** Signature key per tile — carries the owner route so two connections/profiles
+ *  sharing a stored id (or a tile re-homed to another owner) never alias. */
+function tileTranscriptSignatureKey(tile: TileTranscriptTarget): string {
+  const route = tile.ownerRoute
+
+  return `tile:${route ? `${route.connectionId}:${route.targetProfile ?? route.profile}:` : ''}${tile.storedSessionId}`
+}
+
 /**
  * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
  * slice 1). Bot canonical chats live here — never in $sessions /
@@ -96,7 +106,7 @@ export async function reconcileTileTranscripts({
 }: {
   requestSequenceRef: MutableRefObject<number>
   signatureRef: MutableRefObject<Map<string, string>>
-  tiles?: Array<{ storedSessionId: string; runtimeId?: string }>
+  tiles?: TileTranscriptTarget[]
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -104,7 +114,7 @@ export async function reconcileTileTranscripts({
   ) => ClientSessionState
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
-  const openSignatureKeys = new Set(tiles.map(tile => `tile:${tile.storedSessionId}`))
+  const openSignatureKeys = new Set(tiles.map(tileTranscriptSignatureKey))
 
   for (const signatureKey of signatureRef.current.keys()) {
     if (!openSignatureKeys.has(signatureKey)) {
@@ -139,19 +149,27 @@ export async function reconcileTileTranscripts({
         ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
         : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
 
+    // Bot tiles are pinned to an exact owner (connection + target profile);
+    // read from that backend, not whichever profile is foreground. Tiles
+    // without a route keep the legacy local read.
+    const profileScope: ProfileScope = tile.ownerRoute
+      ? { connectionId: tile.ownerRoute.connectionId, profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile }
+      : undefined
+
+    const signatureKey = tileTranscriptSignatureKey(tile)
+
     try {
-      const latest = await getLatestSessionMessages(storedSessionId)
+      const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
       if (requestId !== requestSequenceRef.current || tileRuntimeOwnsLiveState(runtimeSessionId) || !tileStillPresent()) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).
-        signatureRef.current.delete(`tile:${storedSessionId}`)
+        signatureRef.current.delete(signatureKey)
 
         continue
       }
 
-      const signatureKey = `tile:${storedSessionId}`
       const signature = sessionMessagesSignature(latest.messages)
 
       if (signatureRef.current.get(signatureKey) === signature) {

@@ -260,7 +260,7 @@ describe('active transcript refresh', () => {
 
     // Behavior assertions:
     expect(updaterCallCount).toBeGreaterThan(0)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined)
   })
 
   it('reconciles an idle tile while the main pane is busy', async () => {
@@ -285,7 +285,7 @@ describe('active transcript refresh', () => {
       updateSessionState
     })
 
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, undefined)
     expect(updateSessionState).toHaveBeenCalledTimes(1)
   })
 
@@ -345,6 +345,43 @@ describe('active transcript refresh', () => {
     await reconcile
 
     expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('isolates tile transcript reads by connection and profile while preserving the legacy local path', async () => {
+    vi.mocked(getLatestSessionMessages).mockImplementation(async storedId => transcript(storedId, storedId) as never)
+
+    const updateSessionState: Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState'] = vi.fn(
+      (_sessionId, updater) => updater({} as Parameters<typeof updater>[0])
+    )
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [
+        {
+          ownerRoute: { connectionId: 'connection-a', mode: 'remote', profile: 'shared-profile', targetProfile: 'target-a' },
+          runtimeId: 'runtime-a',
+          storedSessionId: 'stored-a'
+        },
+        {
+          ownerRoute: { connectionId: 'connection-b', mode: 'remote', profile: 'shared-profile' },
+          runtimeId: 'runtime-b',
+          storedSessionId: 'stored-b'
+        },
+        { runtimeId: 'runtime-local', storedSessionId: 'stored-local' }
+      ],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-a', { connectionId: 'connection-a', profile: 'target-a' })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-b', {
+      connectionId: 'connection-b',
+      profile: 'shared-profile'
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-local', undefined)
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'stored-a')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'stored-b')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
   })
 
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {

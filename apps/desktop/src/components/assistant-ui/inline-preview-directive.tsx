@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { DirectiveDropBadge } from '@/components/assistant-ui/directive-drop-badge'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { readDesktopFileText } from '@/lib/desktop-fs'
@@ -258,8 +259,17 @@ export function InlinePreviewDirective({
   // the mode-aware fs bridge; the frame now reads through readDesktopFileText,
   // which fetches over the authenticated /api/fs bridge in remote mode, so a
   // URL connection — including a same-machine `hermes serve` — renders live.)
-  if (!file || !HTML_FILE_RE.test(file)) {
-    return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
+  // A claimed directive that renders nothing is indistinguishable from one
+  // that was dropped: the panel is simply absent and the transcript reads as
+  // if the model never emitted it. `::preview` with no usable target is a
+  // malformed directive, so it gets the same visible badge as one that never
+  // parsed, rather than vanishing.
+  if (!file) {
+    return <DirectiveDropBadge reason="Preview skipped: no file given" source="::preview" />
+  }
+
+  if (!HTML_FILE_RE.test(file)) {
+    return <PreviewAttachment source="explicit-link" target={file} />
   }
 
   return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />

@@ -42,16 +42,30 @@ def test_oauth_setup_token_keeps_inherited_stdin():
     break interactive token setup. A blanket DEVNULL sweep over TUI-context
     subprocess calls must leave this one inheriting stdin. Regression guard for
     the over-application caught while salvaging the stdin-EOF fix.
+
+    The call's owner moved from agent/anthropic_adapter.py into
+    agent/anthropic_credentials.py in the adapter godfile split; the guard
+    scans both seams so a future move fails loudly instead of going dark.
     """
-    src = (REPO_ROOT / "agent" / "anthropic_adapter.py").read_text()
-    assert 'subprocess.run([claude_path, "setup-token"])' in src, (
-        "interactive setup-token call changed shape; re-verify it still "
-        "inherits stdin (no stdin=subprocess.DEVNULL)"
+    candidates = [
+        REPO_ROOT / "agent" / "anthropic_credentials.py",
+        REPO_ROOT / "agent" / "anthropic_adapter.py",
+    ]
+    sources = [p.read_text() for p in candidates if p.exists()]
+    owners = [
+        src for src in sources
+        if 'subprocess.run([claude_path, "setup-token"])' in src
+    ]
+    assert owners, (
+        "interactive setup-token call changed shape or moved; re-verify it "
+        "still inherits stdin (no stdin=subprocess.DEVNULL) and update this "
+        "guard's candidate list"
     )
-    assert 'subprocess.run([claude_path, "setup-token"], stdin' not in src, (
-        "setup-token must inherit stdin so the user can complete the OAuth "
-        "login prompt; do not add stdin=subprocess.DEVNULL"
-    )
+    for src in sources:
+        assert 'subprocess.run([claude_path, "setup-token"], stdin' not in src, (
+            "setup-token must inherit stdin so the user can complete the OAuth "
+            "login prompt; do not add stdin=subprocess.DEVNULL"
+        )
 
 
 def test_inline_noqa_marker_exempts_a_call():

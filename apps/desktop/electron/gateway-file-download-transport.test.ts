@@ -51,21 +51,21 @@ test('finalizeGatewayDownload prompts a save dialog then streams the response', 
 
   assert.match(fn, /dialog\.showSaveDialog/)
   assert.match(fn, /pumpStreamToFile\(/)
+  // Production deps come from one place so the streaming save and the data-URL
+  // fallback share the exclusive-create + rename contract (#96597).
+  assert.match(fn, /fsPumpDeps\(\)/)
+  assert.doesNotMatch(fn, /fs\.createWriteStream/)
   // HTTP errors carry their status so a 404 can trigger the fallback.
   assert.match(fn, /error\.statusCode = statusCode/)
 })
 
-test('saveGatewayFile falls back to the data-url route only on 404', () => {
-  const fn = extract('async function saveGatewayFile', '\nasync function saveGatewayFileViaDataUrl')
+test('data-URL fallback writes through the same failure-atomic primitive, never writeFile in place', () => {
+  const fn = extract('async function saveGatewayFileViaDataUrl', '\n// Mint a single-use WS ticket')
 
-  assert.match(fn, /\/api\/fs\/download\?path=/)
-  assert.match(fn, /isNotFoundError\(error\)/)
-  assert.match(fn, /saveGatewayFileViaDataUrl\(/)
-})
-
-test('data-url fallback reads the capped route and decodes it', () => {
-  const fn = extract('async function saveGatewayFileViaDataUrl', '// Mint a single-use WS ticket')
-
-  assert.match(fn, /\/api\/fs\/read-data-url\?path=/)
-  assert.match(fn, /parseDataUrlToBuffer\(/)
+  assert.match(fn, /dialog\.showSaveDialog/)
+  assert.match(fn, /writeBufferToFile\(/)
+  assert.match(fn, /fsPumpDeps\(\)/)
+  // A direct writeFile truncates an existing destination before the write
+  // completes; a mid-write failure would destroy it (#96597).
+  assert.doesNotMatch(fn, /fs\.promises\.writeFile/)
 })

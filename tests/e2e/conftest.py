@@ -235,6 +235,17 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     # telegram param only — first parametrization pays the cold-resolution cost).
     runner._reset_notice_session_info = lambda source: ""
 
+    # Keep the agent-turn path hermetic: _run_post_turn_hooks runs the /goal
+    # continuation, whose SessionDB warm-up constructs a REAL SessionDB on an
+    # executor thread at the turn boundary. On a cold/loaded CI runner that
+    # state.db init can exceed send_and_capture's 2s poll window, so the send
+    # lands after the assertion — the "Expected 'mock' to have been called
+    # once. Called 0 times." flake on
+    # test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]
+    # (issue #92130; e.g. runs 32802504263 / 32799192528 / 32796821900).
+    # e2e tests exercise gateway command dispatch, not post-turn goal hooks.
+    runner._run_post_turn_hooks = AsyncMock()
+
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")

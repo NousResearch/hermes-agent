@@ -38,7 +38,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 1
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
@@ -49,6 +49,8 @@ jobs:
       uv_lock: ${{ steps.classify.outputs.uv_lock }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
+      desktop_updater: ${{ steps.classify.outputs.desktop_updater }}
+      rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -60,6 +62,8 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
+          sparse-checkout: scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
@@ -71,8 +75,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
-    with:
-      slice_count: 12
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -83,6 +85,11 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests-os.yml
+    with:
+      # The Windows lane spawns the real desktop-update hand-off script
+      # (tests/test_desktop_update_windows_*.py) only when that surface
+      # changed; unit-level windows_only tests always run.
+      desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
 
   lint:
     name: Python lints
@@ -105,6 +112,14 @@ jobs:
     if: needs.detect.outputs.installer == 'true'
     uses: ./.github/workflows/installer-tests.yml
 
+  rust-tests:
+    name: Rust tests
+    needs: detect
+    # Only for PRs that touch a Rust crate. `.rs` is under apps/, so these
+    # changes used to run the TypeScript matrix and nothing that compiles them.
+    if: needs.detect.outputs.rust == 'true'
+    uses: ./.github/workflows/rust-tests.yml
+
   e2e-desktop:
     name: Desktop E2E
     needs: detect
@@ -113,14 +128,14 @@ jobs:
     # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
     # single job in the workflow — while still running the full pytest lanes.
     #
-    # ⛔ TEMPORARILY DISABLED (Aug 2, 2026, Teknium) — the suite is red on
-    # every PR and on main itself since the Aug 1 night engines/npm churn
-    # (#76499 → #76562 → #76575): the mock-backend Electron window never
-    # gets a title, so boot/chat/setup/interim specs all fail identically
-    # regardless of the PR's diff (verified on #76573 and the docs-only
-    # #76582). Tracking issue: #76627 (assigned: Ari). To re-enable,
-    # delete the `false &&` below — nothing else changed.
-    if: ${{ false && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true') }}
+    # Re-disabled (Sep 2026): the Sep 1 re-enable is still incredibly flaky.
+    # Keep this a bare `if: false`. The earlier
+    # `${{ false && (... || ...) }}` form on this reusable-workflow job made
+    # GitHub's workflow parser fail at startup ("An unexpected error has
+    # occurred") — every ci.yaml run repo-wide dispatched 0 jobs from
+    # 24f5a60ed1 until this line changed. To re-enable, restore:
+    #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    if: false
     uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:
@@ -156,6 +171,16 @@ jobs:
     name: Check no committed infographics
     needs: detect
     uses: ./.github/workflows/infographic-check.yml
+
+  profile-artifact-check:
+    name: Profile artifact check
+    needs: detect
+    uses: ./.github/workflows/profile-artifact-check.yml
+
+  case-collision-check:
+    name: Check no case-colliding filenames
+    needs: detect
+    uses: ./.github/workflows/case-collision-check.yml
 
   lockfile-diff:
     name: package-lock.json diff
@@ -213,13 +238,16 @@ jobs:
       - lint
       - js-tests
       - installer-tests
+      - rust-tests
       - e2e-desktop
       - docs-site
       - history-check
       - contributor-check
       - uv-lockfile
+      - case-collision-check
       - lockfile-diff
       - docker-lint
+      - profile-artifact-check
       - supply-chain
       - review-labels
       - osv-scanner

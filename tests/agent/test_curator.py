@@ -331,13 +331,17 @@ def _disable_prune_builtins(curator_env, monkeypatch):
 
 
 def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
-    """A protected built-in (e.g. `plan`) is never archived, even when it is a
-    stale bundled skill under prune_builtins — it backs a load-bearing slash
-    command and must survive every curator pass."""
+    """A protected built-in is never archived, even when it is a stale
+    bundled skill under prune_builtins — it backs a load-bearing UX path and
+    must survive every curator pass.
+
+    The shipped set is currently empty (``plan`` graduated to a built-in
+    command), so the mechanism is exercised with a sentinel name."""
     u = curator_env["usage"]
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
-    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    name = "sentinel-protected-skill"
+    monkeypatch.setattr(u, "PROTECTED_BUILTIN_SKILLS", {name})
     _write_skill(skills_dir, name)
     (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
     _enable_prune_builtins(curator_env, monkeypatch)
@@ -523,6 +527,47 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 
+
+
+def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkeypatch):
+    """The prompt actually delivered to the reviewer must name every action
+    the read-before-write guard protects.
+
+    ``_background_review_read_before_write_guard`` refuses a background-review
+    write whose target was not loaded via ``skill_view`` in the same turn —
+    edit, patch, write_file over an existing file, and remove_file. The forked
+    reviewer only performs that read if the prompt tells it to, so a guard the
+    prompt never mentions is a silently jammed write channel rather than a
+    safety net: the run completes, writes nothing, and reads like a pass that
+    found nothing to consolidate.
+
+    The guard's runtime behavior is covered in
+    ``tests/tools/test_skill_manager_tool.py``; this asserts the instruction
+    survives prompt assembly and reaches the model.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    captured = {}
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    c.run_curator_review(synchronous=True, consolidate=True)
+
+    prompt = captured["prompt"]
+    assert "skill_view" in prompt
+    for action in ("edit", "patch", "write_file", "remove_file"):
+        assert f"action={action}" in prompt, (
+            "the delivered prompt never tells the reviewer to call skill_view "
+            f"before skill_manage action={action}, which the read-before-write "
+            "guard refuses without it"
+        )
 
 
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
@@ -806,17 +851,19 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
 
 
-def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monkeypatch):
-    """The curator LLM fork must advertise only the skills + terminal toolsets.
+def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch):
+    """The curator LLM fork must advertise only the skills toolset.
 
-    Without ``enabled_toolsets=["skills", "terminal"]`` on the AIAgent(...) call
-    in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and init_agent
-    grants the fork the full default catalog (~30 tools) plus the context_engine
-    (lcm_*) tools, billing ~7K wasted schema tokens on every one of the fork's
-    50-100 API calls per consolidation pass. The prompt (curator.py:509-523)
-    confines the model to four tools in natural language, but only this kwarg
-    filters the advertised request schema. Capturing the constructor kwarg is
-    the sole assertion that distinguishes fixed from unfixed code.
+    ``terminal`` was removed from this fork for issue #96962: a terminal
+    mv/cp/rm under the skills tree bypasses the skill ledger entirely, so the
+    archive that followed snapshotted an already-stripped package and
+    ``hermes curator rollback`` restored a hollow skill. Removing the toolset
+    (rather than guarding terminal commands) closes every shell bypass by
+    construction. Without ``enabled_toolsets=["skills"]`` on the AIAgent(...)
+    call in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and
+    init_agent grants the fork the full default catalog (~30 tools) plus the
+    context_engine (lcm_*) tools. Capturing the constructor kwarg is the sole
+    assertion that distinguishes fixed from unfixed code.
     """
     curator = curator_env["curator"]
 
@@ -847,37 +894,67 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
 
     # error is None proves the fork was actually constructed (capture ran).
     assert meta.get("error") is None, meta.get("error")
-    assert captured.get("enabled_toolsets") == ["skills", "terminal"], (
-        "curator review fork did not pass enabled_toolsets=['skills', "
-        "'terminal'] to AIAgent; the full default tool catalog (plus lcm_* "
-        "context_engine tools) would be advertised; got "
-        f"{captured.get('enabled_toolsets')!r}"
+    assert captured.get("enabled_toolsets") == ["skills"], (
+        "curator review fork did not pass enabled_toolsets=['skills'] to "
+        "AIAgent; terminal must stay out (issue #96962) and the full default "
+        "tool catalog (plus lcm_* context_engine tools) must not be "
+        f"advertised; got {captured.get('enabled_toolsets')!r}"
     )
 
 
-def test_review_fork_toolset_surface_is_skills_plus_terminal():
-    """Documentary check on the static surface the fork's kwarg resolves to.
+def test_review_fork_toolset_surface_excludes_execution_tools():
+    """The fork's toolset kwarg must resolve to a surface with no shell access.
 
-    Registry-independent (include_registry=False) so a plugin-registered tool
-    tagged into these toolsets cannot flake the membership checks. This
-    documents the intended surface (the four prompt-named tools present, dead
-    default and lcm_* schema absent) but does not itself guard the call-site
-    kwarg. No exact-set pin: intentional additions to either toolset must not
-    fail this test.
+    ``terminal`` and ``process`` must stay out of the curator fork's resolved
+    surface (issue #96962): a shell mv/cp/rm under the skills tree bypasses
+    the skill ledger entirely, the archive that follows snapshots an
+    already-stripped package, and ``hermes curator rollback`` restores a
+    hollow skill. The call-site kwarg is pinned to ``["skills"]`` by the test
+    above; this test pins the RESOLUTION, so an ``includes: ["terminal"]``
+    added to the skills toolset definition — or a new execution tool merged
+    into it — fails here even though the kwarg never changed.
+
+    Registry-independent (``include_registry=False``): the boundary is the
+    static toolset definition. A plugin registering a tool into "skills" is
+    the user's own install decision, not the attack class this guard defends
+    against.
     """
     from toolsets import resolve_toolset
 
-    surface = set(resolve_toolset("skills", include_registry=False)) | set(
-        resolve_toolset("terminal", include_registry=False)
-    )
+    surface = set(resolve_toolset("skills", include_registry=False))
 
-    # The four prompt-named tools are all present.
+    # The ledgered write surface is present in full.
     assert "skills_list" in surface
     assert "skill_view" in surface
     assert "skill_manage" in surface
-    assert "terminal" in surface
 
-    # Representative dropped default + context_engine tools are absent.
-    assert "read_file" not in surface
-    assert "web_search" not in surface
-    assert "lcm_grep" not in surface
+    # The incident class stays out: no command execution, no background
+    # process steering (stdin is a second unguarded write sink), and no
+    # generic filesystem-write tool.
+    for tool in ("terminal", "process_manage", "write_file", "patch",
+                 "execute_code", "computer_use", "browser_exec"):
+        assert tool not in surface, (
+            f"execution/write tool {tool!r} leaked into the curator fork's "
+            "surface via the skills toolset — un-ledgered skill mutations "
+            f"become possible again (issue #96962); surface={sorted(surface)}"
+        )
+
+
+def test_review_prompt_does_not_steer_terminal_writes():
+    """The consolidation prompt must not steer the fork into shell mutations.
+
+    The #96962 incident was steered by a prompt line telling the fork to
+    ``mkdir -p ~/.hermes/skills/<umbrella>/references/ && mv ...`` its
+    support files. Removing terminal from the toolset takes away the
+    capability; removing the steering stops the fork burning tool calls on
+    attempts that can only be refused. Both halves are load-bearing.
+    """
+    from agent.curator import CURATOR_DRY_RUN_BANNER, CURATOR_REVIEW_PROMPT
+
+    for text in (CURATOR_REVIEW_PROMPT, CURATOR_DRY_RUN_BANNER):
+        assert "mkdir -p" not in text, (
+            "the curator prompt steers the fork toward a shell write of the "
+            "skills tree (issue #96962); re-home content via skill_manage "
+            "write_file/remove_file instead"
+        )
+        assert "&& mv" not in text

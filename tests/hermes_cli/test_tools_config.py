@@ -74,6 +74,30 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_null_platform_toolsets_fall_back_to_platform_default():
+    """A YAML ``platform:`` value is absent, not an explicit empty list."""
+    config = {"platform_toolsets": {"cli": None}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
+def test_scalar_platform_toolsets_fall_back_to_platform_default():
+    """A non-list platform value is ignored by the resolver."""
+    config = {"platform_toolsets": {"cli": "bogus"}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
 
 
 
@@ -220,6 +244,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",
@@ -256,8 +281,8 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 
     tools_command(first_install=True, config=config)
 
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
@@ -1034,8 +1059,8 @@ def _saved_list_from_before(platform="cli"):
 
 @_requires_recently_shipped
 def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
-    """The bug: a frozen list never gained bfl, so composite users got Nous
-    Portal video generation on upgrade and picker users silently did not."""
+    """The bug: a frozen list never gained a newly shipped toolset, so
+    composite users got it on upgrade and picker users silently did not."""
     on_composite = _get_platform_tools(
         {"platform_toolsets": {"cli": ["hermes-cli"]}},
         "cli",
@@ -1219,3 +1244,50 @@ def test_explicit_plugin_toolset_admitted_against_real_a2a_plugin(monkeypatch):
         f"plugin-provided 'a2a' toolset dropped by _get_platform_tools "
         f"(Layer 2 of #81163); enabled={sorted(enabled)}"
     )
+
+
+class TestLightpandaPostSetup:
+    """The Lightpanda picker row: no Chromium, just the binary check."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+            yield stub
+
+    def test_reports_binary_when_found(self, _stub_browser_use_install):
+        from hermes_cli.tools_config import _run_post_setup
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
+             patch("hermes_cli.tools_config._print_success") as ok, \
+             patch("hermes_cli.tools_config._print_warning") as warn:
+            _run_post_setup("lightpanda")
+        _stub_browser_use_install.assert_called_once()
+        assert "/opt/lightpanda" in ok.call_args.args[0]
+        warn.assert_not_called()
+
+    def test_prints_install_hint_when_missing(self):
+        from hermes_cli.tools_config import _run_post_setup
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
+             patch("hermes_cli.tools_config._print_warning") as warn, \
+             patch("hermes_cli.tools_config._print_info") as info:
+            _run_post_setup("lightpanda")
+        assert "not found" in warn.call_args.args[0]
+        assert any(LIGHTPANDA_INSTALL_URL in c.args[0] for c in info.call_args_list)
+
+    def test_post_setup_key_is_valid_and_readiness_gated(self):
+        from hermes_cli.tools_config import (
+            _POST_SETUP_INSTALLED,
+            _POST_SETUP_READY,
+            valid_post_setup_keys,
+        )
+
+        assert "lightpanda" in valid_post_setup_keys()
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
+            assert _POST_SETUP_READY["lightpanda"]() is True
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+            assert _POST_SETUP_READY["lightpanda"]() is False
+        # Not in the forced-setup gate: a missing binary must not nag every
+        # user who toggles the browser toolset.
+        assert "lightpanda" not in _POST_SETUP_INSTALLED

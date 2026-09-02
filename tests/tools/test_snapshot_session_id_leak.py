@@ -49,6 +49,7 @@ def test_export_snippet_shape():
     assert "unset" in snippet
     assert "${!HERMES_SESSION_*}" in snippet
     assert "${!HERMES_CRON_AUTO_DELIVER_*}" in snippet
+    assert "${!HERMES_BROWSER_CONTROL_*}" in snippet
     assert "HERMES_UI_SESSION_ID" in snippet
     assert "grep -vE" not in snippet
     assert '"$__hermes_snap_tmp"' in snippet

@@ -149,6 +149,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
+    # Buzz (Nostr relay via buzz-cli): messages can be edited in place
+    # (`buzz messages edit`), so grouped/accumulating progress works, but
+    # channels are shared community spaces — keep the medium tier. Without
+    # this entry Buzz inherited the verbose _GLOBAL_DEFAULTS and every
+    # interim update became a separate permanent channel post (#95841).
+    "buzz":            _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -168,7 +174,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
+    # WeCom is technically non-editable but exposes a native streaming
+    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
+    # consumer routes mid-stream content through. Enable streaming by default
+    # so the WeCom client renders the typing animation and cumulative content
+    # updates instead of a single one-shot markdown drop.
+    "wecom":           {**_TIER_LOW, "streaming": True},
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 

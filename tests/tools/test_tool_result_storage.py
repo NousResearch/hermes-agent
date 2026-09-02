@@ -480,3 +480,22 @@ class TestSpillover:
 
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
+
+
+# ── recovery hint in the persisted preview ────────────────────────────
+
+class TestRecoveryHint:
+    def test_preview_teaches_recovery_not_refetch(self):
+        msg = _build_persisted_message(
+            preview="preview text",
+            has_more=True,
+            original_size=60_000,
+            file_path="/tmp/hermes-results/r.txt",
+        )
+        assert "Recovery:" in msg
+        assert "execute_code" in msg
+        assert "re-request" in msg
+        # Structure preserved: tag, size, path, read_file guidance all intact.
+        assert msg.startswith(PERSISTED_OUTPUT_TAG)
+        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
+        assert "read_file" in msg

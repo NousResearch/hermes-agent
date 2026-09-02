@@ -115,6 +115,15 @@ def score_survey(resp: str, truth: Dict[str, bool]) -> bool:
     return True
 
 
+def _bridge_query_text(call: Dict[str, Any]) -> str:
+    """Render current multi-query calls and legacy saved transcript calls."""
+    args = call.get("args") or {}
+    queries = args.get("queries")
+    if isinstance(queries, list):
+        return "; ".join(str(query) for query in queries)
+    return str(args["query"] if "query" in args else "?")
+
+
 def run_one(scenario, mode, rep, out_dir: Path):
     model = os.environ.get("TS_UE_MODEL", "anthropic/claude-opus-4.8")
     lmax = int(os.environ.get("TS_UE_LISTING_MAX", "30000"))
@@ -203,7 +212,11 @@ def run_one(scenario, mode, rep, out_dir: Path):
         "prompt_tokens_total": sum(u["prompt_tokens"] or 0 for u in usage_log),
         "ue_calls": [c[-60:] for c in ue_calls][:15],
         "write_calls": [c[-60:] for c in write_calls][:10],
-        "bridge_queries": [(b.get("args") or {}).get("query") for b in bridge_call_log if b["name"] == "tool_search"][:10],
+        "bridge_queries": [
+            _bridge_query_text(call)
+            for call in bridge_call_log
+            if call["name"] == "tool_search"
+        ][:10],
         "success": bool(success), "error": error,
         "final_response": base._redact_secrets(final_response)[:400],
     }

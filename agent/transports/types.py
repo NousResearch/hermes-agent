@@ -134,6 +134,12 @@ class NormalizedResponse:
         return pd.get("anthropic_content_blocks")
 
     @property
+    def bedrock_content_blocks(self):
+        """Verbatim, order-preserving Bedrock Converse content blocks."""
+        pd = self.provider_data or {}
+        return pd.get("bedrock_content_blocks")
+
+    @property
     def codex_reasoning_items(self):
         pd = self.provider_data or {}
         return pd.get("codex_reasoning_items")

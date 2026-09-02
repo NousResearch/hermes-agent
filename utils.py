@@ -587,14 +587,30 @@ def atomic_roundtrip_yaml_update(
         config = CommentedMap(config)
 
     current = config
-    keys = key_path.split(".")
-    for key in keys[:-1]:
-        next_value = current.get(key)
+    # Honor escaped dots and prefer existing literal dotted keys (e.g. model
+    # IDs like ``glm-5.3``) over blind splitting — same navigation as
+    # ``hermes config set``'s ``_set_nested`` (#91607: /model + TUI
+    # persistence route through here and used to write ``glm-5: {'3': ...}``
+    # phantom siblings while the runtime kept reading the literal key).
+    from hermes_cli.config import _greedy_literal_match, _split_key_path
+
+    keys = _split_key_path(key_path)
+    i = 0
+    while True:
+        remaining = keys[i:]
+        seg, consumed = remaining[0], 1
+        match = _greedy_literal_match(dict(current), remaining)
+        if match is not None:
+            seg, consumed = match
+        if i + consumed == len(keys):
+            current[seg] = value
+            break
+        next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
             next_value = CommentedMap()
-            current[key] = next_value
+            current[seg] = next_value
         current = next_value
-    current[keys[-1]] = value
+        i += consumed
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
@@ -901,6 +917,36 @@ def model_forces_max_completion_tokens(model: str) -> bool:
         or m.startswith("o3")
         or m.startswith("o4")
     )
+
+
+def base_url_origin(base_url: str) -> tuple[str, str, int]:
+    """Return ``(scheme, hostname, effective_port)`` for a base URL.
+
+    Origin, not just host. ``https://h/v1`` and ``http://h/v1`` are different
+    trust boundaries, and so are two ports on the same host, so any decision
+    about handing a bearer secret to a new URL has to compare all three —
+    hostname equality alone would authorise an HTTPS→HTTP downgrade.
+
+    The port is normalised to the scheme default (443/80) when absent, so
+    ``https://h`` and ``https://h:443`` compare equal. Returns
+    ``("", "", 0)`` when the URL yields no usable hostname or a bad port.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return ("", "", 0)
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
+        return ("", "", 0)
+    try:
+        port = parsed.port
+    except ValueError:
+        # Out-of-range or non-numeric port — not a usable origin.
+        return ("", "", 0)
+    if port is None:
+        port = {"https": 443, "http": 80}.get(scheme, 0)
+    return (scheme, hostname, port)
 
 
 def base_url_host_matches(base_url: str, domain: str) -> bool:

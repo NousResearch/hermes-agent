@@ -3,8 +3,24 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $sessions, $unreadFinishedSessionIds, setSessions } from './session'
-import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc } from './session-dot-state'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  $unreadFinishedSessionIds,
+  markAllSessionsRead,
+  setCronSessions,
+  setMessagingSessions,
+  setSessions
+} from './session'
+import {
+  $delegatingSessionIds,
+  $sessionDotStateById,
+  $unreadSessionCount,
+  hasLiveTurn,
+  showsRunningArc,
+  unreadSessionCount
+} from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -146,5 +162,81 @@ describe('persisted unread (backend watermark)', () => {
     setSessions([storedRow('s1')])
 
     expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('unread')
+  })
+})
+
+describe('unreadSessionCount', () => {
+  it('counts listed unread rows and skips archived', () => {
+    expect(
+      unreadSessionCount({ a: 'unread', b: 'working', c: 'unread' }, [
+        { id: 'a' },
+        { id: 'b' },
+        { archived: true, id: 'c' },
+        { id: 'missing' }
+      ])
+    ).toBe(1)
+  })
+
+  it('does not count alias keys that are not listed rows', () => {
+    expect(unreadSessionCount({ tip: 'unread', root: 'unread' }, [{ id: 'tip' }])).toBe(1)
+  })
+})
+
+describe('$unreadSessionCount (titlebar badge)', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  it('does not count an unread cron session — cron runs finish unwatched by design (#93552)', () => {
+    setCronSessions([storedRow('cron-1', { source: 'cron' })])
+    $unreadFinishedSessionIds.set(['cron-1'])
+
+    // The cron row itself still paints unread in the sidebar cron section...
+    expect($sessionDotStateById.get()['cron-1']).toBe('unread')
+    // ...but the titlebar badge stays quiet.
+    expect($unreadSessionCount.get()).toBe(0)
+  })
+
+  it('counts an unread regular session', () => {
+    setSessions([storedRow('reg-1', { unread: true })])
+
+    expect($unreadSessionCount.get()).toBe(1)
+  })
+
+  it('counts regular + messaging but never cron', () => {
+    setSessions([storedRow('reg-1', { unread: true })])
+    setMessagingSessions([storedRow('msg-1')])
+    setCronSessions([storedRow('cron-1', { source: 'cron' })])
+    $unreadFinishedSessionIds.set(['msg-1', 'cron-1'])
+
+    expect($unreadSessionCount.get()).toBe(2)
+  })
+
+  it('mark-all-read clears regular and cron unread alike', () => {
+    setSessions([storedRow('reg-1')])
+    setCronSessions([storedRow('cron-1', { source: 'cron' })])
+    $unreadFinishedSessionIds.set(['reg-1', 'cron-1'])
+
+    expect($unreadSessionCount.get()).toBe(1)
+    expect($sessionDotStateById.get()['cron-1']).toBe('unread')
+
+    markAllSessionsRead()
+
+    expect($unreadSessionCount.get()).toBe(0)
+    expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
   })
 })

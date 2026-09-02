@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -341,6 +342,8 @@ class WebhookAdapter(BasePlatformAdapter):
             self._port,
             route_names,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -564,12 +567,14 @@ class WebhookAdapter(BasePlatformAdapter):
         """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
 
         Returns:
-          - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored, request handled as the default profile).
+          - ``None`` when no profile prefix is present, or when multiplexing
+            is off and the prefix names this gateway's own profile (the
+            request is handled as the serving profile).
           - the profile name (str) when present, multiplexing is on, and the
             profile is one this gateway serves.
           - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured (handler returns 404).
+            unknown/unconfigured, or names a profile this single-profile
+            gateway does not serve (handler returns 404).
         """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
@@ -577,9 +582,19 @@ class WebhookAdapter(BasePlatformAdapter):
         runner = self.gateway_runner
         cfg = getattr(runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
-            # the single-profile gateway (don't 404 a would-be valid route).
-            return None
+            # Prefix supplied but multiplexing is off. Only a self-referential
+            # prefix (naming this gateway's own profile) may fall through to
+            # the bare route; anything else fails closed — silently ignoring
+            # the prefix served the gateway owner's routes/config under
+            # another profile's URL (#91583 defect 2).
+            try:
+                from hermes_cli.profiles import profile_matches_home
+
+                if profile_matches_home(profile):
+                    return None
+            except Exception:
+                pass
+            return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
             served = {
@@ -618,6 +633,21 @@ class WebhookAdapter(BasePlatformAdapter):
             return False
         effective_profile = request_profile or "default"
         return configured_profile == effective_profile
+
+    @staticmethod
+    def _profile_scope(profile: Optional[str]):
+        """Enter the URL-resolved profile's runtime scope, or a no-op.
+
+        Only a resolved ``/p/<profile>/`` prefix enters a scope (same helper
+        the runner wraps ``handle_message`` in); bare routes keep serving the
+        launch profile exactly as before.
+        """
+        if not profile or not isinstance(profile, str):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+
+        return _profile_runtime_scope(get_profile_dir(profile))
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -770,63 +800,71 @@ class WebhookAdapter(BasePlatformAdapter):
                 }
             )
 
-        if route_config.get("script"):
-            # run_route_script shells out (subprocess.run, up to its timeout);
-            # run it in a worker thread so it can't block the gateway event loop.
-            keep, transformed_payload = await asyncio.to_thread(
-                self._route_processor.run_route_script,
-                route_config.get("script"),
-                payload,
+        # The route script, prompt render and skill lookup below read the
+        # profile's home (skills/, config). The runner only enters the routed
+        # profile's scope later, around handle_message, so without this they
+        # ran against the launch (default) profile (#67277). Only a resolved
+        # /p/<profile>/ enters a scope; bare routes are unchanged.
+        with self._profile_scope(profile):
+            if route_config.get("script"):
+                # run_route_script shells out (subprocess.run, up to its
+                # timeout); run it in a worker thread so it can't block the
+                # gateway event loop. to_thread copies the contextvars, so
+                # the profile scope follows it.
+                keep, transformed_payload = await asyncio.to_thread(
+                    self._route_processor.run_route_script,
+                    route_config.get("script"),
+                    payload,
+                )
+                if not keep:
+                    logger.info(
+                        "[webhook] script ignored event=%s route=%s",
+                        event_type,
+                        route_name,
+                    )
+                    return web.json_response(
+                        {
+                            "status": "ignored",
+                            "reason": "script",
+                            "route": route_name,
+                        }
+                    )
+                payload = transformed_payload or payload
+
+            # Format prompt from template
+            prompt_template = route_config.get("prompt", "")
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
             )
-            if not keep:
-                logger.info(
-                    "[webhook] script ignored event=%s route=%s",
-                    event_type,
-                    route_name,
-                )
-                return web.json_response(
-                    {
-                        "status": "ignored",
-                        "reason": "script",
-                        "route": route_name,
-                    }
-                )
-            payload = transformed_payload or payload
 
-        # Format prompt from template
-        prompt_template = route_config.get("prompt", "")
-        prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
-        )
+            # Inject skill content if configured.
+            # We call build_skill_invocation_message() directly rather than
+            # using /skill-name slash commands — the gateway's command parser
+            # would intercept those and break the flow.
+            skills = route_config.get("skills", [])
+            if skills:
+                try:
+                    from agent.skill_commands import (
+                        build_skill_invocation_message,
+                        get_skill_commands,
+                    )
 
-        # Inject skill content if configured.
-        # We call build_skill_invocation_message() directly rather than
-        # using /skill-name slash commands — the gateway's command parser
-        # would intercept those and break the flow.
-        skills = route_config.get("skills", [])
-        if skills:
-            try:
-                from agent.skill_commands import (
-                    build_skill_invocation_message,
-                    get_skill_commands,
-                )
-
-                skill_cmds = get_skill_commands()
-                for skill_name in skills:
-                    cmd_key = f"/{skill_name}"
-                    if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
-                        )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
-                    else:
-                        logger.warning(
-                            "[webhook] Skill '%s' not found", skill_name
-                        )
-            except Exception as e:
-                logger.warning("[webhook] Skill loading failed: %s", e)
+                    skill_cmds = get_skill_commands()
+                    for skill_name in skills:
+                        cmd_key = f"/{skill_name}"
+                        if cmd_key in skill_cmds:
+                            skill_content = build_skill_invocation_message(
+                                cmd_key, user_instruction=prompt
+                            )
+                            if skill_content:
+                                prompt = skill_content
+                                break  # Load the first matching skill
+                        else:
+                            logger.warning(
+                                "[webhook] Skill '%s' not found", skill_name
+                            )
+                except Exception as e:
+                    logger.warning("[webhook] Skill loading failed: %s", e)
 
         # Build a unique delivery ID
         delivery_id = request.headers.get(
@@ -1368,7 +1406,14 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
-            result = subprocess.run(
+            # Off-loop: `gh` does network I/O and can take its full 30s
+            # timeout. Running it inline froze every adapter and timer on
+            # the gateway event loop for the duration (Pattern A, #91912
+            # class). asyncio.to_thread keeps the loop serving while the
+            # subprocess runs; the worker thread is bounded by the
+            # subprocess timeout below.
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [
                     "gh",
                     "pr",

@@ -68,6 +68,7 @@ import {
 } from "@/lib/pty-keyboard-shortcuts";
 import {
   isViewportPinnedToBottom,
+  parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import {
@@ -1064,6 +1065,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // ``return cleanup`` stays at the top level; handlers + disposables
     // are hoisted to ``let`` bindings the cleanup closes over.
     let unmounting = false;
+    // The implicit active-session fallback (no `?resume=` on the URL) only
+    // becomes known once the server's control frame arrives (see
+    // `ws.onmessage` below) — everything gated on "is this a resume replay"
+    // reads this instead of `resumeParam` directly (#93518).
+    let effectiveResume = resumeParam;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     let onScrollDisposable: { dispose(): void } | null = null;
@@ -1088,7 +1094,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
     const noteResumePtyChunk = (chunkText: string) => {
-      if (!resumeParam || unmounting) {
+      if (!effectiveResume || unmounting) {
         return;
       }
       if (shouldFinishResumeHydrationOnChunk(chunkText)) {
@@ -1256,14 +1262,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // in-place redraws through untouched. See pty-resume-sanitizer.ts.
     const decoder = new TextDecoder();
     const sanitizer = new PtyResumeSanitizer();
+    const beginResumeReplay = () => {
+      stickToBottomRef.current = true;
+      if (!eraseSuppressionTimer) {
+        eraseSuppressionTimer = setTimeout(() => {
+          eraseSuppressionTimer = null;
+          sanitizer.endEraseSuppression();
+        }, PTY_RESUME_SANITIZE_WINDOW_MS);
+      }
+      if (!resumeMaxTimer) {
+        setResumeHydrating(true);
+        resumeMaxTimer = setTimeout(
+          finishResumeHydration,
+          PTY_RESUME_LOADING_MAX_MS,
+        );
+      }
+    };
     if (resumeParam) {
-      eraseSuppressionTimer = setTimeout(() => {
-        eraseSuppressionTimer = null;
-        sanitizer.endEraseSuppression();
-      }, PTY_RESUME_SANITIZE_WINDOW_MS);
+      beginResumeReplay();
     }
 
     ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        // The active-session fallback (no `?resume=` on the URL) tells us
+        // via a one-off JSON control frame that a replay is starting (#93518,
+        // see `pty_ws` in web_server.py). Real PTY output always arrives as
+        // binary frames, so any text frame is a candidate; anything that
+        // isn't this control shape (e.g. the ANSI "Chat unavailable" banners
+        // pty_ws sends as text on failure) falls through to the write path
+        // below unchanged.
+        const resumeId = parseResumeControlMessage(ev.data);
+        if (resumeId) {
+          effectiveResume = resumeId;
+          beginResumeReplay();
+          return;
+        }
+      }
       const text =
         typeof ev.data === "string"
           ? ev.data
@@ -1274,13 +1308,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
       // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
       // would hide the wait notice while the terminal is still blank.
-      const rendered = resumeParam ? sanitizer.next(text) : text;
+      const rendered = effectiveResume ? sanitizer.next(text) : text;
       // Resume replay lands over many write chunks; pin the viewport to the
       // bottom as each chunk COMMITS (xterm write callback) instead of
       // guessing with a fixed delay, and release the pin the moment the user
       // scrolls up to read the backlog (#59591).
       const followScroll = shouldFollowPtyOutput(
-        resumeParam,
+        effectiveResume,
         stickToBottomRef.current,
       )
         ? () => termRef.current?.scrollToBottom()
@@ -1293,7 +1327,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
-      if (resumeParam) {
+      if (effectiveResume) {
         clearEraseSuppressionTimer();
         try {
           term.write(sanitizer.flush());

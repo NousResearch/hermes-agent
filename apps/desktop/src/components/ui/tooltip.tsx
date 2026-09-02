@@ -6,10 +6,16 @@ import { type InputModality, lastInputModality } from '@/lib/input-modality'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
-/** Default hover-open delay for `Tip`. Non-zero so a cursor sweeping across the
- *  chrome doesn't flash a trail of tips — they only appear on a deliberate,
- *  settled hover. Call sites that need an instant tip pass `delayDuration={0}`. */
+/** Default hover-open delay for `Tip`. Below 150ms a passing cursor still
+ *  opens the tip; above 250ms an intentional hover feels broken. Call sites
+ *  that need an instant tip pass `delayDuration={0}`. */
 const TIP_DELAY_MS = 200
+
+/** After a tip closes, this window stays warm: the next trigger opens
+ *  instantly (Radix `skipDelayDuration`). Long enough to cover the move
+ *  between adjacent chrome, short enough that a hover a second later waits
+ *  again. */
+const TIP_SKIP_DELAY_MS = 300
 
 /** True inside `RootTooltipProvider`. `Tip` uses this to decide whether it
  *  needs to supply its own provider — see the note on `Tip`. */
@@ -17,11 +23,11 @@ const HasTooltipProvider = React.createContext(false)
 
 function TooltipProvider({
   delayDuration = 0,
-  // Radix's "skip" grace: after one tip opens, every trigger touched within
-  // this window opens INSTANTLY, delay bypassed. Its 300ms default meant a
-  // cursor sweeping the chrome still flashed a trail of tips despite the
-  // hover delay. Zero it so each tip independently honors `delayDuration`.
-  skipDelayDuration = 0,
+  // First hover waits `delayDuration` so a sweep across chrome does not
+  // flash a trail. After one tip has opened, the page is warm: every
+  // trigger entered within this window skips the delay. The cooldown
+  // starts on close; a hover a second later waits again.
+  skipDelayDuration = TIP_SKIP_DELAY_MS,
   // Tips are labels, not interactive surfaces. Hoverable content + Radix's
   // pointer-grace bridge is what leaves tips stuck open — especially over
   // Electron `-webkit-app-region: drag` chrome where pointermove never fires
@@ -242,8 +248,8 @@ function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, .
   return provided ? tip : <TooltipProvider delayDuration={delayDuration}>{tip}</TooltipProvider>
 }
 
-/** The app's single tooltip provider. Mounted once at the root so no `Tip`
- *  needs its own. Defaults match what `Tip` used to pass per instance. */
+/** The app's single tooltip provider. Mounted once at the root so every
+ *  `Tip` shares one delay + warm-window. */
 function RootTooltipProvider({ children }: { children: React.ReactNode }) {
   return (
     <HasTooltipProvider value>

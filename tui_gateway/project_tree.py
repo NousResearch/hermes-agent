@@ -63,6 +63,21 @@ NO_PROJECT_LABEL = "Home"
 _MAX_SIBLING_PROBES = 4
 
 
+def stamp_profile(projects: list[dict], profile: str) -> None:
+    """Make every session row self-describing for cross-profile routing.
+
+    A scoped project tree is built from one profile's state.db, so the request
+    scope is authoritative even for legacy rows whose ``profile_name`` is NULL.
+    """
+    for project in projects:
+        for session in project.get("previewSessions") or []:
+            session["profile"] = profile
+        for repo in project.get("repos") or []:
+            for group in repo.get("groups") or []:
+                for session in group.get("sessions") or []:
+                    session["profile"] = profile
+
+
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
     """The one definition of a main-checkout lane id (must match the desktop)."""
     return f"{repo_root}::branch::{(branch or '').strip()}"

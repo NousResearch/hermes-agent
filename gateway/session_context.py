@@ -102,6 +102,12 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
+_BROWSER_CONTROL_PRINCIPAL: ContextVar = ContextVar(
+    "HERMES_BROWSER_CONTROL_PRINCIPAL", default=_UNSET
+)
+_BROWSER_CONTROL_TRANSPORT_FAMILY: ContextVar = ContextVar(
+    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", default=_UNSET
+)
 
 # Per-session cron marker. Unlike the process-global legacy env var, this is
 # scoped to one cron job / inbound session. _UNSET preserves the legacy env
@@ -151,6 +157,8 @@ _VAR_MAP = {
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
+    "HERMES_BROWSER_CONTROL_PRINCIPAL": _BROWSER_CONTROL_PRINCIPAL,
+    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY": _BROWSER_CONTROL_TRANSPORT_FAMILY,
     "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -228,6 +236,8 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
+    browser_control_principal: str = "",
+    browser_control_transport_family: str = "",
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
@@ -273,6 +283,8 @@ def set_session_vars(
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
+        _BROWSER_CONTROL_PRINCIPAL.set(browser_control_principal),
+        _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
         _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
@@ -312,6 +324,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _BROWSER_CONTROL_PRINCIPAL,
+        _BROWSER_CONTROL_TRANSPORT_FAMILY,
         _CRON_SESSION,
     ):
         var.set("")

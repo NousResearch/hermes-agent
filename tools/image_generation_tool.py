@@ -66,10 +66,12 @@ from tools.fal_common import (
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    NOUS_MANAGED_PROVIDER,
     fal_key_is_configured,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
-    prefers_gateway,
+    read_selection,
+    selection_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -685,7 +687,10 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "prompt", "aspect_ratio", "num_images", "output_format",
             "resolution", "quality", "sync_mode",
         },
-        "upscale": True,   # 1k native is sub-2MP
+        # Opt-in only (policy: default-on upscaling was disabled everywhere
+        # Aug 2026; the upscaler is a creative enhancer that can alter fine
+        # detail). 1k native is sub-2MP — pass upscale=true when needed.
+        "upscale": False,
         # Edit endpoint takes `image_urls` (max 3) + the same knobs;
         # aspect_ratio defaults to "auto" (follows the first input image),
         # so we don't send it on edits.
@@ -729,9 +734,43 @@ _managed_fal_client_lock = threading.Lock()
 # Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
 def _resolve_managed_fal_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    if fal_key_is_configured() and not prefers_gateway("image_gen"):
+    """Resolve the FAL route from the stored `hermes tools` selection.
+
+    Dispatch is a plain switch on the stored ``image_gen`` provider string:
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed fal-queue
+      gateway ONLY; unentitled/unreachable is a selection-naming error
+      (never a silent fall back to FAL_KEY).
+    - any other stored provider (``"fal"``, ...) → direct FAL ONLY; a
+      missing FAL_KEY is an error naming FAL_KEY and the selection (never a
+      silent managed reroute).
+    - no selection ever written → legacy credential autodetect: direct when
+      FAL_KEY is set, else the managed gateway when resolvable, else None.
+
+    Returns the managed gateway config, or ``None`` for the direct route.
+    Raises ``ValueError`` with the honest error contract when the stored
+    selection cannot run.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        gateway = resolve_managed_tool_gateway("fal-queue")
+        if gateway is None:
+            raise ValueError(selection_error(
+                "image_gen",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return gateway
+    if selected is not None:
+        if not fal_key_is_configured():
+            raise ValueError(selection_error(
+                "image_gen",
+                selected,
+                "FAL_KEY is not set",
+            ))
+        return None
+    # Never-configured category: legacy credential autodetect (do NOT persist).
+    if fal_key_is_configured():
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -1225,6 +1264,9 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
+        # Strict selection check: a stored-but-broken selection raises the
+        # honest selection-naming error from _resolve_managed_fal_gateway();
+        # only the never-configured path can report "no backend at all".
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
 
@@ -1369,8 +1411,19 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    """True if the FAL backend selected via `hermes tools` (or, on a
+    never-configured install, any FAL backend) is available.
+
+    A stored-but-broken selection reports False here (registry gating);
+    the honest selection-naming error surfaces at call time from
+    ``_resolve_managed_fal_gateway``.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return bool(resolve_managed_tool_gateway("fal-queue"))
+    if selected is not None:
+        return fal_key_is_configured()
+    return bool(fal_key_is_configured() or resolve_managed_tool_gateway("fal-queue"))
 
 
 def _build_no_backend_setup_message() -> str:
@@ -1428,7 +1481,7 @@ def check_image_generation_requirements() -> bool:
         pass
 
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
         return False
 
     # Probe only the explicitly selected plugin. Merely possessing a cloud
@@ -1486,25 +1539,16 @@ from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
-    # Placeholder — the real description is rebuilt dynamically at
-    # get_tool_definitions() time so it reflects the active backend's actual
-    # capabilities (whether the selected model supports image-to-image /
-    # editing). See _build_dynamic_image_schema() below and the
-    # dynamic-tool-schemas skill.
+    # Placeholder — description AND params are rebuilt dynamically at
+    # get_tool_definitions() time from the active backend's declared
+    # capabilities (FAL catalog metadata, or plugin provider.capabilities()).
+    # Edit-only args (image_url, reference_image_urls) and upscale are
+    # advertised ONLY when the active model actually supports them; the
+    # handler accepts them regardless (replay compat + teaching errors).
+    # See _build_dynamic_image_schema().
     "description": (
-        "Generate high-quality images from text prompts (text-to-image), or "
-        "edit / transform an existing image (image-to-image) when the active "
-        "model supports it. Pass `image_url` to edit that image; add "
-        "`reference_image_urls` for style/composition references; omit both "
-        "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
-        "Returns the result in the `image` field — either a URL or an absolute "
-        "file path. To show it to the user, reference that path/URL in your "
-        "response using the file-delivery convention for the current platform "
-        "(your platform guidance describes how files are delivered here). When "
-        "the active terminal backend has a different filesystem, successful "
-        "local-file results may also include `agent_visible_image` for "
-        "follow-up terminal/file operations."
+        "Generate images from text prompts. The active model's edit/reference "
+        "capabilities are rendered at serving time."
     ),
     "parameters": {
         "type": "object",
@@ -1523,39 +1567,9 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
-            "image_url": {
-                "type": "string",
-                "description": (
-                    "Optional source image to edit/transform (image-to-image). "
-                    "When provided, the active backend routes to its image "
-                    "editing endpoint; when omitted, it generates from text "
-                    "alone. Pass a public URL or an absolute local file path "
-                    "from the conversation. Only honored by models that "
-                    "support editing — the description above indicates whether "
-                    "the active model does."
-                ),
-            },
-            "reference_image_urls": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional list of additional reference image URLs / paths "
-                    "(style, character, or composition references) to guide an "
-                    "image-to-image edit. Supported only by some models and "
-                    "capped per-model; the description above indicates the max."
-                ),
-            },
-            "upscale": {
-                "type": "boolean",
-                "description": (
-                    "Optional post-generation high-resolution pass (~2x, "
-                    "extra cost/latency). Off by default for every model — "
-                    "pass true to opt in. The upscaler is a creative "
-                    "enhancer and can alter fine detail (rendered text, "
-                    "faces), so only use it when resolution matters more "
-                    "than fidelity."
-                ),
-            },
+            # NOTE (schema diet, #95681): image_url / reference_image_urls /
+            # upscale are added per-capability by _build_dynamic_image_schema.
+            # Do not re-add them statically.
         },
         "required": ["prompt"],
     },
@@ -1626,8 +1640,11 @@ def _dispatch_to_plugin_provider(
     ignore it via their ``**kwargs`` (the ABC contract).
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return None  # unset/explicit FAL keeps the legacy FAL path
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
+        # Unset/explicit FAL keeps the legacy FAL path; "nous" (managed
+        # Nous Subscription selection) also runs the legacy pipeline, which
+        # routes through the managed fal-queue gateway.
+        return None
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
@@ -1782,8 +1799,13 @@ def _maybe_route_managed_krea(
 
     Direct/BYO users (no managed gateway) fall through untouched.
     """
-    # ``provider == "krea"`` is already handled by the standard plugin dispatch.
-    if _read_configured_image_provider() == "krea":
+    # Strict selection rule: an explicitly stored ``image_gen.provider``
+    # (other than the managed "nous" selection, which IS a managed-mode
+    # opt-in) disables the model-driven managed interception — the user's
+    # picker choice dispatches normally. Interception is permitted only on
+    # never-configured installs or under the managed selection.
+    configured_provider = _read_configured_image_provider()
+    if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
         return None
 
     normalized = _normalize_krea_model(_read_configured_image_model())
@@ -1969,10 +1991,18 @@ def _active_image_capabilities() -> Dict[str, Any]:
     1. If ``image_gen.provider`` is set, ask that plugin provider.
     2. Otherwise inspect the in-tree FAL model catalog for the active model.
 
-    Returns a dict like ``{"modalities": [...], "max_reference_images": N,
-    "model": "...", "provider": "..."}``. Never raises.
+    Returns ``{"modalities": [...], "max_reference_images": N,
+    "supports_upscale": bool, "model": "...", "provider": "..."}``.
+    Fail-closed on every axis: an unknown/undeclared capability is
+    advertised as absent (a provider that can edit but didn't declare it
+    under-advertises — that is the provider's bug to fix in
+    ``capabilities()``, not a safety problem). Never raises.
     """
-    info: Dict[str, Any] = {"modalities": ["text"], "max_reference_images": 0}
+    info: Dict[str, Any] = {
+        "modalities": ["text"],
+        "max_reference_images": 0,
+        "supports_upscale": False,
+    }
 
     configured_provider = _read_configured_image_provider()
     if configured_provider and configured_provider != "fal":
@@ -1994,6 +2024,8 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
+                # Plugins opt in explicitly; absent = no upscale param.
+                info["supports_upscale"] = bool(caps.get("supports_upscale"))
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -2009,57 +2041,104 @@ def _active_image_capabilities() -> Dict[str, Any]:
         else:
             info["modalities"] = ["text"]
             info["max_reference_images"] = 0
+        # FAL: the Clarity Upscaler is a separate endpoint chained on
+        # explicit request for ANY catalog model (the per-model ``upscale``
+        # key is only the default-on flag, retired Aug 2026 — not a
+        # capability). Plugin providers must declare supports_upscale.
+        info["supports_upscale"] = True
     except Exception:  # noqa: BLE001
         pass
 
     return info
 
 
+# Param snippets assembled per-capability by _build_dynamic_image_schema.
+_IMAGE_URL_PARAM = {
+    "type": "string",
+    "description": (
+        "Source image to edit/transform (image-to-image). A public URL or "
+        "an absolute local file path from the conversation. Omit for "
+        "text-to-image."
+    ),
+}
+
+_UPSCALE_PARAM = {
+    "type": "boolean",
+    "description": (
+        "Post-generation high-resolution pass (~2x, extra cost/latency), "
+        "off by default. A creative enhancer that can alter fine detail "
+        "(rendered text, faces) — use only when resolution matters more "
+        "than fidelity."
+    ),
+}
+
+
 def _build_dynamic_image_schema() -> Dict[str, Any]:
-    """Build a description reflecting whether the active model supports editing."""
-    parts = [_GENERIC_IMAGE_DESCRIPTION]
+    """Render description AND params from the active model's capabilities.
+
+    Capability coverage is guaranteed: all in-tree FAL catalog entries
+    carry edit/refs/upscale metadata (contract-tested), and the plugin
+    provider ABC's capabilities() fail-closed default is text-only. Args a
+    model cannot honor are NOT advertised — the handler still accepts them
+    (replay compat) and answers with a capability error.
+    """
+    base_desc = (
+        "Generate high-quality images from text prompts{edit_clause}. "
+        "Returns the result in the `image` field — a URL or an absolute "
+        "file path; reference it in your response using the current "
+        "platform's file-delivery convention."
+    )
 
     try:
         info = _active_image_capabilities()
     except Exception:  # noqa: BLE001
-        return {"description": _GENERIC_IMAGE_DESCRIPTION}
+        info = {"modalities": ["text"], "max_reference_images": 0,
+                "supports_upscale": False}
 
-    provider = info.get("provider")
-    model = info.get("model")
     modalities = set(info.get("modalities") or ["text"])
+    max_refs = int(info.get("max_reference_images") or 0)
+    can_edit = "image" in modalities
 
-    line = "\nActive backend"
-    if provider:
-        line += f": {provider}"
-    if model:
-        line += f" · model: {model}"
-    parts.append(line)
+    properties: Dict[str, Any] = {
+        "prompt": IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["prompt"],
+        "aspect_ratio": IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"],
+    }
 
-    if "image" in modalities and "text" in modalities:
-        max_refs = info.get("max_reference_images") or 0
-        ref_note = (
-            f"; up to {max_refs} reference image(s) via reference_image_urls"
-            if max_refs and max_refs > 1
-            else ""
+    if can_edit:
+        edit_clause = (
+            ", or edit / transform an existing image by passing image_url"
         )
-        parts.append(
-            "- supports both text-to-image (omit image_url) and "
-            f"image-to-image / editing (pass image_url){ref_note} — "
-            "routes automatically"
-        )
-    elif "image" in modalities and "text" not in modalities:
-        parts.append(
-            "- this model is image-to-image / edit only — image_url is REQUIRED"
-        )
+        properties["image_url"] = _IMAGE_URL_PARAM
+        if max_refs > 1:
+            properties["reference_image_urls"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": max_refs,
+                "description": (
+                    f"Up to {max_refs} additional reference images (style, "
+                    "character, or composition) guiding an edit. URLs or "
+                    "absolute local paths."
+                ),
+            }
     else:
-        parts.append(
-            "- this model is text-to-image only — it is NOT capable of "
-            "image-to-image / editing; do not pass image_url or "
-            "reference_image_urls (they will be rejected). Provide a "
-            "text-only prompt."
+        edit_clause = (
+            " (text-to-image only — the active model cannot edit existing "
+            "images)"
         )
 
-    return {"description": "\n".join(parts)}
+    if info.get("supports_upscale"):
+        properties["upscale"] = _UPSCALE_PARAM
+
+    description = base_desc.format(edit_clause=edit_clause)
+
+    return {
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": ["prompt"],
+        },
+    }
 
 
 registry.register(

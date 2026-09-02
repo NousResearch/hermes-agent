@@ -110,6 +110,46 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
   })
 })
 
+describe('submissionCore.submitPrompt — literal submissions (startup -q queries)', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('skipDetectDrop submits directly without the detect_drop round-trip', async () => {
+    const { calls, gw } = makeDeferredGateway()
+
+    submitPrompt('!echo not-a-shell-escape', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(calls).not.toContain('input.detect_drop')
+    expect(calls).toContain('prompt.submit')
+  })
+
+  it('literal text reaches prompt.submit verbatim', async () => {
+    const submitted: string[] = []
+
+    const gw = {
+      request: vi.fn((method: string, params?: { text?: string }) => {
+        if (method === 'prompt.submit' && params?.text) {
+          submitted.push(params.text)
+        }
+
+        return Promise.resolve({ status: 'streaming' })
+      })
+    } as unknown as GatewayClient
+
+    submitPrompt('/model $(rm -rf ~)', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(submitted).toEqual(['/model $(rm -rf ~)'])
+  })
+})
+
 describe('submissionCore.markSubmitting', () => {
   beforeEach(() => resetUiState())
 

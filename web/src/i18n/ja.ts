@@ -468,6 +468,8 @@ export const ja: Translations = {
     copyCliCommand: "CLI コマンドをコピー (外部 / フォールバック用)",
     connect: "接続",
     sessionExpires: "セッションは {time} 後に期限切れになります",
+    sessionExpiredNoError:
+      "プロバイダーに到達しないままサインインの有効期限が切れました。多くの場合、開いたタブでサインインページが止まっている（サーバー側の問題）ことが原因です。そのタブでサインインを完了してから「再試行」をクリックしてください。それでも失敗する場合は、API キーまたは CLI をご利用ください。",
     initiatingLogin: "ログインフローを開始しています…",
     exchangingCode: "コードをトークンと交換しています…",
     connectedClosing: "接続しました！閉じています…",

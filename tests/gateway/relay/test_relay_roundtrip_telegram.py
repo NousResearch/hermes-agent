@@ -37,6 +37,7 @@ def _telegram_descriptor() -> CapabilityDescriptor:
         label="Telegram",
         max_message_length=4096,
         supports_draft_streaming=True,  # Telegram DMs support sendMessageDraft
+        supported_ops=("send", "edit", "typing", "follow_up", "draft"),
         supports_edit=True,
         supports_threads=True,  # forum topics
         markdown_dialect="markdown_v2",

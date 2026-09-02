@@ -246,7 +246,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
 
     with (
         jobs.use_cron_store(profile_home),
-        patch("hermes_state.SessionDB", return_value=MagicMock()),
+        patch("hermes_state.get_shared_session_db", return_value=MagicMock()),
     ):
         success, _doc, _response, error = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]
@@ -369,7 +369,15 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         lost_seen.set()
         return False
 
-    def _run_job(job, *, defer_agent_teardown=None, extra_prompt=None, cancel_event=None):
+    def _run_job(
+        job,
+        *,
+        defer_agent_teardown=None,
+        extra_prompt=None,
+        cancel_event=None,
+        execution_id=None,
+    ):
+        assert execution_id == job["execution_id"]
         assert lost_seen.wait(timeout=2)
         return True, "stale output", "stale response", None
 

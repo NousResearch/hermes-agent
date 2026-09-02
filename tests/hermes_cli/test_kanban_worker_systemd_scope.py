@@ -1673,6 +1673,135 @@ def test_spawn_failure_systemd_scope_mode_fails_loudly(shims, conn, kanban_home)
     assert "user bus connection refused" in (run.error or "")
 
 
+def test_fast_worker_exit_is_not_a_launch_failure(
+    shims, conn, kanban_home, monkeypatch,
+):
+    """A worker that legitimately finishes within the launch probe is NOT
+    a failed systemd launch: rc=0 from the launcher means the scoped
+    command ran and exited. Auto mode must NOT plain-spawn a duplicate
+    beside it (the review's critical duplication bug) — the spawn stands,
+    exactly one worker ever exists, and exit classification owns the
+    outcome on the next tick."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: auto\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv",
+        lambda: [sys.executable, "-c", "pass"],
+    )
+    tid = kb.create_task(conn, title="fast worker", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+    assert [s[0] for s in result.spawned] == [tid]
+    row = conn.execute(
+        "SELECT worker_pid, worker_scope, status FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["worker_scope"] is not None  # no fallback re-spawn happened
+    spawned_events = conn.execute(
+        "SELECT count(*) AS n FROM task_events "
+        "WHERE task_id=? AND kind='spawned'", (tid,),
+    ).fetchone()
+    assert spawned_events["n"] == 1  # exactly one worker, ever
+    assert result.late_spawn_failed == []
+
+
+def test_fast_worker_nonzero_exit_is_not_a_launch_failure(
+    shims, conn, kanban_home, monkeypatch,
+):
+    """Same contract in strict mode with a non-zero rc: the unit WAS
+    created, so the worker ran and exited 3 — that is a worker exit, not
+    a launch failure. No spawn_failed, no duplicate spawn, no breaker
+    tick; the exit registry classifies the run on a later tick."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: systemd-scope\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv",
+        lambda: [sys.executable, "-c", "raise SystemExit(3)"],
+    )
+    tid = kb.create_task(conn, title="fast fail", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+    assert [s[0] for s in result.spawned] == [tid]
+    row = conn.execute(
+        "SELECT worker_pid, worker_scope, status, consecutive_failures "
+        "FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["worker_scope"] is not None
+    assert row["consecutive_failures"] == 0  # no spawn_failed recorded
+    spawned_events = conn.execute(
+        "SELECT count(*) AS n FROM task_events "
+        "WHERE task_id=? AND kind='spawned'", (tid,),
+    ).fetchone()
+    assert spawned_events["n"] == 1
+
+
+def test_spawn_failure_with_uncleanable_unit_refuses_fallback(
+    shims, conn, kanban_home, monkeypatch,
+):
+    """A failed launch whose scope cleanup CANNOT be verified must not
+    plain-spawn a replacement beside the possibly-live half-created unit
+    — auto mode included. The dispatcher records spawn_failed with the
+    refusal instead."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: auto\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    shims.arm_fail_next(1)
+    cleanup_calls: list[str] = []
+
+    def unverifiable_stop(unit):
+        cleanup_calls.append(unit)
+        return False  # cleanup could not be verified (wedged stop job)
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", unverifiable_stop)
+    tid = kb.create_task(conn, title="dirty launch", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+    assert result.spawned == []
+    assert cleanup_calls == [kb._kanban_worker_scope_unit(tid, 1)]
+    row = conn.execute(
+        "SELECT status, worker_pid, worker_scope, consecutive_failures, "
+        "last_failure_error FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["worker_pid"] is None  # no plain-spawn duplicate beside it
+    assert row["consecutive_failures"] == 1
+    assert "refusing to spawn a replacement" in (
+        row["last_failure_error"] or ""
+    )
+
+
+def test_set_worker_pid_refuses_terminal_task(conn):
+    """The status guard: a task that left 'running' before its spawn was
+    recorded (fast worker completing mid-spawn, crash reclaim racing the
+    spawn loop) must not get worker bookkeeping reattached — the row
+    keeps its terminal state and no spawned event claims a live run."""
+    tid = kb.create_task(conn, title="done already", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET status='ready', claim_lock=NULL, worker_pid=NULL, "
+        "worker_scope=NULL WHERE id=?", (tid,),
+    )
+    conn.commit()
+
+    kb._set_worker_pid(conn, tid, os.getpid(), scope_unit="u.scope")
+
+    row = conn.execute(
+        "SELECT status, worker_pid, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"
+    assert row["worker_pid"] is None
+    assert row["worker_scope"] is None
+    events = conn.execute(
+        "SELECT count(*) AS n FROM task_events "
+        "WHERE task_id=? AND kind='spawned'", (tid,),
+    ).fetchone()
+    assert events["n"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Audit sweep + shutdown policy
 # ---------------------------------------------------------------------------

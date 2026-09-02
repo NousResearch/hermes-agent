@@ -8504,8 +8504,25 @@ WORKER_REGISTRATION_GRACE_SECONDS = 120
 # How long _default_spawn watches the systemd-run launcher for an early
 # exit before trusting the spawn. Real spawn failures (bus gone, rejected
 # property, unit collision) exit within milliseconds; a healthy
-# ``--scope`` launcher lives as long as the worker.
+# ``--scope`` launcher lives as long as the worker. The window is a
+# BOUND, not a wait: the probe also exits the moment the transient unit
+# appears, which is the launch-confirmation signal.
 WORKER_SPAWN_PROBE_SECONDS = 1.5
+
+
+def _worker_spawn_probe_seconds() -> float:
+    """The launch-probe window, overridable via
+    ``HERMES_KANBAN_SPAWN_PROBE_SECONDS`` (tests; also a support escape
+    hatch for slow user buses)."""
+    raw = os.environ.get("HERMES_KANBAN_SPAWN_PROBE_SECONDS", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return float(WORKER_SPAWN_PROBE_SECONDS)
 
 
 def _kanban_cfg_from_config() -> dict:
@@ -8677,6 +8694,25 @@ def _kanban_scope_state(unit_name: Optional[str]) -> str:
     except Exception as exc:
         _log.debug("kanban: scope state probe %s failed: %s", unit_name, exc)
         return "unknown"
+
+
+def _scope_unit_created(unit_name: Optional[str]) -> bool:
+    """True if the transient unit exists on the user bus.
+
+    Wraps ``tools.process_registry._scope_unit_was_created``: a probe
+    failure counts as created — the cost of that wrong assumption is a
+    duplicate spawn (the review's named failure mode), while the cost of
+    the opposite assumption on a live unit is a plain-spawned worker
+    beside an untracked scoped one."""
+    if not unit_name:
+        return False
+    try:
+        from tools.process_registry import _scope_unit_was_created
+
+        return _scope_unit_was_created(unit_name)
+    except Exception as exc:
+        _log.debug("kanban: unit-created probe %s failed: %s", unit_name, exc)
+        return True
 
 
 def _kanban_list_scope_units(pattern: str) -> dict:
@@ -10699,17 +10735,32 @@ def _set_worker_pid(
     ``worker_registered_at`` stays NULL until the worker registers its
     own pid via :func:`register_worker_pid`. For a plain spawn the pid IS
     the worker, so the row counts as registered immediately.
+
+    Status guard: only a task still ``running`` may receive spawn
+    bookkeeping. A fast worker can reach a terminal state (complete,
+    crash reclaim) between its spawn and this recording; attaching a pid
+    to that terminal row would resurrect worker bookkeeping on it and
+    send the reaper after a scope the row no longer owns. The guard
+    misses, the pid is logged as untracked, and nothing is written.
     """
     pid_started = _worker_pid_start_time(int(pid))
     with write_txn(conn):
-        conn.execute(
+        cur = conn.execute(
             "UPDATE tasks SET worker_pid = ?, worker_pid_started_at = ?, "
-            "worker_scope = ?, worker_registered_at = ? WHERE id = ?",
+            "worker_scope = ?, worker_registered_at = ? "
+            "WHERE id = ? AND status = 'running'",
             (
                 int(pid), pid_started, scope_unit or None,
                 None if scope_unit else int(time.time()), task_id,
             ),
         )
+        if cur.rowcount != 1:
+            _log.warning(
+                "kanban: task %s left 'running' before its spawn could be "
+                "recorded — worker pid %s (scope %s) runs untracked",
+                task_id, pid, scope_unit or "none",
+            )
+            return
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
@@ -12385,18 +12436,62 @@ def _default_spawn(
             # The systemd-run client exits almost immediately when the
             # launch is refused; watch it for a short bounded window so
             # those failures classify NOW as spawn_failed with the
-            # captured stderr. A launcher that survives the window is
-            # healthy — the worker registers its own pid from inside the
-            # scope (see register_worker_pid).
-            deadline = time.monotonic() + WORKER_SPAWN_PROBE_SECONDS
-            while time.monotonic() < deadline and proc.poll() is None:
+            # captured stderr. A healthy ``--scope`` launcher lives as
+            # long as the worker, so the window is a BOUND, not a wait:
+            # the probe also ends the moment the transient unit appears
+            # (the launch-confirmation signal). The worker registers its
+            # own pid from inside the scope (see register_worker_pid).
+            deadline = time.monotonic() + _worker_spawn_probe_seconds()
+            next_unit_check = 0.0
+            while proc.poll() is None:
+                if time.monotonic() >= deadline:
+                    break
+                if time.monotonic() >= next_unit_check:
+                    next_unit_check = time.monotonic() + 0.2
+                    if _scope_unit_created(scope_unit):
+                        break  # unit appeared — launch confirmed
                 time.sleep(0.05)
             if proc.poll() is not None:
+                # The launcher exited inside the window. That is a LAUNCH
+                # failure only when the systemd-run client itself failed:
+                # non-zero rc AND the transient unit never came to life.
+                # A launcher that exits rc=0, or with the unit created,
+                # RAN the worker — the worker just exited fast — and the
+                # next tick's exit classification owns that outcome.
+                # Plain-spawning a "replacement" here duplicated the
+                # work (the review's critical spawn bug).
+                unit_created = _scope_unit_created(scope_unit)
+                if proc.returncode == 0 or unit_created:
+                    _log.info(
+                        "kanban dispatch: task %s worker exited within "
+                        "the launch probe (launcher rc=%s, unit %s) — "
+                        "leaving it to exit classification",
+                        task.id, proc.returncode,
+                        "created" if unit_created else "not created",
+                    )
+                    spawn_err_f.close()
+                    spawn_err_f = None
+                    try:
+                        os.unlink(spawn_err_path)
+                    except OSError:
+                        pass
+                    return proc.pid
                 err_text = _read_spawn_err()
-                # Best-effort verified cleanup of whatever half-formed
-                # unit the failed launch left behind.
-                if scope_unit:
-                    _stop_kanban_worker_scope(scope_unit)
+                # Verified cleanup of whatever half-formed unit the
+                # failed launch left behind. If even that cannot be
+                # confirmed, do NOT plain-spawn a replacement: a fresh
+                # worker beside an unkillable half-created scope is
+                # worse than a failed attempt — record spawn_failed.
+                if scope_unit and not _stop_kanban_worker_scope(scope_unit):
+                    _default_spawn._last_spawn_error = (
+                        f"systemd-run launch failed for task {task.id} "
+                        f"(rc={proc.returncode}): "
+                        f"{err_text or 'no stderr captured'}; the "
+                        f"half-created unit {scope_unit} could not be "
+                        f"verified stopped — refusing to spawn a "
+                        f"replacement beside it"
+                    )
+                    raise RuntimeError(_default_spawn._last_spawn_error)
                 if _resolve_worker_isolation() != "systemd-scope":
                     # auto: fall back to a plain spawn for THIS run and
                     # say so once — a missing user bus must not stall
@@ -12425,9 +12520,9 @@ def _default_spawn(
                     f"(rc={proc.returncode}): "
                     f"{err_text or 'no stderr captured'}"
                 )
-            # Launcher survived its probe window — the run is live.
-            # Drop the spawn-stderr capture so successful runs leave no
-            # stale .spawn.err artifacts behind.
+            # Launcher alive at the deadline or the unit appeared — the
+            # run is live. Drop the spawn-stderr capture so successful
+            # runs leave no stale .spawn.err artifacts behind.
             spawn_err_f.close()
             spawn_err_f = None
             try:

@@ -1315,11 +1315,11 @@ def test_registration_race_mid_stop_keeps_task_running(shims, conn, monkeypatch)
     # scope — exactly the review's snapshot-vs-stop window.
     real_stop = kb.request_worker_scope_stop
 
-    def register_then_stop(unit_name, *, task_id=None):
+    def register_then_stop(unit_name, *, task_id=None, **kwargs):
         kb.register_worker_pid(
             conn, task_id, expected_run_id=run_id, pid=pid,
         )
-        return real_stop(unit_name, task_id=task_id)
+        return real_stop(unit_name, task_id=task_id, **kwargs)
 
     monkeypatch.setattr(kb, "request_worker_scope_stop", register_then_stop)
 
@@ -1335,6 +1335,73 @@ def test_registration_race_mid_stop_keeps_task_running(shims, conn, monkeypatch)
     assert row["worker_registered_at"] is not None
     run = kb.latest_run(conn, tid)
     assert run.outcome is None  # the open run was never closed as failed
+
+
+def test_queued_stop_skips_when_worker_registers_first(
+    shims, conn, monkeypatch,
+):
+    """J: the worker registers AFTER the sweep's pre-stop check but
+    BEFORE the queued verified stop runs on the service thread. The stop
+    re-checks registration immediately before acting and stands down —
+    the CAS already prevented the spawn_failed record; without this the
+    queued stop still killed the legitimate worker."""
+    import threading
+
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_qrace", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(
+        conn, scope=unit, pid=os.getpid(),
+        started_delta=-kb.WORKER_REGISTRATION_GRACE_SECONDS - 300,
+    )
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    # Hold the service on a decoy unit so the real request sits QUEUED
+    # (not in flight) while the worker registers — exactly the finding's
+    # window between the pre-stop check and the queued stop running.
+    gate = threading.Event()
+    stops: list[str] = []
+
+    def gated_stop(unit_name):
+        stops.append(unit_name)
+        gate.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", gated_stop)
+    decoy = kb._kanban_worker_scope_unit("t_decoy", 1)
+    shims.write_unit(decoy, [shims.sleeper()])  # active, so it queues
+    assert not kb.request_worker_scope_stop(decoy)  # queued, now in flight
+    assert shims.wait_for(lambda: stops == [decoy])
+
+    # The sweep: pre-stop check sees an unregistered row, queues its
+    # stop behind the decoy, and (not confirmed this tick) fails nothing.
+    assert kb.fail_unregistered_workers(conn) == []
+
+    # The worker's first heartbeat lands while the stop is still queued.
+    kb.register_worker_pid(
+        conn, tid, expected_run_id=run_id, pid=pid,
+    )
+
+    gate.set()  # release the decoy — the service reaches the real unit
+    kb.join_scope_stop_service(timeout=5.0)
+
+    # The queued stop stood down: the decoy was stopped, the real unit's
+    # verified stop never ran, and the worker lives on.
+    assert stops == [decoy]
+    assert kb._pid_alive(pid)
+    row = conn.execute(
+        "SELECT status, consecutive_failures, worker_registered_at "
+        "FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["consecutive_failures"] == 0
+    assert row["worker_registered_at"] is not None
+    # And the next sweep agrees: a registered row is not its business.
+    assert kb.fail_unregistered_workers(conn) == []
+    kb.reset_scope_stop_service_for_tests()
 
 
 def test_reregistration_same_pid_new_fingerprint_rejected(

@@ -8873,6 +8873,12 @@ class _ScopeStopRequest:
     unit: str
     task_id: Optional[str] = None
     attempts: int = 0
+    # Set by the unregistered-launch sweep (finding J): a stop queued on
+    # "this worker never registered" must re-check that diagnosis
+    # immediately before acting, because the worker can register while
+    # the request sits in this queue. Terminal-path stops leave it False:
+    # a completed task's scope MUST be reaped regardless of registration.
+    skip_if_registered: bool = False
 
 
 _scope_stop_lock = threading.Lock()
@@ -8906,6 +8912,22 @@ def _drain_scope_stop_requests() -> None:
             request = _scope_stop_pending.pop(unit)
             _scope_stop_inflight = unit
         try:
+            if (
+                request.skip_if_registered
+                and request.task_id
+                and _task_has_registered_worker(request.task_id)
+            ):
+                # Finding J: the worker registered while this stop sat in
+                # the queue — the "never launched" diagnosis is stale.
+                # Killing it now would execute a death sentence the row
+                # already repudiated; drop the request and leave the run
+                # to adoption / crash detection, which see a live worker.
+                _log.info(
+                    "kanban: skipping queued stop of scope %s — task %s "
+                    "registered a worker while the stop was queued",
+                    unit, request.task_id,
+                )
+                continue
             verified = _stop_kanban_worker_scope(unit)
         finally:
             with _scope_stop_lock:
@@ -8943,6 +8965,7 @@ def request_worker_scope_stop(
     unit_name: Optional[str],
     *,
     task_id: Optional[str] = None,
+    skip_if_registered: bool = False,
 ) -> bool:
     """Hand a worker scope to the verified-stop service. True = confirmed
     dead, the caller may release its bookkeeping THIS tick.
@@ -8956,6 +8979,12 @@ def request_worker_scope_stop(
     what let the dispatcher spawn duplicates. Never blocks longer than
     one liveness probe; the stop+escalate+verify sequence runs on the
     service thread.
+
+    ``skip_if_registered`` (finding J) marks the request as
+    evidence-based, not terminal: immediately before the service acts it
+    re-checks the task row and stands down when the worker has
+    registered in the meantime. Only the unregistered-launch sweep sets
+    it — a completed task's scope must be reaped regardless.
     """
     if not unit_name:
         return False
@@ -8984,6 +9013,7 @@ def request_worker_scope_stop(
             unit=unit_name,
             task_id=task_id,
             attempts=_scope_stop_attempts.get(unit_name, 0),
+            skip_if_registered=skip_if_registered,
         )
     if _scope_stop_inline:
         _drain_scope_stop_requests()
@@ -10060,6 +10090,10 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
         # snapshot above is a moment in time. Re-read under the write
         # lock so a worker that registered since the snapshot survives
         # this sweep — its scope must not be stopped on stale evidence.
+        # Third half (finding J): the stop below may be QUEUED, not
+        # inline — the worker can register while it sits in the queue, so
+        # the request carries skip_if_registered and the service re-checks
+        # the row immediately before acting.
         with write_txn(conn):
             fresh = conn.execute(
                 "SELECT status, worker_registered_at FROM tasks "
@@ -10070,7 +10104,9 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
                 continue  # a terminal path already moved the row on
             if fresh["worker_registered_at"] is not None:
                 continue  # registered since the snapshot — it is alive
-        if not request_worker_scope_stop(scope, task_id=row["id"]):
+        if not request_worker_scope_stop(
+            scope, task_id=row["id"], skip_if_registered=True,
+        ):
             continue  # stop unconfirmed — retry next tick
         _record_spawn_failure(
             conn, row["id"],
@@ -10154,6 +10190,49 @@ def _claimed_worker_scopes_globally() -> Optional[set[str]]:
             )
             return None
     return claimed
+
+
+def _task_has_registered_worker(task_id: str) -> bool:
+    """True when a board's ``running`` row for *task_id* has a registered
+    worker — fresh evidence that an "unregistered launch" diagnosis is
+    stale (finding J). Read across ALL boards with the same read-only
+    pattern as :func:`_claimed_worker_scopes_globally`, because the
+    scope-stop service is host-global while the row lives on one board.
+
+    Individual board read failures are ignored (an unreadable board can
+    neither confirm nor refute); False overall means "act on the
+    enqueue-time evidence", which next ticks simply re-verify.
+    """
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        return False
+    slugs = [b.get("slug") for b in boards if b.get("slug")] or [DEFAULT_BOARD]
+    for slug in slugs:
+        try:
+            path = kanban_db_path(board=slug)
+            if not path.exists():
+                continue
+            ro = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True, timeout=5.0,
+            )
+            try:
+                row = ro.execute(
+                    "SELECT 1 FROM tasks WHERE id = ? "
+                    "  AND status = 'running' "
+                    "  AND worker_registered_at IS NOT NULL LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+            finally:
+                ro.close()
+            if row is not None:
+                return True
+        except Exception as exc:
+            _log.debug(
+                "kanban: registration re-check cannot read board %s: %s",
+                slug, exc,
+            )
+    return False
 
 
 def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:

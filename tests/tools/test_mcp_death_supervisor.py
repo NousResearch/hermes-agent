@@ -691,6 +691,52 @@ def test_a_server_that_survived_teardown_stays_registered():
 
 
 @pytest.mark.live_system_guard_bypass
+def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypatch):
+    """Two owners (profiles / agents) each hold a stdio group; tearing one down
+    must release only that owner's group and leave the other covered, and the
+    per-process supervisor must then still know about the survivor.
+
+    Exercises the real registry + ``_kill_orphaned_mcp_children`` scoping
+    rather than the control protocol alone (review request on #93517).
+    """
+    fake = _FakeSupervisor()
+    monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", lambda: fake)
+    monkeypatch.setattr(mcp_tool.time, "sleep", lambda _s: None)  # skip the SIGTERM grace wait
+    a = subprocess.Popen(_VICTIM, start_new_session=True)
+    b = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        pg_a, pg_b = os.getpgid(a.pid), os.getpgid(b.pid)
+        with mcp_tool._lock:
+            mcp_tool._stdio_pids[a.pid] = "profile-a"
+            mcp_tool._stdio_pids[b.pid] = "profile-b"
+            mcp_tool._stdio_pgids[a.pid] = pg_a
+            mcp_tool._stdio_pgids[b.pid] = pg_b
+        mcp_tool._update_death_supervisor("register", [pg_a, pg_b])
+
+        mcp_tool._kill_orphaned_mcp_children(include_active=True, server_name="profile-a")
+        a.wait(timeout=10)
+
+        assert b.poll() is None, "scoped teardown of profile-a killed profile-b's server"
+        assert f"unregister {pg_a}" in fake.lines()
+        assert f"unregister {pg_b}" not in fake.lines(), (
+            "scoped teardown released the OTHER owner's group from the supervisor"
+        )
+        assert mcp_tool._supervised_pgids == {pg_b}
+        assert b.pid in mcp_tool._stdio_pids and b.pid in mcp_tool._stdio_pgids
+    finally:
+        for p in (a, b):
+            _kill(p.pid)
+            try:
+                p.wait(timeout=10)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+        with mcp_tool._lock:
+            for p in (a, b):
+                mcp_tool._stdio_pids.pop(p.pid, None)
+                mcp_tool._stdio_pgids.pop(p.pid, None)
+
+
+@pytest.mark.live_system_guard_bypass
 def test_a_group_with_nothing_left_alive_is_forgotten_and_unregistered(monkeypatch):
     """A dead group must not stay registered: its pgid can be recycled.
 

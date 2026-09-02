@@ -109,6 +109,12 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+# Periodic heartbeat re-emitted while a long compression is still running so
+# remote transports with idle-turn watchdogs (#98371) see progress. Same
+# marker as COMPACTION_STATUS so every consumer classifies it identically.
+COMPACTION_HEARTBEAT_STATUS = (
+    f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue..."
+)
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
@@ -2414,11 +2420,12 @@ class _CompressionActivityHeartbeat:
         if not status_callback:
             return
         try:
-            status_callback(
-                "compacting",
-                f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing "
-                "earlier conversation so I can continue...",
-            )
+            # Same "lifecycle" key as every other compaction status: the
+            # TUI gateway re-tags it to kind="compacting" via
+            # is_compaction_progress_status, and Telegram's per-key
+            # send_or_update_status edits the existing bubble instead of
+            # appending one per tick.
+            status_callback("lifecycle", COMPACTION_HEARTBEAT_STATUS)
         except Exception:
             logger.debug(
                 "status_callback error in compression heartbeat", exc_info=True
@@ -6142,6 +6149,7 @@ def try_shrink_image_parts_in_messages(
 __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_DONE_STATUS",
+    "COMPACTION_HEARTBEAT_STATUS",
     "COMPACTION_STATUS_MARKER",
     "is_compaction_progress_status",
     "check_compression_model_feasibility",

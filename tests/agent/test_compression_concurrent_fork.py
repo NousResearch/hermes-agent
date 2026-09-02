@@ -203,10 +203,23 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
 
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    compacting = [event for event, _message in status_events if event == "compacting"]
+    from agent.conversation_compression import (
+        COMPACTION_HEARTBEAT_STATUS,
+        is_compaction_progress_status,
+    )
+
+    heartbeats = [
+        (event, message)
+        for event, message in status_events
+        if message == COMPACTION_HEARTBEAT_STATUS
+    ]
     # One emit at heartbeat start plus at least one periodic tick while the
     # summary call blocks.
-    assert len(compacting) >= 2
+    assert len(heartbeats) >= 2
+    # Same "lifecycle" key as the other compaction statuses so the TUI gateway
+    # re-tags it to kind="compacting" and Telegram edits one bubble in place.
+    assert {event for event, _ in heartbeats} == {"lifecycle"}
+    assert is_compaction_progress_status(COMPACTION_HEARTBEAT_STATUS)
 
 
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:

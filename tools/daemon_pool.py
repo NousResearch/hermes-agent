@@ -16,7 +16,15 @@ exit hook insists on joining.
   - the interpreter's non-daemon thread join at shutdown skips them.
 
 Semantics are otherwise identical (initializer/initargs, work queue,
-idle-thread reuse).  Use it for any pool whose work is best-effort or
+idle-thread reuse) and, since #95119, so is context propagation:
+``submit`` snapshots the submitting context with ``copy_context()`` and
+runs each work item inside it, matching stdlib ``ThreadPoolExecutor``.
+That matters because some bundled CPython runtime builds omit stdlib's
+context propagation entirely, which silently drops contextvar-based state
+(profile secret scope, HERMES_HOME override) in pool workers — e.g. the
+context-compression timeout fence resolved auxiliary provider keys with
+``UnscopedSecretError`` under the multiplexed gateway.  Use it for any
+pool whose work is best-effort or
 independently interruptible and must never hold the process open:
 concurrent tool execution, background memory sync, catalog fan-out,
 subagent timeout wrappers.  Do NOT use it for work that must complete
@@ -30,12 +38,35 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.thread import _worker
+from contextvars import copy_context
 
 __all__ = ["DaemonThreadPoolExecutor"]
 
 
 class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        """Submit a callable, propagating the caller's contextvars.
+
+        Stdlib ``ThreadPoolExecutor`` snapshots the submitting context with
+        ``copy_context()`` and runs each work item inside it, so pool
+        workers inherit contextvar state such as the multiplexed profile
+        secret scope.  Some bundled CPython runtime builds strip that
+        propagation from the stdlib executor (their ``_WorkItem.run`` calls
+        the callable directly), which broke auxiliary LLM key resolution
+        from the context-compression timeout fence with
+        ``UnscopedSecretError``.  Restore the stdlib behavior explicitly so
+        the daemon pool behaves identically on every runtime; on runtimes
+        that already propagate, the inner ``ctx.run`` re-applies the same
+        immutable context and is a no-op.
+        """
+        ctx = copy_context()
+
+        def _run_with_context(*call_args, **call_kwargs):
+            return ctx.run(fn, *call_args, **call_kwargs)
+
+        return super().submit(_run_with_context, *args, **kwargs)
 
     def _adjust_thread_count(self) -> None:
         # Mirrors CPython's implementation (3.8–3.13) with two changes:

@@ -1063,7 +1063,9 @@ class TestCheckpoint:
         to the canonical user-scope location under the real mount."""
         import tools.process_registry as pr
 
-        monkeypatch.setattr(pr, "_cgroup2_mount_point", lambda: "/custom/cgroup")
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (2, "/custom/cgroup")
+        )
 
         assert pr._scope_cgroup_procs_path(
             "w.scope", "/user.slice/user-1000.slice/user@1000.service/app.slice/w.scope"
@@ -1083,6 +1085,202 @@ class TestCheckpoint:
             f"user@{os.getuid()}.service/app.slice/w.scope/cgroup.procs"
         )
         assert pr._scope_cgroup_procs_path("w.scope", "") == expected
+
+    def test_cgroup_mount_point_v1_prefers_systemd_hierarchy(
+        self, tmp_path, monkeypatch
+    ):
+        """Gate B pass 4 (S): a v1 host (no cgroup2 mount) resolves its
+        procs paths against the systemd controller hierarchy's mount —
+        the hierarchy ControlGroup paths are relative to — not the
+        hardcoded /sys/fs/cgroup root, which on such hosts yields a
+        nonexistent path and liveness stuck at "unknown" forever."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "30 23 0:24 / /sys ro,nosuid - sysfs sysfs rw\n"
+            "36 30 0:26 / /sys/fs/cgroup/systemd rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,xattr,name=systemd\n"
+            "37 30 0:27 / /sys/fs/cgroup/pids rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,pids\n"
+            "38 30 0:28 / /sys/fs/cgroup/memory rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,memory\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (1, "/sys/fs/cgroup/systemd")
+        assert pr._cgroup_v1_controller_mount(
+            str(mi), preferred=("memory",)
+        ) == "/sys/fs/cgroup/memory"
+        assert pr._cgroup_v1_controller_mount(
+            str(mi), preferred=("pids",)
+        ) == "/sys/fs/cgroup/pids"
+        # cgroupfs-relative ControlGroup joins the v1 systemd mount
+        # (resolved against the same fake mountinfo).
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point",
+            lambda *a, **k: (1, "/sys/fs/cgroup/systemd"),
+        )
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/app.slice/w.scope"
+        ) == (
+            "/sys/fs/cgroup/systemd/user.slice/user-1000.slice/"
+            "app.slice/w.scope/cgroup.procs"
+        )
+
+    def test_cgroup_mount_point_prefers_v2_when_both_mounted(self, tmp_path):
+        """A hybrid host with both hierarchies mounted: the unified
+        hierarchy wins (its mount, canonical preferred) — matches the
+        pre-existing v2 behaviour exactly."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "36 30 0:26 / /host/cgroupv2 rw,relatime - cgroup2 cgroup2 rw\n"
+            "37 30 0:27 / /sys/fs/cgroup/systemd rw,relatime - cgroup cgroup rw,name=systemd\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (2, "/host/cgroupv2")
+
+    def test_cgroup_mount_point_no_hierarchy_is_definite_unsupported(
+        self, tmp_path, monkeypatch,
+    ):
+        """A readable mountinfo with NO cgroup mount of either version
+        is a DEFINITE (0, None): cgroup verification is impossible by
+        construction, surfaced as "unsupported" so callers fall back to
+        PID semantics instead of retrying "unknown" forever. An
+        UNREADABLE mountinfo keeps the legacy canonical-v2 assumption
+        ("unknown", not a new definite verdict)."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "30 23 0:24 / / rw - apfs /dev/disk1 rw\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (0, None)
+        # Unreadable mountinfo (non-Linux): legacy fallback, not a
+        # definite verdict.
+        assert pr._cgroup_mount_point(str(tmp_path / "missing")) == (
+            2, "/sys/fs/cgroup",
+        )
+        # Canonical-prefix ControlGroup cannot be joined to anything.
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/app.slice/w.scope"
+        ) is None
+
+    def test_scope_unit_liveness_unsupported_when_no_hierarchy(
+        self, monkeypatch,
+    ):
+        """Liveness on a cgroupfs-less host with a loaded unit returns
+        the definite "unsupported" (and active_state maps it through) —
+        not "unknown", which callers would retry forever."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=(
+                    b"LoadState=loaded\nActiveState=active\n"
+                    b"ControlGroup=/user.slice/user-1000.slice/app.slice/w.scope\n"
+                ),
+            ),
+        )
+        assert pr._scope_unit_liveness("w.scope") == "unsupported"
+        assert pr._scope_unit_active_state("w.scope") == "unsupported"
+
+    def test_scope_unit_bus_inactive_confirms_only_terminal_bus_states(
+        self, monkeypatch,
+    ):
+        """The bus-truth fallback for cgroupfs-less hosts: not-found /
+        inactive / failed confirm, deactivating and loaded-active do
+        not."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+
+        def fake_show(props: bytes):
+            return lambda *a, **k: _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=props,
+            )
+
+        for props, expected in [
+            (b"LoadState=not-found\nActiveState=inactive\n", True),
+            (b"LoadState=loaded\nActiveState=inactive\n", True),
+            (b"LoadState=loaded\nActiveState=failed\n", True),
+            (b"LoadState=loaded\nActiveState=deactivating\n", False),
+            (b"LoadState=loaded\nActiveState=active\n", False),
+        ]:
+            monkeypatch.setattr("subprocess.run", fake_show(props))
+            assert pr._scope_unit_bus_inactive("w.scope") is expected
+
+    def test_stop_systemd_unit_verified_confirms_via_bus_on_unsupported(
+        self, monkeypatch,
+    ):
+        """On a cgroupfs-less host the verified stop still terminates:
+        after the stop lands, the bus reporting the unit inactive is
+        the confirmation — previously every stop burned the full
+        escalation budget and re-queued forever."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        show_props: dict[str, bytes] = {"now": b"LoadState=loaded\nActiveState=active\n"}
+        monkeypatch.setattr(
+            pr, "_stop_systemd_unit", lambda unit: show_props.__setitem__(
+                "now", b"LoadState=loaded\nActiveState=inactive\n"
+            )
+        )
+
+        def fake_run(*a, **k):
+            return _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=show_props["now"],
+            )
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(pr, "_collect_dead_systemd_unit", lambda unit: None)
+
+        assert pr._stop_systemd_unit_verified("w.scope") is True
+
+    def test_worker_memory_limit_reads_v1_memory_controller(self, tmp_path):
+        """v1 host: the limit comes from the memory controller
+        hierarchy's memory.limit_in_bytes (mounted per controller), not
+        the hardcoded /sys/fs/cgroup v2 layout."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mem_mount = tmp_path / "memv1"
+        mi.write_text(
+            f"36 30 0:26 / {mem_mount} rw,relatime - cgroup cgroup rw,memory\n",
+            encoding="utf-8",
+        )
+        rel = "user.slice/user-1000.slice/user@1000.service"
+        limit_dir = tmp_path / "memv1" / rel
+        limit_dir.mkdir(parents=True)
+        (limit_dir / "memory.limit_in_bytes").write_text("536870912\n")
+        self_cgroup = tmp_path / "self_cgroup"
+        self_cgroup.write_text(
+            f"10:memory:/{rel}\n1:name=systemd:/{rel}\n", encoding="utf-8"
+        )
+
+        bound = pr._worker_memory_max_bytes(
+            str(self_cgroup), str(mi)
+        )
+        assert bound == 536870912  # 512 MiB — tighter than half of RAM
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"

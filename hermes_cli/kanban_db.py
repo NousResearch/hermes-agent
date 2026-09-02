@@ -8990,12 +8990,17 @@ def _kanban_worker_memory_bytes(
 
 
 def _kanban_scope_state(unit_name: Optional[str]) -> str:
-    """``"active"`` / ``"dead"`` / ``"unknown"`` for a worker's scope.
+    """``"active"`` / ``"dead"`` / ``"unknown"`` / ``"unsupported"``.
 
     Wraps ``tools.process_registry._scope_unit_active_state``; for scopes
     ``active`` means the unit's cgroup still holds at least one process —
     the authoritative "is anything of this worker alive" signal, immune
     to both PID reuse and the launcher-vs-worker split.
+    ``unsupported`` is DEFINITE: the host exposes no readable cgroup
+    hierarchy (v2 or v1) at all, so cgroup verification is impossible by
+    construction — callers treat the run as NOT isolated and fall back
+    to PID semantics rather than retrying ``unknown`` forever (Gate B
+    pass 4, S).
     """
     if not unit_name:
         return "dead"
@@ -9282,12 +9287,16 @@ def request_worker_scope_stop(
         _collect_kanban_scope(unit_name)
         return True
     if state != "active":
-        # Probe failed ("unknown"): death can be neither confirmed nor
-        # ruled out. Queue a stop attempt anyway — an unreachable bus
-        # makes the background pass fail cheaply and the tick retries.
+        # Probe failed ("unknown") or the host has no readable cgroup
+        # hierarchy ("unsupported"): death can be neither confirmed nor
+        # ruled out here. Queue a stop attempt anyway — the stop/kill
+        # still fires over the bus (the only kill path there is), and on
+        # unsupported hosts the service confirms via the unit's bus
+        # state instead of cgroup.procs. An unreachable bus makes the
+        # background pass fail cheaply and the tick retries.
         _log.debug(
-            "kanban: scope %s state unknown (task %s) — queueing a "
-            "verified stop attempt", unit_name, task_id,
+            "kanban: scope %s state %s (task %s) — queueing a "
+            "verified stop attempt", unit_name, state, task_id,
         )
     levels = getattr(_write_txn_tls, "levels", None)
     if levels:
@@ -9501,7 +9510,9 @@ def _run_worker_alive(row: Any) -> "tuple[bool, str]":
             return True, "scope_active"
         if state == "dead":
             return False, "scope_dead"
-        # unknown: systemctl unreachable — fall through to pid checks
+        # unknown/unsupported: no cgroup truth here (bus unreachable, or
+        # a host with no readable cgroup hierarchy at all) — fall through
+        # to pid checks, which for unsupported hosts IS the contract.
     if registered_at is not None:
         if _worker_pid_identity_alive(pid, started_at):
             return True, "pid_identity"

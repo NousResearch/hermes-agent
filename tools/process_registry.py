@@ -115,16 +115,22 @@ _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 
-def _worker_memory_max_bytes() -> int:
+def _worker_memory_max_bytes(
+    self_cgroup: str = "/proc/self/cgroup",
+    mountinfo: str = "/proc/self/mountinfo",
+) -> int:
     """Return a finite per-worker cgroup limit without widening host risk.
 
     The proposed local-memory-guard environment override is honored when it
     tightens the safe bound, so this isolation composes with PR #57121 instead
     of inventing a second knob.  An oversized override cannot widen host risk.
-    Otherwise retain the tighter of the gateway's current cgroup-v2
-    ``memory.max`` and half of physical RAM, capped at 4 GiB.  This keeps the
-    sibling worker outside the gateway cgroup while ensuring the worker cannot
-    consume memory up to the enclosing user slice or host limit.
+    Otherwise retain the tighter of the gateway's current cgroup memory limit
+    (v2 ``memory.max`` on the unified hierarchy, v1
+    ``memory.limit_in_bytes`` on the memory controller hierarchy) and half of
+    physical RAM, capped at 4 GiB.  This keeps the sibling worker outside the
+    gateway cgroup while ensuring the worker cannot consume memory up to the
+    enclosing user slice or host limit.  ``self_cgroup`` / ``mountinfo`` are
+    injectable so tests can feed synthetic procfs.
     """
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
@@ -147,16 +153,36 @@ def _worker_memory_max_bytes() -> int:
 
     candidates: List[int] = []
     try:
-        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+        for line in Path(self_cgroup).read_text(encoding="utf-8").splitlines():
             if line.startswith("0::"):
                 relative = line.partition("::")[2].lstrip("/")
                 raw_limit = (
-                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                    Path(_cgroup2_mount_point(mountinfo)) / relative / "memory.max"
                 ).read_text(encoding="utf-8").strip()
                 if raw_limit.isdigit():
                     cgroup_limit = int(raw_limit)
                     if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
                         candidates.append(cgroup_limit)
+                break
+            # cgroup v1 hosts have no 0:: line; the memory controller's
+            # entry looks like "10:memory:/user.slice/…" and lives in
+            # its own hierarchy, mounted per controller (Gate B pass 4,
+            # S — previously v1 hosts silently fell through to the
+            # physical-RAM bound with a hardcoded /sys/fs/cgroup probe).
+            hierarchy, controllers, relative = line.split(":", 2)
+            if "memory" in controllers.split(","):
+                mount = _cgroup_v1_controller_mount(
+                    mountinfo, preferred=("memory",),
+                )
+                if mount:
+                    raw_limit = (
+                        Path(mount) / relative.lstrip("/")
+                        / "memory.limit_in_bytes"
+                    ).read_text(encoding="utf-8").strip()
+                    if raw_limit.isdigit():
+                        cgroup_limit = int(raw_limit)
+                        if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                            candidates.append(cgroup_limit)
                 break
     except (OSError, ValueError):
         pass
@@ -457,6 +483,55 @@ SCOPE_STOP_VERIFY_BOUND_SECONDS = 31.0
 
 _CGROUP_V2_MOUNT_FALLBACK = "/sys/fs/cgroup"
 
+# cgroup v1 mounts one hierarchy per controller set and lists the
+# controllers in the mount's superoptions (``cpu,net_cls`` or the named
+# hierarchy ``name=systemd``).  Whitelisted so unknown mount flags
+# (relatime, release_agent=…, xattr) can never masquerade as one.
+_CGROUP_V1_CONTROLLERS = frozenset({
+    "blkio", "cpu", "cpuacct", "cpuset", "devices", "freezer",
+    "hugetlb", "memory", "net_cls", "net_prio", "perf_event", "pids",
+})
+
+
+def _parse_cgroup_mounts(
+    mountinfo_path: str = "/proc/self/mountinfo",
+) -> tuple[list[str], list[tuple[str, frozenset[str]]], bool]:
+    """(v2_mounts, v1_mounts, readable) from ``/proc/self/mountinfo``.
+
+    Each v1 entry is ``(mount_point, controllers)`` where controllers
+    comes from the superoptions, with ``name=systemd`` normalised to
+    ``systemd`` — the hierarchy ``systemctl show -p ControlGroup`` paths
+    are relative to.  ``readable`` is False when mountinfo cannot be
+    opened at all (non-Linux); callers decide their own fallback for
+    that case.
+    """
+    v2: list[str] = []
+    v1: list[tuple[str, frozenset[str]]] = []
+    try:
+        with open(mountinfo_path, "r", encoding="utf-8") as f:
+            for line in f:
+                # ... mount-ID parent-ID major:minor root MOUNT-POINT
+                # options [optional...] "-" FSTYPE source superoptions
+                # — fstype is the third field from the end, superoptions
+                # the last.
+                cols = line.split()
+                if len(cols) <= 9:
+                    continue
+                fstype = cols[-3]
+                if fstype == "cgroup2":
+                    v2.append(cols[4])
+                elif fstype == "cgroup":
+                    controllers: set[str] = set()
+                    for token in cols[-1].split(","):
+                        if token in _CGROUP_V1_CONTROLLERS:
+                            controllers.add(token)
+                        elif token == "name=systemd":
+                            controllers.add("systemd")
+                    v1.append((cols[4], frozenset(controllers)))
+    except OSError:
+        return [], [], False
+    return v2, v1, True
+
 
 def _cgroup2_mount_point(
     mountinfo_path: str = "/proc/self/mountinfo",
@@ -471,26 +546,67 @@ def _cgroup2_mount_point(
     the canonical mount when mountinfo is unreadable (non-Linux) or has
     no cgroup2 entry.
     """
-    mounts: list[str] = []
-    try:
-        with open(mountinfo_path, "r", encoding="utf-8") as f:
-            for line in f:
-                # ... mount-ID parent-ID major:minor root MOUNT-POINT
-                # options [optional...] "-" FSTYPE source superoptions
-                # — fstype is the third field from the end.
-                cols = line.split()
-                if len(cols) > 9 and cols[-3] == "cgroup2":
-                    mounts.append(cols[4])
-    except OSError:
-        return _CGROUP_V2_MOUNT_FALLBACK
-    if not mounts:
+    v2, _v1, _readable = _parse_cgroup_mounts(mountinfo_path)
+    if not v2:
         return _CGROUP_V2_MOUNT_FALLBACK
     # Prefer the canonical mount when present; otherwise the first
     # cgroup2 mount wins (a container usually exposes exactly one).
-    for mount in mounts:
+    for mount in v2:
         if mount == _CGROUP_V2_MOUNT_FALLBACK:
             return mount
-    return mounts[0]
+    return v2[0]
+
+
+def _cgroup_v1_controller_mount(
+    mountinfo_path: str = "/proc/self/mountinfo",
+    preferred: tuple[str, ...] = ("systemd", "pids"),
+) -> Optional[str]:
+    """Mount point of the cgroup v1 hierarchy carrying *preferred*
+    controllers, or None when the host has no cgroup v1 mounts.
+
+    v1 mounts one hierarchy per controller set; ``preferred`` is walked
+    in order because the caller cares which hierarchy it lands on —
+    ``systemd`` for ControlGroup-relative paths, ``memory`` for the
+    memory limit file.  ``cgroup.procs`` lists the same processes in
+    every hierarchy, so the first v1 mount is an acceptable last
+    resort for procs lookups.
+    """
+    _v2, v1, _readable = _parse_cgroup_mounts(mountinfo_path)
+    for want in preferred:
+        for mount, controllers in v1:
+            if want in controllers:
+                return mount
+    if v1:
+        return v1[0][0]
+    return None
+
+
+def _cgroup_mount_point(
+    mountinfo_path: str = "/proc/self/mountinfo",
+) -> tuple[int, Optional[str]]:
+    """(version, mount point) of the hierarchy backing cgroup.procs.
+
+    ``2`` — unified hierarchy, canonical mount preferred exactly as
+    :func:`_cgroup2_mount_point` chooses it.  ``1`` — cgroup v1: the
+    best controller mount for process truth (systemd hierarchy first,
+    then pids, then any v1 mount).  ``(0, None)`` is DEFINITE: mountinfo
+    is readable and exposes no cgroup hierarchy at all — a host where
+    cgroup-based verification is impossible by construction, not merely
+    failing right now.  Callers surface that as ``"unsupported"`` and
+    fall back to PID semantics instead of retrying ``"unknown"``
+    forever (Gate B pass 4, S).  An UNREADABLE mountinfo keeps the
+    legacy assumption (canonical v2 mount), so that case stays
+    ``"unknown"`` rather than inventing a definite verdict.
+    """
+    v2, v1, readable = _parse_cgroup_mounts(mountinfo_path)
+    if v2:
+        return 2, _cgroup2_mount_point(mountinfo_path)
+    v1_mount = _cgroup_v1_controller_mount(mountinfo_path)
+    if v1_mount is not None:
+        return 1, v1_mount
+    if not readable:
+        return 2, _CGROUP_V2_MOUNT_FALLBACK
+    return 0, None
 
 
 def _scope_cgroup_procs_path(
@@ -500,14 +616,17 @@ def _scope_cgroup_procs_path(
 
     ``control_group`` is the ``systemctl show -p ControlGroup`` value
     (cgroupfs-relative, e.g. ``/user.slice/user-1000.slice/...``),
-    joined onto the REAL cgroup v2 mount point (see
-    :func:`_cgroup2_mount_point`); an already-absolute path outside the
+    joined onto the REAL cgroup mount — v2's unified hierarchy or, on a
+    v1 host, the systemd controller hierarchy (see
+    :func:`_cgroup_mount_point`; the slice layout of the reported path
+    is the same on both).  An already-absolute path outside the
     canonical cgroup roots (a real cgroupfs mount spelled out by
     systemd, or a test shim's state dir) is honoured as-is.  When
     empty, fall back to the canonical user-scope location so a unit
     systemd forgot to report on is still verified.  ``None`` when no
-    path can be formed (non-Linux without a reported ControlGroup) —
-    callers treat that as "unknown", never "dead".
+    path can be formed (non-Linux without a reported ControlGroup, or a
+    host with no readable cgroup hierarchy at all) — callers treat
+    "no hierarchy" as a definite ``"unsupported"``, never "dead".
     """
     control_group = (control_group or "").strip()
     if control_group:
@@ -515,23 +634,28 @@ def _scope_cgroup_procs_path(
             "/user.slice", "/machine.slice", "/system.slice", "/init.scope",
             "/user-0.slice",
         )):
-            # cgroupfs-relative path as systemd reports it.
-            return (
-                _cgroup2_mount_point() + control_group.rstrip("/")
-                + "/cgroup.procs"
-            )
+            # cgroupfs-relative path as systemd reports it.  On a v1
+            # host the same path is relative to the systemd controller
+            # hierarchy's mount, not the v1 root.
+            _version, mount = _cgroup_mount_point()
+            if mount is None:
+                return None
+            return mount + control_group.rstrip("/") + "/cgroup.procs"
         return control_group.rstrip("/") + "/cgroup.procs"
     if platform.system() != "Linux" or not hasattr(os, "getuid"):
         return None
+    _version, mount = _cgroup_mount_point()
+    if mount is None:
+        return None
     uid = os.getuid()
     return (
-        f"{_cgroup2_mount_point()}/user.slice/user-{uid}.slice/"
+        f"{mount}/user.slice/user-{uid}.slice/"
         f"user@{uid}.service/app.slice/{unit_name}/cgroup.procs"
     )
 
 
 def _scope_unit_liveness(unit_name: str) -> str:
-    """``"alive"`` / ``"dead"`` / ``"unknown"`` — cgroup truth for a unit.
+    """``"alive"`` / ``"dead"`` / ``"unknown"`` / ``"unsupported"``.
 
     ``"alive"`` — the unit's cgroup.procs lists at least one pid.
     ``"dead"`` — VERIFIED: the unit is not loaded (LoadState=not-found),
@@ -544,6 +668,12 @@ def _scope_unit_liveness(unit_name: str) -> str:
     opened (mis-derived path, custom mount, namespace).  Callers must
     treat unknown as NOT dead: keep the claim, retry, and never release
     bookkeeping that guards against a duplicate spawn.
+    ``"unsupported"`` — DEFINITE, not transient: the host exposes no
+    readable cgroup hierarchy at all (no cgroup2 and no cgroup v1
+    mount — see :func:`_cgroup_mount_point`), so cgroup verification is
+    impossible by construction.  Callers treat the run as NOT isolated
+    and fall back to PID semantics rather than retrying "unknown"
+    forever (Gate B pass 4, S).
     """
     import shutil
 
@@ -589,6 +719,13 @@ def _scope_unit_liveness(unit_name: str) -> str:
         unit_name, props.get("ControlGroup", "")
     )
     if procs_path is None:
+        # No path could be formed.  When the host has no cgroup
+        # hierarchy AT ALL that is a definite verdict, not a transient
+        # failure — surface it so callers stop retrying and fall back
+        # to PID semantics.
+        _version, mount = _cgroup_mount_point()
+        if mount is None:
+            return "unsupported"
         return "unknown"
     try:
         with open(procs_path, "r", encoding="utf-8") as f:
@@ -607,17 +744,24 @@ def _scope_unit_liveness(unit_name: str) -> str:
 
 
 def _scope_unit_active_state(unit_name: str) -> str:
-    """Return ``"active"``, ``"dead"``, or ``"unknown"`` for a user unit.
+    """Return ``"active"``, ``"dead"``, ``"unknown"``, ``"unsupported"``.
 
     Compat mapping over :func:`_scope_unit_liveness` (cgroup.procs
     truth): ``active`` means the unit's cgroup holds at least one live
     process; ``dead`` means the unit is verified gone (not loaded, or
     cgroup.procs absent/empty); ``unknown`` means the query could not
     verify either way and callers must fall back to PID-based checks
-    rather than treat this as dead.
+    rather than treat this as dead; ``unsupported`` means the host has
+    no readable cgroup hierarchy at all — callers treat the run as NOT
+    isolated (PID semantics), a definite verdict, not a retry-me
+    unknown.
     """
     liveness = _scope_unit_liveness(unit_name)
-    return {"alive": "active", "dead": "dead"}.get(liveness, "unknown")
+    return {
+        "alive": "active",
+        "dead": "dead",
+        "unsupported": "unsupported",
+    }.get(liveness, "unknown")
 
 
 def _scope_unit_was_created(unit_name: str) -> bool:
@@ -657,6 +801,50 @@ def _scope_unit_was_created(unit_name: str) -> bool:
     return True
 
 
+def _scope_unit_bus_inactive(unit_name: str) -> bool:
+    """True when the BUS itself reports the unit not running.
+
+    Fallback confirmation for hosts where no cgroup hierarchy is
+    readable (liveness ``"unsupported"``): after we fired a stop or a
+    SIGKILL ourselves, systemd moving the unit out of its active states
+    is the strongest verification that host can give — the cgroup
+    cannot be read to say more.  Conservative: only not-found, inactive
+    and failed count; ``deactivating`` and anything unreadable do not.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                binary, "--user", "show", unit_name,
+                "--property", "LoadState",
+                "--property", "ActiveState",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user show %s failed: %s", unit_name, exc)
+        return False
+    if result.returncode != 0:
+        return False
+    props: Dict[str, str] = {}
+    for line in (result.stdout or b"").decode(errors="replace").splitlines():
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key and key not in props:
+            props[key] = value.strip().lower()
+    load_state = props.get("LoadState", "")
+    if load_state == "not-found":
+        return True
+    return load_state == "loaded" and props.get("ActiveState", "") in (
+        "inactive", "failed",
+    )
+
+
 def _stop_systemd_unit_verified(
     unit_name: str,
     *,
@@ -670,6 +858,9 @@ def _stop_systemd_unit_verified(
     dead after the stop — including a ``systemctl stop`` client timeout,
     which does NOT mean the unit died (the stop job may still be running
     server-side) — and returns True only once liveness is verified dead.
+    On a cgroup-less host (liveness ``"unsupported"``) verification
+    falls back to the bus reporting the unit inactive/failed, so a stop
+    still terminates instead of burning the escalation budget forever.
     Callers must treat a False return as "still stopping": retry next
     tick, never assume success and release bookkeeping that guards
     against a duplicate spawn.
@@ -681,6 +872,14 @@ def _stop_systemd_unit_verified(
     """
     import shutil
 
+    def confirmed_dead(unit: str) -> bool:
+        state = _scope_unit_liveness(unit)
+        if state == "dead":
+            return True
+        if state == "unsupported":
+            return _scope_unit_bus_inactive(unit)
+        return False
+
     binary = shutil.which("systemctl")
     if binary is None:
         return False
@@ -689,7 +888,7 @@ def _stop_systemd_unit_verified(
     # that; anything else (including a client timeout) leaves the real
     # verdict to the liveness checks that follow.
     _stop_systemd_unit(unit_name)
-    if _scope_unit_liveness(unit_name) == "dead":
+    if confirmed_dead(unit_name):
         _collect_dead_systemd_unit(unit_name)
         return True
     # Not verified dead (slow descendants, a wedged stop job draining
@@ -707,7 +906,7 @@ def _stop_systemd_unit_verified(
     timeout = _SCOPE_STOP_VERIFY_TIMEOUT if verify_timeout is None else verify_timeout
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _scope_unit_liveness(unit_name) == "dead":
+        if confirmed_dead(unit_name):
             _collect_dead_systemd_unit(unit_name)
             return True
         time.sleep(0.2)

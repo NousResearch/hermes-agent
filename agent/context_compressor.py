@@ -3954,9 +3954,17 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression ineffective-count refresh failed: %s", exc)
 
-    def _automatic_compression_blocked(self) -> bool:
-        """Return whether automatic compaction is in cooldown or tripped."""
-        if not self._automatic_compression_blocked_locally():
+    def _automatic_compression_blocked(self, *, ignore_cooldown: bool = False) -> bool:
+        """Return whether automatic compaction is in cooldown or tripped.
+
+        ``ignore_cooldown=True`` evaluates only the breakers that are NOT the
+        summary-failure cooldown. Used by provider-proven overflow recovery
+        (#100661): the provider already rejected the request, so waiting out
+        the cooldown just wedges the session — every turn defers and the next
+        failure extends the ladder. The overflow path gets one real attempt;
+        the ineffective/structural breakers still apply.
+        """
+        if not self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown):
             return False
         # Blocked on the in-memory snapshot. Durable guard rows may have
         # been cleared by another agent since bind_session_state() — a
@@ -3966,9 +3974,9 @@ class ContextCompressor(ContextEngine):
         # local block outlive the durable state that justified it. The
         # unblocked hot path above never pays for the DB reads.
         self._refresh_durable_guards()
-        return self._automatic_compression_blocked_locally()
+        return self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown)
 
-    def _automatic_compression_blocked_locally(self) -> bool:
+    def _automatic_compression_blocked_locally(self, *, ignore_cooldown: bool = False) -> bool:
         """Evaluate the automatic-compaction gate on in-memory state only."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
@@ -3980,7 +3988,7 @@ class ContextCompressor(ContextEngine):
         # force=True, which clears this cooldown in compress() before running,
         # so it still retries immediately.
         _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
-        if _cooldown_remaining > 0:
+        if _cooldown_remaining > 0 and not ignore_cooldown:
             if not self.quiet_mode:
                 logger.debug(
                     "Compression deferred — summary LLM in cooldown for %.0fs more",
@@ -5013,6 +5021,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
         memory_context: str = "",
+        bypass_cooldown: bool = False,
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -5035,7 +5044,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         now = prompt_started_at
-        if now < self._summary_failure_cooldown_until:
+        # bypass_cooldown (#100661): provider-proven overflow gets ONE real
+        # summary attempt while the cooldown is armed; a failure below still
+        # records/extends the cooldown normally.
+        if now < self._summary_failure_cooldown_until and not bypass_cooldown:
             logger.debug(
                 "Skipping context summary during cooldown (%.0fs remaining)",
                 self._summary_failure_cooldown_until - now,
@@ -7729,6 +7741,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         focus_topic: Optional[str] = None,
         force: bool = False,
         memory_context: str = "",
+        bypass_cooldown: bool = False,
     ) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
@@ -7765,6 +7778,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 summary path.  Auto-compress callers pass False.
             memory_context: Optional provider-supplied context to preserve in
                 the summary prompt. Whitespace-only values are ignored.
+            bypass_cooldown: If True, run the summary LLM even while the
+                summary-failure cooldown is armed, WITHOUT clearing it
+                (#100661). Set by provider-proven overflow recovery, which
+                is already bounded by the caller's attempt budget.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -8102,6 +8119,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     turns_to_summarize,
                     focus_topic=summary_focus_topic,
                     memory_context=memory_context,
+                    bypass_cooldown=bypass_cooldown,
                 )
             except AuxiliaryExplicitCancellation:
                 # Explicit cancellation is a true no-op. Restore state mutated by

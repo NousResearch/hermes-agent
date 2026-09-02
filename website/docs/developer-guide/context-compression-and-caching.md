@@ -73,6 +73,21 @@ Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
 
+#### Failure cooldown and provider-proven overflow
+
+A failed or stalled summary attempt arms a per-session **failure cooldown**
+(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
+ordinary threshold-triggered compaction is deferred so a broken summary backend
+does not re-fire every turn. Two paths run a real attempt anyway:
+
+- Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- **Provider-proven overflow** — when the provider itself rejects the request
+  with a context-length error, the recovery pass ignores the cooldown for one
+  bounded attempt (`max_compression_attempts`) without clearing it. Deferring
+  here would wedge the session: every turn would bounce off the provider and
+  the next failure would extend the ladder (#100661). If that attempt fails,
+  the cooldown is recorded normally.
+
 
 ## Configuration
 

@@ -114,7 +114,18 @@ class PlatformActions:
 
                 profile_name = get_active_profile_name()
             except Exception:
-                profile_name = None
+                # Fail closed: an unresolvable profile must not degrade to the
+                # default profile's bot (the same rule _authorization_adapter
+                # applies to a stamped profile with no registry entry).
+                logger.debug(
+                    "platform_actions: profile resolution failed for %s",
+                    self._plugin_id, exc_info=True,
+                )
+                return None, _err(
+                    "adapter_not_registered",
+                    f"no {platform_enum.value} adapter is registered "
+                    "(active profile could not be resolved)",
+                )
             adapter = resolve_fn(platform_enum, profile_name)
         else:
             adapter = getattr(runner, "adapters", {}).get(platform_enum)

@@ -1133,12 +1133,15 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[int], Optional[str]]
+    ] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock "
+            "SELECT status, current_run_id, worker_pid, claim_lock, "
+            "       worker_pid_started_at, worker_scope "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -1181,9 +1184,18 @@ def _set_status_direct(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  worker_pid_started_at = CASE WHEN ? = 'running' "
+            "      THEN worker_pid_started_at ELSE NULL END, "
+            "  worker_registered_at = CASE WHEN ? = 'running' "
+            "      THEN worker_registered_at ELSE NULL END, "
+            "  worker_scope = CASE WHEN ? = 'running' "
+            "      THEN worker_scope ELSE NULL END "
             "WHERE id = ?",
             (
+                effective_status,
+                effective_status,
+                effective_status,
                 effective_status,
                 effective_status,
                 effective_status,
@@ -1200,7 +1212,9 @@ def _set_status_direct(
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)",
             )
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
+            # Same uniform shape as every other transition path (the
+            # two-tuple here crashed the post-commit drain unpack).
+            terminations.append(kanban_db._worker_termination_tuple(prev))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",

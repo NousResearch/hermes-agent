@@ -7276,12 +7276,7 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = _retry_status_for_run(
                     conn, row["id"], row["current_run_id"]
                 )
-                terminations.append(
-                    (
-                        row["worker_pid"], row["claim_lock"],
-                        row["worker_pid_started_at"], row["worker_scope"],
-                    )
-                )
+                terminations.append(_worker_termination_tuple(row))
                 run_id = _end_run(
                     conn,
                     row["id"],
@@ -9150,6 +9145,26 @@ def _worker_pid_identity_alive(pid: int, started_at: Optional[int]) -> bool:
     if live is None:
         return True
     return live == int(started_at)
+
+
+def _worker_termination_tuple(row: Any) -> tuple[
+    Optional[int], Optional[str], Optional[int], Optional[str]
+]:
+    """Uniform termination record for a row being moved off ``running``:
+    ``(worker_pid, claim_lock, worker_pid_started_at, worker_scope)``.
+
+    Every status-transition path that collects pending worker
+    terminations for a post-commit drain appends exactly this shape, so
+    the drain can unpack four fields uniformly. The dashboard's direct
+    moves recorded two-tuples and crashed the drain with a ValueError
+    (Gate B review, finding 5) — one helper, one shape."""
+    keys = row.keys() if hasattr(row, "keys") else ()
+    return (
+        row["worker_pid"] if "worker_pid" in keys else None,
+        row["claim_lock"] if "claim_lock" in keys else None,
+        row["worker_pid_started_at"] if "worker_pid_started_at" in keys else None,
+        row["worker_scope"] if "worker_scope" in keys else None,
+    )
 
 
 def _terminate_reclaimed_worker(

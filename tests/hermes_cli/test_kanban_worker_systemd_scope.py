@@ -1802,6 +1802,67 @@ def test_set_worker_pid_refuses_terminal_task(conn):
     assert events["n"] == 0
 
 
+def test_dashboard_direct_running_to_ready_terminates_cleanly(
+    shims, conn, kanban_home,
+):
+    """Dashboard drag running->ready must not crash the post-commit
+    termination drain (Gate B review, finding 5): the direct path
+    records the same four-field termination tuple as every other
+    transition — with and without a scope — and a scoped worker's unit
+    is stopped (verified) by the drain."""
+    pytest.importorskip("fastapi")
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_scope_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    # A scoped running row and an unscoped one.
+    scoped_pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_dash", 3)
+    shims.write_unit(unit, [scoped_pid])
+    tid_scoped = _scoped_task_row(
+        conn, scope=unit, pid=scoped_pid, registered=True,
+    )
+    plain_pid = shims.sleeper()
+    tid_plain = kb.create_task(conn, title="plain drag", assignee="w")
+    kb.claim_task(conn, tid_plain, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=? WHERE id=?",
+        (plain_pid, kb._worker_pid_start_time(plain_pid), now, tid_plain),
+    )
+    conn.commit()
+
+    # The old bug: ValueError unpacking a two-tuple into four names.
+    assert mod._set_status_direct(conn, tid_scoped, "ready") is True
+    assert mod._set_status_direct(conn, tid_plain, "ready") is True
+
+    for tid in (tid_scoped, tid_plain):
+        row = conn.execute(
+            "SELECT status, worker_pid, worker_pid_started_at, "
+            "worker_registered_at, worker_scope FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["worker_pid"] is None
+        assert row["worker_pid_started_at"] is None
+        assert row["worker_registered_at"] is None
+        assert row["worker_scope"] is None
+    # The scoped worker was terminated through its scope (the plain one
+    # via the pid loop); both are gone.
+    assert shims.wait_for(lambda: not kb._pid_alive(scoped_pid))
+    assert shims.cgroup_pids(unit) == []
+    assert shims.wait_for(lambda: not kb._pid_alive(plain_pid))
+
+
 # ---------------------------------------------------------------------------
 # Audit sweep + shutdown policy
 # ---------------------------------------------------------------------------

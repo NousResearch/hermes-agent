@@ -1320,6 +1320,10 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Slack user IDs whose Web-API posts (user token, e.g. your own
+#       # dashboard/mobile front-end) count as human instead of being dropped
+#       # as app traffic. Narrower than allow_bots: all. Users only — never apps.
+#       api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
 #       # Suppress automatic link-preview cards without removing clickable links.
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false

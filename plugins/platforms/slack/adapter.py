@@ -3839,6 +3839,30 @@ class SlackAdapter(BasePlatformAdapter):
             return "none"
         return value
 
+    def _slack_api_human_users(self) -> frozenset:
+        """Slack user IDs whose Web-API posts count as human-authored.
+
+        A message posted with a *user* token (``xoxp-``) is authored by a real
+        person, but Slack still stamps it with the posting ``app_id`` and it
+        carries no ``client_msg_id`` — exactly the #35777 app/bot signature in
+        ``_event_declares_bot_sender``. Operators running their own front-end
+        (dashboard, mobile shell) allowlist those *users* via
+        ``platforms.slack.extra.api_human_users`` (``SLACK_API_HUMAN_USERS``
+        fallback) instead of ``allow_bots: all``. Users only — an app-id
+        allowlist would also admit the app's own ``xoxb`` bot posts, which
+        carry the same user+app_id shape.
+        """
+        cached = getattr(self, "_api_human_users_cache", None)
+        if cached is None:
+            raw = self.config.extra.get("api_human_users")
+            if raw is None:
+                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
+            parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
+            cached = self._api_human_users_cache = frozenset(
+                str(p).strip() for p in parts if str(p).strip()
+            )
+        return cached
+
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
         if event.get("bot_id") or event.get("bot_profile"):
@@ -3853,7 +3877,11 @@ class SlackAdapter(BasePlatformAdapter):
         # human-authored messages normally carry client_msg_id, so treat the
         # combination as app/bot-authored (#35777).
         if event.get("app_id") and not event.get("client_msg_id"):
-            return True
+            # ...unless the operator allowlisted this user's API posts
+            # (_slack_api_human_users). ``user`` is required so classic bot
+            # posts (no ``user``) never match; bot_message/bot_id already
+            # returned True above.
+            return event.get("user") not in self._slack_api_human_users()
         return False
 
     def _resolve_thread_ts(

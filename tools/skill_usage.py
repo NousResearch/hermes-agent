@@ -24,10 +24,12 @@ Lifecycle states:
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +56,26 @@ STATE_ACTIVE = "active"
 STATE_STALE = "stale"
 STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
+LOCK_TIMEOUT_SECONDS = 5.0
+LOCK_RETRY_SECONDS = 0.05
+# Errnos that mean "another holder has the lock" and are therefore worth
+# retrying until the deadline. ``fcntl.flock(LOCK_NB)`` reports contention as
+# BlockingIOError (EAGAIN/EWOULDBLOCK), but ``msvcrt.locking`` has no dedicated
+# exception type and signals it through errno instead: EACCES for LK_NBLCK,
+# EDEADLOCK for the retrying LK_LOCK/LK_RLCK variants. Anything else -- EBADF,
+# EINVAL, ENOSPC -- is a genuine failure that must propagate immediately rather
+# than spin in the retry loop and resurface as a misleading TimeoutError.
+_LOCK_UNAVAILABLE_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EDEADLK", None),
+        getattr(errno, "EDEADLOCK", None),
+    )
+    if code is not None
+)
 
 # Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
 # regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
@@ -85,6 +107,11 @@ def _usage_file() -> Path:
     return _skills_dir() / ".usage.json"
 
 
+def _lock_unavailable(exc: OSError) -> bool:
+    """Whether *exc* means the lock is held elsewhere rather than a real error."""
+    return isinstance(exc, BlockingIOError) or exc.errno in _LOCK_UNAVAILABLE_ERRNOS
+
+
 @contextmanager
 def _usage_file_lock():
     """Serialize .usage.json read-modify-write cycles across processes."""
@@ -99,20 +126,33 @@ def _usage_file_lock():
         lock_path.write_text(" ", encoding="utf-8")
 
     fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
+    locked = False
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     try:
-        if fcntl:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        else:
-            fd.seek(0)
-            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+        while not locked:
+            try:
+                if fcntl:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError as exc:
+                if not _lock_unavailable(exc):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out acquiring skill usage lock: {lock_path}"
+                    )
+                time.sleep(LOCK_RETRY_SECONDS)
         yield
     finally:
-        if fcntl:
+        if locked and fcntl:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except (OSError, IOError):
                 pass
-        elif msvcrt:
+        elif locked and msvcrt:
             try:
                 fd.seek(0)
                 msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)

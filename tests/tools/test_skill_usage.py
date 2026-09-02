@@ -1,5 +1,6 @@
 """Tests for tools/skill_usage.py — sidecar telemetry + provenance filtering."""
 
+import errno
 import json
 import multiprocessing as mp
 import os
@@ -14,6 +15,17 @@ def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
 
     for _ in range(iterations):
         bump_view(skill_name)
+
+
+def _hold_usage_lock(hermes_home: str, ready, release) -> None:
+    os.environ["HERMES_HOME"] = hermes_home
+    import importlib
+    import tools.skill_usage as mod
+
+    importlib.reload(mod)
+    with mod._usage_file_lock():
+        ready.set()
+        release.wait(timeout=10)
 
 
 @pytest.fixture
@@ -327,6 +339,87 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
     for process in processes:
         assert process.exitcode == 0
     assert get_record("shared-skill")["view_count"] == process_count * iterations
+
+
+def test_usage_lock_times_out_when_held(skills_home, monkeypatch):
+    import tools.skill_usage as mod
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Event()
+    release = ctx.Event()
+    holder = ctx.Process(
+        target=_hold_usage_lock,
+        args=(str(skills_home), ready, release),
+    )
+    holder.start()
+    assert ready.wait(timeout=5), "holder did not acquire the usage lock"
+
+    monkeypatch.setattr(mod, "LOCK_TIMEOUT_SECONDS", 0.2)
+    try:
+        with pytest.raises(TimeoutError, match="Timed out acquiring skill usage lock"):
+            with mod._usage_file_lock():
+                pass
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert holder.exitcode == 0
+
+
+class _FakeMsvcrt:
+    """Minimal stand-in for the Windows ``msvcrt`` locking API.
+
+    ``msvcrt`` cannot be imported on POSIX CI, so the Windows branch of
+    ``_usage_file_lock`` is otherwise unreachable from the test suite.
+    """
+
+    LK_NBLCK = 1
+    LK_UNLCK = 0
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.attempts = 0
+
+    def locking(self, _fd, mode, _nbytes):
+        if mode == self.LK_UNLCK:
+            return
+        self.attempts += 1
+        raise self._exc
+
+
+def test_usage_lock_propagates_real_oserror_on_windows_path(skills_home, monkeypatch):
+    """A non-contention OSError must propagate, not spin out as a TimeoutError."""
+    import tools.skill_usage as mod
+
+    fake = _FakeMsvcrt(OSError(errno.EBADF, "Bad file descriptor"))
+    monkeypatch.setattr(mod, "fcntl", None)
+    monkeypatch.setattr(mod, "msvcrt", fake)
+
+    with pytest.raises(OSError) as excinfo:
+        with mod._usage_file_lock():
+            pass
+
+    # TimeoutError subclasses OSError, so assert on the concrete failure.
+    assert not isinstance(excinfo.value, TimeoutError)
+    assert excinfo.value.errno == errno.EBADF
+    assert fake.attempts == 1, "a real error must not be retried"
+
+
+def test_usage_lock_retries_windows_contention_errno(skills_home, monkeypatch):
+    """EACCES -- how msvcrt reports a held lock -- still retries to the deadline."""
+    import tools.skill_usage as mod
+
+    fake = _FakeMsvcrt(OSError(errno.EACCES, "Permission denied"))
+    monkeypatch.setattr(mod, "fcntl", None)
+    monkeypatch.setattr(mod, "msvcrt", fake)
+    monkeypatch.setattr(mod, "LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(mod, "LOCK_RETRY_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="Timed out acquiring skill usage lock"):
+        with mod._usage_file_lock():
+            pass
+
+    assert fake.attempts > 1
 
 
 # ---------------------------------------------------------------------------

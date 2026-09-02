@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 import threading
-import unicodedata
 from unittest.mock import patch
 
 import pytest
@@ -160,13 +159,17 @@ class TestReadFileNonTextPaths:
 
     def test_unicode_variant_retry_still_works(self, shell, tmp_path):
         ops, calls = shell
-        nfc = unicodedata.normalize("NFC", "café.txt")
-        nfd = unicodedata.normalize("NFD", "café.txt")
-        assert nfc != nfd
-        _write(tmp_path, nfc, b"accent\n")
-        r = ops.read_file(str(tmp_path / nfd))
+        # A curly apostrophe vs the ASCII one: visually identical in a
+        # terminal, and — unlike NFC/NFD — never aliased by the filesystem
+        # (APFS resolves NFD lookups to NFC files directly, which would skip
+        # the retry path this test exists to exercise).
+        on_disk = "it\u2019s.txt"
+        typed = "it's.txt"
+        assert on_disk != typed
+        _write(tmp_path, on_disk, b"accent\n")
+        r = ops.read_file(str(tmp_path / typed))
         assert r.error is None and r.content == "1|accent\n2|"
-        assert "unicode-equivalent" in r.hint
+        assert r.hint is not None and "unicode-equivalent" in r.hint
 
     def test_directory_is_not_regular(self, shell, tmp_path):
         ops, calls = shell

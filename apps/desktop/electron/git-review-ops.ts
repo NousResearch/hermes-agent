@@ -30,15 +30,16 @@ function ghEnv(ghBin) {
   return { ...process.env, PATH: [...extra, process.env.PATH].filter(Boolean).join(path.delimiter) }
 }
 
-// Run the `gh` CLI in a repo. Resolves { ok, stdout } so callers branch on
-// availability/auth without a throw. gh missing/unauthed → ok:false.
-function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
+// Run the `gh` CLI in a repo. Resolves { ok, stdout, stderr } so callers branch
+// on availability/auth without a throw. gh missing/unauthed → ok:false.
+function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     execFile(
       ghBin || 'gh',
       args,
       { cwd, env: ghEnv(ghBin), windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') })
+      (err, stdout, stderr) =>
+        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(err?.stderr ?? stderr ?? '') })
     )
   })
 }
@@ -770,7 +771,12 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
   const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
 
   if (!created.ok) {
-    throw new Error('gh pr create failed (is gh installed and authenticated?)')
+    // gh's own stderr says why the create failed (e.g. "no commits between
+    // main and feature", missing auth, a repo in an uncreatable state). Surface
+    // it instead of the generic fallback, which lied whenever gh was fine.
+    const reason = created.stderr.trim() || 'is gh installed and authenticated?'
+
+    throw new Error(`gh pr create failed: ${reason}`)
   }
 
   const url = created.stdout.trim().split('\n').filter(Boolean).pop() || ''

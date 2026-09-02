@@ -2683,6 +2683,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         #
         # An explicit ``api_mode`` on the fallback entry always wins — including
         # an explicit "chat_completions" — and suppresses all re-detection below.
+        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
         fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
         fb_api_mode = "chat_completions"
         if fb_api_mode_explicit:
@@ -2699,6 +2701,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 _orig_url.endswith("/anthropic")
                 or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
             ):
+                fb_api_mode = "anthropic_messages"
+            elif _detect_api_mode_for_url(fb_base_url_hint) == "anthropic_messages":
+                # Kimi Code ``api.kimi.com/coding`` (and other host-mandated
+                # Anthropic-Messages wires) when the fallback entry carries
+                # an explicit base_url. Same class as api.anthropic.com
+                # (#32243, #49247).
                 fb_api_mode = "anthropic_messages"
         
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
@@ -2756,6 +2764,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # pre-resolve hint check above never sees it. Match the host
                 # the same way determine_api_mode() and _detect_api_mode_for_url()
                 # do on the primary path. (#32243, #49247)
+                fb_api_mode = "anthropic_messages"
+            elif _detect_api_mode_for_url(fb_base_url) == "anthropic_messages":
+                # Kimi Code ``api.kimi.com/coding`` (and other host-mandated
+                # Anthropic-Messages wires already classified on the primary
+                # path) must not stay on chat_completions — that POSTs
+                # /v1/chat/completions against a Messages-only route and 404s.
+                # Typical fallback entries name provider kimi-coding-cn
+                # without a base_url, so the pre-resolve hint pass misses
+                # them. Same class as api.anthropic.com (#32243, #49247).
                 fb_api_mode = "anthropic_messages"
             elif _fb_is_azure:
                 # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT

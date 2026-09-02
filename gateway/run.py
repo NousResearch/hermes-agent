@@ -7721,6 +7721,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # context pin; last-delivered voice-channel context) lives on
         # SessionState.conversation — see gateway/session_state.py.
         self._kanban_notifier_profile = self._active_profile_name()
+        # Launch-time identity of the profile that owns ``self.adapters``;
+        # ``_authorization_adapter`` compares against this rather than the
+        # per-turn ``_active_profile_name()`` (see gateway/authz_mixin.py).
+        self._primary_profile_name = self._kanban_notifier_profile
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None

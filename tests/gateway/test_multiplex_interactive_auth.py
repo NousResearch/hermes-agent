@@ -108,3 +108,30 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
     with _profile_runtime_scope(mux_home):
         assert tg._is_user_authorized_from_message(msg(4242, True)) is True
         assert tg._is_user_authorized_from_message(msg(4343, False)) is False
+
+
+def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
+    """#87240 egress half: inside a secondary profile's runtime scope the
+    default bot must not be handed to that profile (fail-closed None); the
+    launch profile still resolves ``self.adapters``."""
+    from gateway.run import _profile_runtime_scope
+
+    runner = _runner(mux_home)
+    default_bot = object()
+    runner.adapters = {Platform.TELEGRAM: default_bot}
+
+    with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
+        assert runner._authorization_adapter(Platform.TELEGRAM, profile="secondary") is None
+    assert runner._authorization_adapter(Platform.TELEGRAM, profile="default") is default_bot
+
+
+def test_channel_directory_path_follows_current_home(mux_home):
+    """#87240: the directory file resolves against the CURRENT profile home,
+    not the home that happened to import the module."""
+    import gateway.channel_directory as cd
+    from gateway.run import _profile_runtime_scope
+
+    assert cd.DIRECTORY_PATH is None
+    with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
+        assert cd._directory_path() == Path(mux_home / "profiles" / "secondary" / "channel_directory.json")
+    assert cd._directory_path() == Path(mux_home / "channel_directory.json")

@@ -209,14 +209,21 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
-            active_profile = None
-            active_profile_fn = getattr(self, "_active_profile_name", None)
-            if callable(active_profile_fn):
-                try:
-                    active_profile = active_profile_fn()
-                except Exception:
-                    active_profile = None
-            if profile_name == active_profile:
+            # Adapter ownership is process-wide: only the profile the gateway
+            # was LAUNCHED as owns ``self.adapters``. ``_active_profile_name()``
+            # reads the per-turn HERMES_HOME override, so inside a secondary
+            # profile's ``_profile_runtime_scope`` it reports that secondary
+            # and would hand it the default bot. Compare against the identity
+            # captured at construction instead.
+            primary_profile = getattr(self, "_primary_profile_name", None)
+            if not primary_profile:
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    try:
+                        primary_profile = active_profile_fn()
+                    except Exception:
+                        primary_profile = None
+            if profile_name == primary_profile:
                 adapters = getattr(self, "adapters", None) or {}
                 return adapters.get(platform)
             profile_adapters = getattr(self, "_profile_adapters", None) or {}

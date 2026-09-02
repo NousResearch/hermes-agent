@@ -34,6 +34,7 @@ explicit bounded joins.
 
 from __future__ import annotations
 
+import sys
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -66,8 +67,8 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         return super().submit(_run_with_context, *args, **kwargs)
 
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8–3.13) with two changes:
-        # daemon=True and no _threads_queues registration.
+        # Mirrors CPython's implementation (version-gated for 3.11-3.13 vs 3.14+)
+        # with two changes: daemon=True and no _threads_queues registration.
         if self._idle_semaphore.acquire(timeout=0):
             return
 
@@ -77,15 +78,26 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
-            t = threading.Thread(
-                name=thread_name,
-                target=_worker,
-                args=(
+            if sys.version_info >= (3, 14):
+                # Python 3.14+ bundles initializer/initargs into a context object
+                worker_args = (
+                    weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
+                    self._work_queue,
+                )
+            else:
+                # Python 3.11-3.13: legacy _worker(executor_reference, work_queue,
+                # initializer, initargs) signature
+                worker_args = (
                     weakref.ref(self, weakref_cb),
                     self._work_queue,
                     self._initializer,
                     self._initargs,
-                ),
+                )
+            t = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                args=worker_args,
                 daemon=True,
             )
             t.start()

@@ -325,25 +325,24 @@ def _copy_direct_tables(
 ) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
 
+    # Lazy import: session_recovery imports this module inside a function, so
+    # a module-level import here would be circular.
+    from hermes_cli.session_recovery import (
+        _AUXILIARY_TABLE_SCHEMAS,
+        _AUXILIARY_TABLES,
+        _CANONICAL_TABLES,
+    )
+
     copied: dict[str, int] = {}
-    for table in (
-        "system_prompts",
-        "sessions",
-        "messages",
-        "session_model_usage",
-        "compression_locks",
-        "gateway_routing",
-        "async_delegations",
-        "delivery_obligations",
-    ):
+    for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
         source_columns = _table_columns(lf_conn, table)
         if not source_columns:
             continue
         dest_columns = _table_columns(dest, table)
-        if table == "delivery_obligations" and not dest_columns:
-            from gateway.delivery_ledger import _initialize_schema
-
-            _initialize_schema(dest)
+        if not dest_columns and table in _AUXILIARY_TABLE_SCHEMAS:
+            # Lazily-created gateway table: base SessionDB never made it on
+            # the fresh destination, so create it before copying.
+            _AUXILIARY_TABLE_SCHEMAS[table](dest)
             dest_columns = _table_columns(dest, table)
         columns = [c for c in dest_columns if c in source_columns]
         if not columns:

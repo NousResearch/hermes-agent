@@ -45,12 +45,26 @@ _TOPIC_TABLES = (
     "telegram_dm_topic_bindings",
 )
 
-# Durable gateway outbox. Created lazily by gateway.delivery_ledger, so a
-# fresh SessionDB destination does not have the table until we initialize it.
-# Omitting it from the copy inventory drops owed replies (#100313, #86236).
-_AUXILIARY_TABLES = (
-    "delivery_obligations",
-)
+
+
+def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
+    from gateway.delivery_ledger import _initialize_schema
+
+    _initialize_schema(conn)
+
+
+# Tables that live in state.db but are created lazily by a gateway module on
+# first use, so base ``SessionDB`` never creates them on a fresh destination.
+# Every entry maps the table to the initializer that owns its DDL; recovery
+# creates the table on the destination before copying, so owed rows survive
+# instead of silently vanishing from a "complete" salvage (#100313, #86236).
+# Add new lazily-created state.db tables HERE, never as one-off ``if table ==``
+# branches.
+_AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
+    "delivery_obligations": _init_delivery_ledger_schema,
+}
+
+_AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
 
 _INVENTORY_TABLES = (
     *_CANONICAL_TABLES,
@@ -410,10 +424,12 @@ def _ensure_auxiliary_destination_schema(
     would report ``missing`` / ``no compatible columns`` and drop the rows.
     """
 
-    if table == "delivery_obligations":
-        from gateway.delivery_ledger import _initialize_schema
-
-        _initialize_schema(destination)
+    initialize = _AUXILIARY_TABLE_SCHEMAS.get(table)
+    if initialize is None:
+        raise SessionRecoverySafetyError(
+            f"no destination schema initializer registered for table {table!r}"
+        )
+    initialize(destination)
 
 
 def _copy_table(

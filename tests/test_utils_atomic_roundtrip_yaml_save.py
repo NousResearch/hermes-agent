@@ -196,6 +196,35 @@ class TestAtomicRoundtripYamlSave:
         result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert result["toolsets"] == ["three"]
 
+    def test_stale_writer_preserves_plugin_runtime_state(self, config_path):
+        from utils import atomic_roundtrip_yaml_save
+
+        config_path.write_text(
+            "plugins:\n"
+            "  enabled: [new-plugin]\n"
+            "  disabled: [blocked]\n"
+            "platform_toolsets:\n"
+            "  cli: [file, new-tools]\n"
+            "display:\n"
+            "  skin: default\n",
+            encoding="utf-8",
+        )
+        stale = {
+            "plugins": {"enabled": [], "disabled": []},
+            "platform_toolsets": {"cli": ["file"]},
+            "display": {"skin": "mono"},
+        }
+
+        saved = atomic_roundtrip_yaml_save(config_path, stale)
+
+        result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert result["plugins"] == {
+            "enabled": ["new-plugin"],
+            "disabled": ["blocked"],
+        }
+        assert result["platform_toolsets"]["cli"] == ["file", "new-tools"]
+        assert saved["plugins"] == result["plugins"]
+
     def test_recurses_into_nested_dicts(self, config_path):
         """Deep mutations target the matching subtree, not the whole parent.
 

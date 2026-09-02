@@ -237,10 +237,6 @@ def _fanout_patches(install_side_effect, consent_mock=None):
     patches = {
         "_install_plugin_core": mock.MagicMock(side_effect=install_side_effect),
         "_prompt_plugin_env_vars": mock.MagicMock(),
-        "_get_enabled_set": mock.MagicMock(return_value=set()),
-        "_get_disabled_set": mock.MagicMock(return_value=set()),
-        "_save_enabled_set": mock.MagicMock(),
-        "_save_disabled_set": mock.MagicMock(),
         "_run_capability_consent": consent_mock or mock.MagicMock(return_value=True),
         "_declared_capabilities_from_manifest": mock.MagicMock(
             side_effect=lambda manifest, name: manifest.get("capabilities", [])
@@ -274,8 +270,8 @@ def test_install_fan_out_passes_pinned_refs_to_installer(tmp_path):
 
     assert [r.ok for r in results] == [True, True]
     assert installer.call_args_list == [
-        mock.call("o/a", force=False, ref=SHA_A),
-        mock.call("o/b", force=False, ref=SHA_B),
+        mock.call("o/a", force=False, ref=SHA_A, enable_on_commit=True),
+        mock.call("o/b", force=False, ref=SHA_B, enable_on_commit=True),
     ]
 
 
@@ -326,7 +322,7 @@ def test_install_fan_out_continues_past_failures_and_reports():
         )
     )
 
-    def installer(identifier, *, force, ref):
+    def installer(identifier, *, force, ref, enable_on_commit=False):
         if "bad" in identifier:
             raise PluginOperationError("clone exploded")
         return (mock.MagicMock(), {"name": "good"}, "good")
@@ -357,7 +353,7 @@ def test_pack_install_exits_nonzero_on_partial_failure(tmp_path, monkeypatch):
     )
     from hermes_cli.plugins_cmd import PluginOperationError
 
-    def installer(identifier, *, force, ref):
+    def installer(identifier, *, force, ref, enable_on_commit=False):
         if "bad" in identifier:
             raise PluginOperationError("boom")
         return (mock.MagicMock(), {"name": "good"}, "good")

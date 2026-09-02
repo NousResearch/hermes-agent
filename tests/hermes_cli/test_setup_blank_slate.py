@@ -95,7 +95,7 @@ class TestBlankSlateFork:
         # Neutralize side-effecting setup steps and I/O.
         monkeypatch.setattr(s, "setup_model_provider", lambda cfg, **k: None)
         monkeypatch.setattr(s, "setup_terminal_backend", lambda cfg, **k: None)
-        monkeypatch.setattr(s, "save_config", lambda cfg: None)
+        monkeypatch.setattr(s, "save_config", lambda cfg, **kwargs: None)
         monkeypatch.setattr(s, "_print_setup_summary", lambda cfg, home: None)
         monkeypatch.setattr(s, "print_header", lambda *a, **k: None)
         monkeypatch.setattr(s, "print_info", lambda *a, **k: None)

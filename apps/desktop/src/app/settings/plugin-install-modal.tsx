@@ -23,6 +23,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
 import { installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -49,6 +50,14 @@ export function PluginInstallModal() {
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const agentRequest = useMemo(
+    () =>
+      request?.scopeKey
+        ? async <T,>(method: string, params: Record<string, unknown> = {}) =>
+            requestGatewayForAgent<T>(request.connectionId ?? null, request.profile ?? 'default', method, params)
+        : requestGateway,
+    [request?.connectionId, request?.profile, request?.scopeKey, requestGateway]
+  )
 
   const [repoInput, setRepoInput] = useState('')
   const [phase, setPhase] = useState<ProbePhase>('idle')
@@ -60,9 +69,11 @@ export function PluginInstallModal() {
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const probeToken = useRef(0)
+  const installToken = useRef(0)
 
   const resetState = useCallback(() => {
     setRepoInput('')
+    installToken.current += 1
     setPhase('idle')
     setProbe(null)
     setInstallAgent(true)
@@ -156,8 +167,10 @@ export function PluginInstallModal() {
 
   const profileLabel = request?.profile || activeProfile || profileScope || 'default'
 
-  const agentTargetHint =
-    connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
+  const targetIsRemote = request?.scopeKey
+    ? request.connectionId !== null && request.connectionId !== 'local'
+    : connection?.mode === 'remote'
+  const agentTargetHint = targetIsRemote ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -183,6 +196,9 @@ export function PluginInstallModal() {
 
     setInstalling(true)
     setInstallError(null)
+    const token = ++installToken.current
+    const payload = request
+    const isCurrent = () => token === installToken.current && $pluginInstallRequest.get() === payload
 
     const errors: string[] = []
     const successes: string[] = []
@@ -190,13 +206,17 @@ export function PluginInstallModal() {
 
     try {
       if (installAgent && probe.agent) {
-        const result = await installAgentPlugin(requestGateway, {
+        const result = await installAgentPlugin(agentRequest, {
           identifier: request.repo,
           force: forceReinstall,
           enable: enableAgent,
           catalogName: request.catalogName,
           profile: request.profile
         })
+
+        if (!isCurrent()) {
+          return
+        }
 
         if (result.ok) {
           successes.push(m.agentSuccess(result.pluginName ?? request.repo))
@@ -233,16 +253,26 @@ export function PluginInstallModal() {
         } else {
           const result = await installFn({ identifier: request.repo, force: forceReinstall })
 
+          if (!isCurrent()) {
+            return
+          }
+
           if (result.ok) {
             successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
             await discoverRuntimePlugins()
+            if (!isCurrent()) {
+              return
+            }
           } else {
             errors.push(result.error || m.desktopFailed)
           }
         }
       }
 
-      await loadAgentPlugins(requestGateway)
+      await loadAgentPlugins(agentRequest, request.profile, request.scopeKey)
+      if (!isCurrent()) {
+        return
+      }
 
       if (errors.length === 0) {
         for (const message of successes) {
@@ -274,7 +304,9 @@ export function PluginInstallModal() {
 
       setInstallError(errors.join('\n'))
     } finally {
-      setInstalling(false)
+      if (token === installToken.current) {
+        setInstalling(false)
+      }
     }
   }
 

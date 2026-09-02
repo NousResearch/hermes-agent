@@ -1,5 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
+import copy
 import errno
 import json
 import logging
@@ -8,7 +9,7 @@ import shutil
 import stat
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -19,6 +20,458 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def sync_directory(path: Union[str, Path]) -> None:
+    """Flush directory-entry changes on POSIX and Windows."""
+    if os.name != "nt":
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0xC0000000,
+        0x00000001 | 0x00000002,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@contextmanager
+def secure_parent_directory(
+    path: Union[str, Path], root: Union[str, Path], *, create: bool = False
+):
+    """Hold a no-follow parent descriptor for a path beneath a trusted root."""
+    path = Path(path).absolute()
+    root = Path(root).absolute()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise OSError(errno.EPERM, f"Path escapes trusted root: {path}") from exc
+    if not relative.parts:
+        raise OSError(errno.EINVAL, "A child path is required")
+
+    root_real = root.resolve(strict=True)
+    if os.name != "posix":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileAttributeTagInfo(ctypes.Structure):
+            _fields_ = [
+                ("file_attributes", wintypes.DWORD),
+                ("reparse_tag", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.GetFileInformationByHandleEx.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        )
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        invalid = wintypes.HANDLE(-1).value
+        handles = []
+        parent = root_real
+        paths = [root_real]
+        for part in relative.parts[:-1]:
+            parent /= part
+            paths.append(parent)
+        try:
+            for current in paths:
+                if not current.exists():
+                    if create:
+                        current.mkdir()
+                    else:
+                        raise FileNotFoundError(current)
+                handle = kernel32.CreateFileW(
+                    str(current),
+                    0x00000080,
+                    0x00000001 | 0x00000002,
+                    None,
+                    3,
+                    0x02000000 | 0x00200000,
+                    None,
+                )
+                if handle == invalid:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                info = FileAttributeTagInfo()
+                if not kernel32.GetFileInformationByHandleEx(
+                    handle, 9, ctypes.byref(info), ctypes.sizeof(info)
+                ):
+                    kernel32.CloseHandle(handle)
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if info.file_attributes & 0x400:
+                    kernel32.CloseHandle(handle)
+                    raise OSError(errno.ELOOP, f"Unsafe reparse-point path: {current}")
+                handles.append(handle)
+            yield None, parent, relative.name
+        finally:
+            for handle in reversed(handles):
+                kernel32.CloseHandle(handle)
+        return
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(root_real, flags)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd, root_real.joinpath(*relative.parts[:-1]), relative.name
+    finally:
+        os.close(fd)
+
+
+def secure_open_file(
+    path: Union[str, Path],
+    root: Union[str, Path],
+    flags: int,
+    mode: int = 0o600,
+    *,
+    create_parent: bool = False,
+) -> int:
+    """Open a regular child without releasing parent containment first."""
+    with secure_parent_directory(path, root, create=create_parent) as (
+        parent_fd,
+        parent,
+        name,
+    ):
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        candidate = parent / name
+        if parent_fd is None and os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateFileW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            )
+            kernel32.CreateFileW.restype = wintypes.HANDLE
+            kernel32.GetFileInformationByHandleEx.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+            )
+            kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            access = 0x80000000
+            if flags & (os.O_WRONLY | os.O_RDWR):
+                access |= 0x40000000
+            if flags & os.O_CREAT:
+                creation = 1 if flags & os.O_EXCL else 2 if flags & os.O_TRUNC else 4
+            else:
+                creation = 5 if flags & os.O_TRUNC else 3
+            handle = kernel32.CreateFileW(
+                str(candidate),
+                access,
+                0x00000001 | 0x00000002,
+                None,
+                creation,
+                0x00000080 | 0x00200000,
+                None,
+            )
+            invalid = wintypes.HANDLE(-1).value
+            if handle == invalid:
+                raise ctypes.WinError(ctypes.get_last_error())
+
+            class FileAttributeTagInfo(ctypes.Structure):
+                _fields_ = [
+                    ("file_attributes", wintypes.DWORD),
+                    ("reparse_tag", wintypes.DWORD),
+                ]
+
+            info = FileAttributeTagInfo()
+            if not kernel32.GetFileInformationByHandleEx(
+                handle, 9, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                kernel32.CloseHandle(handle)
+                raise ctypes.WinError(ctypes.get_last_error())
+            if info.file_attributes & (0x10 | 0x400):
+                kernel32.CloseHandle(handle)
+                raise OSError(errno.ELOOP, f"Unsafe control path: {candidate}")
+            try:
+                fd_flags = flags & (
+                    os.O_APPEND
+                    | os.O_WRONLY
+                    | os.O_RDWR
+                    | getattr(os, "O_TEXT", 0)
+                    | getattr(os, "O_BINARY", 0)
+                )
+                return msvcrt.open_osfhandle(handle, fd_flags)
+            except BaseException:
+                kernel32.CloseHandle(handle)
+                raise
+
+        fd = (
+            os.open(name, flags | nofollow, mode, dir_fd=parent_fd)
+            if parent_fd is not None
+            else os.open(candidate, flags | nofollow, mode)
+        )
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            raise OSError(errno.EPERM, f"Control path is not a regular file: {path}")
+        return fd
+
+
+def secure_atomic_write_text(
+    path: Union[str, Path],
+    content: str,
+    root: Union[str, Path],
+    *,
+    encoding: str = "utf-8",
+) -> None:
+    """Atomically write beneath a held no-follow parent directory."""
+    with secure_parent_directory(path, root, create=True) as (parent_fd, parent, name):
+        if parent_fd is None:
+            atomic_write_text(
+                parent / name, content, encoding=encoding, follow_symlinks=False
+            )
+            sync_directory(parent)
+            return
+        tmp_name = f".{name}.tmp-{os.getpid()}-{time.time_ns()}"
+        fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding=encoding) as handle:
+                fd = -1
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(tmp_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+
+
+def secure_unlink(
+    path: Union[str, Path], root: Union[str, Path], *, missing_ok: bool = False
+) -> None:
+    """Unlink a child through a held no-follow parent directory."""
+    with secure_parent_directory(path, root) as (parent_fd, parent, name):
+        try:
+            if parent_fd is not None:
+                os.unlink(name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            else:
+                os.unlink(parent / name)
+                sync_directory(parent)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
+
+
+def secure_replace(
+    source: Union[str, Path], target: Union[str, Path], root: Union[str, Path]
+) -> None:
+    """Replace one child with another while both parent namespaces stay pinned."""
+    source = Path(source)
+    target = Path(target)
+    with secure_parent_directory(source, root) as (src_fd, src_parent, src_name):
+        with secure_parent_directory(target, root, create=True) as (
+            dst_fd,
+            dst_parent,
+            dst_name,
+        ):
+            src_info = (
+                os.stat(src_name, dir_fd=src_fd, follow_symlinks=False)
+                if src_fd is not None
+                else os.lstat(src_parent / src_name)
+            )
+            src_attrs = getattr(src_info, "st_file_attributes", 0)
+            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(src_info.st_mode) or src_attrs & reparse:
+                raise OSError(errno.ELOOP, f"Refusing reparse-point source: {source}")
+            try:
+                dst_info = (
+                    os.stat(dst_name, dir_fd=dst_fd, follow_symlinks=False)
+                    if dst_fd is not None
+                    else os.lstat(dst_parent / dst_name)
+                )
+            except FileNotFoundError:
+                dst_info = None
+            if dst_info is not None:
+                dst_attrs = getattr(dst_info, "st_file_attributes", 0)
+                if stat.S_ISLNK(dst_info.st_mode) or dst_attrs & reparse:
+                    raise OSError(
+                        errno.ELOOP, f"Refusing reparse-point target: {target}"
+                    )
+            if src_fd is not None and dst_fd is not None:
+                os.replace(
+                    src_name,
+                    dst_name,
+                    src_dir_fd=src_fd,
+                    dst_dir_fd=dst_fd,
+                )
+                os.fsync(src_fd)
+                if dst_fd != src_fd:
+                    os.fsync(dst_fd)
+            else:
+                os.replace(src_parent / src_name, dst_parent / dst_name)
+                sync_directory(src_parent)
+                if dst_parent != src_parent:
+                    sync_directory(dst_parent)
+
+
+def secure_rmtree(path: Union[str, Path], root: Union[str, Path]) -> None:
+    """Remove a directory tree without following a swapped parent or leaf."""
+    path = Path(path)
+    with secure_parent_directory(path, root) as (parent_fd, parent, name):
+        candidate = parent / name
+        info = (
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if parent_fd is not None
+            else os.lstat(candidate)
+        )
+        attrs = getattr(info, "st_file_attributes", 0)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or attrs & reparse:
+            raise OSError(errno.ELOOP, f"Refusing symlinked directory tree: {path}")
+        if parent_fd is not None:
+            shutil.rmtree(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        elif os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateFileW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            )
+            kernel32.CreateFileW.restype = wintypes.HANDLE
+            kernel32.GetFileInformationByHandleEx.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+            )
+            kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.CreateFileW(
+                str(candidate),
+                0x00000080,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0x02000000 | 0x00200000,
+                None,
+            )
+            invalid = wintypes.HANDLE(-1).value
+            if handle == invalid:
+                raise ctypes.WinError(ctypes.get_last_error())
+
+            class FileAttributeTagInfo(ctypes.Structure):
+                _fields_ = [
+                    ("file_attributes", wintypes.DWORD),
+                    ("reparse_tag", wintypes.DWORD),
+                ]
+
+            try:
+                opened = FileAttributeTagInfo()
+                if not kernel32.GetFileInformationByHandleEx(
+                    handle, 9, ctypes.byref(opened), ctypes.sizeof(opened)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not opened.file_attributes & 0x10 or opened.file_attributes & 0x400:
+                    raise OSError(errno.ELOOP, f"Unsafe directory tree: {path}")
+                try:
+                    shutil.rmtree(candidate)
+                except PermissionError:
+                    # ponytail: the pinned leaf blocks only the final rmdir;
+                    # split into a plain rmdir unless deeper cleanup failed.
+                    if next(candidate.iterdir(), None) is not None:
+                        raise
+            finally:
+                kernel32.CloseHandle(handle)
+            try:
+                os.rmdir(candidate)
+            except FileNotFoundError:
+                pass
+            sync_directory(parent)
+        else:
+            shutil.rmtree(candidate)
+            sync_directory(parent)
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -132,7 +585,12 @@ def _copy_fallback(tmp_str: str, real_path: str) -> None:
     os.unlink(tmp_str)
 
 
-def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
+def atomic_replace(
+    tmp_path: Union[str, Path],
+    target: Union[str, Path],
+    *,
+    follow_symlinks: bool = True,
+) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
     Resolves a symlink first so ``os.replace`` writes the real file in place and the symlink
@@ -142,7 +600,11 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     then in-place rewrite).
     """
     target_str = str(target)
-    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    real_path = (
+        os.path.realpath(target_str)
+        if follow_symlinks and os.path.islink(target_str)
+        else target_str
+    )
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
@@ -174,7 +636,8 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+                  preserve_owner: bool = True, follow_symlinks: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
@@ -192,7 +655,11 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        _restore_file_metadata(
+            Path(atomic_replace(tmp_path, path, follow_symlinks=follow_symlinks)),
+            original_owner,
+            mode,
+        )
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -206,7 +673,8 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None) -> None:
+                      preserve_mode: bool = False, create_mode: "int | None" = None,
+                      follow_symlinks: bool = True) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
@@ -214,7 +682,8 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
     """
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
-                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
+                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode),
+                  preserve_owner=preserve_mode, follow_symlinks=follow_symlinks)
 
 
 def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
@@ -8,23 +8,32 @@ import { Tip } from '@/components/ui/tooltip'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2, Package } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+
 import {
   $agentPluginBusy,
+  $agentPluginScope,
   $agentPlugins,
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
+  type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
+import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
 import { notify } from '@/store/notifications'
-import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
-import { openPluginInstallRequest } from '@/store/plugin-install-request'
+
+import {
+  $pluginInstallRequest,
+  closePluginInstallRequest,
+  openPluginInstallRequest
+} from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 
 import { PanelEmpty } from '../overlays/panel'
+import { PrivateMarketplaces } from './private-marketplaces'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -36,10 +45,6 @@ import { PanelEmpty } from '../overlays/panel'
 // packages install both halves in one flow.
 const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
-
-const CATALOG_PANE_ID = 'capabilities-plugin-catalog'
-const CATALOG_DEFAULT_PX = 380
-const CATALOG_COLLAPSED_PX = 4
 
 interface PluginPickMessage {
   installCmd?: string
@@ -95,6 +100,18 @@ function PluginRow({
               </span>
             </Tip>
           )}
+          {row.marketplace_id && (
+            <Tip
+              label={t.skills.plugins.marketplaceProvenance(
+                row.marketplace_name ?? row.marketplace_id,
+                row.installed_repo_sha?.slice(0, 8) ?? ''
+              )}
+            >
+              <span className="rounded border border-(--ui-stroke-tertiary) px-1 text-[0.65rem] text-(--ui-text-tertiary)">
+                {row.marketplace_name ?? row.marketplace_id}
+              </span>
+            </Tip>
+          )}
           {row.update_available && onUpdate && (
             <Button
               className="h-5 px-1.5 text-[0.65rem]"
@@ -103,7 +120,9 @@ function PluginRow({
               size="xs"
               variant="outline"
             >
-              {t.skills.plugins.updateToPin(row.catalog_sha?.slice(0, 8) ?? '')}
+              {t.skills.plugins.updateToPin(
+                (row.catalog_sha ?? row.current_tree_sha ?? row.current_repo_sha ?? '').slice(0, 8)
+              )}
             </Button>
           )}
         </div>
@@ -141,31 +160,48 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const agentScope = useStore($agentPluginScope)
+  const activeConnection = useStore($connection)
 
   const scope = profileParam(profile)
-
-  useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
-
-  const visible = useMemo(() => rows.filter(isDesktopRelevantPlugin), [rows])
-
-  // Catalog picker viewport (persisted height, collapse toggle) — same pane
-  // store contract as EmbeddedHubPicker.
-  const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
-  const height = heightOverride ?? CATALOG_DEFAULT_PX
-  const open = height > CATALOG_COLLAPSED_PX
-  const [pickerMounted, setPickerMounted] = useState(open)
-
-  if (open && !pickerMounted) {
-    setPickerMounted(true)
-  }
-
-  useEffect(() => {
-    if (!open) {
-      return undefined
+  const explicitScope = Boolean(profile && typeof profile === 'object')
+  const ambientConnectionId =
+    String(activeConnection?.connectionId || (activeConnection?.mode === 'local' ? 'local' : '')).trim() ||
+    activeGatewayConnectionId()
+  const connectionId = explicitScope
+    ? ((profile as { connectionId?: null | string }).connectionId ?? null)
+    : ambientConnectionId
+  const scopeKey = `${connectionId ?? 'local'}::${scope ?? 'default'}`
+  const request = useMemo<GatewayRequest>(() => {
+    if (!explicitScope) {
+      return requestGateway
     }
 
+    return async <T,>(method: string, params: Record<string, unknown> = {}) =>
+      requestGatewayForAgent<T>(connectionId, scope ?? 'default', method, params)
+  }, [connectionId, explicitScope, requestGateway, scope])
+
+  useEffect(() => {
+    void loadAgentPlugins(request, scope, scopeKey)
+  }, [request, scope, scopeKey])
+
+  useEffect(
+    () => () => {
+      if ($pluginInstallRequest.get()?.scopeKey === scopeKey) {
+        closePluginInstallRequest()
+      }
+    },
+    [scopeKey]
+  )
+
+  const visible = useMemo(
+    () => (agentScope === scopeKey ? rows.filter(isDesktopRelevantPlugin) : []),
+    [agentScope, rows, scopeKey]
+  )
+  const visibleStatus = agentScope === scopeKey ? status : 'loading'
+  const visibleError = agentScope === scopeKey ? error : null
+
+  useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== CATALOG_ORIGIN) {
         return
@@ -193,8 +229,10 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
       // into the scoped profile, and offers the desktop half locally.
       openPluginInstallRequest({
         catalogName: String(data.name),
+        connectionId,
         profile: scope,
         repo: data.subdir ? `${String(data.repo)}#${String(data.subdir)}` : String(data.repo),
+        scopeKey,
         sha: data.sha ? String(data.sha) : undefined
       })
     }
@@ -202,23 +240,23 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [open, scope, t])
+  }, [connectionId, scope, scopeKey, t])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-32 flex-1 overflow-y-auto">
-        {status === 'error' ? (
+        {visibleStatus === 'error' ? (
           <PanelEmpty
             action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
+              <Button onClick={() => void loadAgentPlugins(request, scope, scopeKey)} size="sm">
                 {t.skills.refresh}
               </Button>
             }
-            description={error ?? undefined}
+            description={visibleError ?? undefined}
             icon="error"
             title={p.loadFailed}
           />
-        ) : visible.length === 0 && status === 'ready' ? (
+        ) : visible.length === 0 && visibleStatus === 'ready' ? (
           <PanelEmpty description={p.emptyHint} icon="package" title={p.empty} />
         ) : (
           <div className="flex flex-col">
@@ -231,12 +269,12 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
                     return
                   }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  void toggleAgentPlugin(request, row.key, enable, p.toggleFailed(row.name), scope, scopeKey)
                 }}
                 onUpdate={
-                  row.update_available
+                  row.update_available && row.key
                     ? () => {
-                        void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                        void updateAgentPlugin(request, row.key!, p.updateFailed(row.name), scope, scopeKey).then(
                           applied => {
                             if (applied) {
                               notify({ kind: 'success', message: p.updated(row.name) })
@@ -253,20 +291,15 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
         )}
       </div>
 
-      <section className={cn('relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)')}>
-        <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
-          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{p.catalogTitle}</span>
-          <Button onClick={() => setPaneHeightOverride(CATALOG_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
-            {open ? p.catalogHide : p.catalogBrowse}
-          </Button>
-        </div>
-        {pickerMounted && (
-          <div className={cn('flex min-h-0 flex-col gap-1 px-3 pb-2', !open && 'hidden')}>
+      <PrivateMarketplaces
+        installed={visible}
+        officialCatalog={
+          <div className="flex min-h-0 flex-col gap-1 px-3 pb-2">
             <div
               style={{
                 border: '1px solid var(--ui-stroke-secondary)',
                 borderRadius: 8,
-                flex: `0 1 ${height}px`,
+                height: 280,
                 maxWidth: '100%',
                 minHeight: 0,
                 minWidth: 320,
@@ -291,8 +324,11 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
             </div>
             <p className="shrink-0 px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{p.catalogHint}</p>
           </div>
-        )}
-      </section>
+        }
+        profile={scope}
+        request={request}
+        scopeKey={scopeKey}
+      />
     </div>
   )
 })

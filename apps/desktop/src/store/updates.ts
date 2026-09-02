@@ -101,7 +101,8 @@ function isUpdateToastSnoozed(): boolean {
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
 //     read-only in Settings → Plugins).
-const REQUIRED_BACKEND_CONTRACT = 6
+// v7: requires profile-scoped Git marketplace source management.
+const REQUIRED_BACKEND_CONTRACT = 7
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even

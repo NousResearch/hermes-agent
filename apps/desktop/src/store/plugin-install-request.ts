@@ -18,6 +18,10 @@ export interface PluginInstallRequest {
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */
   profile?: string | null
+  /** Durable backend selected when the catalog row was picked. */
+  connectionId?: string | null
+  /** Composite backend/profile cache scope for the post-install refresh. */
+  scopeKey?: string
 }
 
 export const $pluginInstallRequest = atom<PluginInstallRequest | null>(null)

@@ -1998,7 +1998,8 @@ def _current_profile_name() -> str:
 # one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
 # v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key.
-DESKTOP_BACKEND_CONTRACT = 6
+# v7 plugins.manage adds profile-scoped Git marketplace source management.
+DESKTOP_BACKEND_CONTRACT = 7
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:

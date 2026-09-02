@@ -598,19 +598,20 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
-def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
-    """Resolve the toolset list for a cron job.
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+    """Resolve the toolset list for a cron job under the F1 profile pin.
 
-    Precedence:
+    Precedence (frozen-spec semantics — overrides may NARROW only):
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130. Enabled
-       MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
-       native-toolset allowlist does not silently strip MCP tools.
+       Intersected with the profile's resolved surface (``_get_platform_tools``)
+       so a job override can never widen past the profile's role pin (#6130
+       preserved as a narrowing mechanism; MCP layering still applies inside
+       ``_merge_mcp_into_per_job_toolsets`` for the names the job keeps).
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
-       Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
-       so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
-       (legacy behavior before this change, preserved as the safety net).
+       Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``).
+    3. FAIL CLOSED: a resolver error under a pinned profile yields ``[]`` (no
+       tools), never the full default set. Unpinned profiles keep the legacy
+       ``None`` → default-set safety net (#6130-era behavior).
 
     _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
     ``_get_platform_tools`` for unconfigured platforms, so fresh installs
@@ -618,17 +619,33 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
-        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        profile_surface = sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
+        from hermes_cli.tools_config import _profile_has_pin
+
+        if _profile_has_pin(cfg or {}):
+            logger.error(
+                "Cron toolset resolution failed under a pinned profile; failing "
+                "closed with NO toolsets (profile pin is authoritative): %s",
+                exc,
+            )
+            return []
         logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
+            "Cron toolset resolution failed (unpinned profile); falling back to "
+            "full default toolset: %s",
             exc,
         )
         return None
+    if per_job:
+        allowed = set(profile_surface)
+        narrowed = [
+            name for name in _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+            if name in allowed
+        ]
+        return sorted(set(narrowed) & allowed) if narrowed else []
+    return profile_surface
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:

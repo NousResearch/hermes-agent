@@ -2643,6 +2643,18 @@ def _enable_recently_shipped_toolsets(
         enabled_toolsets.add(ts_key)
 
 
+def _profile_has_pin(config: dict) -> bool:
+    """Whether the config carries a profile tools.enabled_toolsets pin.
+
+    Distinguishes "pinned profile" from "unpinned" for fail-closed decisions:
+    callers that cannot resolve a pinned profile's surface must deny all
+    rather than degrade to a broad default (frozen-spec I4/D6). An empty list
+    IS a pin (it pins the profile to nothing).
+    """
+    tools_cfg = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    return isinstance(tools_cfg.get("enabled_toolsets"), list)
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -2671,21 +2683,29 @@ def _get_platform_tools(
     tools_cfg = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     profile_pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
     if isinstance(profile_pin, list):
-        from toolsets import resolve_toolset as _rt  # noqa: F401 (parity with below)
-
-        pin_names = [str(t).strip() for t in profile_pin if str(t).strip()]
-        enabled_mcp = enabled_mcp_server_names(config)
-        enabled_toolsets: Set[str] = set()
-        unknown: List[str] = []
-        for name in pin_names:
-            if name == "no_mcp":
-                # Legacy sentinel: accepted as "no MCP servers" and ignored —
-                # MCP servers are only present if the pin lists them.
-                continue
-            elif validate_toolset(name) or name in enabled_mcp:
-                enabled_toolsets.add(name)
-            else:
-                unknown.append(name)
+        try:
+            pin_names = [str(t).strip() for t in profile_pin if str(t).strip()]
+            enabled_mcp = enabled_mcp_server_names(config)
+            enabled_toolsets: Set[str] = set()
+            unknown: List[str] = []
+            for name in pin_names:
+                if name == "no_mcp":
+                    # Legacy sentinel: accepted as "no MCP servers" and ignored —
+                    # MCP servers are only present if the pin lists them.
+                    continue
+                elif validate_toolset(name) or name in enabled_mcp:
+                    enabled_toolsets.add(name)
+                else:
+                    unknown.append(name)
+        except Exception as exc:
+            # Fail closed (D6): a resolver error mid-build under a pinned
+            # profile must not widen to any partial or broad surface.
+            logger.error(
+                "profile tools.enabled_toolsets resolution failed (%s) — "
+                "failing closed with NO tools enabled",
+                exc,
+            )
+            return set()
         if unknown:
             # Fail closed: refuse to widen the surface when the pin names a
             # toolset (or MCP server) this build doesn't know.

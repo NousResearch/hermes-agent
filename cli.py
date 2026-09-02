@@ -21963,7 +21963,9 @@ def main(
     else:
         # Coding posture (base Hermes): with no explicit --toolsets, collapse
         # to the coding toolset (+ enabled MCP servers) when sitting in a code
-        # workspace. See agent/coding_context.py.
+        # workspace. See agent/coding_context.py. F1: the profile pin is
+        # authoritative — a pinned profile's surface is resolved through the
+        # shared resolver and focus may only NARROW it, never replace it.
         _coding = None
         try:
             from agent.coding_context import coding_selection
@@ -21971,7 +21973,16 @@ def main(
         except Exception:
             _coding = None
         if _coding is not None:
-            toolsets_list = _coding
+            # Focus narrows: intersect the posture's selection with the
+            # profile's authoritative surface. A pinned profile therefore
+            # keeps its exact allowlist (minus anything focus strips); an
+            # unpinned profile keeps the historical coding behavior.
+            from hermes_cli.tools_config import _get_platform_tools, _profile_has_pin
+            profile_surface = _get_platform_tools(CLI_CONFIG, "cli")
+            if _profile_has_pin(CLI_CONFIG):
+                toolsets_list = sorted(set(_coding) & set(profile_surface)) if profile_surface else []
+            else:
+                toolsets_list = _coding
         else:
             # Use the shared resolver so MCP servers are included at runtime
             from hermes_cli.tools_config import _get_platform_tools

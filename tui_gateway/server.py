@@ -6448,6 +6448,26 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         return None
 
 
+def _resolve_disabled_toolsets(cfg: dict | None) -> list[str]:
+    """agent.disabled_toolsets for TUI/desktop agent builds (D8 parity).
+
+    CLI parses this from CLI_CONFIG at HermesCLI init and cron layers it in
+    _resolve_cron_disabled_toolsets; the desktop/TUI was silently omitting
+    it, so tool-level and toolset-level denials never applied on this
+    surface. Resolution errors deny nothing extra (an empty list) but never
+    fail the agent build — the toolset-side fail-closed behavior owns
+    denial-of-service semantics.
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        agent_cfg = (cfg or {}).get("agent") or {}
+        return parse_config_string_list(agent_cfg.get("disabled_toolsets") or [])
+    except Exception:
+        logger.warning("Could not resolve agent.disabled_toolsets for TUI agent", exc_info=True)
+        return []
+
+
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
@@ -9402,6 +9422,10 @@ def _make_agent(
             else _load_service_tier()
         ),
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+        # D8 parity with CLI/cron: agent.disabled_toolsets must reach the agent
+        # builder too, or tool-level denials (e.g. disabling `terminal` under
+        # the coding composite) apply on every surface EXCEPT the desktop/TUI.
+        disabled_toolsets=_resolve_disabled_toolsets(cfg),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.

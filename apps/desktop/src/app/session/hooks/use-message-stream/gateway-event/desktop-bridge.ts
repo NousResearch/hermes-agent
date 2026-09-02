@@ -186,6 +186,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // As with preview actions, only the renderer that owns an explicitly
+      // scoped request may answer. Inactive windows must stay silent even when
+      // tours are disabled locally, or their refusal can beat the owner.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('tour.respond', {
           request_id: requestId,

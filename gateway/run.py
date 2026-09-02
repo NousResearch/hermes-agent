@@ -17691,6 +17691,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # _app_lock_identity, so including it lets the multiplex guard
             # refuse cloned profiles competing for the same Feishu app.
             "_app_id",
+            # Same class: Teams (client_id/client_secret) and WeCom
+            # (bot_id/secret) authenticate with an app-style id pair too.
+            "_client_id",
+            "_bot_id",
         ):
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():

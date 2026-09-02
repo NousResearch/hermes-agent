@@ -1,6 +1,7 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
 import asyncio
+import types
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -71,6 +72,18 @@ class TestCredentialFingerprint:
 
         assert fp_a is not None and fp_b is not None
         assert fp_a != fp_b
+
+    @pytest.mark.parametrize("attr", ["_client_id", "_bot_id"])
+    def test_reads_app_style_ids_teams_wecom(self, attr):
+        """Teams (_client_id) and WeCom (_bot_id) are the same class as Feishu:
+        id/secret pairs, no token — cloned profiles must collide."""
+        a = types.SimpleNamespace(**{attr: "app-1"})
+        b = types.SimpleNamespace(**{attr: "app-1"})
+        c = types.SimpleNamespace(**{attr: "app-2"})
+        fp = GatewayRunner._adapter_credential_fingerprint
+        assert fp(a) is not None and fp(a) == fp(b)
+        assert fp(a) != fp(c)
+        assert "app-1" not in fp(a)
 
     def test_reads_config_token(self):
         """Adapters like Discord store token on `config`, not on self.

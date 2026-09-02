@@ -1065,6 +1065,21 @@ class RelayRuntime:
         with session.lock:
             if session.closing:
                 return
+            if SESSION_COORDINATOR.has_active_turn(
+                profile_key=self.profile_key, session_id=session_id
+            ):
+                # A live turn's scope sits above the session scope on this
+                # session's stack. Popping the session scope now violates
+                # LIFO order ("scope handle is not at the top of the stack")
+                # and setting ``closing`` here strands the turn scope —
+                # end_turn's finalization is refused with "session is
+                # closing" (proven live 2026-08-15 in gateway.error.log).
+                # Defer instead: the live turn's end_turn consumes
+                # close_pending via _consume_deferred_close after its own
+                # scope pops — the same contract notify_session_compacted
+                # already uses for rotating compaction.
+                session.close_pending = True
+                return
             session.closing = True
             if session.handle is not None:
                 failure = self._close_scope_handle(

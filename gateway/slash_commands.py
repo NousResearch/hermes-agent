@@ -2592,7 +2592,6 @@ class GatewaySlashCommandsMixin:
             available_personalities,
             describe_personality,
             persist_personality,
-            prompt_text,
             resolve_personality,
         )
 
@@ -2621,24 +2620,21 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         try:
-            name, new_prompt = resolve_personality(args, config)
+            name, _new_prompt = resolve_personality(args, config)
         except ValueError:
             available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
             return t("gateway.personality.unknown", name=args.lower(), available=available)
 
         # Persist the selection only — hermes_cli.personality never writes
-        # agent.system_prompt (user-owned manual overlay).
+        # agent.system_prompt (user-owned manual overlay). persist_personality
+        # writes get_hermes_home()/config.yaml, i.e. the routed profile under
+        # multiplex; the next turn re-resolves the prompt from that file
+        # (_get_system_prompt_for_channel), so no process-global state to update.
         if not persist_personality(name):
             return t("gateway.personality.save_failed", error="config write failed")
 
         if not name:
-            self._ephemeral_system_prompt = prompt_text(
-                cfg_get(config, "agent", "system_prompt", default="")
-            )
             return t("gateway.personality.cleared")
-
-        # Update in-memory so it takes effect on the very next message.
-        self._ephemeral_system_prompt = new_prompt
         return t("gateway.personality.set_to", name=name)
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:

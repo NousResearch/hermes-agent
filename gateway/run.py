@@ -7523,7 +7523,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
-        self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
@@ -10283,7 +10282,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
-        Uses ``channel_overrides`` when set, else the global gateway prompt.
+        Uses ``channel_overrides`` when set, else the gateway prompt resolved
+        from the CURRENT profile's config on every call. Callers run inside
+        ``_profile_runtime_scope`` (``run_sync`` under ``_run_agent``), so a
+        routed multiplex profile gets its own ``display.personality`` /
+        ``agent.system_prompt`` instead of a boot-time snapshot of the launch
+        profile's (#89161); ``/personality`` edits take effect on the next
+        turn for the same reason.
         Legacy ``channel_prompts`` are applied separately via ``event.channel_prompt``
         in ``run_sync`` (adapter ``resolve_channel_prompt``), so they are not
         duplicated here.
@@ -10299,7 +10304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if override and override.system_prompt:
                 return (override.system_prompt or "").strip()
-        return getattr(self, "_ephemeral_system_prompt", None) or ""
+        return self._load_ephemeral_system_prompt()
 
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:

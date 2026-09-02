@@ -239,6 +239,61 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+def fail_open_executions_for_job(
+    job_id: str, *, reason: str,
+) -> List[Dict[str, Any]]:
+    """Write a terminal ``failed`` state for this job's open, own-process attempts.
+
+    Called at the moment of *conscious* interruption (gateway shutdown after
+    the drain timeout kills tool subprocesses) so the ledger records the same
+    precise cause ``mark_job_run`` records in jobs.json — instead of leaving
+    the row open for the next scheduler's ``recover_interrupted_executions``
+    sweep to mislabel ``unknown`` with a vague "fate is unknowable" message.
+
+    Scope is deliberately narrow, mirroring the recovery sweep's ownership
+    logic from the writing side:
+
+    - ``job_id`` — only this job's attempts (interruption is per-fire, not a
+      global sweep of the ledger).
+    - ``status IN ('claimed','running')`` — terminal attempts are immutable;
+      a completed attempt keeps its record and a racing final write from the
+      job's own still-alive thread (``finish_execution`` from the exception
+      handler) finds ``rowcount == 0`` and no-ops harmlessly.
+    - ``process_id == _PROCESS_ID`` — the caller and the attempt owner are
+      the same live process; a *different* live scheduler's attempt is never
+      touched (it may still be running fine on another machine sharing this
+      DB, or be a live thread the caller cannot speak for). The recovery
+      sweep owns cross-process classification; this function never does.
+    """
+    now = _hermes_now().isoformat()
+    finished: List[Dict[str, Any]] = []
+    with _transaction() as conn:
+        rows = conn.execute(
+            """SELECT id FROM executions
+               WHERE job_id=? AND status IN ('claimed','running')
+                 AND process_id=?""",
+            (str(job_id), _PROCESS_ID),
+        ).fetchall()
+        ids = [row["id"] for row in rows]
+        for execution_id in ids:
+            conn.execute(
+                """UPDATE executions SET status='failed', finished_at=?, error=?
+                   WHERE id=? AND status IN ('claimed','running')""",
+                (now, str(reason), execution_id),
+            )
+        if ids:
+            _prune_unlocked(conn)
+            for execution_id in ids:
+                record = _record(conn.execute(
+                    "SELECT * FROM executions WHERE id=?", (execution_id,)
+                ).fetchone())
+                if record is not None:
+                    finished.append(record)
+    for record in finished:
+        _emit_execution_state(record)
+    return finished
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50,
     before_claimed_at: Optional[str] = None,

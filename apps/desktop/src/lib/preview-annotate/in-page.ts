@@ -19,6 +19,7 @@ export interface AnnotatePageRect {
 
 export interface AnnotatePageIdentity {
   css: Record<string, string>
+  html: string
   selector: string
   tag: string
   text: string
@@ -72,15 +73,24 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     'position',
     'width',
     'height',
+    'max-width',
     'padding',
     'margin',
+    'border',
     'border-radius',
+    'box-shadow',
     'opacity',
+    'overflow',
+    'z-index',
+    'transform',
     'flex-direction',
     'gap',
+    'grid-template-columns',
     'justify-content',
     'align-items'
   ]
+
+  const htmlBudget = 600
 
   let host: HTMLElement | null = null
   let shadow: ShadowRoot | null = null
@@ -240,11 +250,70 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     return out
   }
 
+  /**
+   * Markup for the picked element, with anything secret-shaped stripped first.
+   *
+   * A comment is user-authored context, but the element under the cursor is
+   * whatever the page put there: a filled password box, a token in a hidden
+   * input, an api-key data attribute. Redaction happens on a clone here, in
+   * the guest, so the secret never reaches the host, the composer, or the
+   * model — the same reason `browser_type` masks what it types.
+   */
+  const markupOf = (el: Element): string => {
+    let clone: Element
+
+    try {
+      clone = el.cloneNode(true) as Element
+    } catch {
+      return ''
+    }
+
+    const nodes: Element[] = [clone]
+    const nested = clone.querySelectorAll('input, textarea, select, [data-secret]')
+
+    for (let i = 0; i < nested.length; i++) {
+      nodes.push(nested[i])
+    }
+
+    for (const node of nodes) {
+      const tag = node.tagName.toLowerCase()
+      const type = (node.getAttribute('type') || '').toLowerCase()
+      const secretField = tag === 'input' && (type === 'password' || type === 'hidden')
+      const names = node.getAttributeNames()
+
+      for (const name of names) {
+        const lower = name.toLowerCase()
+
+        if (lower === 'value' && (secretField || node.getAttribute('value'))) {
+          node.setAttribute(name, secretField ? '[redacted]' : node.getAttribute(name) || '')
+        }
+
+        if (/key|token|secret|password|auth|session|credential/.test(lower)) {
+          node.setAttribute(name, '[redacted]')
+        }
+      }
+
+      if (secretField) {
+        node.setAttribute('value', '[redacted]')
+      }
+    }
+
+    const html = clone.outerHTML || ''
+
+    if (html.length <= htmlBudget) {
+      return html
+    }
+
+    // Keep the opening tag — where the classes and props live — over the tail.
+    return `${html.slice(0, htmlBudget - 1)}…`
+  }
+
   const identityOf = (el: Element): AnnotatePageIdentity => {
     const text = (el.textContent || '').replace(/\s+/g, ' ').trim()
 
     return {
       css: readCss(el),
+      html: markupOf(el),
       selector: cssPath(el),
       tag: el.tagName.toLowerCase(),
       text: text.length > 80 ? `${text.slice(0, 79)}…` : text

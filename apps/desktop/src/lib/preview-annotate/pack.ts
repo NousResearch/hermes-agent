@@ -17,13 +17,36 @@ function identityBlock(pin: AnnotatePin): string {
   return formatIdentityLine(pin.identity)
 }
 
+function cssBlock(identity: CompactIdentity): string {
+  const entries = Object.entries(identity.css)
+
+  if (!entries.length) {
+    return ''
+  }
+
+  return `Styles: ${entries.map(([name, value]) => `${name}: ${value}`).join('; ')}`
+}
+
+/**
+ * One comment, as much as the agent needs to find the element in source.
+ *
+ * The human-readable target line stays first and stays prose — it is what the
+ * user actually pointed at. Selector, markup, and computed styles follow as
+ * labelled lines, because the crop shows what is wrong and the DOM shows where
+ * it lives; an agent given only the picture greps for the wrong div. Area pins
+ * have no element, so they get the crop and the note and nothing invented.
+ */
 export function packageAnnotatePin(pin: AnnotatePin): ComposerReadyAnnotation {
   const target = identityBlock(pin)
   const note = pin.note.trim()
+  const identity = pin.identity
 
   const prompt = [
     `Comment ${pin.number}`,
     `Target: ${target}`,
+    identity?.selector ? `Selector: ${identity.selector}` : '',
+    identity?.html ? `HTML: ${identity.html}` : '',
+    identity ? cssBlock(identity) : '',
     note ? `Note: ${note}` : '',
     `Image ${pin.number} marks the target in blue.`
   ]
@@ -31,7 +54,7 @@ export function packageAnnotatePin(pin: AnnotatePin): ComposerReadyAnnotation {
     .join('\n')
 
   return {
-    identity: pin.identity,
+    identity,
     imageDataUrl: pin.imageDataUrl,
     note,
     number: pin.number,

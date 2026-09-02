@@ -4,6 +4,7 @@ import { flushAnnotateStack } from './flush'
 import { compactIdentity } from './identity'
 import { annotateFlushPrompt, packageAnnotatePin, packageAnnotateStack } from './pack'
 import { addAnnotatePin, type AnnotatePin, emptyAnnotateStack } from './stack'
+import { ANNOTATE_HTML_BUDGET } from './tokens'
 
 const png =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -20,6 +21,7 @@ function pin(partial: Partial<AnnotatePin> = {}): AnnotatePin {
     rect: { height: 40, width: 120, x: 8, y: 8 },
     identity: {
       css: { color: 'rgb(24, 24, 24)', 'font-size': '14px' },
+      html: '<button class="plan">Select plan</button>',
       selector: 'button.plan',
       tag: 'button',
       text: 'Select plan'
@@ -29,13 +31,23 @@ function pin(partial: Partial<AnnotatePin> = {}): AnnotatePin {
 }
 
 describe('packageAnnotatePin', () => {
-  it('describes text in a generic container without exposing DOM and style internals', () => {
+  it('carries the selector, markup, and computed styles the agent needs to find the source', () => {
+    const packed = packageAnnotatePin(pin())
+
+    expect(packed.prompt).toContain('Selector: button.plan')
+    expect(packed.prompt).toContain('HTML: <button class="plan">Select plan</button>')
+    expect(packed.prompt).toContain('color: rgb(24, 24, 24)')
+    expect(packed.prompt).toContain('font-size: 14px')
+  })
+
+  it('keeps the target line prose while the DOM detail rides its own labelled lines', () => {
     const text = 'גם בקיבוץ חולית הקטן יש ילד שעושה את הצעד הראשון במערכת החינוך'
 
     const packed = packageAnnotatePin(
       pin({
         identity: {
           css: { color: 'rgb(0, 0, 0)', 'font-family': 'Moses, NarkisBlock', 'font-size': '18px' },
+          html: '<div class="text_editor_paragraph rtl">…</div>',
           selector:
             'div.DraftEditor-editorContainer>div.public-DraftEditor-content>div>div.text_editor_paragraph.rtl:nth-of-type(9)',
           tag: 'div',
@@ -45,11 +57,13 @@ describe('packageAnnotatePin', () => {
       })
     )
 
-    expect(packed.prompt).toContain(`Target: "${text}"`)
+    const target = packed.prompt.split('\n').find(line => line.startsWith('Target:'))
+
+    expect(target).toBe(`Target: "${text}"`)
+    expect(target).not.toContain('div')
+    expect(target).not.toContain('DraftEditor')
     expect(packed.prompt).toContain('Note: תסכם את זה')
-    expect(packed.prompt).not.toContain('div')
-    expect(packed.prompt).not.toContain('DraftEditor')
-    expect(packed.prompt).not.toContain('font-size')
+    expect(packed.prompt).toContain('Selector: div.DraftEditor-editorContainer')
   })
 
   it('packs a numbered crop, compact identity, and the note', () => {
@@ -62,8 +76,6 @@ describe('packageAnnotatePin', () => {
     expect(packed.prompt).toContain('Target: button "Select plan"')
     expect(packed.prompt).toContain('Image 1 marks the target in blue.')
     expect(packed.prompt).toContain('Note: This button overflows on mobile.')
-    expect(packed.prompt).not.toContain('button.plan')
-    expect(packed.prompt).not.toContain('font-size')
     expect(packed.prompt).not.toContain('<html')
   })
 
@@ -72,6 +84,7 @@ describe('packageAnnotatePin', () => {
       pin({
         identity: {
           css: { display: 'block' },
+          html: '<div id="sales-chart"></div>',
           selector: '#sales-chart',
           tag: 'div',
           text: ''
@@ -81,15 +94,17 @@ describe('packageAnnotatePin', () => {
     )
 
     expect(packed.prompt).toContain('Target: #sales-chart')
-    expect(packed.prompt).not.toContain('display: block')
   })
 
-  it('packages an area pin without pretending it has a selector', () => {
+  it('invents no element detail for an area pin', () => {
     const packed = packageAnnotatePin(pin({ identity: undefined, kind: 'area', note: 'too tight' }))
 
     expect(packed.prompt).toContain('area')
     expect(packed.prompt).toContain('120×40px')
     expect(packed.prompt).toContain('too tight')
+    expect(packed.prompt).not.toContain('Selector:')
+    expect(packed.prompt).not.toContain('HTML:')
+    expect(packed.prompt).not.toContain('Styles:')
   })
 })
 
@@ -108,6 +123,24 @@ describe('compactIdentity', () => {
     expect(compact.css.display).toBeUndefined()
     expect(compact.css.margin).toBeUndefined()
     expect(compact.css.color).toBe('red')
+  })
+
+  it('clips markup to the budget rather than pasting a whole section', () => {
+    const compact = compactIdentity({
+      css: {},
+      html: `<section>${'<p>filler</p>'.repeat(400)}</section>`,
+      selector: 'section',
+      tag: 'section',
+      text: ''
+    })
+
+    expect(compact.html.length).toBeLessThanOrEqual(ANNOTATE_HTML_BUDGET)
+    expect(compact.html.startsWith('<section>')).toBe(true)
+    expect(compact.html.endsWith('…')).toBe(true)
+  })
+
+  it('tolerates a snapshot with no markup', () => {
+    expect(compactIdentity({ css: {}, selector: 'div', tag: 'div', text: '' }).html).toBe('')
   })
 })
 

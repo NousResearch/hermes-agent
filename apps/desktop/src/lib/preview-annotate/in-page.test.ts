@@ -140,7 +140,88 @@ describe('annotateInPage overlay', () => {
       expect(event.identity.tag).toBe('button')
       expect(event.identity.selector).toContain('go')
       expect(event.identity.text).toBe('Go')
+      expect(event.identity.html).toContain('<button')
+      expect(event.identity.html).toContain('Go')
     }
+  })
+
+  it('redacts secret-shaped values before the markup leaves the page', async () => {
+    const form = document.createElement('form')
+    form.setAttribute('data-api-key', 'sk-live-1234567890')
+    form.innerHTML =
+      '<input type="password" value="hunter2"><input type="hidden" name="csrf" value="tok_abc">' +
+      '<input type="email" value="me@example.com">'
+    document.body.appendChild(form)
+    form.getBoundingClientRect = () => ({
+      bottom: 60,
+      height: 50,
+      left: 0,
+      right: 200,
+      toJSON: () => ({}),
+      top: 10,
+      width: 200,
+      x: 0,
+      y: 10
+    })
+    document.elementFromPoint = () => form
+
+    const api = annotateInPage(document)
+    api.install()
+    const pending = api.wait()
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
+
+    const event = await pending
+
+    expect(event.type).toBe('pick-element')
+
+    if (event.type === 'pick-element') {
+      expect(event.identity.html).not.toContain('hunter2')
+      expect(event.identity.html).not.toContain('tok_abc')
+      expect(event.identity.html).not.toContain('sk-live-1234567890')
+      expect(event.identity.html).toContain('[redacted]')
+      // A non-secret field keeps its value — redaction is targeted, not a blanket wipe.
+      expect(event.identity.html).toContain('me@example.com')
+    }
+
+    api.teardown()
+  })
+
+  it('budgets the markup so one comment cannot paste a whole section', async () => {
+    const section = document.createElement('section')
+    section.innerHTML = '<p>filler filler filler</p>'.repeat(200)
+    document.body.appendChild(section)
+    section.getBoundingClientRect = () => ({
+      bottom: 400,
+      height: 400,
+      left: 0,
+      right: 300,
+      toJSON: () => ({}),
+      top: 0,
+      width: 300,
+      x: 0,
+      y: 0
+    })
+    document.elementFromPoint = () => section
+
+    const api = annotateInPage(document)
+    api.install()
+    const pending = api.wait()
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
+
+    const event = await pending
+
+    if (event.type === 'pick-element') {
+      expect(event.identity.html.length).toBeLessThanOrEqual(600)
+      expect(event.identity.html.startsWith('<section>')).toBe(true)
+    }
+
+    api.teardown()
   })
 
   it('owns wheel scrolling instead of also allowing the native wheel action', () => {

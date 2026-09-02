@@ -64,18 +64,17 @@ def _make_wal_db(tmp_path: Path) -> Path:
 def test_repair_refuses_while_another_connection_holds_the_db(tmp_path):
     """Surgery under concurrent writers is what spread the corruption.
 
-    Gated on ``requires_wal``: ``_live_writer_holds_db`` detects an
-    out-of-process holder via ``PRAGMA locking_mode=EXCLUSIVE`` + a
-    ``BEGIN IMMEDIATE`` that a concurrent connection makes fail with
-    SQLITE_BUSY through the WAL index. On SQLite builds carrying the
-    WAL-reset bug (and on NFS/SMB) Hermes deliberately runs ``state.db`` in
-    ``journal_mode=DELETE``, where a held reader takes only a SHARED lock and
-    ``BEGIN IMMEDIATE`` can still acquire RESERVED — so the probe cannot see
-    the holder and the guard fails open. In DELETE mode repair is instead
-    serialised only by the cross-process repairer lock (see
-    ``_live_writer_holds_db``'s docstring). The conftest auto-skips this test
-    where WAL is unusable rather than assert a guarantee the runtime doesn't
-    make there.
+    Gated on ``requires_wal``: repair admission
+    (``hermes_state_holders.live_writer_holds_db``) first scans for foreign
+    holders — deleted sidecar generations, uninspectable Hermes processes —
+    and then probes SQLite with ``PRAGMA locking_mode=EXCLUSIVE`` +
+    ``BEGIN IMMEDIATE``, which a concurrent connection makes fail with
+    SQLITE_BUSY through the WAL index. This test exercises the probe leg: on
+    SQLite builds carrying the WAL-reset bug (and on NFS/SMB) Hermes runs
+    ``state.db`` in ``journal_mode=DELETE``, where a held reader takes only a
+    SHARED lock and ``BEGIN IMMEDIATE`` still acquires RESERVED, so the probe
+    alone cannot see the holder. The conftest auto-skips this test where WAL
+    is unusable rather than assert a guarantee the probe doesn't make there.
     """
     db = _make_wal_db(tmp_path)
 

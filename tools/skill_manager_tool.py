@@ -732,6 +732,36 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _maybe_debounced_sync_push(name)
 
 
+def _crossed_skill_payload_error(action, content, file_content):
+    """Name the rejected sibling key so the model can self-correct.
+
+    The operations-item schema advertises both ``content`` (create/patch)
+    and ``file_content`` (write_file). Models pick the wrong one and then
+    loop on a missing-key error that never names the key they sent
+    (#101418). Do not alias the fields — schema-alias-coverage forbids it.
+    """
+    has_content = bool(content)
+    has_file_content = file_content is not None
+    if action in {"create", "edit"} and not has_content and has_file_content:
+        return (
+            f"'file_content' is only valid for action='write_file'; "
+            f"for '{action}' pass 'content' with the full SKILL.md text "
+            f"(frontmatter + body)."
+        )
+    if action == "write_file" and file_content is None and has_content:
+        return (
+            "'content' is only valid for action='create' or 'patch'; "
+            "for 'write_file' pass 'file_content'."
+        )
+    if action == "patch" and not has_content and has_file_content:
+        return (
+            "'file_content' is only valid for action='write_file'; "
+            "for 'patch' pass 'content' (full rewrite) or "
+            "old_string/new_string (targeted replacement)."
+        )
+    return None
+
+
 def skill_manage(
     action: str, name: str, content: str = None, category: str = None, file_path: str = None,
     file_content: str = None, old_string: str = None, new_string: str = None,
@@ -762,6 +792,9 @@ def skill_manage(
         _pre = _find_skill(name)
         _ledger_before = _ledger.capture_before(
             _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+    crossed = _crossed_skill_payload_error(action, content, file_content)
+    if crossed:
+        return tool_error(crossed, success=False)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
             return tool_error(message, success=False)
@@ -826,7 +859,8 @@ SKILL_MANAGE_SCHEMA = {
                             "description": (
                                 "Full SKILL.md text (YAML frontmatter + "
                                 "markdown body) for create, or a full "
-                                "rewrite on patch."
+                                "rewrite on patch. Not for write_file "
+                                "(that key is file_content)."
                             )
                         },
                         "category": {
@@ -860,7 +894,10 @@ SKILL_MANAGE_SCHEMA = {
                         },
                         "file_content": {
                             "type": "string",
-                            "description": "Content for write_file."
+                            "description": (
+                                "write_file only. create/patch use content, "
+                                "not this key."
+                            )
                         }
                     },
                     "required": ["name", "action"]

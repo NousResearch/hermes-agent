@@ -35,10 +35,12 @@ def _clean_registry():
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
     yield
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
 
 
 def _replace_file_preserving_schema(src: Path, dst: Path) -> None:

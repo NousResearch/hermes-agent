@@ -29,6 +29,7 @@ from acp.schema import (
     SetSessionModeResponse,
     SessionInfo,
     SessionInfoUpdate,
+    ModelInfo,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -58,16 +59,53 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_edit_approvals_as_modes_and_model_config(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    assert resp.config_options is not None
+    assert [option.id for option in resp.config_options] == ["model"]
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
         ("default", "Default"),
         ("accept_edits", "Accept Edits"),
         ("dont_ask", "Don't Ask"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_session_exposes_model_picker_as_select_config_option(agent, monkeypatch):
+    monkeypatch.setattr(
+        "acp_adapter.server.HermesACPAgent._build_model_state",
+        lambda self, state: SessionModelState(
+            available_models=[
+                ModelInfo(
+                    model_id="openrouter:model-a",
+                    name="OpenRouter · model-a",
+                    description="Provider: OpenRouter",
+                ),
+                ModelInfo(
+                    model_id="nous:model-b",
+                    name="Nous · model-b",
+                    description="Provider: Nous",
+                ),
+            ],
+            current_model_id="openrouter:model-a",
+        ),
+    )
+
+    response = await agent.new_session(cwd="/tmp")
+
+    assert response.config_options is not None
+    assert len(response.config_options) == 1
+    option = response.config_options[0].model_dump(by_alias=True, exclude_none=True)
+    assert option["id"] == "model"
+    assert option["name"] == "Model"
+    assert option["type"] == "select"
+    assert option["currentValue"] == "openrouter:model-a"
+    assert [entry["value"] for entry in option["options"]] == [
+        "openrouter:model-a",
+        "nous:model-b",
     ]
 
 
@@ -84,6 +122,32 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     assert isinstance(update, SetSessionConfigOptionResponse)
     assert update.config_options == []
     assert getattr(state, "mode", None) == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_set_model_config_option_delegates_to_session_model_switch(agent, monkeypatch):
+    response = await agent.new_session(cwd="/tmp")
+    calls = []
+
+    async def fake_set_session_model(model_id, session_id, **kwargs):
+        calls.append((model_id, session_id))
+        return SetSessionModelResponse()
+
+    monkeypatch.setattr(agent, "set_session_model", fake_set_session_model)
+    monkeypatch.setattr(
+        "acp_adapter.server.HermesACPAgent._build_model_state",
+        lambda self, state: SessionModelState(
+            available_models=[
+                ModelInfo(model_id="nous:model-b", name="Nous · model-b"),
+            ],
+            current_model_id="nous:model-b",
+        ),
+    )
+
+    update = await agent.set_config_option("model", response.session_id, "nous:model-b")
+
+    assert calls == [("nous:model-b", response.session_id)]
+    assert update.config_options[0].model_dump(by_alias=True)["currentValue"] == "nous:model-b"
 
 
 # ---------------------------------------------------------------------------

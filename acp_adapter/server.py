@@ -46,6 +46,7 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionConfigOptionSelect,
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
@@ -977,6 +978,51 @@ class HermesACPAgent(acp.Agent):
         )
 
     @staticmethod
+    def _build_model_config_option(
+        model_state: SessionModelState | None,
+    ) -> list[SessionConfigOptionSelect] | None:
+        """Expose the model catalog through ACP config options for Zed.
+
+        Zed's ACP client currently renders ``session/new.configOptions`` and
+        sends ``session/set_config_option`` for external-agent model pickers.
+        The newer ``models``/``session/set_model`` fields are still returned
+        for clients that support them, but are not enough for Zed's selector.
+        """
+        if model_state is None or not model_state.available_models:
+            return None
+
+        return [
+            SessionConfigOptionSelect.model_validate(
+                {
+                    "id": "model",
+                    "name": "Model",
+                    "type": "select",
+                    "category": "model",
+                    "description": "Model and provider used for this Hermes session.",
+                    "currentValue": model_state.current_model_id,
+                    "options": [
+                        {
+                            "name": model.name,
+                            "value": model.model_id,
+                            "description": model.description,
+                        }
+                        for model in model_state.available_models
+                    ],
+                }
+            )
+        ]
+
+    @staticmethod
+    def _model_response_fields(
+        model_state: SessionModelState | None,
+    ) -> dict[str, Any]:
+        """Build the model fields shared by ACP session responses."""
+        return {
+            "models": model_state,
+            "config_options": HermesACPAgent._build_model_config_option(model_state),
+        }
+
+    @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
         """Resolve ``provider:model`` input into the provider and normalized model id."""
         target_provider = current_provider
@@ -1600,9 +1646,10 @@ class HermesACPAgent(acp.Agent):
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return NewSessionResponse(
             session_id=state.session_id,
-            models=self._build_model_state(state),
+            **self._model_response_fields(model_state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
@@ -1649,8 +1696,9 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return LoadSessionResponse(
-            models=self._build_model_state(state),
+            **self._model_response_fields(model_state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 session_id, getattr(state.agent, "session_id", session_id)
@@ -1685,8 +1733,9 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
+        model_state = self._build_model_state(state)
         return ResumeSessionResponse(
-            models=self._build_model_state(state),
+            **self._model_response_fields(model_state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
@@ -1728,9 +1777,10 @@ class HermesACPAgent(acp.Agent):
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
             self._schedule_available_commands_update(new_id)
+        model_state = self._build_model_state(state) if state is not None else None
         return ForkSessionResponse(
             session_id=new_id,
-            models=self._build_model_state(state) if state is not None else None,
+            **self._model_response_fields(model_state),
             modes=self._session_modes(state) if state is not None else None,
         )
 
@@ -2625,6 +2675,14 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
+
+        if str(config_id) == "model":
+            await self.set_session_model(str(value), session_id)
+            model_state = self._build_model_state(state)
+            model_options = self._build_model_config_option(model_state)
+            return SetSessionConfigOptionResponse(
+                config_options=list(model_options) if model_options is not None else []
+            )
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)

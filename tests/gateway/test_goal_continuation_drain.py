@@ -190,7 +190,13 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
             source=src,
             final_response="partial progress",
         )
-        await asyncio.sleep(0.05)
+        # The continuation hand-off can cross an adapter task boundary on a
+        # loaded worker; wait for the declared FIFO effect rather than assuming
+        # a single scheduler turn is enough.
+        for _ in range(40):
+            if adapter_key in adapter._pending_messages:
+                break
+            await asyncio.sleep(0.05)
 
     assert adapter_key in adapter._pending_messages, (
         "continuation enqueued under a different key than the adapter "

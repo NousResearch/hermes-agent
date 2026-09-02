@@ -2927,20 +2927,16 @@ def _extract_steer_text_from_message(message: Any) -> Optional[str]:
     return extracted if extracted else None
 
 
-def _find_latest_busy_steer_text(messages: list) -> Optional[str]:
-    """Return the most recent steer payload in *messages*, if any."""
-    for msg in reversed(messages):
-        if not isinstance(msg, dict):
-            continue
-        extracted = _extract_steer_text_from_message(msg)
-        if extracted:
-            return extracted
-    return None
-
-
 def _compressed_has_busy_steer(messages: list) -> bool:
-    """Whether *messages* already carries a steer marker (intent present)."""
+    """Whether *messages* already carries a steer marker (intent present).
+
+    Only ``role=tool`` rows count: that is the sole place the runtime ever
+    delivers a steer, so a compaction summary that merely quotes the marker
+    text must not be mistaken for live intent.
+    """
     for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
         if _message_contains_busy_steer(msg):
             return True
     return False
@@ -3155,18 +3151,26 @@ def _ensure_compressed_has_user_turn(
         _fresh_compaction_message_copy,
     )
 
-    steer_text = _find_latest_busy_steer_text(original_messages)
-    if steer_text:
-        return _insert_real_user_anchor(
-            compressed,
-            {"role": "user", "content": steer_text},
-        )
-
+    # One reversed positional scan: the anchor is whichever intent-bearing
+    # row is LAST in the original transcript — a real ``role=user`` turn or
+    # a steer marker riding inside a ``role=tool`` result. Scanning the two
+    # kinds separately (steer first, then user) would let an older, already
+    # consumed steer outrank a newer real user request and replay it
+    # (#100053 follow-up: ``[user A, tool(steer B), ..., user C]`` must
+    # anchor C, not B).
     for message in reversed(original_messages):
         if _is_real_user_message(message):
             return _insert_real_user_anchor(
                 compressed,
                 _fresh_compaction_message_copy(message),
+            )
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        steer_text = _extract_steer_text_from_message(message)
+        if steer_text:
+            return _insert_real_user_anchor(
+                compressed,
+                {"role": "user", "content": steer_text},
             )
     from agent.message_metadata import append_message
 

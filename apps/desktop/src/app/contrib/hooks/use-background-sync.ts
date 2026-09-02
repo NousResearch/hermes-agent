@@ -13,10 +13,9 @@ import {
   $activeSessionId,
   $busy,
   $currentCwd,
-  $messagingSessions,
   $selectedStoredSessionId,
-  $sessions,
   getSessionOwnerHint,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
@@ -39,9 +38,7 @@ interface ActiveTranscriptSession {
 
 /** Resolve an active transcript from visible rows or its unique hidden owner. */
 export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
-  const visible =
-    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
-    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const visible = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (visible) {
     return { profile: visible.profile }

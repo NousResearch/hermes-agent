@@ -138,15 +138,29 @@ def _config_refresh_lock(path: Path):
                 pass
             fh.close()
 
-# In-memory expiry cache keyed by (config path, host) → (expires_at, access).
-# Lets the hot path (every memory access calls this) skip the honcho.json read
-# while the token is comfortably live; disk is only touched near expiry, on a
-# cache miss, or when an explicit ``raw`` is supplied. Single-key dict ops are
-# atomic under the GIL, so no separate lock is needed. An access token stays
-# valid until its own expiry regardless of out-of-band rotation, so a stale
-# cache entry can't break auth — it just defers picking up external changes
-# until the token nears expiry and disk is read again.
-_expiry_cache: dict[tuple[str, str], tuple[float, str]] = {}
+# In-memory expiry cache keyed by (config path, host) →
+# (expires_at, access, config fingerprint). Every memory access stats the small
+# config file but avoids parsing it while both the token and fingerprint are
+# unchanged. The fingerprint is necessary because another process can rotate
+# the same grant and atomically replace the credential file before this
+# process's cached access token reaches its local expiry.
+_ConfigFingerprint = tuple[int, int, int, int]
+_expiry_cache: dict[
+    tuple[str, str], tuple[float, str, _ConfigFingerprint | None]
+] = {}
+
+
+def _fingerprint_from_stat(st: os.stat_result) -> _ConfigFingerprint:
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _config_fingerprint(path: Path) -> _ConfigFingerprint | None:
+    """Return a cheap identity for detecting atomic out-of-process rewrites."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return _fingerprint_from_stat(st)
 
 # Permanently rejected grants: (config path, host) → sha256 of the dead refresh token; a re-login rotates the token, so the digest check self-clears.
 _dead_grants: dict[tuple[str, str], str] = {}
@@ -442,19 +456,48 @@ def _read_config(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _atomic_write_config(path: Path, raw: dict[str, Any]) -> None:
-    """Write ``raw`` to ``path`` atomically, preserving 0600 on the new file."""
+def _read_config_snapshot(
+    path: Path,
+) -> tuple[dict[str, Any], _ConfigFingerprint | None]:
+    """Read JSON and fingerprint the same opened file version.
+
+    An atomic replacement after ``open`` does not change the file descriptor,
+    so ``fstat`` keeps the parsed credential and cached fingerprint aligned.
+    """
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+            try:
+                fingerprint = _fingerprint_from_stat(os.fstat(fh.fileno()))
+            except OSError:
+                fingerprint = None
+        return raw, fingerprint
+    except (OSError, json.JSONDecodeError):
+        return {}, None
+
+
+def _atomic_write_config(
+    path: Path, raw: dict[str, Any]
+) -> _ConfigFingerprint | None:
+    """Write ``raw`` atomically and return the written file's fingerprint."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     text = json.dumps(raw, indent=2) + "\n"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fingerprint = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
+            fh.flush()
+            try:
+                fingerprint = _fingerprint_from_stat(os.fstat(fh.fileno()))
+            except OSError:
+                pass
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, path)
+    return fingerprint
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -474,8 +517,12 @@ def _persist_credential(path: Path, host: str, cred: OAuthCredential) -> None:
     block = hosts.setdefault(host, {})
     block["apiKey"] = cred.access_token
     block["oauth"] = cred.oauth_block()
-    _atomic_write_config(path, raw)
-    _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
+    fingerprint = _atomic_write_config(path, raw)
+    _expiry_cache[(str(path), host)] = (
+        cred.expires_at,
+        cred.access_token,
+        fingerprint,
+    )
     _dead_grants.pop((str(path), host), None)
     _refresh_failure_at.pop((str(path), host), None)
 
@@ -500,20 +547,36 @@ def ensure_fresh_token(
     key = (str(path), host)
 
     # Hot path: trust the cached expiry while the token is well clear of the
-    # skew window — no disk read. Bypassed when an explicit ``raw`` is supplied.
+    # skew window and the credential file is unchanged. A stat catches atomic
+    # rotation by another process without parsing JSON on every memory call.
+    # Bypassed when an explicit ``raw`` is supplied.
     if raw is None:
         cached = _expiry_cache.get(key)
-        if cached is not None and now < cached[0] - _REFRESH_SKEW_SECONDS:
+        if (
+            cached is not None
+            and cached[2] is not None
+            and cached[2] == _config_fingerprint(path)
+            and now < cached[0] - _REFRESH_SKEW_SECONDS
+        ):
             return cached[1], False
 
-    source = raw if raw is not None else _read_config(path)
+    if raw is None:
+        source, source_fingerprint = _read_config_snapshot(path)
+    else:
+        # Explicit snapshots are not tied to a verifiable on-disk version, so
+        # never let them enable the normal cache hot path.
+        source, source_fingerprint = raw, None
     block = (source.get("hosts") or {}).get(host) or {}
     cred = OAuthCredential.from_host_block(block)
     if cred is None:
         _expiry_cache.pop(key, None)
         return None, False
 
-    _expiry_cache[key] = (cred.expires_at, cred.access_token)
+    _expiry_cache[key] = (
+        cred.expires_at,
+        cred.access_token,
+        source_fingerprint,
+    )
     if not cred.is_expired(now=now):
         return cred.access_token, False
     if _in_failure_cooldown(key):
@@ -523,9 +586,15 @@ def ensure_fresh_token(
     with _refresh_lock, _config_refresh_lock(path):
         # Re-read under both locks: another thread or process may have just
         # rotated the token — adopt theirs instead of replaying the old one.
-        fresh_block = (_read_config(path).get("hosts") or {}).get(host) or {}
+        fresh_source, fresh_fingerprint = _read_config_snapshot(path)
+        fresh_block = (fresh_source.get("hosts") or {}).get(host) or {}
         current = OAuthCredential.from_host_block(fresh_block) or cred
         if not current.is_expired(now=now):
+            _expiry_cache[key] = (
+                current.expires_at,
+                current.access_token,
+                fresh_fingerprint,
+            )
             return current.access_token, current.access_token != cred.access_token
         if _grant_is_dead(key, current):
             return current.access_token, False
@@ -547,7 +616,8 @@ def force_refresh_token(path: Path, host: str) -> str | None:
     now = time.time()
     key = (str(path), host)
     with _refresh_lock, _config_refresh_lock(path):
-        block = (_read_config(path).get("hosts") or {}).get(host) or {}
+        source, source_fingerprint = _read_config_snapshot(path)
+        block = (source.get("hosts") or {}).get(host) or {}
         cred = OAuthCredential.from_host_block(block)
         if cred is None:
             _expiry_cache.pop(key, None)
@@ -561,7 +631,11 @@ def force_refresh_token(path: Path, host: str) -> str | None:
         cached = _expiry_cache.get(key)
         # Another thread or process already rotated: adopt the newer on-disk token.
         if cached is not None and cred.access_token != cached[1] and not cred.is_expired(now=now):
-            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            _expiry_cache[key] = (
+                cred.expires_at,
+                cred.access_token,
+                source_fingerprint,
+            )
             return cred.access_token
         rotated = _rotate_and_persist(path, host, key, cred, now=now, op_label="forced refresh")
         if rotated is None:
@@ -614,14 +688,18 @@ def install_grant(
         cred.consent_peer_name = granted_config.get("peerName")
         if apply_config:
             _deep_merge(raw, granted_config)
-    _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
     _dead_grants.pop((str(path), host), None)
     _refresh_failure_at.pop((str(path), host), None)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})
     block["apiKey"] = cred.access_token
     block["oauth"] = cred.oauth_block()
-    _atomic_write_config(path, raw)
+    fingerprint = _atomic_write_config(path, raw)
+    _expiry_cache[(str(path), host)] = (
+        cred.expires_at,
+        cred.access_token,
+        fingerprint,
+    )
     return cred
 
 

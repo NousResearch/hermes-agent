@@ -947,6 +947,7 @@ _honcho_client_slot: SingletonSlot = SingletonSlot()
 import threading as _threading
 
 _client_slots: dict[tuple, SingletonSlot] = {}
+_client_oauth_sync_locks: dict[tuple, _threading.Lock] = {}
 _client_slots_lock = _threading.Lock()
 
 
@@ -1078,9 +1079,19 @@ def _slot_for(key: tuple) -> SingletonSlot:
             ]
             for k in stale:
                 _client_slots.pop(k, None)
+                _client_oauth_sync_locks.pop(k, None)
             slot = SingletonSlot()
             _client_slots[key] = slot
+        _client_oauth_sync_locks.setdefault(key, _threading.Lock())
         return slot
+
+
+def _oauth_sync_lock_for(key: tuple):
+    """Return the per-client-identity lock for read/compare/apply token sync."""
+    with _client_slots_lock:
+        return _client_oauth_sync_locks.setdefault(key, _threading.Lock())
+
+
 # Memo for the honcho.json-derived timeout, keyed PER CONFIG PATH on the
 # file's mtime_ns so the staleness check on every get_honcho_client() call
 # costs one stat() instead of a JSON parse. Path-keyed because multi-profile
@@ -1185,11 +1196,16 @@ def _refresh_cached_oauth(
     config: HonchoClientConfig | None,
     slot: SingletonSlot | None = None,
 ) -> None:
-    """Rotate the cached client's Bearer in place when its OAuth token is stale.
+    """Keep the cached client's Bearer aligned with the persisted OAuth token.
+
+    ``ensure_fresh_token`` returns ``refreshed=False`` both when no refresh was
+    needed and when another process already rotated the grant on disk. The
+    latter still requires updating this process's cached SDK client, so compare
+    the returned token with the live client instead of relying on that flag.
 
     If the SDK shape changed and the in-place rotation can't apply, the
     client's own slot is reset so the next acquisition rebuilds with the
-    fresh token.
+    persisted token.
     """
     try:
         from plugins.memory.honcho import oauth
@@ -1200,8 +1216,10 @@ def _refresh_cached_oauth(
         else:
             host = resolve_active_host()
             path = resolve_config_path()
-        token, refreshed = oauth.ensure_fresh_token(path, host)
-        if refreshed and token and not oauth.apply_token_to_client(client, token):
+        token, _refreshed = oauth.ensure_fresh_token(path, host)
+        http = getattr(client, "_http", None)
+        live_token = getattr(http, "api_key", None)
+        if token and token != live_token and not oauth.apply_token_to_client(client, token):
             if slot is not None:
                 slot.reset()
     except Exception:
@@ -1228,13 +1246,14 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """
     key = _client_cache_key(config)
     slot = _slot_for(key)
-    cached = slot.peek()
-    if cached is not None:
-        _refresh_cached_oauth(cached, config, slot)
-        refreshed = slot.peek()
-        if refreshed is not None:
-            return refreshed
-        # Slot was reset by a failed in-place rotation — rebuild below.
+    with _oauth_sync_lock_for(key):
+        cached = slot.peek()
+        if cached is not None:
+            _refresh_cached_oauth(cached, config, slot)
+            refreshed = slot.peek()
+            if refreshed is not None:
+                return refreshed
+            # Slot was reset by a failed in-place rotation — rebuild below.
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -1363,5 +1382,6 @@ def reset_honcho_client() -> None:
     """Reset all cached Honcho clients (tests, OAuth re-login)."""
     with _client_slots_lock:
         _client_slots.clear()
+        _client_oauth_sync_locks.clear()
     _honcho_client_slot.reset()
     _honcho_json_timeout_memo.clear()

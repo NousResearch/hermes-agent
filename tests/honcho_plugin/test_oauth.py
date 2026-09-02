@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/oauth.py — OAuth grant storage + refresh."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,89 @@ class TestEnsureFreshToken:
         )
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=0)
         assert token == "hch-at-old" and refreshed is False
+
+    def test_fresh_cache_adopts_atomic_out_of_process_rotation(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
+        oauth._expiry_cache.clear()
+        oauth.ensure_fresh_token(path, "hermes", now=0)
+
+        rotated = _host_block(expires_at=20_000)
+        rotated["apiKey"] = "hch-at-external"
+        replacement = tmp_path / "honcho.json.next"
+        _write(replacement, {"hosts": {"hermes": rotated}})
+        replacement.replace(path)
+        monkeypatch.setattr(
+            oauth,
+            "_http_post_form_status",
+            lambda *a, **k: pytest.fail("fresh external token must not refresh again"),
+        )
+
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=100)
+
+        assert token == "hch-at-external" and refreshed is False
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows does not replace a destination while it is open",
+    )
+    def test_config_snapshot_fingerprints_the_opened_file(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"version": "opened"})
+        opened_fingerprint = oauth._fingerprint_from_stat(path.stat())
+        replacement = tmp_path / "honcho.json.next"
+        _write(replacement, {"version": "replacement"})
+
+        real_load = oauth.json.load
+
+        def load_then_replace(*args, **kwargs):
+            result = real_load(*args, **kwargs)
+            replacement.replace(path)
+            return result
+
+        monkeypatch.setattr(oauth.json, "load", load_then_replace)
+
+        raw, fingerprint = oauth._read_config_snapshot(path)
+
+        assert raw == {"version": "opened"}
+        assert fingerprint == opened_fingerprint
+        assert fingerprint != oauth._fingerprint_from_stat(path.stat())
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows does not replace a destination while it is open",
+    )
+    def test_rotation_during_config_parse_does_not_cache_stale_token(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
+        rotated = _host_block(expires_at=20_000)
+        rotated["apiKey"] = "hch-at-external"
+        replacement = tmp_path / "honcho.json.next"
+        _write(replacement, {"hosts": {"hermes": rotated}})
+        oauth._expiry_cache.clear()
+
+        real_load = oauth.json.load
+        replaced = False
+
+        def load_then_replace(*args, **kwargs):
+            nonlocal replaced
+            result = real_load(*args, **kwargs)
+            if not replaced:
+                replacement.replace(path)
+                replaced = True
+            return result
+
+        monkeypatch.setattr(oauth.json, "load", load_then_replace)
+
+        first, _ = oauth.ensure_fresh_token(path, "hermes", now=100)
+        second, refreshed = oauth.ensure_fresh_token(path, "hermes", now=100)
+
+        assert first == "hch-at-old"
+        assert second == "hch-at-external" and refreshed is False
 
 
     def test_expired_token_refreshes_and_persists_rotation(self, tmp_path, monkeypatch):

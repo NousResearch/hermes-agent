@@ -4,14 +4,17 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 import types
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.profiles import _get_default_hermes_home
 
 import pytest
 
+from plugins.memory.honcho import client as honcho_client
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
@@ -649,6 +652,214 @@ class TestResetHonchoClient:
         assert mod._honcho_client_slot.peek() is not None
         reset_honcho_client()
         assert mod._honcho_client_slot.peek() is None
+
+
+class TestCachedOAuthRotation:
+    def test_adopts_token_rotated_by_another_process(self, tmp_path, monkeypatch):
+        """A persisted token must rotate the matching cached SDK client."""
+        config_path = tmp_path / "honcho.json"
+        http = types.SimpleNamespace(api_key="hch-at-old")
+        sdk_client = cast(Any, types.SimpleNamespace(_http=http))
+        config = HonchoClientConfig(host="hermes", config_path=config_path)
+
+        ensure = MagicMock(return_value=("hch-at-external", False))
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.ensure_fresh_token",
+            ensure,
+        )
+
+        honcho_client._refresh_cached_oauth(sdk_client, config)
+
+        ensure.assert_called_once_with(config_path, "hermes")
+        assert http.api_key == "hch-at-external"
+
+    def test_does_not_reapply_matching_token(self, tmp_path, monkeypatch):
+        """The normal fresh-token path leaves the cached client untouched."""
+        config_path = tmp_path / "honcho.json"
+        http = types.SimpleNamespace(api_key="hch-at-current")
+        sdk_client = cast(Any, types.SimpleNamespace(_http=http))
+        config = HonchoClientConfig(host="hermes", config_path=config_path)
+        apply = MagicMock(return_value=True)
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.ensure_fresh_token",
+            lambda *args, **kwargs: ("hch-at-current", False),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.apply_token_to_client",
+            apply,
+        )
+
+        honcho_client._refresh_cached_oauth(sdk_client, config)
+
+        apply.assert_not_called()
+
+    def test_cached_sync_runs_inside_per_identity_lock(self, tmp_path, monkeypatch):
+        """The persisted-token read/compare/apply sequence must be atomic."""
+        config = HonchoClientConfig(
+            host="hermes",
+            api_key="hch-at-old",
+            config_path=tmp_path / "honcho.json",
+        )
+        sdk_client = cast(
+            Any,
+            types.SimpleNamespace(
+                _http=types.SimpleNamespace(api_key="hch-at-old")
+            ),
+        )
+        key = honcho_client._client_cache_key(config)
+        slot = honcho_client._slot_for(key)
+        slot.get(lambda: sdk_client)
+
+        class TrackingLock:
+            active = False
+
+            def __enter__(self):
+                self.active = True
+
+            def __exit__(self, *exc_info):
+                self.active = False
+
+        sync_lock = TrackingLock()
+        monkeypatch.setattr(
+            honcho_client,
+            "_oauth_sync_lock_for",
+            lambda cache_key: sync_lock,
+        )
+
+        def assert_locked(*args):
+            assert sync_lock.active
+
+        monkeypatch.setattr(
+            honcho_client, "_refresh_cached_oauth", assert_locked
+        )
+        try:
+            assert get_honcho_client(config) is sdk_client
+        finally:
+            reset_honcho_client()
+
+    def test_concurrent_sync_cannot_regress_to_older_observation(
+        self, tmp_path, monkeypatch
+    ):
+        """A delayed B observation must not overwrite a later persisted C."""
+        config = HonchoClientConfig(
+            host="hermes",
+            api_key="hch-at-old",
+            config_path=tmp_path / "honcho.json",
+        )
+        http = types.SimpleNamespace(api_key="hch-at-old")
+        sdk_client = cast(Any, types.SimpleNamespace(_http=http))
+        key = honcho_client._client_cache_key(config)
+        honcho_client._slot_for(key).get(lambda: sdk_client)
+
+        ensure_calls = 0
+        ensure_lock = threading.Lock()
+        first_apply_entered = threading.Event()
+        allow_first_apply = threading.Event()
+        second_applied = threading.Event()
+
+        def ensure(*args, **kwargs):
+            nonlocal ensure_calls
+            with ensure_lock:
+                ensure_calls += 1
+                return (f"hch-at-{'B' if ensure_calls == 1 else 'C'}", False)
+
+        def apply(client, token):
+            if token == "hch-at-B":
+                first_apply_entered.set()
+                assert allow_first_apply.wait(timeout=2)
+            client._http.api_key = token
+            if token == "hch-at-C":
+                second_applied.set()
+            return True
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.ensure_fresh_token", ensure
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.apply_token_to_client", apply
+        )
+
+        errors = []
+
+        def acquire_client():
+            try:
+                get_honcho_client(config)
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        first = threading.Thread(target=acquire_client)
+        second = threading.Thread(target=acquire_client)
+        try:
+            first.start()
+            assert first_apply_entered.wait(timeout=2)
+            second.start()
+            assert not second_applied.wait(timeout=0.25)
+            allow_first_apply.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+            assert not first.is_alive() and not second.is_alive()
+            assert errors == []
+            assert ensure_calls == 2
+            assert http.api_key == "hch-at-C"
+        finally:
+            allow_first_apply.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+            reset_honcho_client()
+
+    def test_failed_in_place_rotation_resets_only_matching_slot(
+        self, tmp_path, monkeypatch
+    ):
+        first_config = HonchoClientConfig(
+            host="hermes",
+            api_key="hch-at-first",
+            config_path=tmp_path / "first.json",
+        )
+        second_config = HonchoClientConfig(
+            host="hermes_other",
+            api_key="hch-at-second",
+            config_path=tmp_path / "second.json",
+        )
+        first_client = cast(
+            Any,
+            types.SimpleNamespace(
+                _http=types.SimpleNamespace(api_key="hch-at-first")
+            ),
+        )
+        second_client = cast(
+            Any,
+            types.SimpleNamespace(
+                _http=types.SimpleNamespace(api_key="hch-at-second")
+            ),
+        )
+        first_slot = honcho_client._slot_for(
+            honcho_client._client_cache_key(first_config)
+        )
+        second_slot = honcho_client._slot_for(
+            honcho_client._client_cache_key(second_config)
+        )
+        first_slot.get(lambda: first_client)
+        second_slot.get(lambda: second_client)
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.ensure_fresh_token",
+            lambda *args, **kwargs: ("hch-at-replacement", False),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.oauth.apply_token_to_client",
+            lambda *args, **kwargs: False,
+        )
+        try:
+            honcho_client._refresh_cached_oauth(
+                first_client, first_config, first_slot
+            )
+
+            assert first_slot.peek() is None
+            assert second_slot.peek() is second_client
+        finally:
+            reset_honcho_client()
 
 
 class TestDialecticDepthParsing:

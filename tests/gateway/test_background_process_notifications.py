@@ -693,3 +693,113 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_watch_matches_for_one_session_coalesce_to_one_synthetic_turn(monkeypatch, tmp_path):
+    """Multiple matches during one foreground turn must not create reply spam."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    queue = asyncio.Queue()
+    first = _watch_event("proc_first")
+    second = _watch_event("proc_second")
+    first["thread_id"] = "first-thread"
+    second["thread_id"] = "first-thread"
+    second["pattern"] = "DONE"
+    second["output"] = "DONE\\n"
+    queue.put_nowait(first)
+    queue.put_nowait(second)
+    runner._inject_watch_notification = AsyncMock(return_value=True)
+
+    await runner._drain_watch_notifications(queue)
+
+    runner._inject_watch_notification.assert_awaited_once()
+    text, event = runner._inject_watch_notification.await_args.args
+    assert event is first
+    assert event["thread_id"] == "first-thread"
+    assert 'watch pattern "READY"' in text
+    assert 'watch pattern "DONE"' in text
+
+
+@pytest.mark.asyncio
+async def test_same_session_key_different_thread_watch_events_remain_separate(monkeypatch, tmp_path):
+    """A thread mismatch must not merge notifications into the wrong reply route."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    queue = asyncio.Queue()
+    first = _watch_event("proc_first")
+    second = _watch_event("proc_second")
+    first["thread_id"] = "first-thread"
+    second["thread_id"] = "other-thread"
+    queue.put_nowait(first)
+    queue.put_nowait(second)
+    runner._inject_watch_notification = AsyncMock(return_value=True)
+
+    await runner._drain_watch_notifications(queue)
+
+    assert runner._inject_watch_notification.await_count == 2
+    assert [call.args[1] for call in runner._inject_watch_notification.await_args_list] == [
+        first, second,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_asymmetric_route_metadata_does_not_coalesce(monkeypatch, tmp_path):
+    """An explicit route field must not merge with a session-key fallback."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    queue = asyncio.Queue()
+    first = _watch_event("proc_first")
+    second = _watch_event("proc_second")
+    second["platform"] = "telegram"
+    queue.put_nowait(first)
+    queue.put_nowait(second)
+    runner._inject_watch_notification = AsyncMock(return_value=True)
+
+    await runner._drain_watch_notifications(queue)
+
+    assert runner._inject_watch_notification.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_interleaved_watch_sessions_preserve_chronological_turn_order(monkeypatch, tmp_path):
+    """A1, B1, A2 must stay three turns rather than reordering A matches."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    queue = asyncio.Queue()
+    first_a = _watch_event("proc_first_a")
+    first_b = _watch_event("proc_first_b")
+    first_b["session_key"] = "agent:main:telegram:dm:456:99"
+    second_a = _watch_event("proc_second_a")
+    second_a["pattern"] = "AFTER_B"
+    queue.put_nowait(first_a)
+    queue.put_nowait(first_b)
+    queue.put_nowait(second_a)
+    runner._inject_watch_notification = AsyncMock(return_value=True)
+
+    await runner._drain_watch_notifications(queue)
+
+    assert runner._inject_watch_notification.await_count == 3
+    assert [call.args[1] for call in runner._inject_watch_notification.await_args_list] == [
+        first_a, first_b, second_a,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mixed_and_blank_key_watch_events_remain_separate(monkeypatch, tmp_path):
+    """Only adjacent nonblank same-session matches may coalesce."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    queue = asyncio.Queue()
+    first = _watch_event("proc_first")
+    disabled = {"type": "watch_disabled", "message": "watch disabled", "session_key": first["session_key"]}
+    second = _watch_event("proc_second")
+    blank_one = _watch_event("proc_blank_one")
+    blank_two = _watch_event("proc_blank_two")
+    blank_one["session_key"] = ""
+    blank_two["session_key"] = ""
+    for event in (first, disabled, second, blank_one, blank_two):
+        queue.put_nowait(event)
+    runner._inject_watch_notification = AsyncMock(return_value=True)
+
+    await runner._drain_watch_notifications(queue)
+
+    assert runner._inject_watch_notification.await_count == 5
+    assert [call.args[1] for call in runner._inject_watch_notification.await_args_list] == [
+        first, disabled, second, blank_one, blank_two,
+    ]

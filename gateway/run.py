@@ -952,7 +952,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
-    r"^\s*(\W*\s*)?("
+    r"^\s*(?:the\s+request\s+failed:\s*)?(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
     r"|provider\s+authentication\s+failed"
     r"|non-retryable\s+error"
@@ -1063,7 +1063,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         ):
             return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        # A terminal provider failure is returned through the final-response
+        # rail after this lifecycle callback. Sending its sanitized category
+        # here as well produced two identical chat replies for one failed
+        # request. Keep the final response as the single user-visible result;
+        # raw details remain in gateway logs.
+        return None
     return text
 
 
@@ -4536,6 +4541,44 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
     for evt in requeue:
         completion_queue.put(evt)
     return watch_events
+
+
+def _watch_notification_route_key(evt: dict) -> Optional[tuple[str, ...]]:
+    """Return a fail-closed routing identity for coalesced watch matches.
+
+    Synthetic delivery prefers a saved session origin, but falls back to the
+    event's platform/chat metadata.  Do not merge two events merely because
+    their session key happens to match: divergent thread, scope, user, or
+    raw-session metadata can target a different recipient after recovery.
+    """
+    session_key = str(evt.get("session_key") or "").strip()
+    if not session_key:
+        return None
+    parsed = _parse_session_key(session_key) or {}
+
+    def normalized(field: str, fallback: str = "", *, lower: bool = False) -> str:
+        raw = str(evt.get(field) or "").strip()
+        value = raw or fallback.strip()
+        if lower:
+            value = value.lower()
+        # A recovered event that omits metadata is not equivalent to one
+        # that explicitly supplies it, even when session-key parsing happens
+        # to produce the same fallback. Keep those asymmetric records on
+        # separate synthetic turns rather than assuming their routes agree.
+        return ("present:" if raw else "missing:") + value
+
+    return (
+        session_key,
+        normalized("platform", str(parsed.get("platform") or ""), lower=True),
+        normalized("chat_type", str(parsed.get("chat_type") or ""), lower=True),
+        normalized("chat_id", str(parsed.get("chat_id") or "")),
+        normalized("thread_id"),
+        normalized("scope_id"),
+        normalized("user_id"),
+        normalized("user_name"),
+        normalized("origin_session_id"),
+        normalized("parent_session_id"),
+    )
 
 
 # Module-level weak reference to the active GatewayRunner instance.
@@ -28174,10 +28217,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._load_background_notifications_mode() == "off":
             return
 
+        # Several matching lines can arrive while a foreground turn is still
+        # running. They share the same session route, so injecting each as an
+        # independent synthetic user turn produces repeated assistant replies.
+        # Preserve every formatted match but let the agent handle one combined
+        # notification for that session in this drain pass.
+        ordered_notifications: list[tuple[dict, list[str]]] = []
         for evt in watch_events:
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
                 continue
+            if evt.get("type") == "watch_match":
+                route_key = _watch_notification_route_key(evt)
+                if route_key:
+                    if ordered_notifications:
+                        previous_evt, previous_matches = ordered_notifications[-1]
+                        previous_key = _watch_notification_route_key(previous_evt)
+                        if (
+                            previous_evt.get("type") == "watch_match"
+                            and previous_key == route_key
+                        ):
+                            previous_matches.append(synth_text)
+                            continue
+            ordered_notifications.append((evt, [synth_text]))
+
+        for evt, matches in ordered_notifications:
+            synth_text = "\n\n".join(matches)
             try:
                 await self._inject_watch_notification(synth_text, evt)
             except Exception as exc:

@@ -1,0 +1,46 @@
+--- a/docs/decisions/ADR-001-engineering-runtime-strategy.md
++++ b/docs/decisions/ADR-001-engineering-runtime-strategy.md
+@@ -1,6 +1,6 @@
+ # ADR-001: Engineering Runtime Strategy
+ 
+-- **Status:** Proposed
++- **Status:** Accepted
+ - **Date:** 2026-08-15
+ - **Decision scope:** V1 Engineering Agent runtime composition
+ - **Research basis:** `docs/research/hermes-runtime-reconnaissance.md`
+@@ -153,7 +153,7 @@
+ 
+ - Orchestrator 不能假装拥有 Hermes loop 内部状态；它只控制 engineering workflow 的外层 terminal transition。
+ - Tool-level enforcement 仍应通过 plugin `pre_tool_call`/approval/middleware 进入现有 choke point，不能由 orchestrator 旁路执行 handler。
+-- V1 若允许 `codex_app_server` 作为主 runtime，plugin policy 会被旁路；因此必须限制该模式或把它作为独立 delegated runtime。
++- `codex_app_server` 不受 V1 Engineering Surface 支持，也不允许作为 V1 delegated runtime；其集成仅作为未来可能性保留。
+ - 同一 AIAgent/session 的重入必须遵守 prompt caching、role alternation、compression 和 session lifecycle，不能直接篡改 past messages。
+ 
+ - **Status:** INFERENCE，所有依赖能力均有已确认源码基础
+@@ -324,7 +324,9 @@
+ 
+ - 主模型继续由 Hermes provider resolver 选择；Engineering module 不绑定 OpenAI、Anthropic、Gemini 或 OpenAI-compatible SDK。
+ - Codex 作为 `openai-codex` provider 时仍运行 Hermes normal loop，可以进入 V1 主路径。
+-- V1 不把 `codex_app_server` 用作受 Engineering lifecycle 管理的主 runtime，因为它旁路正常 tool hooks；若启用，只能作为明确标记的 delegated runtime，并且其结果仍需外层 verification/review。
++- `codex_app_server` 不受 V1 Engineering Surface 支持。
++- V1 不允许把 `codex_app_server` 作为 delegated runtime。
++- delegated `codex_app_server` integration 仅作为延期的未来可能性保留，待 policy/evidence contract 明确后重新决策。
+ - Hermes-native `delegate_task` 是 V1 可依赖的 subagent 能力。
+ - Codex CLI、Claude Code CLI、OpenCode CLI 当前是 skill + subprocess，不视为 typed Hermes subagent。V1 只有在明确产品需求存在时才为实际采用的 worker 增加 adapter；不预建无消费者的统一框架。
+ - 无论执行者是谁，只有 outer orchestrator 能改变 engineering workflow terminal state。
+@@ -354,7 +356,7 @@
+ - 系统存在 conversation session 与 engineering workflow 两套关联但不同的 lifecycle，需要明确 lineage。
+ - outer re-entry 是新 turn，而不是在 candidate response 内部无缝 veto；prompt/cache/session contract 必须受测试保护。
+ - plugin bridge 与 orchestrator 必须共享稳定 correlation id，否则 policy/evidence 无法可靠归属。
+-- Codex app-server 和外部 CLI worker 需要明确隔离，不能假装完全受 Hermes tool hooks 控制。
++- `codex_app_server` 在 V1 Engineering Surface 中保持禁用；未来 delegated integration 仍需先解决 Hermes tool hooks 的旁路问题。
+ 
+ ### Risks and mitigations
+ 
+@@ -393,5 +395,5 @@
+ | Tool/terminal/session/context | KEEP UPSTREAM |
+ | Engineering policy/tools/context bridge | PLUGIN |
+ | Orchestrator/verification/review/evidence/workflows/evals | NEW ENGINEERING MODULE |
+-| Codex/Claude Code/OpenCode | 区分 provider、Hermes subagent、app-server、skill+subprocess；不统一误分类 |
++| Codex/Claude Code/OpenCode | 区分 provider、Hermes subagent、app-server、skill+subprocess；V1 Engineering Surface 不支持 `codex_app_server`，其 delegated integration 延期 |
+ | Future core seam | 仅在真实证据触发后考虑 generic typed completion decision |

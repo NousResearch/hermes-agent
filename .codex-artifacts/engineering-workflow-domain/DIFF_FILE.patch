@@ -1,0 +1,521 @@
+diff --git a/engineering/__init__.py b/engineering/__init__.py
+new file mode 100644
+index 000000000..ba897f0c8
+--- /dev/null
++++ b/engineering/__init__.py
+@@ -0,0 +1 @@
++"""Hermes-independent software engineering domain package."""
+diff --git a/engineering/domain/__init__.py b/engineering/domain/__init__.py
+new file mode 100644
+index 000000000..e9c7770a2
+--- /dev/null
++++ b/engineering/domain/__init__.py
+@@ -0,0 +1,21 @@
++"""Engineering domain models."""
++
++from .workflow import (
++    ALLOWED_STATE_TRANSITIONS,
++    TERMINAL_STATES,
++    AttemptLimitExceeded,
++    InvalidWorkflowTransition,
++    WorkflowDomainError,
++    WorkflowRun,
++    WorkflowState,
++)
++
++__all__ = [
++    "ALLOWED_STATE_TRANSITIONS",
++    "TERMINAL_STATES",
++    "AttemptLimitExceeded",
++    "InvalidWorkflowTransition",
++    "WorkflowDomainError",
++    "WorkflowRun",
++    "WorkflowState",
++]
+diff --git a/engineering/domain/workflow.py b/engineering/domain/workflow.py
+new file mode 100644
+index 000000000..570e919ff
+--- /dev/null
++++ b/engineering/domain/workflow.py
+@@ -0,0 +1,252 @@
++"""Hermes-independent engineering workflow domain model."""
++
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from enum import Enum
++from types import MappingProxyType
++from typing import Mapping
++from uuid import uuid4
++
++
++class WorkflowState(str, Enum):
++    """Engineering workflow states; these are not Hermes turn states."""
++
++    CREATED = "CREATED"
++    UNDERSTANDING = "UNDERSTANDING"
++    EXPLORING = "EXPLORING"
++    PLANNING = "PLANNING"
++    IMPLEMENTING = "IMPLEMENTING"
++    VERIFYING = "VERIFYING"
++    REVIEWING = "REVIEWING"
++    BLOCKED = "BLOCKED"
++    FAILED = "FAILED"
++    COMPLETED = "COMPLETED"
++
++
++TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
++    {
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++        WorkflowState.COMPLETED,
++    }
++)
++
++
++ALLOWED_STATE_TRANSITIONS: Mapping[
++    WorkflowState, frozenset[WorkflowState]
++] = MappingProxyType(
++    {
++        WorkflowState.CREATED: frozenset(
++            {
++                WorkflowState.UNDERSTANDING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.UNDERSTANDING: frozenset(
++            {
++                WorkflowState.EXPLORING,
++                WorkflowState.PLANNING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.EXPLORING: frozenset(
++            {
++                WorkflowState.UNDERSTANDING,
++                WorkflowState.PLANNING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.PLANNING: frozenset(
++            {
++                WorkflowState.EXPLORING,
++                WorkflowState.IMPLEMENTING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.IMPLEMENTING: frozenset(
++            {
++                WorkflowState.VERIFYING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.VERIFYING: frozenset(
++            {
++                WorkflowState.IMPLEMENTING,
++                WorkflowState.REVIEWING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++            }
++        ),
++        WorkflowState.REVIEWING: frozenset(
++            {
++                WorkflowState.IMPLEMENTING,
++                WorkflowState.VERIFYING,
++                WorkflowState.BLOCKED,
++                WorkflowState.FAILED,
++                WorkflowState.COMPLETED,
++            }
++        ),
++        WorkflowState.BLOCKED: frozenset(),
++        WorkflowState.FAILED: frozenset(),
++        WorkflowState.COMPLETED: frozenset(),
++    }
++)
++
++
++class WorkflowDomainError(ValueError):
++    """Base error for deterministic workflow-domain failures."""
++
++
++class InvalidWorkflowTransition(WorkflowDomainError):
++    """Raised when a requested workflow state transition is not allowed."""
++
++    def __init__(
++        self, current_state: WorkflowState, target_state: WorkflowState
++    ) -> None:
++        self.current_state = current_state
++        self.target_state = target_state
++        super().__init__(
++            "Invalid engineering workflow transition: "
++            f"{current_state.value} -> {target_state.value}"
++        )
++
++
++class AttemptLimitExceeded(WorkflowDomainError):
++    """Raised after an exhausted workflow is deterministically failed."""
++
++    def __init__(self, workflow_run_id: str, max_attempts: int) -> None:
++        self.workflow_run_id = workflow_run_id
++        self.max_attempts = max_attempts
++        super().__init__(
++            "Engineering workflow attempt limit exceeded: "
++            f"workflow_run_id={workflow_run_id}, max_attempts={max_attempts}"
++        )
++
++
++class WorkflowRun:
++    """A single engineering workflow run.
++
++    ``engineering_completed`` is derived exclusively from the engineering
++    workflow state. A completed Hermes turn is execution evidence for a future
++    orchestrator; it does not mutate this model and cannot complete a workflow.
++
++    ``attempt`` starts at one. ``begin_next_attempt`` advances it while budget
++    remains. Requesting another attempt after the configured limit moves the
++    workflow to ``FAILED`` and raises ``AttemptLimitExceeded``; exhaustion can
++    never produce ``COMPLETED``.
++    """
++
++    __slots__ = (
++        "_attempt",
++        "_created_at",
++        "_max_attempts",
++        "_state",
++        "_updated_at",
++        "_workflow_run_id",
++    )
++
++    def __init__(self, *, max_attempts: int = 3) -> None:
++        if type(max_attempts) is not int or max_attempts < 1:
++            raise ValueError("max_attempts must be an integer greater than zero")
++
++        now = _utc_now()
++        self._workflow_run_id = str(uuid4())
++        self._state = WorkflowState.CREATED
++        self._created_at = now
++        self._updated_at = now
++        self._attempt = 1
++        self._max_attempts = max_attempts
++
++    @property
++    def workflow_run_id(self) -> str:
++        return self._workflow_run_id
++
++    @property
++    def state(self) -> WorkflowState:
++        return self._state
++
++    @property
++    def created_at(self) -> datetime:
++        return self._created_at
++
++    @property
++    def updated_at(self) -> datetime:
++        return self._updated_at
++
++    @property
++    def attempt(self) -> int:
++        return self._attempt
++
++    @property
++    def max_attempts(self) -> int:
++        return self._max_attempts
++
++    @property
++    def is_terminal(self) -> bool:
++        return self._state in TERMINAL_STATES
++
++    @property
++    def engineering_completed(self) -> bool:
++        """Whether the engineering workflow—not a Hermes turn—completed."""
++
++        return self._state is WorkflowState.COMPLETED
++
++    def can_transition_to(self, target_state: WorkflowState) -> bool:
++        """Return whether ``target_state`` is allowed from the current state."""
++
++        if not isinstance(target_state, WorkflowState):
++            return False
++        return target_state in ALLOWED_STATE_TRANSITIONS[self._state]
++
++    def transition_to(
++        self, target_state: WorkflowState, *, at: datetime | None = None
++    ) -> None:
++        """Apply an allowed state transition or fail without partial mutation."""
++
++        if not isinstance(target_state, WorkflowState):
++            raise TypeError("target_state must be a WorkflowState")
++        if not self.can_transition_to(target_state):
++            raise InvalidWorkflowTransition(self._state, target_state)
++
++        timestamp = self._validated_timestamp(at)
++        self._state = target_state
++        self._updated_at = timestamp
++
++    def begin_next_attempt(self, *, at: datetime | None = None) -> int:
++        """Begin the next attempt, or fail the workflow when none remain."""
++
++        if self.is_terminal:
++            raise WorkflowDomainError(
++                "Cannot begin an attempt for terminal engineering workflow: "
++                f"{self._state.value}"
++            )
++
++        timestamp = self._validated_timestamp(at)
++        if self._attempt >= self._max_attempts:
++            self._state = WorkflowState.FAILED
++            self._updated_at = timestamp
++            raise AttemptLimitExceeded(
++                self._workflow_run_id, self._max_attempts
++            )
++
++        self._attempt += 1
++        self._updated_at = timestamp
++        return self._attempt
++
++    def _validated_timestamp(self, at: datetime | None) -> datetime:
++        timestamp = _utc_now() if at is None else at
++        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
++            raise ValueError("workflow timestamps must be timezone-aware")
++        if timestamp < self._updated_at:
++            raise ValueError("workflow timestamps cannot move backwards")
++        return timestamp
++
++
++def _utc_now() -> datetime:
++    return datetime.now(timezone.utc)
+diff --git a/tests/engineering/domain/test_workflow.py b/tests/engineering/domain/test_workflow.py
+new file mode 100644
+index 000000000..b6c201d1a
+--- /dev/null
++++ b/tests/engineering/domain/test_workflow.py
+@@ -0,0 +1,223 @@
++from __future__ import annotations
++
++import ast
++import inspect
++from datetime import timedelta
++from uuid import UUID
++
++import pytest
++
++import engineering.domain.workflow as workflow_module
++from engineering.domain.workflow import (
++    ALLOWED_STATE_TRANSITIONS,
++    TERMINAL_STATES,
++    AttemptLimitExceeded,
++    InvalidWorkflowTransition,
++    WorkflowRun,
++    WorkflowState,
++)
++
++
++EXPECTED_TRANSITIONS = {
++    WorkflowState.CREATED: {
++        WorkflowState.UNDERSTANDING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.UNDERSTANDING: {
++        WorkflowState.EXPLORING,
++        WorkflowState.PLANNING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.EXPLORING: {
++        WorkflowState.UNDERSTANDING,
++        WorkflowState.PLANNING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.PLANNING: {
++        WorkflowState.EXPLORING,
++        WorkflowState.IMPLEMENTING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.IMPLEMENTING: {
++        WorkflowState.VERIFYING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.VERIFYING: {
++        WorkflowState.IMPLEMENTING,
++        WorkflowState.REVIEWING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++    },
++    WorkflowState.REVIEWING: {
++        WorkflowState.IMPLEMENTING,
++        WorkflowState.VERIFYING,
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++        WorkflowState.COMPLETED,
++    },
++    WorkflowState.BLOCKED: set(),
++    WorkflowState.FAILED: set(),
++    WorkflowState.COMPLETED: set(),
++}
++
++
++def test_declares_the_explicit_workflow_contract() -> None:
++    assert [state.value for state in WorkflowState] == [
++        "CREATED",
++        "UNDERSTANDING",
++        "EXPLORING",
++        "PLANNING",
++        "IMPLEMENTING",
++        "VERIFYING",
++        "REVIEWING",
++        "BLOCKED",
++        "FAILED",
++        "COMPLETED",
++    ]
++    assert TERMINAL_STATES == {
++        WorkflowState.BLOCKED,
++        WorkflowState.FAILED,
++        WorkflowState.COMPLETED,
++    }
++    assert {
++        state: set(targets)
++        for state, targets in ALLOWED_STATE_TRANSITIONS.items()
++    } == EXPECTED_TRANSITIONS
++
++
++def test_standard_lifecycle_reaches_engineering_completion() -> None:
++    run = WorkflowRun()
++
++    for state in (
++        WorkflowState.UNDERSTANDING,
++        WorkflowState.EXPLORING,
++        WorkflowState.PLANNING,
++        WorkflowState.IMPLEMENTING,
++        WorkflowState.VERIFYING,
++        WorkflowState.REVIEWING,
++    ):
++        run.transition_to(state)
++        assert run.engineering_completed is False
++
++    run.transition_to(WorkflowState.COMPLETED)
++
++    assert run.state is WorkflowState.COMPLETED
++    assert run.is_terminal is True
++    assert run.engineering_completed is True
++
++
++def test_invalid_transition_fails_without_mutating_the_run() -> None:
++    run = WorkflowRun()
++    original_updated_at = run.updated_at
++
++    with pytest.raises(
++        InvalidWorkflowTransition,
++        match="Invalid engineering workflow transition: CREATED -> COMPLETED",
++    ):
++        run.transition_to(WorkflowState.COMPLETED)
++
++    assert run.state is WorkflowState.CREATED
++    assert run.updated_at == original_updated_at
++    assert run.engineering_completed is False
++
++
++@pytest.mark.parametrize(
++    ("path", "rejected_target"),
++    [
++        ((WorkflowState.BLOCKED,), WorkflowState.FAILED),
++        ((WorkflowState.FAILED,), WorkflowState.BLOCKED),
++        (
++            (
++                WorkflowState.UNDERSTANDING,
++                WorkflowState.PLANNING,
++                WorkflowState.IMPLEMENTING,
++                WorkflowState.VERIFYING,
++                WorkflowState.REVIEWING,
++                WorkflowState.COMPLETED,
++            ),
++            WorkflowState.FAILED,
++        ),
++    ],
++)
++def test_terminal_states_reject_all_outgoing_transitions(
++    path: tuple[WorkflowState, ...], rejected_target: WorkflowState
++) -> None:
++    run = WorkflowRun()
++    for state in path:
++        run.transition_to(state)
++
++    assert run.state in TERMINAL_STATES
++    assert ALLOWED_STATE_TRANSITIONS[run.state] == frozenset()
++    with pytest.raises(InvalidWorkflowTransition):
++        run.transition_to(rejected_target)
++
++
++def test_workflow_ids_and_timestamps_are_generated_by_code() -> None:
++    first = WorkflowRun()
++    second = WorkflowRun()
++
++    assert UUID(first.workflow_run_id).version == 4
++    assert UUID(second.workflow_run_id).version == 4
++    assert first.workflow_run_id != second.workflow_run_id
++    assert first.created_at == first.updated_at
++    assert first.created_at.tzinfo is not None
++    assert first.created_at.utcoffset() is not None
++
++
++def test_transition_updates_timestamp_without_allowing_time_to_move_backwards() -> None:
++    run = WorkflowRun()
++    next_timestamp = run.updated_at + timedelta(seconds=1)
++
++    run.transition_to(WorkflowState.UNDERSTANDING, at=next_timestamp)
++
++    assert run.updated_at == next_timestamp
++    with pytest.raises(ValueError, match="timestamps cannot move backwards"):
++        run.transition_to(
++            WorkflowState.EXPLORING,
++            at=next_timestamp - timedelta(microseconds=1),
++        )
++    assert run.state is WorkflowState.UNDERSTANDING
++    assert run.updated_at == next_timestamp
++
++
++def test_attempt_exhaustion_fails_and_never_completes_the_workflow() -> None:
++    run = WorkflowRun(max_attempts=2)
++    run.transition_to(WorkflowState.UNDERSTANDING)
++
++    assert run.begin_next_attempt() == 2
++    with pytest.raises(AttemptLimitExceeded, match="max_attempts=2"):
++        run.begin_next_attempt()
++
++    assert run.attempt == 2
++    assert run.state is WorkflowState.FAILED
++    assert run.is_terminal is True
++    assert run.engineering_completed is False
++
++
++@pytest.mark.parametrize("max_attempts", [0, -1, True, 1.5, "3"])
++def test_max_attempts_must_be_a_positive_integer(max_attempts: object) -> None:
++    with pytest.raises(
++        ValueError, match="max_attempts must be an integer greater than zero"
++    ):
++        WorkflowRun(max_attempts=max_attempts)  # type: ignore[arg-type]
++
++
++def test_domain_model_has_no_hermes_runtime_imports() -> None:
++    tree = ast.parse(inspect.getsource(workflow_module))
++    forbidden_roots = {"run_agent", "agent", "hermes_cli", "tools"}
++    imported_roots: set[str] = set()
++
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Import):
++            imported_roots.update(
++                alias.name.partition(".")[0] for alias in node.names
++            )
++        elif isinstance(node, ast.ImportFrom) and node.module:
++            imported_roots.add(node.module.partition(".")[0])
++
++    assert imported_roots.isdisjoint(forbidden_roots)

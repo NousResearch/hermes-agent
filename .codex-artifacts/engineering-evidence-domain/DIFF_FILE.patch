@@ -1,0 +1,388 @@
+diff --git a/engineering/domain/__init__.py b/engineering/domain/__init__.py
+index e9c7770a2..7ac332c1b 100644
+--- a/engineering/domain/__init__.py
++++ b/engineering/domain/__init__.py
+@@ -1,5 +1,6 @@
+ """Engineering domain models."""
+ 
++from .evidence import Evidence, EvidenceKind, EvidenceStatus
+ from .workflow import (
+     ALLOWED_STATE_TRANSITIONS,
+     TERMINAL_STATES,
+@@ -14,6 +15,9 @@ __all__ = [
+     "ALLOWED_STATE_TRANSITIONS",
+     "TERMINAL_STATES",
+     "AttemptLimitExceeded",
++    "Evidence",
++    "EvidenceKind",
++    "EvidenceStatus",
+     "InvalidWorkflowTransition",
+     "WorkflowDomainError",
+     "WorkflowRun",
+diff --git a/engineering/domain/evidence.py b/engineering/domain/evidence.py
+new file mode 100644
+index 000000000..8b5b69da1
+--- /dev/null
++++ b/engineering/domain/evidence.py
+@@ -0,0 +1,129 @@
++"""Passive, Hermes-independent engineering evidence facts."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from datetime import datetime, timedelta
++from enum import Enum
++from uuid import uuid4
++
++
++class EvidenceKind(str, Enum):
++    """The engineering activity that produced an evidence fact."""
++
++    BUILD = "BUILD"
++    TEST = "TEST"
++    LINT = "LINT"
++    GIT_DIFF = "GIT_DIFF"
++    POLICY = "POLICY"
++    PROJECT_INSPECTION = "PROJECT_INSPECTION"
++    COMMAND = "COMMAND"
++    OTHER = "OTHER"
++
++
++class EvidenceStatus(str, Enum):
++    """Explicit producer-supplied evidence status, not workflow state."""
++
++    PASS = "PASS"
++    FAIL = "FAIL"
++    ERROR = "ERROR"
++    SKIPPED = "SKIPPED"
++
++
++@dataclass(frozen=True, slots=True, kw_only=True)
++class Evidence:
++    """An immutable, auditable fact produced by an engineering check.
++
++    This entity is intentionally passive: it performs no execution, inspection,
++    status inference, artifact loading, or secret redaction. ``status`` is an
++    explicit fact supplied by the trusted producer; text and exit codes never
++    change it. Artifact references identify external data without embedding it.
++    """
++
++    workflow_run_id: str
++    attempt: int
++    kind: EvidenceKind
++    status: EvidenceStatus
++    producer: str
++    summary: str
++    started_at: datetime
++    finished_at: datetime
++    evidence_id: str = field(default_factory=lambda: str(uuid4()))
++    command: str | None = None
++    cwd: str | None = None
++    execution_backend: str | None = None
++    exit_code: int | None = None
++    stdout_summary: str | None = None
++    stderr_summary: str | None = None
++    artifact_references: tuple[str, ...] = field(default_factory=tuple)
++
++    def __post_init__(self) -> None:
++        _require_non_empty_string("evidence_id", self.evidence_id)
++        _require_non_empty_string("workflow_run_id", self.workflow_run_id)
++        if type(self.attempt) is not int or self.attempt < 1:
++            raise ValueError("attempt must be an integer greater than zero")
++        if not isinstance(self.kind, EvidenceKind):
++            raise TypeError("kind must be an EvidenceKind")
++        if not isinstance(self.status, EvidenceStatus):
++            raise TypeError("status must be an EvidenceStatus")
++        _require_non_empty_string("producer", self.producer)
++        _require_non_empty_string("summary", self.summary)
++
++        _require_aware_datetime("started_at", self.started_at)
++        _require_aware_datetime("finished_at", self.finished_at)
++        if self.finished_at < self.started_at:
++            raise ValueError("finished_at cannot be earlier than started_at")
++
++        for name in (
++            "command",
++            "cwd",
++            "execution_backend",
++            "stdout_summary",
++            "stderr_summary",
++        ):
++            value = getattr(self, name)
++            if value is not None and not isinstance(value, str):
++                raise TypeError(f"{name} must be a string or None")
++        if self.exit_code is not None and type(self.exit_code) is not int:
++            raise TypeError("exit_code must be an integer or None")
++
++        execution_context = (self.command, self.cwd, self.execution_backend)
++        if any(value is not None for value in execution_context) and not all(
++            value is not None and value.strip() for value in execution_context
++        ):
++            raise ValueError(
++                "command-backed evidence requires command, cwd, and "
++                "execution_backend"
++            )
++        if self.exit_code is not None and self.command is None:
++            raise ValueError("exit_code requires command-backed evidence")
++
++        if isinstance(self.artifact_references, str):
++            raise TypeError("artifact_references must be an iterable of strings")
++        try:
++            references = tuple(self.artifact_references)
++        except TypeError as exc:
++            raise TypeError(
++                "artifact_references must be an iterable of strings"
++            ) from exc
++        for reference in references:
++            _require_non_empty_string("artifact reference", reference)
++        object.__setattr__(self, "artifact_references", references)
++
++    @property
++    def duration(self) -> timedelta:
++        """Return the deterministic elapsed time represented by this fact."""
++
++        return self.finished_at - self.started_at
++
++
++def _require_non_empty_string(name: str, value: object) -> None:
++    if not isinstance(value, str) or not value.strip():
++        raise ValueError(f"{name} must be a non-empty string")
++
++
++def _require_aware_datetime(name: str, value: object) -> None:
++    if not isinstance(value, datetime):
++        raise TypeError(f"{name} must be a datetime")
++    if value.tzinfo is None or value.utcoffset() is None:
++        raise ValueError(f"{name} must be timezone-aware")
+diff --git a/tests/engineering/domain/test_evidence.py b/tests/engineering/domain/test_evidence.py
+new file mode 100644
+index 000000000..27e34161a
+--- /dev/null
++++ b/tests/engineering/domain/test_evidence.py
+@@ -0,0 +1,226 @@
++from __future__ import annotations
++
++import ast
++import inspect
++from dataclasses import FrozenInstanceError
++from datetime import datetime, timedelta, timezone
++from uuid import UUID
++
++import pytest
++
++import engineering.domain.evidence as evidence_module
++from engineering.domain.evidence import Evidence, EvidenceKind, EvidenceStatus
++
++
++STARTED_AT = datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc)
++FINISHED_AT = STARTED_AT + timedelta(seconds=4, milliseconds=250)
++
++
++def make_evidence(**overrides: object) -> Evidence:
++    values: dict[str, object] = {
++        "workflow_run_id": "workflow-123",
++        "attempt": 1,
++        "kind": EvidenceKind.TEST,
++        "status": EvidenceStatus.PASS,
++        "producer": "focused-pytest-check",
++        "summary": "Focused tests completed.",
++        "started_at": STARTED_AT,
++        "finished_at": FINISHED_AT,
++    }
++    values.update(overrides)
++    return Evidence(**values)  # type: ignore[arg-type]
++
++
++def test_declares_evidence_kinds_and_statuses() -> None:
++    assert [kind.value for kind in EvidenceKind] == [
++        "BUILD",
++        "TEST",
++        "LINT",
++        "GIT_DIFF",
++        "POLICY",
++        "PROJECT_INSPECTION",
++        "COMMAND",
++        "OTHER",
++    ]
++    assert [status.value for status in EvidenceStatus] == [
++        "PASS",
++        "FAIL",
++        "ERROR",
++        "SKIPPED",
++    ]
++
++
++def test_generates_uuid4_evidence_identity_by_default() -> None:
++    first = make_evidence()
++    second = make_evidence()
++
++    assert UUID(first.evidence_id).version == 4
++    assert UUID(second.evidence_id).version == 4
++    assert first.evidence_id != second.evidence_id
++
++
++def test_preserves_explicit_evidence_id_and_workflow_lineage() -> None:
++    evidence = make_evidence(
++        evidence_id="imported-evidence-7",
++        workflow_run_id="workflow-run-99",
++        attempt=3,
++    )
++
++    assert evidence.evidence_id == "imported-evidence-7"
++    assert evidence.workflow_run_id == "workflow-run-99"
++    assert evidence.attempt == 3
++
++
++@pytest.mark.parametrize("attempt", [0, -1, True, 1.5, "1"])
++def test_attempt_must_be_a_positive_integer(attempt: object) -> None:
++    with pytest.raises(
++        ValueError, match="attempt must be an integer greater than zero"
++    ):
++        make_evidence(attempt=attempt)
++
++
++def test_accepts_timezone_aware_timestamps_and_calculates_duration() -> None:
++    offset = timezone(timedelta(hours=8))
++    started_at = datetime(2026, 8, 15, 16, 0, tzinfo=offset)
++    finished_at = started_at + timedelta(seconds=7, microseconds=125)
++
++    evidence = make_evidence(
++        started_at=started_at,
++        finished_at=finished_at,
++    )
++
++    assert evidence.started_at == started_at
++    assert evidence.finished_at == finished_at
++    assert evidence.duration == timedelta(seconds=7, microseconds=125)
++
++
++@pytest.mark.parametrize("field_name", ["started_at", "finished_at"])
++def test_rejects_naive_timestamps(field_name: str) -> None:
++    with pytest.raises(ValueError, match=f"{field_name} must be timezone-aware"):
++        make_evidence(**{field_name: datetime(2026, 8, 15, 8, 0)})
++
++
++def test_rejects_finished_at_before_started_at() -> None:
++    with pytest.raises(
++        ValueError, match="finished_at cannot be earlier than started_at"
++    ):
++        make_evidence(finished_at=STARTED_AT - timedelta(microseconds=1))
++
++
++def test_preserves_command_execution_context() -> None:
++    evidence = make_evidence(
++        command="python -m pytest tests/unit/test_example.py",
++        cwd="/workspace/project",
++        execution_backend="local",
++        exit_code=0,
++        stdout_summary="12 tests passed",
++        stderr_summary="",
++    )
++
++    assert evidence.command == "python -m pytest tests/unit/test_example.py"
++    assert evidence.cwd == "/workspace/project"
++    assert evidence.execution_backend == "local"
++    assert evidence.exit_code == 0
++    assert evidence.stdout_summary == "12 tests passed"
++    assert evidence.stderr_summary == ""
++
++
++def test_command_backed_evidence_requires_auditable_environment_context() -> None:
++    with pytest.raises(
++        ValueError,
++        match="requires command, cwd, and execution_backend",
++    ):
++        make_evidence(command="pytest", cwd="/workspace")
++
++
++def test_non_command_evidence_does_not_require_execution_fields() -> None:
++    evidence = make_evidence(
++        kind=EvidenceKind.PROJECT_INSPECTION,
++        status=EvidenceStatus.SKIPPED,
++        producer="project-inspector",
++        summary="Inspection was intentionally skipped.",
++    )
++
++    assert evidence.command is None
++    assert evidence.cwd is None
++    assert evidence.execution_backend is None
++    assert evidence.exit_code is None
++
++
++def test_evidence_and_artifact_references_are_immutable() -> None:
++    evidence = make_evidence(
++        artifact_references=[
++            "artifact://logs/test-run-1",
++            "artifact://diffs/change-1",
++        ]
++    )
++
++    assert evidence.artifact_references == (
++        "artifact://logs/test-run-1",
++        "artifact://diffs/change-1",
++    )
++    with pytest.raises(FrozenInstanceError):
++        evidence.summary = "changed"  # type: ignore[misc]
++    with pytest.raises(TypeError):
++        evidence.artifact_references[0] = "changed"  # type: ignore[index]
++
++
++def test_pass_status_is_not_inferred_from_exit_code_or_text() -> None:
++    evidence = make_evidence(
++        status=EvidenceStatus.PASS,
++        summary="An explanation says the tests failed.",
++        command="custom-check",
++        cwd="/workspace/project",
++        execution_backend="container",
++        exit_code=17,
++        stdout_summary="FAIL written by an untrusted narrator",
++        stderr_summary="build failed",
++    )
++
++    assert evidence.status is EvidenceStatus.PASS
++    assert evidence.exit_code == 17
++
++
++@pytest.mark.parametrize("exit_code", [None, 0, 1, 143])
++def test_fail_status_can_coexist_with_any_exit_code(
++    exit_code: int | None,
++) -> None:
++    execution_fields: dict[str, object] = {}
++    if exit_code is not None:
++        execution_fields = {
++            "command": "policy-check",
++            "cwd": "/workspace/project",
++            "execution_backend": "ssh",
++            "exit_code": exit_code,
++        }
++
++    evidence = make_evidence(
++        kind=EvidenceKind.POLICY,
++        status=EvidenceStatus.FAIL,
++        **execution_fields,
++    )
++
++    assert evidence.status is EvidenceStatus.FAIL
++    assert evidence.exit_code == exit_code
++
++
++def test_evidence_model_has_no_runtime_or_execution_dependencies() -> None:
++    tree = ast.parse(inspect.getsource(evidence_module))
++    forbidden_roots = {
++        "run_agent",
++        "agent",
++        "hermes_cli",
++        "tools",
++        "subprocess",
++    }
++    imported_roots: set[str] = set()
++
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Import):
++            imported_roots.update(
++                alias.name.partition(".")[0] for alias in node.names
++            )
++        elif isinstance(node, ast.ImportFrom) and node.module:
++            imported_roots.add(node.module.partition(".")[0])
++
++    assert imported_roots.isdisjoint(forbidden_roots)

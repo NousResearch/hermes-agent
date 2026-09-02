@@ -21,7 +21,7 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
-    runs-on: ubuntu-latest-96-core
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout code

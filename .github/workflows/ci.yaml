@@ -36,7 +36,10 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # 1 minute upstream. On this fork the job twice blew that budget on
+    # runner/checkout startup alone (12s of real work, 1m43s wall) and
+    # reported a red X for it. 5 is still tight enough to catch a hang.
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}

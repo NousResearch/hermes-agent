@@ -5180,6 +5180,18 @@ def classify_session_status(
     return SESSION_STATUS_COMPLETE
 
 
+# Parent→child ``profile_name`` inheritance fence (#88381). ``agent:<ns>:...``
+# gateway keys encode the profile namespace; a keyless row (CLI / subagent
+# lineage) carries none and inherits freely. Two keyed rows must agree on
+# ``agent:<ns>:`` — a default child (``agent:main:``) forked from a sibling
+# profile's row must not be durably mislabelled as that profile's.
+_SAME_KEY_NAMESPACE_SQL = (
+    "p.session_key IS NULL OR sessions.session_key IS NULL"
+    " OR substr(p.session_key, 1, instr(substr(p.session_key, 7), ':') + 6)"
+    "  = substr(sessions.session_key, 1, instr(substr(sessions.session_key, 7), ':') + 6)"
+)
+
+
 class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
     """
     SQLite-backed session storage with FTS5 search.
@@ -7338,7 +7350,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._delete_unreferenced_system_prompts(conn)
             if parent_session_id:
                 conn.execute(
-                    """UPDATE sessions
+                    f"""UPDATE sessions
                        SET cwd = COALESCE(sessions.cwd,
                                  (SELECT p.cwd FROM sessions p
                                    WHERE p.id = sessions.parent_session_id)),
@@ -7350,7 +7362,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                                           WHERE p.id = sessions.parent_session_id)),
                            profile_name = COALESCE(sessions.profile_name,
                                           (SELECT p.profile_name FROM sessions p
-                                            WHERE p.id = sessions.parent_session_id))
+                                            WHERE p.id = sessions.parent_session_id
+                                              AND ({_SAME_KEY_NAMESPACE_SQL})))
                      WHERE id = ? AND parent_session_id IS NOT NULL""",
                     (session_id,),
                 )
@@ -7922,6 +7935,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # tuple so we never cross chats/threads/users.
             if chat_id is None or chat_type is None:
                 return None
+            # Profile fence (#74285): a Telegram DM's peer tuple is identical
+            # for every bot (chat_id == user_id, no thread), so a sibling
+            # profile's row written into this store before the per-profile
+            # partition (legacy data) would otherwise be adopted here. Every
+            # profile-tree store has one owner; a row is ours when its
+            # profile_name is the owner or NULL (legacy rows this store
+            # minted). Stores outside the tree derive no owner and keep the
+            # historical unfenced behavior.
+            owner = self._own_profile_name()
             row = conn.execute(
                 f"""
                 SELECT s.*,
@@ -7937,6 +7959,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
+                  AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
@@ -7956,7 +7979,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                (source, user_id, chat_id, chat_type, thread_id, owner, owner, owner),
             ).fetchone()
         return self._session_row_dict(row) if row else None
 

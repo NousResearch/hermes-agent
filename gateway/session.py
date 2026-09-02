@@ -2209,10 +2209,15 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Prevent a gateway from reviving another profile's row.
 
+        Single-profile: the recovered row's namespace must match the ACTIVE
+        profile. Multiplexed: several profiles serve traffic at once, so the
+        active profile is meaningless — the requested key carries the profile
+        the turn was routed to, and the recovered row must sit in the same
+        ``agent:<ns>:`` namespace (#74285). Rows with no key namespace stay
+        adoptable in both modes (legacy/keyless data owned by this store).
+        """
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -2220,6 +2225,10 @@ class SessionStore:
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
             return True
+
+        if getattr(self.config, "multiplex_profiles", False):
+            requested_profile = self._profile_from_session_key(requested_session_key)
+            return requested_profile is None or recovered_profile == requested_profile
 
         return recovered_profile == self._active_profile_name()
 
@@ -2427,8 +2436,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -2504,8 +2512,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )

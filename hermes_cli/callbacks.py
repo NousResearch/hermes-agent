@@ -121,7 +121,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     }
     cli._secret_deadline = _time.monotonic() + timeout
     if hasattr(cli, "_ring_bell"):
-        cli._ring_bell(prompt=True)
+        cli._ring_bell(prompt=True, context=f"secret needed ({var_name})")
     # Avoid storing stale draft input as the secret when Enter is pressed.
     if hasattr(cli, "_clear_secret_input_buffer"):
         try:

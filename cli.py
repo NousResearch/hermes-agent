@@ -16167,13 +16167,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             outcome = outcome[:119] + "…"
         _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
 
-    def _ring_bell(self, prompt: bool = False) -> None:
+    def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:
         """Write a terminal bell (\\a) if the matching display.bell_* flag is on.
 
         ``prompt=True`` is the blocking-modal variant (clarify / approval /
         sudo / secret capture) gated by ``display.bell_on_prompt``; the default
         is the end-of-turn bell gated by ``display.bell_on_complete``. Works
         over SSH — the BEL propagates to the user's terminal.
+
+        The same flag also emits an OSC 9 desktop notification (Ghostty,
+        iTerm2, Kitty, WezTerm) and, inside a supporting Warp build, a
+        ``warp://cli-agent`` OSC 777 event — see ``hermes_cli.terminal_notify``.
+        ``context`` is the short notification body (e.g. "approval").
         """
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
         if not getattr(self, flag, False):
@@ -16181,6 +16186,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             sys.stdout.write("\a")
             sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            from hermes_cli.terminal_notify import notify as _terminal_notify
+
+            _terminal_notify(
+                context or ("input needed" if prompt else "turn complete"),
+                prompt=prompt,
+                session_id=getattr(self, "session_id", "") or "",
+                detail=detail,
+            )
         except Exception:
             pass
 
@@ -16231,7 +16247,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_freetext = is_open_ended
         self._clarify_multi_base = None
 
-        self._ring_bell(prompt=True)
+        self._ring_bell(prompt=True, context="clarify")
         # Trigger an immediate prompt_toolkit repaint from this (non-main)
         # thread. Modal prompts must paint at once and must not be gated by the
         # _invalidate throttle / resize guard — see _paint_now / _invalidate (#41098).
@@ -16423,7 +16439,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._ring_bell(prompt=True)
+        self._ring_bell(prompt=True, context="clarify")
         self._paint_now()
 
         _last_countdown_refresh = _time.monotonic()
@@ -16474,7 +16490,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "response_queue": response_queue,
         }
         self._sudo_deadline = _time.monotonic() + timeout
-        self._ring_bell(prompt=True)
+        self._ring_bell(prompt=True, context="sudo password")
 
         # Modal prompt — paint immediately, bypassing the throttle/resize guard
         # so the prompt can't be dropped and time out unseen (#41098).
@@ -16544,7 +16560,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             }
             self._approval_deadline = _time.monotonic() + timeout
 
-            self._ring_bell(prompt=True)
+            self._ring_bell(prompt=True, context="approval", detail=command)
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
             # window collision or in-flight resize), leaving the panel unseen so
@@ -17688,7 +17704,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
-            self._ring_bell()
+            self._ring_bell(context="turn complete")
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):

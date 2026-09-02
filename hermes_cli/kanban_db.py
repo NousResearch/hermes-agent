@@ -3140,7 +3140,6 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
-_write_txn_tls = threading.local()
 # Scope-stop intents collected while a write transaction is open, flushed
 # ONLY at the outermost commit and discarded on any rollback (Gate B pass
 # 4, finding O). A stop queued mid-transaction must never outlive that
@@ -3149,32 +3148,67 @@ _write_txn_tls = threading.local()
 # Shape: one intent list per nesting level (savepoint); a savepoint RELEASE
 # folds its intents into the parent level, a ROLLBACK TO discards them, the
 # outermost COMMIT flushes whatever survives, the outermost ROLLBACK
-# discards everything. ``request_worker_scope_stop`` consults the
-# thread-local stack, so no call-site plumbing is needed.
+# discards everything. ``request_worker_scope_stop`` consults the stack,
+# so no call-site plumbing is needed beyond passing ``conn``.
+#
+# Keyed by CONNECTION, not thread (Gate B pass 8, finding AA): a shared
+# ``check_same_thread=False`` connection running a transaction on thread A
+# must still COLLECT (not immediately queue) a stop requested from thread
+# B — the thread-local stack let that request bypass the transaction and
+# fire a stop the rollback could not recall. Keying by id(conn) also keeps
+# one thread's nested transactions on two different connections from
+# folding their intents together. Entries are removed at the outermost
+# exit, so a connection id can never be consulted while stale.
+_scope_stop_intents_lock = threading.Lock()
+_scope_stop_intents_by_conn: dict[int, list[list]] = {}
 
 
-def _push_scope_stop_level() -> None:
-    levels = getattr(_write_txn_tls, "levels", None)
-    if levels is None:
-        _write_txn_tls.levels = levels = []
-    levels.append([])
+def _collect_scope_stop_intent(
+    conn: sqlite3.Connection,
+    unit_name: str,
+    task_id: Optional[str],
+    skip_if_registered: bool,
+) -> bool:
+    """Collect a commit-conditional intent when *conn* is mid-transaction.
+
+    True = collected (the caller must NOT queue now; the outermost commit
+    of *conn* flushes it, any rollback discards it). False = *conn* has no
+    open intent levels (or none was given) — the caller queues immediately.
+    Runs under the intents lock so a concurrent outermost exit on the same
+    shared connection either folds this intent in or removes the level
+    before it lands; it can never be lost between the two."""
+    with _scope_stop_intents_lock:
+        levels = _scope_stop_intents_by_conn.get(id(conn))
+        if not levels:
+            return False
+        levels[-1].append((unit_name, task_id, skip_if_registered))
+        return True
 
 
-def _pop_scope_stop_level(*, commit: bool) -> list:
-    """Close the innermost intent level.
+def _push_scope_stop_level(conn: sqlite3.Connection) -> None:
+    with _scope_stop_intents_lock:
+        _scope_stop_intents_by_conn.setdefault(id(conn), []).append([])
+
+
+def _pop_scope_stop_level(conn: sqlite3.Connection, *, commit: bool) -> list:
+    """Close the innermost intent level of *conn*.
 
     ``commit=True`` folds its intents into the parent level — or, at the
     outermost level, returns them for the caller to flush after the
     COMMIT. ``commit=False`` discards them (this level is rolling back).
-    """
-    levels = getattr(_write_txn_tls, "levels", None) or []
-    level = levels.pop() if levels else []
-    if not commit:
-        return []
-    if levels:
-        levels[-1].extend(level)
-        return []
-    return level
+    The connection's entry is deleted at the outermost exit so a recycled
+    connection id starts clean."""
+    with _scope_stop_intents_lock:
+        levels = _scope_stop_intents_by_conn.get(id(conn))
+        level = levels.pop() if levels else []
+        if not levels:
+            _scope_stop_intents_by_conn.pop(id(conn), None)
+        if not commit:
+            return []
+        if levels:
+            levels[-1].extend(level)
+            return []
+        return level
 
 
 def _flush_deferred_scope_stops(intents: list) -> None:
@@ -3205,7 +3239,8 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 
     One side effect IS sanctioned inside the transaction: a worker
     scope-stop requested mid-transaction is collected as a commit-
-    conditional intent (see ``_write_txn_tls``) and only reaches the
+    conditional intent (see ``_scope_stop_intents_by_conn``) and only
+    reaches the
     verified-stop queue when the OUTERMOST transaction commits. A
     rollback discards it, so a demotion that never happened can never
     leave its worker killed.
@@ -3224,12 +3259,12 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 "the outer transaction commits)."
             )
         savepoint = f"hermes_nested_{secrets.token_hex(8)}"
-        _push_scope_stop_level()
+        _push_scope_stop_level(conn)
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
             yield conn
         except Exception:
-            _pop_scope_stop_level(commit=False)
+            _pop_scope_stop_level(conn, commit=False)
             try:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 conn.execute(f"RELEASE {savepoint}")
@@ -3237,16 +3272,16 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 pass
             raise
         else:
-            _pop_scope_stop_level(commit=True)
+            _pop_scope_stop_level(conn, commit=True)
             conn.execute(f"RELEASE {savepoint}")
         return
 
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
-    _push_scope_stop_level()
+    _push_scope_stop_level(conn)
     try:
         yield conn
     except Exception:
-        _pop_scope_stop_level(commit=False)
+        _pop_scope_stop_level(conn, commit=False)
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
@@ -3261,13 +3296,13 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         except Exception:
             # COMMIT exhausted retries with the txn still open; roll back so the
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
-            _pop_scope_stop_level(commit=False)
+            _pop_scope_stop_level(conn, commit=False)
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
                 pass
             raise
-        intents = _pop_scope_stop_level(commit=True)
+        intents = _pop_scope_stop_level(conn, commit=True)
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
@@ -7508,7 +7543,7 @@ def invalidate_descendants_for_parent_reopen(
             row["worker_scope"],
         )
         if request_worker_scope_stop(
-            row["worker_scope"], task_id=row["id"],
+            row["worker_scope"], task_id=row["id"], conn=conn,
         ):
             continue  # cgroup confirmed empty — safe to demote in-txn
         termination = {
@@ -9243,6 +9278,7 @@ def request_worker_scope_stop(
     *,
     task_id: Optional[str] = None,
     skip_if_registered: bool = False,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """Hand a worker scope to the verified-stop service. True = confirmed
     dead, the caller may release its bookkeeping THIS tick.
@@ -9266,11 +9302,18 @@ def request_worker_scope_stop(
     Only the unregistered-launch sweep sets it — a completed task's
     scope must be reaped regardless.
 
-    Called inside an open :func:`write_txn`, the request becomes
-    commit-conditional (finding O): it is collected as an intent and
-    queued only after the OUTERMOST transaction commits, discarded on
-    rollback — the queue entry is process state, not a DB row, so
-    without this a rolled-back demotion would still kill its worker.
+    Called with the ``conn`` of an open :func:`write_txn`, the request
+    becomes commit-conditional (finding O): it is collected as an intent
+    and queued only after the OUTERMOST transaction on that connection
+    commits, discarded on rollback — the queue entry is process state,
+    not a DB row, so without this a rolled-back demotion would still
+    kill its worker. The stack is keyed by CONNECTION, not thread
+    (pass 8, finding AA): a caller on a shared
+    ``check_same_thread=False`` connection must pass ``conn`` so a
+    request from ANY thread inside that transaction is collected, and
+    threads using other connections never see it. Without ``conn`` the
+    request always queues immediately (legacy paths that by construction
+    run outside any transaction).
     """
     if not unit_name:
         return False
@@ -9298,16 +9341,17 @@ def request_worker_scope_stop(
             "kanban: scope %s state %s (task %s) — queueing a "
             "verified stop attempt", unit_name, state, task_id,
         )
-    levels = getattr(_write_txn_tls, "levels", None)
-    if levels:
-        # Commit-conditional (Gate B pass 4, finding O): called inside an
-        # open write transaction — collect the intent on the innermost
-        # savepoint level instead of queueing now. It only reaches the
-        # queue if the OUTERMOST transaction commits; any rollback
-        # discards it, so a demotion that was rolled back can never
-        # leave its worker killed. Same return contract as queueing:
-        # not confirmed, the caller keeps its hold and retries next tick.
-        levels[-1].append((unit_name, task_id, skip_if_registered))
+    if conn is not None and _collect_scope_stop_intent(
+        conn, unit_name, task_id, skip_if_registered,
+    ):
+        # Commit-conditional (Gate B pass 4, finding O): *conn* has an
+        # open write transaction — the intent is collected on the
+        # innermost savepoint level instead of queueing now. It only
+        # reaches the queue if the OUTERMOST transaction commits; any
+        # rollback discards it, so a demotion that was rolled back can
+        # never leave its worker killed. Same return contract as
+        # queueing: not confirmed, the caller keeps its hold and retries
+        # next tick.
         return False
     with _scope_stop_lock:
         _scope_stop_pending[unit_name] = _ScopeStopRequest(
@@ -10080,7 +10124,9 @@ def enforce_max_runtime(
         # duplicate beside it.
         scope_verified = False
         if row["worker_scope"]:
-            if not request_worker_scope_stop(row["worker_scope"], task_id=tid):
+            if not request_worker_scope_stop(
+                row["worker_scope"], task_id=tid, conn=conn,
+            ):
                 _log.warning(
                     "kanban: max-runtime stop of scope %s for task %s "
                     "unconfirmed; deferring to next tick",
@@ -10409,7 +10455,9 @@ def reconcile_orphaned_running(
         # it double-forked survives the requeue. An unconfirmed stop
         # defers the requeue for the same reason as a live pid.
         if row["worker_scope"]:
-            if not request_worker_scope_stop(row["worker_scope"], task_id=tid):
+            if not request_worker_scope_stop(
+                row["worker_scope"], task_id=tid, conn=conn,
+            ):
                 _log.debug(
                     "kanban reconcile: task %s scope %s still stopping — "
                     "deferring requeue to next tick", tid, row["worker_scope"],
@@ -10532,7 +10580,7 @@ def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
             if fresh["worker_registered_at"] is not None:
                 continue  # registered since the snapshot — it is alive
         if not request_worker_scope_stop(
-            scope, task_id=row["id"], skip_if_registered=True,
+            scope, task_id=row["id"], skip_if_registered=True, conn=conn,
         ):
             continue  # stop unconfirmed — retry next tick
         _record_spawn_failure(
@@ -10751,7 +10799,7 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
         # eventually clears a wedged drain.
         if unit in claimed:
             continue
-        if not request_worker_scope_stop(unit):
+        if not request_worker_scope_stop(unit, conn=conn):
             continue  # still stopping — retry next tick
         reaped.append(unit)
         _log.info(
@@ -11191,7 +11239,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # rows need no teardown and close immediately, as before.)
     for entry in pending_rows:
         scope = entry["worker_scope"]
-        if scope and not request_worker_scope_stop(scope, task_id=entry["id"]):
+        if scope and not request_worker_scope_stop(
+            scope, task_id=entry["id"], conn=conn,
+        ):
             _mark_run_scope_stopping(conn, entry["id"], scope)
             continue
         close_rows.append(entry)

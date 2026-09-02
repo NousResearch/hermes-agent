@@ -3058,6 +3058,70 @@ def test_join_scope_stop_service_returns_fast_when_drained(shims):
     assert time.monotonic() - t0 < 1.0
 
 
+def test_scope_stop_intents_are_connection_local_not_thread_local(
+    shims, conn, kanban_home, tmp_path, monkeypatch,
+):
+    """AA: the commit-conditional intent stack is keyed by connection, not
+    thread. A shared ``check_same_thread=False`` connection that is mid
+    transaction on one thread must COLLECT (not immediately queue) a stop
+    requested from another thread — the thread-local stack let that
+    request bypass the transaction and fire a kill the rollback could not
+    recall. And a commit on one connection must never flush another
+    connection's intents."""
+    import sqlite3
+    import threading
+
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)
+    monkeypatch.setattr(kb, "_ensure_scope_stop_thread", lambda: None)
+    monkeypatch.setattr(kb, "_kanban_scope_state", lambda unit: "unknown")
+    kb.reset_scope_stop_service_for_tests()
+
+    unit_shared = kb._kanban_worker_scope_unit("t_shared", 1)
+    unit_a = kb._kanban_worker_scope_unit("t_a", 1)
+    unit_b = kb._kanban_worker_scope_unit("t_b", 1)
+
+    # Shared connection: thread 2 requests a stop while thread 1 holds the
+    # transaction open.
+    shared = sqlite3.connect(
+        kb.kanban_db_path(board="default"), timeout=5.0, check_same_thread=False,
+    )
+    # A second, independent database file so two write transactions can be
+    # open at once on this thread.
+    other = kb.connect(db_path=tmp_path / "board2.db")
+    try:
+        requested = threading.Event()
+
+        def request_from_other_thread():
+            kb.request_worker_scope_stop(unit_shared, conn=shared)
+            requested.set()
+
+        with kb.write_txn(shared):
+            t = threading.Thread(target=request_from_other_thread)
+            t.start()
+            assert requested.wait(timeout=5.0)
+            t.join(timeout=5.0)
+            # Collected as an intent of THIS transaction — not queued.
+            assert unit_shared not in kb._scope_stop_pending
+        # The outermost commit flushed exactly that intent.
+        assert unit_shared in kb._scope_stop_pending
+
+        kb.reset_scope_stop_service_for_tests()
+        with kb.write_txn(conn):
+            with kb.write_txn(other):
+                kb.request_worker_scope_stop(unit_a, conn=conn)
+                kb.request_worker_scope_stop(unit_b, conn=other)
+            # The inner (other) transaction committed first: only its
+            # intent reached the queue; conn's stays collected.
+            assert unit_b in kb._scope_stop_pending
+            assert unit_a not in kb._scope_stop_pending
+        # conn's outermost commit flushes its own intent.
+        assert unit_a in kb._scope_stop_pending
+    finally:
+        shared.close()
+        other.close()
+        kb.reset_scope_stop_service_for_tests()
+
+
 def test_shutdown_single_budget_bounds_both_joins(
     shims, conn, kanban_home, monkeypatch, caplog,
 ):

@@ -20,6 +20,12 @@ import { SlashPopover, type SlashPopoverHandle } from "@/components/SlashPopover
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { mergeSnapshotTranscript, snapshotHasField, snapshotMatchesSession } from "@/lib/native-chat-reconcile";
 import {
+  applyEditedTranscript,
+  buildEditSubmitParams,
+  parseDurableRowId,
+  type EditSubmitResponse,
+} from "@/lib/native-chat-edit";
+import {
   initialNativeChatTimeline,
   projectTimelineEntries,
   reduceNativeChatTimeline,
@@ -33,6 +39,7 @@ import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCa
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
 import { MessageActions } from "@/components/chat/MessageActions";
 import { CommandPalette } from "@/components/chat/CommandPalette";
+import { EditMessageDialog } from "@/components/chat/EditMessageDialog";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ArrowDown, Menu, MessageSquare, Mic, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
@@ -50,6 +57,7 @@ type TranscriptMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  rowId?: number;
   streaming?: boolean;
 };
 
@@ -87,7 +95,8 @@ function snapshotTranscript(messages: ResumeMessage[] | undefined): TranscriptMe
   return (messages ?? []).flatMap((message, index) => {
     const role = message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : null;
     if (!role) return [];
-    return [{ id: String(message.row_id ?? message.id ?? `snapshot-${index}`), role, text: snapshotText(message) }];
+    const rowId = parseDurableRowId(message.row_id);
+    return [{ id: String(rowId ?? message.row_id ?? message.id ?? `snapshot-${index}`), role, text: snapshotText(message), ...(rowId !== undefined ? { rowId } : {}) }];
   });
 }
 
@@ -207,7 +216,7 @@ const TranscriptBubble = memo(function TranscriptBubble({
   sessionId?: string;
   onUseAsPrompt: (message: string) => void;
   onSpeak: (message: string) => Promise<void>;
-  onEdit: (message: string) => void;
+  onEdit: (message: TranscriptMessage) => void;
   onRegenerate?: () => void;
 }) {
   return (
@@ -230,7 +239,8 @@ const TranscriptBubble = memo(function TranscriptBubble({
           message={message.text}
           messageRole={message.role}
           onUseAsPrompt={onUseAsPrompt}
-          onEdit={message.role === "user" ? onEdit : undefined}
+          editLabel={message.rowId !== undefined ? "Edit" : "Edit draft"}
+          onEdit={message.role === "user" ? () => onEdit(message) : undefined}
           onRegenerate={message.role === "assistant" ? onRegenerate : undefined}
           onSpeak={message.role === "assistant" ? onSpeak : undefined}
         />
@@ -281,6 +291,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [draft, setDraft] = useState("");
   const [transcriptQuery, setTranscriptQuery] = useState("");
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [editTarget, setEditTarget] = useState<TranscriptMessage | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
   const [timelineState, dispatchTimeline] = useReducer(reduceNativeChatTimeline, initialNativeChatTimeline);
   const liveTimelineMessages = useMemo(() => projectTimelineEntries(timelineState.entries), [timelineState.entries]);
   const displayTranscript = useMemo(() => mergeSnapshotTranscript(transcript, liveTimelineMessages), [liveTimelineMessages, transcript]);
@@ -682,6 +694,8 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       setSessionId(null);
       setTranscript([]);
       setTranscriptQuery("");
+      setEditTarget(null);
+      setEditSubmitting(false);
       dispatchTimeline({ type: "reset" });
       virtualRowHeightsRef.current.clear();
       setVirtualMeasureRevision((revision) => revision + 1);
@@ -895,6 +909,78 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       textarea.setSelectionRange(message.length, message.length);
     }
   }, []);
+
+  const beginMessageEdit = useCallback((message: TranscriptMessage) => {
+    if (message.role !== "user") return;
+    if (parseDurableRowId(message.rowId) === undefined) {
+      applyMessageAsPrompt(message.text);
+      setStatus("Message is not durable yet; edit loaded as draft");
+      return;
+    }
+    if (!sessionId || connectionState !== "open") return;
+    setError(null);
+    setErrorAction(null);
+    setEditTarget(message);
+  }, [applyMessageAsPrompt, connectionState, sessionId]);
+
+  const submitEditedMessage = useCallback(async (editedText: string) => {
+    const target = editTarget;
+    if (!target || !sessionId || connectionState !== "open") return;
+    if (editSubmitting || submitInFlightRef.current) return;
+    const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
+    if (turnActive) {
+      setError("Wait for the active turn to finish before editing");
+      setErrorAction(null);
+      return;
+    }
+
+    let params;
+    try {
+      params = buildEditSubmitParams(sessionId, target, editedText, transcript);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setErrorAction(null);
+      return;
+    }
+
+    submitInFlightRef.current = true;
+    setEditSubmitting(true);
+    setSubmitting(true);
+    setError(null);
+    setErrorAction(null);
+    setStatus("Editing…");
+    try {
+      const response = await gateway.request<EditSubmitResponse>("prompt.submit", params);
+      setTranscript((current) => applyEditedTranscript(
+        current,
+        target.id,
+        editedText,
+        response,
+        `edited-${Date.now()}`,
+      ) as TranscriptMessage[]);
+      dispatchTimeline({ type: "reset" });
+      setTools([]);
+      setApproval(null);
+      setClarify(null);
+      setFailedPrompt(null);
+      setEditTarget(null);
+      setStreaming(true);
+      setTurnStartedAt(Date.now());
+      setStatus("Working…");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setErrorAction(null);
+      setStatus("Edit failed");
+    } finally {
+      submitInFlightRef.current = false;
+      setEditSubmitting(false);
+      setSubmitting(false);
+    }
+  }, [connectionState, editSubmitting, editTarget, gateway, sessionId, streaming, tools, transcript, turnStartedAt]);
+
+  const cancelMessageEdit = useCallback(() => {
+    if (!editSubmitting) setEditTarget(null);
+  }, [editSubmitting]);
 
   const applyQuickPrompt = useCallback((prompt: string) => {
     setDraft(prompt);
@@ -1373,7 +1459,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                       message={message}
                       sessionId={sessionId ?? undefined}
                       onUseAsPrompt={applyMessageAsPrompt}
-                      onEdit={applyMessageAsPrompt}
+                      onEdit={beginMessageEdit}
                       onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}
                       onSpeak={speakMessage}
                     />
@@ -1630,6 +1716,16 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           </span>
         </div>
       </form>
+      {editTarget && (
+        <EditMessageDialog
+          key={editTarget.id}
+          initialText={editTarget.text}
+          loading={editSubmitting}
+          onCancel={cancelMessageEdit}
+          onConfirm={(text) => { void submitEditedMessage(text); }}
+          open
+        />
+      )}
     </section>
   );
 }

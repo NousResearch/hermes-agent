@@ -3,6 +3,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const clipboard = vi.hoisted(() => ({
   copyTextToClipboard: vi.fn(),
 }));
@@ -71,6 +73,18 @@ describe("MessageActions", () => {
     await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Copy assistant message']")?.click());
 
     expect(host.querySelector("[role='status']")?.textContent).toContain("Copy failed");
+  });
+
+  it("supports a caller-provided safe edit label", async () => {
+    await act(async () => root.render(createElement(MessageActions, {
+      message: "durable edit",
+      messageRole: "user",
+      onUseAsPrompt: vi.fn(),
+      onEdit: vi.fn(),
+      editLabel: "Edit",
+    })));
+    expect(host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.textContent).toContain("Edit");
+    expect(host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.textContent).not.toContain("draft");
   });
 
   it("speaks assistant messages through the optional callback", async () => {

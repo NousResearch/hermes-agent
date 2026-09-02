@@ -2,6 +2,7 @@ export type ReconcileMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  rowId?: number;
   streaming?: boolean;
 };
 

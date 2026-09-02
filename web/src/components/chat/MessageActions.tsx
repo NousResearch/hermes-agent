@@ -9,6 +9,7 @@ export interface MessageActionsProps {
   onUseAsPrompt: (message: string) => void;
   onSpeak?: (message: string) => Promise<void> | void;
   onEdit?: (message: string) => void;
+  editLabel?: string;
   onRegenerate?: () => void;
 }
 
@@ -16,7 +17,7 @@ type FeedbackState = "copied" | "copy-failed" | "prompt-filled" | "spoken" | "sp
 
 const FEEDBACK_DURATION_MS = 1800;
 
-export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, onEdit, onRegenerate }: MessageActionsProps) {
+export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, onEdit, editLabel, onRegenerate }: MessageActionsProps) {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
 
@@ -97,7 +98,7 @@ export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, o
           className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
           onClick={() => onEdit(message)}
         >
-          Edit draft
+          {editLabel ?? "Edit draft"}
         </button>
       )}
       {messageRole === "assistant" && onRegenerate && (

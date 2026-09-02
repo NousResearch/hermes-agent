@@ -29,7 +29,7 @@ const gateway = vi.hoisted(() => {
       if (method === "file.attach" && params.name === "fail.txt") throw new Error("upload failed");
       if (method === "prompt.submit" && params.text === "failed prompt" && this.requests.filter(({ method: requestMethod, params: requestParams }) => requestMethod === "prompt.submit" && requestParams.text === "failed prompt").length === 1) throw new Error("submit failed");
       if (method === "session.interrupt" && this.interrupt) await this.interrupt;
-      if (method === "session.activate" || method === "session.resume") return { session_id: "runtime-1", messages: [{ id: 7, role: "user", text: "previous prompt" }, { id: 8, role: "assistant", content: "previous answer" }], ...this.snapshot } as T;
+      if (method === "session.activate" || method === "session.resume") return { session_id: "runtime-1", messages: [{ row_id: 7, id: 7, role: "user", text: "previous prompt" }, { row_id: 8, id: 8, role: "assistant", content: "previous answer" }], ...this.snapshot } as T;
       if (method === "session.branch") return { session_id: "branch-runtime", stored_session_id: "branch-durable", title: "Branch" } as T;
       if (method === "complete.slash") return { items: [{ display: "/help", text: "/help" }], replace_from: 0 } as T;
       if (method === "model.options") return { providers: [{ slug: "openai-codex", models: ["gpt-5.6-luna", "gpt-5.6-sol"] }, { slug: "openrouter", models: ["minimax/minimax-m3:free"] }] } as T;
@@ -189,6 +189,34 @@ describe("NativeChatPage", () => {
     expect(branch).toBeTruthy();
     await act(async () => branch?.click());
     expect(gateway.instance?.requests.some(({ method, params }) => method === "session.branch" && params.session_id === "session-1")).toBe(true);
+  });
+
+  it("confirms a durable edit before truncating and submits the row-id contract", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, { initialEntries: ["/chat?resume=stored-1"] }, createElement(NativeChatPage))));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editButton = host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']");
+    expect(editButton).toBeTruthy();
+    await act(async () => editButton?.click());
+    expect(document.body.querySelector("[role='dialog']")).toBeTruthy();
+    expect(gateway.instance?.requests.some(({ method }) => method === "prompt.submit")).toBe(false);
+
+    const editTextarea = document.body.querySelector<HTMLTextAreaElement>("textarea[aria-label='Edited user message']")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(editTextarea, "revised first prompt");
+      editTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+      document.body.querySelector<HTMLButtonElement>("button[data-confirm]")?.click();
+    });
+    const editRequest = gateway.instance?.requests.find(({ method }) => method === "prompt.submit");
+    expect(editRequest?.params).toMatchObject({
+      session_id: "runtime-1",
+      text: "revised first prompt",
+      truncate_before_row_id: 7,
+      confirm_truncate: true,
+      confirm_empty_truncate: true,
+      rebind_survivor_row_ids: [7],
+    });
+    expect(document.body.querySelector("[role='dialog']")).toBeNull();
   });
 
   it("supports edit-as-draft and rerunning the latest prompt", async () => {

@@ -102,6 +102,30 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             for rec in caplog.records
         )
 
+    def test_close_disables_sqlite_internal_checkpoint_on_py312(self, tmp_path):
+        """Quarantine must also stop SQLite's own last-connection checkpoint.
+
+        Skipping the explicit PRAGMA is not enough: sqlite3.Connection.close()
+        runs an internal PASSIVE checkpoint and unlinks -wal/-shm unless
+        SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE is set (Connection.setconfig,
+        Python 3.12+). On 3.11 the switch is unavailable — skip there.
+        """
+        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        if flag is None or not hasattr(db._conn, "setconfig"):
+            db.close()
+            pytest.skip("SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE needs Python 3.12+")
+        real_conn = db._conn
+        db.create_session(session_id="s1", source="cli", model="test")
+        assert real_conn.getconfig(flag) is False
+        db._conn = _MalformedConn(real_conn)
+        with pytest.raises(StateDbCorruptError):
+            db.create_session(session_id="s2", source="cli", model="test")
+        db._conn = real_conn
+        # _halt_db_corrupt armed the no-checkpoint-on-close switch.
+        assert real_conn.getconfig(flag) is True
+        db.close()
+
     def test_reopen_after_close_refused_when_quarantined(self, tmp_path, monkeypatch):
         from unittest.mock import MagicMock
 

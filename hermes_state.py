@@ -4380,9 +4380,14 @@ class StateDbCorruptError(sqlite3.DatabaseError):
     minutes after the first structural error checkpointed 15 pages under the
     wrong page numbers on shutdown, turning a still-readable file into
     ``file is not a database``. Stopping the writes is what prevents that;
-    skipping the explicit checkpoint is the second line of defence (SQLite
-    may still run its own last-connection checkpoint on close — Python's
-    ``sqlite3`` does not expose ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``). The
+    skipping the explicit checkpoint is the second line of defence. SQLite
+    still runs its own last-connection checkpoint inside ``close()`` (and
+    deletes the ``-wal`` sidecar) unless ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``
+    is set — Python exposes it via ``Connection.setconfig()`` on 3.12+, so
+    quarantine disables the close-time checkpoint there and the WAL survives
+    on disk for forensics; on 3.11 the internal checkpoint is unavoidable
+    (post-quarantine it can only carry pre-corruption committed frames, since
+    no further writes are accepted). The
     recovery boundary is a process restart on a repaired or restored file.
     """
 
@@ -6408,6 +6413,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Quarantine this handle and raise; never run in-file repair here."""
         self._db_corrupt = True
         self._db_corrupt_reason = str(exc)
+        self._disable_close_time_checkpoint()
         logger.error(
             "state.db %s reported structural corruption outside the FTS "
             "indexes (%s); quarantining this handle: no further writes, no "
@@ -6424,6 +6430,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if value is not None:
                 setattr(err, attr, value)
         raise err from exc
+
+    def _disable_close_time_checkpoint(self) -> None:
+        """Best-effort: stop SQLite's own last-connection checkpoint on close.
+
+        Skipping our explicit ``PRAGMA wal_checkpoint(PASSIVE)`` in
+        ``close()`` is not enough on its own: ``sqlite3.Connection.close()``
+        still runs SQLite's internal last-connection PASSIVE checkpoint and
+        unlinks the ``-wal``/``-shm`` sidecars. On the field incident's file
+        that close-time checkpoint is exactly what wrote 15 pages under the
+        wrong page numbers. Python 3.12+ exposes the switch as
+        ``Connection.setconfig(SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)``; on 3.11
+        neither the constant nor ``setconfig`` exists, so the internal
+        checkpoint remains (it can only carry pre-quarantine committed
+        frames — no further writes are accepted on this handle).
+        """
+        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+        if flag is None:
+            return
+        conn = self._conn
+        setconfig = getattr(conn, "setconfig", None)
+        if conn is None or setconfig is None:
+            return
+        try:
+            setconfig(flag, True)
+        except Exception:
+            logger.debug(
+                "Could not disable SQLite's close-time checkpoint on the "
+                "quarantined handle for %s",
+                self.db_path,
+                exc_info=True,
+            )
 
     def _raise_if_db_corrupt(self) -> None:
         if self._db_corrupt:

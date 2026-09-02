@@ -40,9 +40,12 @@ writing for ~50 minutes after the first structural error checkpointed 15
 pages under the wrong page numbers on shutdown (page 1 received a
 `messages_fts_trigram_data` leaf) and turned a damaged-but-readable file into
 one that no longer opened at all. Skipping the explicit checkpoint is the
-second line of defence; SQLite may still run its own last-connection
-checkpoint when the connection closes, so copy `state.db`, `state.db-wal` and
-`state.db-shm` together before restarting anything.
+second line of defence; on Python 3.12+ the quarantine also disables
+SQLite's own last-connection checkpoint (`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`),
+so the `-wal` sidecar survives `close()` for forensics. On Python 3.11 that
+switch is unavailable and SQLite may still checkpoint once on close, so copy
+`state.db`, `state.db-wal` and `state.db-shm` together before restarting
+anything.
 
 The gateway and the agent flush path treat the quarantine like a replaced
 file: pending transcripts go to `sessions/<id>.jsonl` and the gateway

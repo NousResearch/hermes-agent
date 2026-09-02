@@ -933,7 +933,17 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 else:
                     reopened = _reopen_if_review(conn, task_id, current)
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
+                    try:
+                        ok = (
+                            reopened if reopened is not None
+                            else _set_status_direct(conn, task_id, "ready")
+                        )
+                    except _StatusTransitionRefused as refusal:
+                        # Worker teardown unconfirmed: the task stayed
+                        # running with its claim held — surface why.
+                        raise HTTPException(
+                            status_code=409, detail=refusal.detail,
+                        ) from None
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
             elif s == "running":
@@ -946,7 +956,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # transition; fetch lazily so triage/scheduled skip the query.
                 current = kanban_db.get_task(conn, task_id) if s == "todo" else None
                 reopened = _reopen_if_review(conn, task_id, current)
-                ok = reopened if reopened is not None else _set_status_direct(conn, task_id, s)
+                try:
+                    ok = (
+                        reopened if reopened is not None
+                        else _set_status_direct(conn, task_id, s)
+                    )
+                except _StatusTransitionRefused as refusal:
+                    raise HTTPException(
+                        status_code=409, detail=refusal.detail,
+                    ) from None
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
@@ -1120,6 +1138,19 @@ def _invalidate_descendants_for_parent_reopen(
     terminations.extend(result["terminations"])
 
 
+class _StatusTransitionRefused(Exception):
+    """_set_status_direct refused a move; ``detail`` says why.
+
+    Raised (not returned) so the single-task endpoint can answer 409
+    with the reason while the bulk endpoint records it per entry — a
+    bare ``False`` already means "invalid transition" there.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 def _set_status_direct(
     conn: sqlite3.Connection, task_id: str, new_status: str,
 ) -> bool:
@@ -1132,54 +1163,104 @@ def _set_status_direct(
     active run with outcome='reclaimed' so attempt history isn't
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
+
+    The worker is verified dead BEFORE the status write (Gate B review,
+    finding E): flipping a running task to a spawnable state beside a
+    live or still-draining worker is the duplication loop. A scoped
+    worker whose unit stop is not yet confirmed keeps the task
+    ``running`` with its claim held (non-spawnable, ``scope_stopping``
+    marked, claim grace extended) and the move is refused — the caller
+    retries once the teardown lands (the verified-stop service and the
+    crash-cleanup path finish the job even if nobody retries).
     """
+    # Phase 1 — read-only snapshot + transition decision.
+    prev = conn.execute(
+        "SELECT status, current_run_id, worker_pid, claim_lock, "
+        "       worker_pid_started_at, worker_scope "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if prev is None:
+        return False
+
+    effective_status = new_status
+    if prev["status"] == "running" and new_status == "ready":
+        resume_status = kanban_db._retry_status_for_run(
+            conn, task_id, prev["current_run_id"]
+        )
+        if resume_status == "review":
+            effective_status = (
+                "review"
+                if kanban_db._parents_satisfied(conn, task_id)
+                else "todo"
+            )
+
+    # Guard: don't allow promoting to 'ready' unless all parents are done.
+    # Prevents the dispatcher from spawning a child whose upstream work
+    # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
+    if effective_status == "ready":
+        parent_statuses = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if parent_statuses and not all(
+            p["status"] in {"done", "archived"} for p in parent_statuses
+        ):
+            return False
+
+    was_running = prev["status"] == "running"
+    leaving_running = was_running and effective_status != "running"
+    reopening_satisfied_parent = (
+        prev["status"] in {"done", "archived"}
+        and effective_status not in {"done", "archived"}
+    )
+
+    # Phase 2 — confirmed worker teardown BEFORE the status write.
+    # Scoped: hand the unit to the verified-stop service; True means the
+    # cgroup is already confirmed empty. Unscoped: the synchronous
+    # SIGTERM->SIGKILL loop (same order as reclaim_task). Anything that
+    # survives leaves the task running with its claim held and refuses
+    # the move.
+    termination: dict[str, Any] = {}
+    if leaving_running:
+        pid, claim_lock, pid_started, scope = (
+            kanban_db._worker_termination_tuple(prev)
+        )
+        termination = kanban_db._terminate_reclaimed_worker(
+            pid, claim_lock,
+            scope_unit=scope or None,
+            pid_started_at=pid_started,
+        )
+        if kanban_db._worker_survived_termination(termination):
+            kanban_db._defer_reclaim_for_live_worker(
+                conn, task_id, prev["claim_lock"], int(time.time()),
+                termination,
+                reason=(
+                    f"dashboard_status_{new_status}_stop_unconfirmed"
+                ),
+            )
+            if scope:
+                kanban_db._mark_run_scope_stopping(
+                    conn, task_id, scope,
+                    reason="dashboard_status_stop_unconfirmed",
+                )
+            raise _StatusTransitionRefused(
+                f"task {task_id} stays running: its worker could not be "
+                f"verified stopped (scope still draining); the status "
+                f"change to {new_status!r} was not applied — retry once "
+                f"the teardown completes"
+            )
+
+    # Phase 3 — the status write, CAS'd on the snapshotted state: the
+    # teardown above can take seconds, so a task that moved on
+    # underneath us (completed, reclaimed elsewhere) is skipped rather
+    # than clobbered.
     terminations: list[
         tuple[Optional[int], Optional[str], Optional[int], Optional[str]]
     ] = []
-    effective_status = new_status
     with kanban_db.write_txn(conn):
-        # Snapshot current state so we know whether to close a run.
-        prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock, "
-            "       worker_pid_started_at, worker_scope "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if prev is None:
-            return False
-
-        if prev["status"] == "running" and new_status == "ready":
-            resume_status = kanban_db._retry_status_for_run(
-                conn, task_id, prev["current_run_id"]
-            )
-            if resume_status == "review":
-                effective_status = (
-                    "review"
-                    if kanban_db._parents_satisfied(conn, task_id)
-                    else "todo"
-                )
-
-        # Guard: don't allow promoting to 'ready' unless all parents are done.
-        # Prevents the dispatcher from spawning a child whose upstream work
-        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
-        if effective_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] in {"done", "archived"} for p in parent_statuses
-            ):
-                return False
-
-        was_running = prev["status"] == "running"
-        reopening_satisfied_parent = (
-            prev["status"] in {"done", "archived"}
-            and effective_status not in {"done", "archived"}
-        )
-
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
@@ -1191,7 +1272,7 @@ def _set_status_direct(
             "      THEN worker_registered_at ELSE NULL END, "
             "  worker_scope = CASE WHEN ? = 'running' "
             "      THEN worker_scope ELSE NULL END "
-            "WHERE id = ?",
+            "WHERE id = ? AND status IS ? AND claim_lock IS ?",
             (
                 effective_status,
                 effective_status,
@@ -1201,20 +1282,20 @@ def _set_status_direct(
                 effective_status,
                 effective_status,
                 task_id,
+                prev["status"],
+                prev["claim_lock"],
             ),
         )
         if cur.rowcount != 1:
             return False
         run_id = None
-        if was_running and effective_status != "running" and prev["current_run_id"]:
+        if leaving_running and prev["current_run_id"]:
             run_id = kanban_db._end_run(
                 conn, task_id,
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)",
+                metadata=termination or None,
             )
-            # Same uniform shape as every other transition path (the
-            # two-tuple here crashed the post-commit drain unpack).
-            terminations.append(kanban_db._worker_termination_tuple(prev))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",
@@ -1385,7 +1466,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             reopened = _reopen_if_review(conn, tid, cur)
-                            ok = reopened if reopened is not None else _set_status_direct(conn, tid, "ready")
+                            try:
+                                ok = (
+                                    reopened if reopened is not None
+                                    else _set_status_direct(conn, tid, "ready")
+                                )
+                            except _StatusTransitionRefused as refusal:
+                                entry.update(ok=False, error=refusal.detail)
+                                results.append(entry)
+                                continue
                     elif s == "running":
                         entry.update(
                             ok=False,
@@ -1402,7 +1491,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         # Fetch lazily: only review->todo needs reopen.
                         cur = kanban_db.get_task(conn, tid) if s == "todo" else None
                         reopened = _reopen_if_review(conn, tid, cur)
-                        ok = reopened if reopened is not None else _set_status_direct(conn, tid, s)
+                        try:
+                            ok = (
+                                reopened if reopened is not None
+                                else _set_status_direct(conn, tid, s)
+                            )
+                        except _StatusTransitionRefused as refusal:
+                            entry.update(ok=False, error=refusal.detail)
+                            results.append(entry)
+                            continue
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
                         results.append(entry)

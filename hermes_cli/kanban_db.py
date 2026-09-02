@@ -7213,15 +7213,22 @@ def invalidate_descendants_for_parent_reopen(
       WHY a card moved instead of watching it silently teleport.
 
     Live ``running`` descendants keep the termination behavior (a running
-    child building on a retracted premise is wasted spend): their run is
-    closed ``reclaimed`` and their worker is killed via
-    :func:`_terminate_reclaimed_worker` — the same helper the reclaim paths
-    use. Events/comments are written inside the transaction and the kill
-    happens strictly post-commit, so the audit trail exists BEFORE the
-    worker dies. When this function opened its own transaction it performs
-    the terminations itself after commit; when composing under a caller's
-    transaction the caller MUST drain the returned ``terminations`` list
-    with ``_terminate_reclaimed_worker`` after its own commit.
+    child building on a retracted premise is wasted spend), split by
+    isolation so no descendant is ever demoted beside a live worker
+    (Gate B review, finding E):
+
+    * Scoped descendants are verified stopped BEFORE the demotion: a
+      confirmed-empty cgroup demotes immediately; an unconfirmed stop
+      DEFERS that descendant — it stays ``running`` with its claim held
+      and a ``scope_stopping`` marker, and the crash-cleanup path
+      requeues it once the verified-stop service finishes the kill.
+    * Unscoped descendants keep the audit-first contract: events and
+      comments are written inside the transaction and the kill happens
+      strictly post-commit via :func:`_terminate_reclaimed_worker`.
+      When this function opened its own transaction it performs the
+      terminations itself after commit; when composing under a caller's
+      transaction the caller MUST drain the returned ``terminations``
+      list with ``_terminate_reclaimed_worker`` after its own commit.
 
     ``consecutive_failures`` is reset to 0 on every invalidated descendant:
     ancestor reopen is a deliberate operator action, so demoted work gets a
@@ -7237,8 +7244,9 @@ def invalidate_descendants_for_parent_reopen(
     invalidated entry is ``{id, prior_status, new_status, resume_status}``
     and each termination is a ``(worker_pid, claim_lock,
     worker_pid_started_at, worker_scope)`` tuple — pass all four to
-    ``_terminate_reclaimed_worker`` so scoped descendants die with the
-    retraction.
+    ``_terminate_reclaimed_worker`` so unscoped descendants die with the
+    retraction. (Scoped running descendants never appear here: they are
+    either verified dead before the demotion or deferred whole.)
     """
     caller_owns_txn = bool(getattr(conn, "in_transaction", False))
     now = int(time.time())
@@ -7246,6 +7254,54 @@ def invalidate_descendants_for_parent_reopen(
     terminations: list[
         tuple[Optional[int], Optional[str], Optional[int], Optional[str]]
     ] = []
+
+    # Phase 0 — scoped running descendants: verified stop BEFORE any
+    # demotion. Demoting flips the row to spawnable 'todo'; doing that
+    # beside a live or still-draining scope is the duplication loop, so
+    # an unconfirmed stop defers the whole descendant (claim held,
+    # ``scope_stopping`` marked) and the crash-cleanup path requeues it
+    # once the verified-stop service lands the kill. Runs before the
+    # write transaction so the stop probe never sits inside it.
+    deferred: set[str] = set()
+    scoped_rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+            SELECT child_id FROM task_links WHERE parent_id = ?
+            UNION
+            SELECT l.child_id
+            FROM task_links l
+            JOIN descendants d ON d.id = l.parent_id
+        )
+        SELECT t.id, t.claim_lock, t.worker_pid, t.worker_scope
+        FROM descendants d
+        JOIN tasks t ON t.id = d.id
+        WHERE t.status = 'running' AND t.worker_scope IS NOT NULL
+        """,
+        (task_id,),
+    ).fetchall()
+    for row in scoped_rows:
+        if request_worker_scope_stop(
+            row["worker_scope"], task_id=row["id"],
+        ):
+            continue  # cgroup confirmed empty — safe to demote in-txn
+        termination = {
+            "prev_pid": row["worker_pid"],
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": False,
+            "scope_unit": row["worker_scope"],
+            "scope_stopped": False,
+        }
+        _defer_reclaim_for_live_worker(
+            conn, row["id"], row["claim_lock"], now, termination,
+            reason="ancestor_reopen_scope_still_stopping",
+        )
+        _mark_run_scope_stopping(
+            conn, row["id"], row["worker_scope"],
+            reason="ancestor_reopen_stop_unconfirmed",
+        )
+        deferred.add(row["id"])
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -7268,6 +7324,10 @@ def invalidate_descendants_for_parent_reopen(
             previous_status = row["status"]
             if previous_status not in {"ready", "review", "running", "done"}:
                 continue
+            if row["id"] in deferred:
+                # Scoped descendant whose stop is unconfirmed — kept
+                # running with its claim by Phase 0; nothing to demote.
+                continue
             resume_status = "ready"
             run_id = None
             if previous_status == "review":
@@ -7276,7 +7336,10 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = _retry_status_for_run(
                     conn, row["id"], row["current_run_id"]
                 )
-                terminations.append(_worker_termination_tuple(row))
+                if not row["worker_scope"]:
+                    # Unscoped pid: kill post-commit (audit-first). Scoped
+                    # rows here were verified dead in Phase 0 — no kill.
+                    terminations.append(_worker_termination_tuple(row))
                 run_id = _end_run(
                     conn,
                     row["id"],
@@ -8950,8 +9013,10 @@ def _mark_run_scope_stopping(
     A tick that wants to close a run but could not verify its scope dead
     defers the close and marks this event instead; the row keeps its
     claim and the next tick re-checks the service. One event per run id
-    so a long teardown doesn't flood the timeline."""
-    with write_txn(conn):
+    so a long teardown doesn't flood the timeline.  Nested-safe: the
+ancestor-reopen invalidation composes this under the dashboard's outer
+commit."""
+    with write_txn(conn, allow_nested=True):
         run_id = _current_run_id(conn, task_id)
         already = conn.execute(
             "SELECT 1 FROM task_events "
@@ -9406,7 +9471,10 @@ def _defer_reclaim_for_live_worker(
     duplicate is what lets the throttled worker finally die.
     """
     grace = now + RECLAIM_DEFER_GRACE_SECONDS
-    with write_txn(conn):
+    # Nested-safe: composed under the dashboard's outer commit by the
+    # ancestor-reopen invalidation's Phase 0 (savepoint there, own txn
+    # everywhere else).
+    with write_txn(conn, allow_nested=True):
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
             "WHERE id = ? AND status = 'running' AND claim_lock IS ?",

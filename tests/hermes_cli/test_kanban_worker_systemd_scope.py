@@ -1828,11 +1828,12 @@ def test_invalidate_descendants_stops_scope(shims, conn):
     result = kb.invalidate_descendants_for_parent_reopen(
         conn, parent, author="operator",
     )
-    assert any(t[3] == unit for t in result["terminations"])
-    # The audit sweep guarantees the verified stop even though the
-    # domain-layer drain is best-effort.
-    kb.reap_orphaned_worker_scopes(conn)
+    # Scoped descendants are verified stopped BEFORE the demotion — no
+    # post-commit termination tuple exists for an already-empty cgroup
+    # (E: a spawnable 'todo' never lands beside a live scope).
+    assert result["terminations"] == []
     assert any(s["unit"] == unit for s in shims.stops())
+    assert shims.wait_for(lambda: not kb._pid_alive(pid))
     row = conn.execute(
         "SELECT status, worker_scope FROM tasks WHERE id = ?", (child,)
     ).fetchone()
@@ -2102,23 +2103,12 @@ def test_set_worker_pid_refuses_terminal_task(conn):
 def test_dashboard_direct_running_to_ready_terminates_cleanly(
     shims, conn, kanban_home,
 ):
-    """Dashboard drag running->ready must not crash the post-commit
-    termination drain (Gate B review, finding 5): the direct path
-    records the same four-field termination tuple as every other
-    transition — with and without a scope — and a scoped worker's unit
-    is stopped (verified) by the drain."""
-    pytest.importorskip("fastapi")
-    import importlib.util
-
-    repo_root = Path(__file__).resolve().parents[2]
-    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
-    spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_scope_test", plugin_file,
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
+    """Dashboard drag running->ready must not crash the termination
+    drain (Gate B review, finding 5): the direct path records the same
+    four-field termination tuple as every other transition — with and
+    without a scope — and a scoped worker's unit is stopped (verified)
+    BEFORE the status lands, never beside it."""
+    mod = _load_dashboard_plugin()
 
     # A scoped running row and an unscoped one.
     scoped_pid = shims.sleeper()
@@ -2158,6 +2148,164 @@ def test_dashboard_direct_running_to_ready_terminates_cleanly(
     assert shims.wait_for(lambda: not kb._pid_alive(scoped_pid))
     assert shims.cgroup_pids(unit) == []
     assert shims.wait_for(lambda: not kb._pid_alive(plain_pid))
+
+
+def _load_dashboard_plugin():
+    """Import plugins/kanban/dashboard/plugin_api.py as a fresh module
+    (it is not a package import; the dashboard loads it by path)."""
+    pytest.importorskip("fastapi")
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_scope_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_dashboard_direct_running_to_ready_refuses_unverified_stop(
+    shims, conn, kanban_home,
+):
+    """E: with the scope stop unconfirmed (stop job wedged), the drag
+    does NOT flip the task to spawnable 'ready' — the row stays running
+    with its claim held, a scope_stopping marker records why, and the
+    refusal names the reason. Once the stop can confirm, the retry
+    lands."""
+    mod = _load_dashboard_plugin()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_dash_refuse", 1)
+    shims.write_unit(unit, [pid])
+    shims.arm_deactivating(unit)
+    shims.arm_killproof(unit)
+    tid = _scoped_task_row(conn, scope=unit, pid=pid, registered=True)
+
+    with pytest.raises(mod._StatusTransitionRefused):
+        mod._set_status_direct(conn, tid, "ready")
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"  # non-spawnable: no duplicate window
+    assert row["claim_lock"]  # claim held
+    assert row["worker_scope"] == unit
+    kinds = [
+        r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+            (tid,),
+        ).fetchall()
+    ]
+    assert "scope_stopping" in kinds
+    assert "reclaim_deferred" in kinds
+    # The pid-kill backstop may well have killed the worker directly —
+    # that is fine; what must NOT happen is confirming the SCOPE or
+    # releasing the row while its cgroup state is unknown.
+    assert any(
+        a["action"] in {"stop", "kill"} and a["unit"] == unit
+        for a in shims.stops()
+    )
+
+    # Unwedged: the retry verified-stops first, then flips the status.
+    shims.clear_deactivating(unit)
+    shims.clear_killproof(unit)
+    assert mod._set_status_direct(conn, tid, "ready") is True
+    row = conn.execute(
+        "SELECT status, worker_pid, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"
+    assert row["worker_pid"] is None
+    assert row["worker_scope"] is None
+    assert shims.wait_for(lambda: not kb._pid_alive(pid))
+    assert shims.cgroup_pids(unit) == []
+
+
+def test_ancestor_reopen_defers_scoped_running_descendant(shims, conn):
+    """E, invalidation half: reopening an ancestor demotes a scoped
+    running descendant only after its scope is verified dead. An
+    unconfirmed stop defers the whole descendant (stays running, claim
+    held, marker written) instead of parking a spawnable 'todo' beside a
+    draining cgroup; a confirmed one demotes and the worker is dead."""
+    # Wedged descendant.
+    wedged_pid = shims.sleeper()
+    wedged_unit = kb._kanban_worker_scope_unit("t_desc_wedged", 1)
+    shims.write_unit(wedged_unit, [wedged_pid])
+    shims.arm_deactivating(wedged_unit)
+    shims.arm_killproof(wedged_unit)
+    # Clean descendant.
+    clean_pid = shims.sleeper()
+    clean_unit = kb._kanban_worker_scope_unit("t_desc_clean", 1)
+    shims.write_unit(clean_unit, [clean_pid])
+    parent = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent)
+    for scope, pid, title in (
+        (wedged_unit, wedged_pid, "wedged child"),
+        (clean_unit, clean_pid, "clean child"),
+    ):
+        child = kb.create_task(
+            conn, title=title, assignee="builder", parents=[parent],
+        )
+        claimed = kb.claim_task(conn, child)
+        assert claimed is not None and claimed.status == "running"
+        kb._set_worker_pid(conn, child, pid)
+        conn.execute(
+            "UPDATE tasks SET worker_scope=? WHERE id=?", (scope, child),
+        )
+        conn.commit()
+    wedged_child, clean_child = (
+        conn.execute(
+            "SELECT id FROM tasks WHERE title=?", (t,),
+        ).fetchone()["id"]
+        for t in ("wedged child", "clean child")
+    )
+
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent, author="operator",
+    )
+
+    # Wedged: deferred whole — still running, claim held, marked.
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (wedged_child,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"]
+    assert row["worker_scope"] == wedged_unit
+    kinds = [
+        r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+            (wedged_child,),
+        ).fetchall()
+    ]
+    assert "scope_stopping" in kinds
+    assert "reclaim_deferred" in kinds
+    # Clean: verified dead first, then demoted — no termination tuple is
+    # left for a post-commit kill of an already-empty cgroup.
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?",
+        (clean_child,),
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert row["worker_scope"] is None
+    assert result["terminations"] == []
+    assert shims.wait_for(lambda: not kb._pid_alive(clean_pid))
+    assert kb._pid_alive(wedged_pid)  # killproof held the wedge
+
+    # Unwedge + re-run: the deferred descendant demotes on the retry.
+    shims.clear_deactivating(wedged_unit)
+    shims.clear_killproof(wedged_unit)
+    kb.invalidate_descendants_for_parent_reopen(conn, parent, author="op")
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?",
+        (wedged_child,),
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert row["worker_scope"] is None
+    assert shims.wait_for(lambda: not kb._pid_alive(wedged_pid))
 
 
 # ---------------------------------------------------------------------------

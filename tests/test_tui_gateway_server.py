@@ -633,7 +633,7 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
         def __init__(self):
             self.controls = []
 
-        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0):
+        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0, on_late_ack=None):
             self.controls.append((sid, route_name, dict(payload or {}), wait))
             return {
                 "type": "control.ack",
@@ -10500,7 +10500,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
     }
 
 
-def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+def test_session_compress_forwards_config_ceiling_budget_to_compute_host(monkeypatch):
     session = _session(agent=None, _compute_host_active=True)
     server._sessions["sid"] = session
     calls = []
@@ -10519,6 +10519,9 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
 
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
     monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"compression": {"context_total_ceiling_seconds": 300}}
+    )
 
     try:
         resp = server.handle_request(
@@ -10528,17 +10531,17 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
         server._sessions.pop("sid", None)
 
     assert resp["result"]["status"] == "compressed"
-    assert calls == [
-        (
-            ("sid",),
-            {
-                "route_name": "session.compress",
-                "command": "/compress",
-                "wait": True,
-                "timeout": 120.0,
-            },
-        )
-    ]
+    assert len(calls) == 1
+    (sid_arg,), kwargs = calls[0]
+    assert sid_arg == "sid"
+    assert kwargs["route_name"] == "session.compress"
+    assert kwargs["command"] == "/compress"
+    assert kwargs["wait"] is True
+    # #97948: the waiter follows compression.context_total_ceiling_seconds
+    # (+30s slack) instead of a hard-coded 120s, and registers a late-ack
+    # handler so a compress that outlives it is still adopted.
+    assert kwargs["timeout"] == 330.0
+    assert callable(kwargs["on_late_ack"])
 
 
 def test_session_compress_preserves_compute_host_aborted_summary(monkeypatch):

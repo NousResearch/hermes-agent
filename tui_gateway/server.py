@@ -2656,6 +2656,11 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
 
 _compute_host_supervisor = None
 _compute_host_supervisor_lock = threading.Lock()
+# Hard cap on how long session.compress blocks its RPC waiting for the compute
+# host (#97948). Must stay below the desktop's SESSION_COMPRESS_TIMEOUT_MS
+# (660s) so the client receives the `pending` answer instead of its own
+# timeout error; the late-ack path covers anything slower.
+_COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS = 630.0
 
 
 def _inside_compute_host_child() -> bool:
@@ -2931,6 +2936,7 @@ def _send_compute_host_control(
     payload: dict | None = None,
     wait: bool = True,
     timeout: float = 30.0,
+    on_late_ack=None,
 ) -> dict:
     frame = dict(payload or {})
     frame.setdefault("type", "control")
@@ -2941,7 +2947,66 @@ def _send_compute_host_control(
         payload=frame,
         wait=wait,
         timeout=timeout,
+        on_late_ack=on_late_ack,
     )
+
+
+def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:
+    """RPC wait budget for a compute-host compress control (#97948).
+
+    Manual compression legitimately runs up to the configured
+    ``compression.context_total_ceiling_seconds`` (default 600s), so a fixed
+    120s waiter reported a false timeout while the host kept working. Follow
+    the ceiling with a little slack, but cap the blocking wait so it stays
+    below the desktop's own RPC timeout; anything longer is adopted through
+    the late-ack path instead of failing.
+    """
+    from agent.conversation_compression import resolve_context_compression_timeouts
+
+    try:
+        compression_cfg = (cfg if cfg is not None else _load_cfg()).get("compression", {})
+    except Exception:
+        compression_cfg = {}
+    _idle, ceiling = resolve_context_compression_timeouts(
+        compression_cfg if isinstance(compression_cfg, dict) else {}
+    )
+    return float(min(max(ceiling + 30.0, 120.0), _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS))
+
+
+def _announce_compute_host_compress_done(sid: str, session: dict, ack: dict) -> None:
+    """Mirror a compute-host compress ack and push the client-visible edges.
+
+    Emits the same ``session.info`` the in-process /compress path does plus
+    the ``compacted`` status edge, so a client whose own RPC wait already
+    expired still learns the transcript changed.
+    """
+    _apply_compute_host_metadata_mirror(session, ack)
+    try:
+        info = _session_info(session.get("agent"), session)
+    except TypeError:
+        info = _session_info(session.get("agent"))
+    _emit("session.info", sid, info)
+    _status_update(sid, "compacted", "✓ Context compression complete")
+
+
+def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *, route_name: str) -> None:
+    """Adopt a compute-host compress ack that arrived after its RPC waiter gave up.
+
+    The RPC already answered ``status: pending``; this is the only place the
+    rotated session_key / history_version / session_info mirror can land, and
+    the only signal the client gets that the transcript changed. A late
+    ``control.error`` surfaces through the existing ``error`` event path.
+    """
+    with _sessions_lock:
+        live = _sessions.get(sid)
+    if live is not session:
+        return
+    if not isinstance(ack, dict) or ack.get("type") in {"control.error", "error"}:
+        message = str((ack or {}).get("message") or f"compute-host {route_name} failed")
+        _emit("error", sid, {"message": f"compression failed: {message}"})
+        _status_update(sid, "ready")
+        return
+    _announce_compute_host_compress_done(sid, session, ack)
 
 
 def _approval_request_payload(data: dict | None) -> dict:
@@ -16708,13 +16773,28 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
     if _session_uses_compute_host(session) and name in _MUTATES_WHILE_RUNNING:
         route_name = f"slash.{name}"
+        is_compress = name == "compress"
+        _late_session = session
+
+        def _on_late_ack(late: dict, _sid=sid) -> None:
+            _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name=route_name)
+
         try:
             ack = _send_compute_host_control(
                 sid,
                 route_name=route_name,
                 command=command,
                 wait=True,
+                **(
+                    {"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack}
+                    if is_compress
+                    else {}
+                ),
             )
+        except queue.Empty:
+            if is_compress:
+                return "compression still running in the background; the transcript will refresh when it finishes"
+            return f"compute-host {route_name} failed: timed out"
         except Exception as exc:
             return f"compute-host {route_name} failed: {exc}"
         if ack.get("type") in {"control.error", "error"}:

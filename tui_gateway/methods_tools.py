@@ -1057,12 +1057,31 @@ def _(rid, params: dict) -> dict:
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            _late_session = session
+
+            def _on_late_ack(late: dict, _sid=sid) -> None:
+                _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="slash.compress")
+
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compute_host_compress_wait_seconds(),
+                    on_late_ack=_on_late_ack,
+                )
+            except queue.Empty:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "status": "pending",
+                        "output": (
+                            "compression still running in the background; "
+                            "the transcript will refresh when it finishes"
+                        ),
+                    },
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")

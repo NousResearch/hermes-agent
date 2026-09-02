@@ -31,6 +31,7 @@ import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
+import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -692,7 +693,7 @@ describe('usePromptActions /compress', () => {
     vi.restoreAllMocks()
   })
 
-  it('routes through session.compress (not slash.exec) with a 120s timeout and renders the summary', async () => {
+  it('routes through session.compress (not slash.exec) with the compute-host ceiling timeout and renders the summary', async () => {
     const seeds: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
@@ -728,7 +729,7 @@ describe('usePromptActions /compress', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.compress',
       expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
-      120_000
+      SESSION_COMPRESS_TIMEOUT_MS
     )
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -862,7 +863,7 @@ describe('usePromptActions /compress', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.compress',
       expect.objectContaining({ focus_topic: 'the auth refactor' }),
-      120_000
+      SESSION_COMPRESS_TIMEOUT_MS
     )
   })
 
@@ -969,7 +970,7 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 120_000))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS))
 
     // Switch to session B before compression resolves.
     activeSessionIdRef.current = RUNTIME_SESSION_B
@@ -1028,7 +1029,7 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 120_000))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), SESSION_COMPRESS_TIMEOUT_MS))
     activeSessionIdRef.current = RUNTIME_SESSION_B
     storedSessionIdRef.current = 'stored-b'
     rejectCompress(new Error('compression failed'))

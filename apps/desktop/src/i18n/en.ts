@@ -675,6 +675,10 @@ export const en: Translations = {
       bundleOutOfSyncDesc:
         'The Hermes runtime was updated, but the desktop app itself is still an older build — new interface features (like Bot Mode) will be missing until it updates. Run the update below to rebuild the app. If that doesn\u2019t clear this warning, reinstall from the latest desktop installer.',
       bundleOutOfSyncAction: 'Get the installer',
+      bundleSwapPending: 'Restart to finish the update',
+      bundleSwapPendingDesc:
+        'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',
+      bundleSwapPendingAction: 'Restart Hermes',
       updates: 'Updates',
       checkNow: 'Check now',
       checking: 'Checking…',

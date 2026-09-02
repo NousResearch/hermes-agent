@@ -502,6 +502,8 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
+      relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
@@ -582,6 +584,9 @@ export interface DesktopVersionInfo {
   bundleOutOfSync?: boolean
   /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
   bundleCommitsBehind?: null | number
+  /** True when the bundle on disk is newer than the running process — a plain
+   *  app restart (no rebuild, no installer) is enough to load it. */
+  bundleSwapPending?: boolean
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

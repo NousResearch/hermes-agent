@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { detectBundleSkew, isFallbackCommit, RUNTIME_PATHS, type RunGit } from './bundle-skew'
+import { detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
 
 const REPO = '/repo'
 const STAMP = { commit: 'a'.repeat(40), source: 'ci' }

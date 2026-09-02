@@ -704,6 +704,9 @@ export const zhHant = defineLocale({
       bundleOutOfSyncDesc:
         'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
       bundleOutOfSyncAction: '取得安裝程式',
+      bundleSwapPending: '重新啟動以完成更新',
+      bundleSwapPendingDesc: '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+      bundleSwapPendingAction: '重新啟動 Hermes',
       updates: '更新',
       checkNow: '立即檢查',
       checking: '檢查中…',

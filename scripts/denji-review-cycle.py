@@ -33,6 +33,7 @@ Usage:
   python3 denji-review-cycle.py --cycle quarterly
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -130,6 +131,10 @@ def _file_stats(profile: str) -> dict[str, dict]:
                 "size": st.st_size,
                 "mtime_epoch": int(st.st_mtime),
                 "mtime_iso": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                # Content hash so downstream consumers (e.g. the targeted
+                # self-eval trigger) can detect a MATERIAL change vs a
+                # mtime-only touch / fleet-wide rewrite of identical bytes.
+                "content_sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
             }
         except OSError:
             result[fn] = {"exists": True, "error": "stat failed"}

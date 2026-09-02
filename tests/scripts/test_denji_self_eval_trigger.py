@@ -42,6 +42,49 @@ def _seed(home, event_type, actor, target, when, count=1):
         )
 
 
+def _seed_cron_failure(home, profile, when, count=1):
+    """Seed a job_run_error event with NULL actor/target columns but the
+    owning profile in payload_json (the cron producer's actual shape)."""
+    from hermes_cli.profile_activity_ledger import append_event
+    for _ in range(count):
+        append_event(
+            source="cron", event_type="job_run_error",
+            event_id=f"cron:run:{when}-{time.time_ns()}",
+            actor_profile=None, target_profile=None,
+            summary=f"cron job_run_error for {profile}",
+            payload={"job_id": "x", "name": "x", "profile": profile,
+                     "severity": "error"},
+            occurred_at=when,
+        )
+
+
+def _seed_review_baseline(home, profile, config_sha256):
+    """Seed a profile.review.* event carrying a content-hash baseline for
+    config.yaml, so the trigger's semantic config-change check has a
+    reference to compare against."""
+    import hashlib
+    from hermes_cli.profile_activity_ledger import append_event
+    cfg = home / "profiles" / profile / "config.yaml"
+    if config_sha256 is None:
+        config_sha256 = hashlib.sha256(cfg.read_bytes()).hexdigest()
+    append_event(
+        source="denji-review-cycle",
+        event_type="profile.review.weekly",
+        event_id=f"review-{profile}-{time.time_ns()}",
+        actor_profile="denji", target_profile=profile,
+        object_type="profile.review",
+        summary=f"Weekly review for {profile}",
+        payload={
+            "cycle": "weekly",
+            "profile": profile,
+            "files": {
+                "config.yaml": {"exists": True, "content_sha256": config_sha256},
+            },
+        },
+        occurred_at=int(time.time()),
+    )
+
+
 class TestTriggerDecision:
     def test_repeated_failure_triggers(self, fake_home):
         mod = _load()
@@ -56,10 +99,27 @@ class TestTriggerDecision:
     def test_material_config_change_triggers(self, fake_home):
         mod = _load()
         now = int(time.time())
+        # Seed a baseline review event with the CURRENT config content hash,
+        # then change the config content so the trigger sees a material change.
+        _seed_review_baseline(fake_home, "octacon", config_sha256=None)
+        cfg = fake_home / "profiles" / "octacon" / "config.yaml"
+        cfg.write_text("model:\n  default: t/m\n  changed: true\n")
         d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
-        # config.yaml was just created inside the window → material change
         reasons = [r["reason"] for r in d["reasons"]]
         assert "material_config_change" in reasons
+
+    def test_mtime_only_touch_is_not_material(self, fake_home):
+        """A fleet-wide mtime touch with unchanged content must NOT fire the
+        config-change reason (the no-blanket-fleet-request guarantee)."""
+        mod = _load()
+        now = int(time.time())
+        _seed_review_baseline(fake_home, "octacon", config_sha256=None)
+        # Touch the file (mtime bump) without changing content.
+        import os
+        os.utime(fake_home / "profiles" / "octacon" / "config.yaml", (now, now))
+        d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
+        reasons = [r["reason"] for r in d["reasons"]]
+        assert "material_config_change" not in reasons
 
     def test_quarterly_lead_review(self, fake_home):
         mod = _load()
@@ -97,6 +157,58 @@ class TestTriggerDecision:
         d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
         assert d["trigger"] is False
         assert d["reasons"] == []
+
+    def test_repeated_failure_via_payload_profile_attribution(self, fake_home):
+        """Cron failure events carry the owning profile only in payload_json
+        (NULL actor/target columns). The trigger must attribute them."""
+        mod = _load()
+        now = int(time.time())
+        for i in range(3):
+            _seed_cron_failure(fake_home, "octacon", now - 100 - i)
+        d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
+        reasons = [r["reason"] for r in d["reasons"]]
+        assert "repeated_failure" in reasons
+        assert d["trigger"] is True
+
+    def test_quality_regression_from_dimensions_verdict(self, fake_home):
+        """A review event with dimensions.quality.verdict=WATCH must fire the
+        quality_regression reason (repo producer shape)."""
+        mod = _load()
+        now = int(time.time())
+        from hermes_cli.profile_activity_ledger import append_event
+        append_event(
+            source="denji-review-cycle", event_type="profile.review.weekly",
+            event_id=f"review-{time.time_ns()}",
+            actor_profile="denji", target_profile="octacon",
+            object_type="profile.review",
+            summary="review",
+            payload={"cycle": "weekly", "profile": "octacon",
+                     "dimensions": {"quality": {"verdict": "WATCH"}}},
+            occurred_at=now,
+        )
+        d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
+        reasons = [r["reason"] for r in d["reasons"]]
+        assert "quality_regression" in reasons
+
+    def test_quality_no_false_positive_on_deployed_recommendation(self, fake_home):
+        """The deployed producer writes a 'recommendation' string with no
+        dimensions block. That must NOT fire quality_regression (fail-safe)."""
+        mod = _load()
+        now = int(time.time())
+        from hermes_cli.profile_activity_ledger import append_event
+        append_event(
+            source="denji-review-cycle", event_type="profile.review.weekly",
+            event_id=f"review-{time.time_ns()}",
+            actor_profile="denji", target_profile="octacon",
+            object_type="profile.review",
+            summary="review",
+            payload={"cycle": "weekly", "profile": "octacon",
+                     "recommendation": "dormant - consider archival or removal"},
+            occurred_at=now,
+        )
+        d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
+        reasons = [r["reason"] for r in d["reasons"]]
+        assert "quality_regression" not in reasons
 
 
 class TestEmitIdempotence:
@@ -139,6 +251,11 @@ class TestEmitIdempotence:
         """The trigger path must not modify any cron record or reminder."""
         mod = _load()
         now = int(time.time())
+        # Seed a baseline and change the config so the trigger fires, then
+        # assert the only side effect is a ledger event (no cron dir).
+        _seed_review_baseline(fake_home, "octacon", config_sha256=None)
+        cfg = fake_home / "profiles" / "octacon" / "config.yaml"
+        cfg.write_text("model:\n  default: t/m\n  changed: true\n")
         d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=fake_home, now=now)
         mod.emit_trigger(d, hermes_home=fake_home)
         cron_dir = fake_home / "cron"

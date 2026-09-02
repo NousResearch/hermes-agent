@@ -852,6 +852,18 @@ class TestFTS5Search:
             traced_connections.append(read_conn)
         for conn in traced_connections:
             conn.set_trace_callback(statements.append)
+        # The context-enrichment query runs on a pooled read connection
+        # obtained via _checkout_read_conn() (the read-pool refactor
+        # 87aedbe7b6). That connection is opened lazily during the search,
+        # so trace it by wrapping the checkout seam rather than pre-borrowing
+        # (pre-borrowing would steal the pooled conn and force a new one).
+        _orig_checkout = db._checkout_read_conn
+        def _traced_checkout():
+            conn = _orig_checkout()
+            if conn is not None:
+                conn.set_trace_callback(statements.append)
+            return conn
+        db._checkout_read_conn = _traced_checkout
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)

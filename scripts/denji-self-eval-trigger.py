@@ -54,6 +54,13 @@ _CONFIG_FILES = ("config.yaml", "SOUL.md")
 
 
 def _ledger_counts(profile: str, since: int, hermes_home: Path) -> dict[str, int]:
+    """Return failure/activity counts for a profile in the window.
+
+    Attribution is read from BOTH the actor/target columns AND the
+    payload_json ``profile`` field. Cron-produced events (``job_run_error``,
+    ``job_run_ok``) carry the owning profile only in payload_json, with NULL
+    actor/target columns — matching on the column alone would miss them.
+    """
     import sqlite3
     db = hermes_home / "governance" / "profile-activity-ledger.sqlite"
     if not db.exists():
@@ -62,9 +69,10 @@ def _ledger_counts(profile: str, since: int, hermes_home: Path) -> dict[str, int
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute(
             "SELECT event_type, COUNT(*) FROM activity_events "
-            "WHERE (actor_profile = ? OR target_profile = ?) "
+            "WHERE (actor_profile = ? OR target_profile = ? "
+            "       OR json_extract(payload_json, '$.profile') = ?) "
             "AND occurred_at >= ? GROUP BY event_type",
-            (profile, profile, int(since)),
+            (profile, profile, profile, int(since)),
         ).fetchall()
         con.close()
         return {r[0]: int(r[1]) for r in rows}
@@ -73,16 +81,54 @@ def _ledger_counts(profile: str, since: int, hermes_home: Path) -> dict[str, int
 
 
 def _config_changed(profile: str, since: int, hermes_home: Path) -> tuple[bool, list[str]]:
-    """True when an identity/config file changed inside the window."""
+    """True when an identity/config file's CONTENT changed inside the window.
+
+    Raw mtime is not used: a fleet-wide config write (e.g. a bulk touch of
+    every profile's config.yaml) would otherwise fire this reason for every
+    profile, defeating the "no blanket fleet-wide request" guarantee. Instead
+    the current content hash is compared against the hash recorded in the
+    most recent ``profile.review.*`` event's ``files`` block. A file whose
+    content is unchanged (mtime-only touch) does not count as a material
+    change. When no review event exists yet, the file is not treated as
+    changed (fail-safe: avoid over-firing on first observation).
+    """
+    import hashlib
+    import json
+    import sqlite3
     profiles_dir = hermes_home / "profiles"
     base = hermes_home if profile == "default" else profiles_dir / profile
+    # Baseline content hashes from the most recent review event, if any.
+    baseline: dict[str, str] = {}
+    db = hermes_home / "governance" / "profile-activity-ledger.sqlite"
+    if db.exists():
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            row = con.execute(
+                "SELECT payload_json FROM activity_events "
+                "WHERE event_type LIKE 'profile.review.%' AND target_profile = ? "
+                "ORDER BY occurred_at DESC, id DESC LIMIT 1",
+                (profile,),
+            ).fetchone()
+            con.close()
+            if row and row[0]:
+                payload = json.loads(row[0])
+                files = payload.get("files") or {}
+                for fn, meta in files.items():
+                    if isinstance(meta, dict) and meta.get("content_sha256"):
+                        baseline[fn] = meta["content_sha256"]
+        except Exception:
+            baseline = {}
     changed: list[str] = []
     for fn in _CONFIG_FILES:
         path = base / fn
         if fn == "config.yaml" and profile == "default":
             path = hermes_home / "config.yaml"
         try:
-            if path.exists() and path.stat().st_mtime >= since:
+            if not path.exists():
+                continue
+            current = hashlib.sha256(path.read_bytes()).hexdigest()
+            # Only a content change vs the recorded baseline is material.
+            if fn in baseline and baseline[fn] != current:
                 changed.append(fn)
         except OSError:
             continue
@@ -90,7 +136,18 @@ def _config_changed(profile: str, since: int, hermes_home: Path) -> tuple[bool, 
 
 
 def _quality_regression(profile: str, since: int, hermes_home: Path) -> tuple[bool, dict]:
-    """Read the latest review event's quality dimension verdict, if any."""
+    """Read the latest review event's quality verdict, if any.
+
+    Aligned with BOTH review producers:
+      * the repo producer writes ``dimensions.quality.verdict``
+        (WATCH / ATTENTION / CLEAN);
+      * the deployed producer writes a ``recommendation`` string
+        (activity-based: active / low activity / dormant) with no
+        dimensions block.
+    A quality regression is signalled only by an explicit WATCH/ATTENTION
+    verdict. When the payload has no dimensions block (deployed producer),
+    no quality signal exists and the reason does not fire (fail-safe).
+    """
     import sqlite3
     db = hermes_home / "governance" / "profile-activity-ledger.sqlite"
     try:

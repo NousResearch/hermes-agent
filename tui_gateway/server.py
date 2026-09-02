@@ -10965,14 +10965,33 @@ def _deferred_session_record(
     }
 
 
+_ANY_PROFILE = object()  # default: match a live session regardless of profile
+
+
+def _live_profile_matches(session: dict, profile_home) -> bool:
+    """True when ``session`` belongs to ``profile_home`` (None = launch profile).
+
+    Same string compare as session.resume's ``_find_live_unpersisted``: a
+    record with no ``profile_home`` is the launch profile's. ``_ANY_PROFILE``
+    disables the check for callers that have no profile to scope by.
+    """
+    if profile_home is _ANY_PROFILE:
+        return True
+    want = str(profile_home) if profile_home else None
+    return (session.get("profile_home") or None) == want
+
+
 def _claim_or_reuse_live(
     sid: str, session_key: str, record: dict, lease
 ) -> tuple[str, dict] | None:
     """Register ``record`` as the live session for ``session_key`` under the
     resume lock, or — if a concurrent resume already won — release ``lease`` and
     return the winner for the caller to reuse."""
+    # The record carries the home this resume resolved; a live runtime of the
+    # same stored id under ANOTHER profile is not a winner to reuse (#100029).
+    profile_home = record.get("profile_home")
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key)
+        live = _find_live_session_by_key(session_key, profile_home)
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -10990,7 +11009,7 @@ def _claim_or_reuse_live(
         # those quietly so the reap doesn't later broadcast session.reclaimed
         # for a session the client just re-resumed (auto-re-resume storm).
         _cancel_ws_orphan_reap(sid)
-        stale = _claim_parked_runtimes(session_key, keep_sid=sid)
+        stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
     # Slow finalization work stays OUTSIDE _session_resume_lock (see
     # _pop_session_by_id) — the stale records are already claimed above.
     _finalize_superseded_runtimes(stale)
@@ -10998,7 +11017,7 @@ def _claim_or_reuse_live(
 
 
 def _claim_parked_runtimes(
-    session_key: str, *, keep_sid: str
+    session_key: str, *, keep_sid: str, profile_home=_ANY_PROFILE
 ) -> list[tuple[str, dict]]:
     """Claim sentinel-parked stale runtimes of ``session_key`` for supersession.
 
@@ -11017,6 +11036,7 @@ def _claim_parked_runtimes(
             if old_sid != keep_sid
             and not old.get("_finalized")
             and _session_lookup_key(old, fallback=old_sid) == session_key
+            and _live_profile_matches(old, profile_home)
             and old.get("transport") is _detached_ws_transport
         ]
     for old_sid, _old in candidates:
@@ -11245,11 +11265,19 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     )
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+def _find_live_session_by_key(
+    session_key: str, profile_home=_ANY_PROFILE
+) -> tuple[str, dict] | None:
+    # Stored session ids are timestamp-based and can legitimately exist in more
+    # than one profile's store, so a bare-id match can hand profile B's resume
+    # profile A's live runtime (#100029). Profile-aware callers pass the home
+    # they resolved; the match must then be on (profile_home, session_key).
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key:
+        if _session_lookup_key(session, fallback=sid) == session_key and _live_profile_matches(
+            session, profile_home
+        ):
             return sid, session
     return None
 

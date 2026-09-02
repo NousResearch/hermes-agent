@@ -752,9 +752,11 @@ def _(rid, params: dict) -> dict:
                 _cancel_ws_orphan_reap(sid)
                 return _ok(rid, _reuse_live_payload(sid, session))
 
-        # Fast path: if the session is already live, reuse it under the lock.
+        # Fast path: if the session is already live IN THIS PROFILE, reuse it
+        # under the lock. Never another profile's runtime of the same stored id
+        # — that ran profile B's turn on profile A's agent/memory (#100029).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target)
+            live = _find_live_session_by_key(target, profile_home)
         if live is not None:
             return _reuse_live_response(*live)
 
@@ -1077,7 +1079,7 @@ def _(rid, params: dict) -> dict:
         # live session while we were building. Re-check under the lock; if it won,
         # discard our just-built agent and reuse theirs (no worker/poller wired yet).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target)
+            live = _find_live_session_by_key(target, profile_home)
             if live is not None:
                 try:
                     if hasattr(agent, "close"):

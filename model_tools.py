@@ -1386,9 +1386,9 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     )
                 )
-            # Probe-validate against the deferred tool's schema (ironclaw#5149):
-            # a blind call missing required arguments returns the parameter
-            # schema instead of dispatching into an opaque downstream failure.
+            # Validate against the deferred tool's concrete schema before
+            # dispatch. This covers constraints the provider cannot enforce
+            # through the generic tool_call ``arguments: object`` bridge.
             _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
             if _probe_err is not None:
                 return _return_bridge_result(_probe_err)

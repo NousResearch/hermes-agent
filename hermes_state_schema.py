@@ -554,12 +554,13 @@ class SessionSchemaMixin:
         now = time.monotonic()
         if now < getattr(self, "_fts_stale_retry_after", 0.0):
             return False
-        interval = float(
-            getattr(self, "_fts_stale_retry_interval", 0.0)
-        ) or _FTS_STALE_RETRY_SECONDS
+        interval = float(getattr(self, "_fts_stale_retry_interval", 0.0))
+        if interval <= 0.0:
+            interval = _FTS_STALE_RETRY_SECONDS
         self._fts_stale_retry_after = now + interval
         self._fts_stale_retry_interval = min(
-            interval * 2.0, _FTS_STALE_RETRY_MAX_SECONDS
+            max(interval, _FTS_STALE_RETRY_SECONDS, 1.0) * 2.0,
+            _FTS_STALE_RETRY_MAX_SECONDS,
         )
         try:
             with self._lock:

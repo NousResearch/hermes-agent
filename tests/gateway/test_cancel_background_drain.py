@@ -9,6 +9,7 @@ untracked against a disconnecting adapter.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -116,6 +117,174 @@ async def test_cancel_background_tasks_drains_late_arrivals():
         "the re-drain loop is missing and the task leaked"
     )
     assert adapter._background_tasks == set()
+
+
+def _redirect_flush_dir(tmp_path, monkeypatch):
+    """Point the #72680 pending-message spool at a temp dir."""
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    return flush_dir
+
+
+def _flushed_payloads(flush_dir):
+    return [
+        json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(flush_dir.glob("*.json"))
+    ]
+
+
+async def _stall_until_drain(adapter, resume):
+    """Add a background task that resists cancellation until ``resume`` is set.
+
+    Returns an Event that fires once the task has entered its cancellation
+    handler — i.e. once ``cancel_background_tasks`` is parked in the drain
+    ``wait_for``, which is the exact window the teardown budget expires in.
+    """
+    draining = asyncio.Event()
+
+    async def stubborn():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            draining.set()
+            # Shielded, so the drain's gather cannot complete until the
+            # test releases us — holding the coroutine inside the loop.
+            await asyncio.shield(resume.wait())
+            raise
+
+    task = asyncio.create_task(stubborn())
+    await asyncio.sleep(0)  # let it reach the sleep
+    adapter._background_tasks.add(task)
+    return draining, task
+
+
+@pytest.mark.asyncio
+async def test_pending_flush_survives_teardown_budget_cancellation(tmp_path, monkeypatch):
+    """The #72680 flush must still run when the teardown budget cancels the drain.
+
+    ``GatewayRunner._bounded_adapter_teardown`` wraps this coroutine in
+    ``_await_adapter_cleanup_with_timeout``, which calls ``task.cancel()``
+    once ``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT`` expires.  If the
+    settle tail is not in a ``finally``, that cancellation skips the flush
+    and the queued follow-up is lost with no on-disk recovery copy.
+    """
+    flush_dir = _redirect_flush_dir(tmp_path, monkeypatch)
+    adapter = _make_adapter()
+    sk = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    )
+    adapter._pending_messages[sk] = _event("queued follow-up")
+
+    resume = asyncio.Event()
+    draining, stubborn_task = await _stall_until_drain(adapter, resume)
+
+    cancel_task = asyncio.create_task(adapter.cancel_background_tasks())
+    await asyncio.wait_for(draining.wait(), timeout=1.0)
+
+    # The teardown budget expires: the runner cancels the cleanup coroutine
+    # outright while it is still parked in the drain.
+    cancel_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_task
+
+    payloads = _flushed_payloads(flush_dir)
+    assert len(payloads) == 1, (
+        "pending message was NOT flushed to disk when the teardown budget "
+        "cancelled the drain — the settle tail is not running in a finally"
+    )
+    assert payloads[0]["session_key"] == sk
+    assert payloads[0]["reason"] == "adapter_shutdown"
+    assert payloads[0]["data"]["text"] == "queued follow-up"
+    assert adapter._pending_messages == {}
+
+    resume.set()
+    await asyncio.gather(stubborn_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_still_propagates_to_caller(tmp_path, monkeypatch):
+    """The finally must not swallow CancelledError.
+
+    ``_await_adapter_cleanup_with_timeout`` relies on the cancellation
+    completing; a swallowed CancelledError would turn a bounded teardown
+    back into an unbounded one.
+    """
+    _redirect_flush_dir(tmp_path, monkeypatch)
+    adapter = _make_adapter()
+
+    resume = asyncio.Event()
+    draining, stubborn_task = await _stall_until_drain(adapter, resume)
+
+    cancel_task = asyncio.create_task(adapter.cancel_background_tasks())
+    await asyncio.wait_for(draining.wait(), timeout=1.0)
+    cancel_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_task
+    assert cancel_task.cancelled()
+
+    resume.set()
+    await asyncio.gather(stubborn_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_timely_teardown_flushes_pending_exactly_once(tmp_path, monkeypatch):
+    """Moving the tail into a finally must not double-flush the timely path.
+
+    A clean teardown already flushed correctly before this change (#72680);
+    guard that it still writes exactly one payload per pending slot.
+    """
+    flush_dir = _redirect_flush_dir(tmp_path, monkeypatch)
+    adapter = _make_adapter()
+    sk = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    )
+    adapter._pending_messages[sk] = _event("queued follow-up")
+
+    await adapter.cancel_background_tasks()
+
+    payloads = _flushed_payloads(flush_dir)
+    assert len(payloads) == 1
+    assert payloads[0]["data"]["text"] == "queued follow-up"
+    assert adapter._pending_messages == {}
+    assert adapter._active_sessions == {}
+    assert adapter._background_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_second_teardown_pass_after_cancellation_is_safe(tmp_path, monkeypatch):
+    """A retried teardown after a cancelled pass must not raise or re-flush.
+
+    ``_bounded_adapter_teardown`` keeps making forward progress after a
+    timeout, so the adapter can see a second cleanup call.  The first pass
+    already drained the pending slots, so the second must be a no-op.
+    """
+    flush_dir = _redirect_flush_dir(tmp_path, monkeypatch)
+    adapter = _make_adapter()
+    sk = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    )
+    adapter._pending_messages[sk] = _event("queued follow-up")
+
+    resume = asyncio.Event()
+    draining, stubborn_task = await _stall_until_drain(adapter, resume)
+
+    cancel_task = asyncio.create_task(adapter.cancel_background_tasks())
+    await asyncio.wait_for(draining.wait(), timeout=1.0)
+    cancel_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_task
+
+    assert len(_flushed_payloads(flush_dir)) == 1
+
+    resume.set()
+    await asyncio.gather(stubborn_task, return_exceptions=True)
+
+    # Second pass: nothing left to flush, and it must complete cleanly.
+    await adapter.cancel_background_tasks()
+    assert len(_flushed_payloads(flush_dir)) == 1
+    assert adapter._pending_messages == {}
 
 
 @pytest.mark.asyncio

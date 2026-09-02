@@ -615,9 +615,12 @@ def _write_kanban_config(home: Path, kanban_yaml: str):
 
 
 def _capture_worker_argv(
-    monkeypatch, tmp_path, kanban_yaml: str, *, systemd_available: bool
-) -> list[str]:
-    """Spawn one worker with the given kanban config and return its argv.
+    monkeypatch, tmp_path, kanban_yaml: str, *, systemd_available: bool,
+    task: kb.Task | None = None,
+):
+    """Spawn one worker with the given kanban config; returns
+    ``(argv, spawned_pid)`` — the pid object carries the scope unit the
+    call created (finding F: per-call channel, not a function attribute).
 
     Writes the config exactly once per call site (load_config caches on
     mtime/size, so rewrites within a test would be unreliable); tests that
@@ -638,8 +641,8 @@ def _capture_worker_argv(
 
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
-    kb._default_spawn(_make_task(), str(workspace))
-    return captured["cmds"][0]
+    result = kb._default_spawn(task or _make_task(), str(workspace))
+    return captured["cmds"][0], result
 
 
 def _assert_plain_argv_shape(cmd: list[str]):
@@ -694,13 +697,13 @@ def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
     from the same code path with the probe disabled, so the comparison is
     exact."""
     config = "  worker_isolation: auto\n  worker_memory_max_mb: 512\n"
-    plain = _capture_worker_argv(
+    plain, plain_pid = _capture_worker_argv(
         monkeypatch, tmp_path, config, systemd_available=False
     )
     _assert_plain_argv_shape(plain)
 
     # Same config, probe now passes → same spawn, wrapped.
-    wrapped = _capture_worker_argv(
+    wrapped, wrapped_pid = _capture_worker_argv(
         monkeypatch, tmp_path, config, systemd_available=True
     )
 
@@ -724,8 +727,11 @@ def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
     assert head[head.index("--property") + 7] == "OOMPolicy=kill"
     # Legacy argv preserved verbatim after the separator.
     assert wrapped[wrapped.index("--") + 1:] == plain
-    # The spawn published the unit for the dispatcher's bookkeeping.
-    assert kb._default_spawn._last_scope_unit == unit
+    # The spawn published the unit on the returned pid — a per-call
+    # channel, usable verbatim as an int by every existing caller.
+    assert isinstance(wrapped_pid, int)
+    assert wrapped_pid.scope_unit == unit
+    assert plain_pid.scope_unit == ""
 
 
 def test_default_spawn_memory_default_derives_both_bounds(monkeypatch, tmp_path):
@@ -735,7 +741,7 @@ def test_default_spawn_memory_default_derives_both_bounds(monkeypatch, tmp_path)
         monkeypatch, tmp_path, "  worker_isolation: auto\n",
         systemd_available=True,
     )
-    head = wrapped[: wrapped.index("--")]
+    head = wrapped[0][: wrapped[0].index("--")]
     expected = kb._kanban_worker_memory_bytes()
     assert expected, "helper must return a positive bound on a normal host"
     props = [p for p in head if p.startswith("MemoryMax=")]
@@ -759,7 +765,7 @@ def test_default_spawn_omits_memory_when_helper_falsy(monkeypatch, tmp_path):
         )
     finally:
         kb._memory_bound_omitted_warned = False
-    head = wrapped[: wrapped.index("--")]
+    head = wrapped[0][: wrapped[0].index("--")]
     assert not [p for p in head if p.startswith("MemoryMax=")]
     assert not [p for p in head if p.startswith("MemorySwapMax=")]
 
@@ -767,41 +773,85 @@ def test_default_spawn_omits_memory_when_helper_falsy(monkeypatch, tmp_path):
 def test_default_spawn_none_keeps_legacy_argv_exactly(monkeypatch, tmp_path):
     """isolation 'none' must produce today's argv byte-for-byte, even when
     systemd is fully available — the rollback contract."""
-    none_cmd = _capture_worker_argv(
+    none_cmd, none_pid = _capture_worker_argv(
         monkeypatch, tmp_path, "  worker_isolation: none\n",
         systemd_available=True,
     )
     _assert_plain_argv_shape(none_cmd)
     # 'none' ignores availability: a second capture with the probe down
     # (the classic macOS/container host) is byte-identical.
-    fallback_cmd = _capture_worker_argv(
+    fallback_cmd, fallback_pid = _capture_worker_argv(
         monkeypatch, tmp_path, "  worker_isolation: none\n",
         systemd_available=False,
     )
     assert fallback_cmd == none_cmd
-    assert kb._default_spawn._last_scope_unit == ""
+    assert none_pid.scope_unit == ""
+    assert fallback_pid.scope_unit == ""
 
 
 def test_default_spawn_auto_without_systemd_keeps_legacy_argv(monkeypatch, tmp_path):
     """Unusable systemd (macOS / containers) with the default 'auto' mode
     silently falls back to the plain argv — no behavioural change."""
-    cmd = _capture_worker_argv(
+    cmd, pid = _capture_worker_argv(
         monkeypatch, tmp_path, "  worker_isolation: auto\n",
         systemd_available=False,
     )
     _assert_plain_argv_shape(cmd)
-    assert kb._default_spawn._last_scope_unit == ""
+    assert pid.scope_unit == ""
+
+
+def test_spawn_scope_unit_is_per_call_not_global(monkeypatch, tmp_path):
+    """F: the scope unit travels on the spawn's RETURN VALUE, not on a
+    process-global function attribute. Per-board dispatches run
+    concurrently, so the old global let board B's spawn overwrite the
+    unit board A's dispatcher was about to record. Here: spawn A, then
+    spawn B, then read A's unit — under the old global that read
+    returned B's unit; per-call it is stable and each pid works as a
+    plain int for every caller contract."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: auto\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_systemd_available(monkeypatch, True)
+    _patch_systemd_run_binary(monkeypatch)
+    captured: dict = {}
+    _fake_popen_capture(monkeypatch, captured, pid=4242)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    pid_a = kb._default_spawn(
+        _make_task(task_id="t_board_a", run_id=11), str(workspace),
+    )
+    pid_b = kb._default_spawn(
+        _make_task(task_id="t_board_b", run_id=22), str(workspace),
+    )
+
+    unit_a = kb._kanban_worker_scope_unit("t_board_a", 11)
+    unit_b = kb._kanban_worker_scope_unit("t_board_b", 22)
+    assert unit_a != unit_b
+    # A's unit survives B's spawn — the cross-wire the global allowed.
+    assert pid_a.scope_unit == unit_a
+    assert pid_b.scope_unit == unit_b
+    # The annotated pid is a real int for every existing caller
+    # contract (truthiness, int(), str(), arithmetic).
+    assert pid_a == 4242
+    assert int(pid_a) == 4242
+    assert str(pid_a) == "4242"
+    # And the old global channel no longer exists to cross-wire.
+    assert not hasattr(kb._default_spawn, "_last_scope_unit")
 
 
 def test_forced_scope_without_systemd_still_spawns(monkeypatch, tmp_path):
     """'systemd-scope' + failed probe = loud warning, plain spawn. A board
     that cannot spawn at all would be worse than an unisolated worker."""
-    cmd = _capture_worker_argv(
+    cmd, pid = _capture_worker_argv(
         monkeypatch, tmp_path, "  worker_isolation: systemd-scope\n",
         systemd_available=False,
     )
     _assert_plain_argv_shape(cmd)
-    assert kb._default_spawn._last_scope_unit == ""
+    assert pid.scope_unit == ""
 
 
 # ---------------------------------------------------------------------------

@@ -11976,10 +11976,11 @@ def _dispatch_once_locked(
                 _set_worker_pid(
                     conn, claimed.id, int(pid),
                     # ``_default_spawn`` publishes the scope unit it
-                    # actually created (empty when unisolated / custom
-                    # spawn stubs). Same function-attribute channel
-                    # detect_crashed_workers uses for rate-limited ids.
-                    scope_unit=getattr(_spawn, "_last_scope_unit", "") or "",
+                    # actually created on the returned pid (empty when
+                    # unisolated / custom spawn stubs) — per-call, so
+                    # concurrent per-board dispatches can never record
+                    # each other's unit (Gate B review, finding F).
+                    scope_unit=getattr(pid, "scope_unit", "") or "",
                 )
             # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn
             # returned and the PID (when reported) is durably persisted,
@@ -12115,10 +12116,11 @@ def _dispatch_once_locked(
                 _set_worker_pid(
                     conn, claimed.id, int(pid),
                     # ``_default_spawn`` publishes the scope unit it
-                    # actually created (empty when unisolated / custom
-                    # spawn stubs). Same function-attribute channel
-                    # detect_crashed_workers uses for rate-limited ids.
-                    scope_unit=getattr(_spawn, "_last_scope_unit", "") or "",
+                    # actually created on the returned pid (empty when
+                    # unisolated / custom spawn stubs) — per-call, so
+                    # concurrent per-board dispatches can never record
+                    # each other's unit (Gate B review, finding F).
+                    scope_unit=getattr(pid, "scope_unit", "") or "",
                 )
             # Worker-lifecycle observer (RFC #58548): same contract as the
             # ready-lane fire above — after spawn + PID persistence.
@@ -12436,6 +12438,26 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+class _SpawnedWorkerPid(int):
+    """Worker PID annotated with the scope unit the spawn actually created.
+
+    Per-call channel replacing the old process-global
+    ``_default_spawn._last_scope_unit`` function attribute: per-board
+    dispatches run concurrently, so a global let one board's dispatch
+    record another board's unit on its task row (Gate B review, finding
+    F). Subclassing ``int`` keeps every existing caller contract —
+    ``if pid:``, ``int(pid)``, ``str(pid)``, and plain-int returns from
+    custom spawn stubs (whose unit reads as ``""``) — unchanged.
+    """
+
+    scope_unit: str = ""
+
+    def __new__(cls, pid: int, scope_unit: str = ""):
+        self = super().__new__(cls, pid)
+        self.scope_unit = scope_unit
+        return self
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -12444,8 +12466,10 @@ def _default_spawn(
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
+    Returns the spawned child's PID (a :class:`_SpawnedWorkerPid`
+    carrying the scope unit this call created, ``""`` when unisolated)
+    so the dispatcher can detect crashes before the claim TTL expires.
+    The child's completion is still observed
     via the ``complete`` / ``block`` transitions the worker writes itself;
     the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
 
@@ -12458,13 +12482,12 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    # Reset the spawn-scope channel before any path can raise, so a failed
-    # spawn never leaves the previous spawn's unit name behind for the
-    # dispatcher to record. Read by ``_dispatch_once_locked`` after the
-    # call — same function-attribute pattern detect_crashed_workers uses
-    # for ``_last_rate_limited``. ``_last_spawn_error`` mirrors it for the
-    # systemd-run stderr captured on a refused launch.
-    _default_spawn._last_scope_unit = ""
+    # Reset the spawn-error channel before any path can raise, so a
+    # failed spawn never surfaces the previous spawn's systemd-run
+    # stderr. Set and consumed within THIS call (raise site reads it
+    # immediately), unlike the scope unit, which now travels per-call on
+    # the returned pid (finding F: per-board dispatches run
+    # concurrently, so a function attribute could cross-wire boards).
     _default_spawn._last_spawn_error = ""
 
     from hermes_cli.profiles import normalize_profile_name
@@ -12691,7 +12714,6 @@ def _default_spawn(
             scope_unit = ""
     if scope_unit:
         env["HERMES_KANBAN_SCOPE"] = scope_unit
-    _default_spawn._last_scope_unit = scope_unit
 
     def _spawn(stderr_target):
         return subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
@@ -12767,7 +12789,7 @@ def _default_spawn(
                         os.unlink(spawn_err_path)
                     except OSError:
                         pass
-                    return proc.pid
+                    return _SpawnedWorkerPid(proc.pid, scope_unit)
                 err_text = _read_spawn_err()
                 # Verified cleanup of whatever half-formed unit the
                 # failed launch left behind. If even that cannot be
@@ -12800,10 +12822,10 @@ def _default_spawn(
                     )
                     launch_cmd = cmd
                     env.pop("HERMES_KANBAN_SCOPE", None)
-                    _default_spawn._last_scope_unit = ""
+                    scope_unit = ""
                     proc = _spawn(subprocess.STDOUT)
                     # NOTE: log_f stays open for the child (see below).
-                    return proc.pid
+                    return _SpawnedWorkerPid(proc.pid, scope_unit)
                 # systemd-scope mode never degrades silently: fail loudly
                 # so the dispatcher records spawn_failed with the cause.
                 _default_spawn._last_spawn_error = err_text
@@ -12839,7 +12861,7 @@ def _default_spawn(
         f"in systemd scope {scope_unit}" if scope_unit else "unisolated",
         _resolve_worker_isolation(),
     )
-    return proc.pid
+    return _SpawnedWorkerPid(proc.pid, scope_unit)
 
 
 # ---------------------------------------------------------------------------

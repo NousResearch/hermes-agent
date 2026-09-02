@@ -593,3 +593,44 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 })
+
+describe('ModelSettings code-skew 503', () => {
+  const skewError = new Error(
+    'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'
+  )
+
+  afterEach(() => {
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('unwraps the stale-backend 503 instead of dumping IPC JSON', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+
+    await waitFor(() => {
+      expect(screen.getByText(/running old code after an update/i)).toBeTruthy()
+    })
+    expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy()
+    expect(screen.queryByText(/hermes:api/)).toBeNull()
+    expect(screen.queryByText(/systemctl/)).toBeNull()
+  })
+
+  it('recycles the Desktop-owned backend and reloads the catalog', async () => {
+    const recycleBackend = vi.fn().mockResolvedValue({ ok: true })
+
+    ;(window as unknown as { hermesDesktop: { recycleBackend: typeof recycleBackend } }).hermesDesktop = {
+      recycleBackend
+    }
+
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }))
+
+    await waitFor(() => expect(recycleBackend).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
+  })
+})

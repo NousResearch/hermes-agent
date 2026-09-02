@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import importlib
 import json
 import logging
@@ -1314,8 +1315,17 @@ class HindsightMemoryProvider(MemoryProvider):
         # If the previous writer exited (e.g. after a prior shutdown), reset
         # the flag so this fresh writer is allowed to drain new jobs.
         self._shutting_down.clear()
+        # Per-provider background threads start with an EMPTY contextvars
+        # Context. Under multiplex_profiles the spawning thread carries the
+        # profile's secret scope + HERMES_HOME override (gateway/run.py wraps
+        # the agent turn in copy_context().run), and get_secret fails closed
+        # without it (#92608). Snapshot the spawner's context into the thread.
+        # (The shared ``hindsight-loop`` thread needs no wrap: coroutines
+        # scheduled via run_coroutine_threadsafe inherit the submitter's
+        # context per call, so one loop can serve every profile.)
         thread = threading.Thread(
-            target=self._writer_loop,
+            target=contextvars.copy_context().run,
+            args=(self._writer_loop,),
             daemon=True,
             name="hindsight-writer",
         )
@@ -1835,7 +1845,12 @@ class HindsightMemoryProvider(MemoryProvider):
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
                         traceback.print_exc(file=f)
 
-            t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
+            t = threading.Thread(
+                target=contextvars.copy_context().run,
+                args=(_start_daemon,),
+                daemon=True,
+                name="hindsight-daemon-start",
+            )
             t.start()
 
     def system_prompt_block(self) -> str:
@@ -1992,7 +2007,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._prefetch_result = recalled.text
                     self._prefetch_count = recalled.count
 
-        self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
+        self._prefetch_thread = threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(_run,),
+            daemon=True,
+            name="hindsight-prefetch",
+        )
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:

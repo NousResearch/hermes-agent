@@ -31,6 +31,10 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
+from hermes_cli.toolset_scope import (
+    _TOOLSET_PLATFORM_RESTRICTIONS,
+    toolset_allowed_for_platform as _toolset_allowed_for_platform,
+)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -107,7 +111,7 @@ CONFIGURABLE_TOOLSETS = [
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
-    ("todo",            "📋 Task Planning",             "todo"),
+    ("todo",            "📋 Task Planning",             "todo_list"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -204,28 +208,6 @@ def _homeassistant_credentials_present() -> bool:
         return bool((get_secret("HASS_TOKEN", "") or "").strip())
     except Exception:
         return False
-
-# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
-# these platforms, and only resolve/save for these platforms.  A toolset
-# absent from this map is available on every platform (current behaviour).
-#
-# Use this for tools whose APIs only make sense on one platform (Discord
-# server admin, Slack workspace admin, etc.).  Keeps every other platform's
-# checklist from filling up with irrelevant toggles.
-_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
-    "discord": {"discord"},
-    "discord_admin": {"discord"},
-}
-
-
-def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
-    """Return True if ``ts_key`` is configurable on ``platform``.
-
-    Toolsets without a restriction entry are allowed everywhere (the default).
-    """
-    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return allowed is None or platform in allowed
-
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Return the platform a platform-less configuration UI should target.
@@ -615,6 +597,10 @@ TOOL_CATEGORIES = {
         # fresh install — pressing Enter must land on the free, no-key local
         # backend, never on the paid Nous Subscription gateway row:
         #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
+        #   - "Lightpanda" — local too (cloud_provider: local) but with
+        #     browser.engine: lightpanda; Browser Use mode spawns
+        #     ``lightpanda serve`` itself, the built-in tools use
+        #     ``agent-browser --engine lightpanda``. No Chromium needed.
         #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
         #     billed via Nous subscription (requires_nous_auth +
         #     override_env_vars). Uses the browser-use plugin as the
@@ -629,7 +615,17 @@ TOOL_CATEGORIES = {
                 "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
+                "browser_engine": "auto",
                 "post_setup": "agent_browser",
+            },
+            {
+                "name": "Lightpanda",
+                "badge": "free · local · no Chromium",
+                "tag": "Zig headless browser spawned by Hermes, text-only (no screenshots)",
+                "env_vars": [],
+                "browser_provider": "local",
+                "browser_engine": "lightpanda",
+                "post_setup": "lightpanda",
             },
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -2029,6 +2025,28 @@ def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     from hermes_constants import find_node_executable
 
+    if post_setup_key == "lightpanda":
+        # Browser Use mode drives Lightpanda directly (Hermes spawns
+        # ``lightpanda serve``); the built-in tools go through agent-browser.
+        # Neither needs a Chromium build.
+        _ensure_browser_use_cli()
+        from tools.browser_lightpanda import (
+            LIGHTPANDA_INSTALL_HINT,
+            find_lightpanda_binary,
+        )
+
+        lightpanda_bin = find_lightpanda_binary()
+        if lightpanda_bin:
+            _print_success(f"    Lightpanda found: {lightpanda_bin}")
+        else:
+            _print_warning(
+                "    lightpanda binary not found on PATH, ~/.lightpanda or ~/.local/bin"
+            )
+            _print_info(f"    {LIGHTPANDA_INSTALL_HINT}")
+            if os.name == "nt":
+                _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
+        return
+
     if post_setup_key in {"agent_browser", "browserbase"}:
         # Every non-Camofox browser backend drives through the Browser Use
         # CLI when it's runnable — install it here too, not only on the
@@ -3313,8 +3331,8 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# "Web Search & Extract" picker. All bundled providers (brave-free, ddgs,
+# searxng, exa, parallel, tavily, firecrawl, keenable) live as plugins after
 # PR #25182 — this helper is the sole source of truth for the category's
 # provider rows. The hardcoded entries that used to drive the category
 # were deleted in the same PR; only the two non-provider UX rows
@@ -3330,8 +3348,8 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    After PR #25182, all bundled web providers (brave-free, ddgs, searxng,
+    exa, parallel, tavily, firecrawl, keenable) are plugins; this helper is the sole
     source of provider rows for the Web Search & Extract category.
     """
     try:
@@ -3747,8 +3765,19 @@ _POST_SETUP_READY: dict = {
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),
+    "lightpanda": lambda: _lightpanda_installed(),
     "cua_driver": lambda: _cua_driver_install_ready(),
 }
+
+
+def _lightpanda_installed() -> bool:
+    """True when a lightpanda binary is on PATH or in a known install dir."""
+    try:
+        from tools.browser_lightpanda import find_lightpanda_binary
+
+        return find_lightpanda_binary() is not None
+    except Exception:
+        return False
 
 
 def _cloud_agent_browser_installed() -> bool:
@@ -4159,7 +4188,15 @@ def _is_provider_active(
         # Browser Use mode composes with the provider (driver over the
         # provider's CDP endpoint) — don't deactivate the provider row.
         current = cfg_get(config, "browser", "cloud_provider")
-        return provider["browser_provider"] == current
+        if provider["browser_provider"] != current:
+            return False
+        # Two local rows differ only by engine ("Local Browser" vs
+        # "Lightpanda"): config.yaml is the picker's source of truth here,
+        # the AGENT_BROWSER_ENGINE env var is not consulted.
+        if provider.get("browser_engine"):
+            engine = str(cfg_get(config, "browser", "engine") or "auto").strip().lower()
+            return engine == provider["browser_engine"]
+        return True
     if provider.get("browser_backend"):
         backend = cfg_get(config, "browser", "backend")
         if backend is False:
@@ -4680,6 +4717,12 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
 
+    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets
+    # lightpanda). Composes with browser.backend like the provider does.
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         _set_selection("web", "backend", provider["web_backend"])
@@ -4874,6 +4917,9 @@ def _configure_provider(
 
     if provider.get("browser_backend"):
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
+
+    if provider.get("browser_engine") and provider["browser_engine"] != "auto":
+        _print_success(f"  Browser engine set to: {provider['browser_engine']}")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -5412,6 +5458,12 @@ def _reconfigure_provider(
         browser_cfg["backend"] = provider["browser_backend"]
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+        if provider["browser_engine"] != "auto":
+            _print_success(f"  Browser engine set to: {provider['browser_engine']}")
+
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
@@ -5570,6 +5622,43 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
+def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
+    """Return (collection_enabled, send_enabled) from a config dict."""
+    telemetry = config.get("telemetry")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    shared = telemetry.get("shared_metrics")
+    shared = shared if isinstance(shared, dict) else {}
+    return shared.get("enabled") is True, shared.get("send") is True
+
+
+def _shared_metrics_menu_label(config: dict) -> str:
+    """Menu row for shared metrics, showing both consent states."""
+    enabled, send = _shared_metrics_state(config)
+    if not enabled:
+        state = "off"
+    elif send:
+        state = "collecting + sending to Nous"
+    else:
+        state = "collecting locally"
+    return f"Configure shared metrics  ({state})"
+
+
+def _configure_shared_metrics_interactive(config: dict) -> None:
+    """Toggle shared-metrics collection and sending from `hermes tools`.
+
+    Delegates to the setup wizard's prompt so the consent rules live in one
+    place: sending requires collection, and turning collection off also turns
+    sending off.
+    """
+    from hermes_cli.setup import setup_telemetry
+
+    before = _shared_metrics_state(config)
+    setup_telemetry(config)
+    after = _shared_metrics_state(config)
+    if before != after:
+        save_config(config)
+
+
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` and `hermes setup tools`.
 
@@ -5694,6 +5783,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if len(platform_keys) > 1:
         platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
+    platform_choices.append(_shared_metrics_menu_label(config))
 
     # Show MCP option if any MCP servers are configured
     _has_mcp = bool(config.get("mcp_servers"))
@@ -5705,8 +5795,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
-    _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
-    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
+    _metrics_idx = _reconfig_idx + 1
+    _mcp_idx = (_metrics_idx + 1) if _has_mcp else -1
+    _done_idx = _metrics_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -5718,6 +5809,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         # "Reconfigure" selected
         if idx == _reconfig_idx:
             _reconfigure_tool(config, force_fresh=True)
+            print()
+            continue
+
+        # "Shared metrics" selected
+        if idx == _metrics_idx:
+            _configure_shared_metrics_interactive(config)
+            platform_choices[_metrics_idx] = _shared_metrics_menu_label(config)
             print()
             continue
 

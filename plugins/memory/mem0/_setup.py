@@ -135,6 +135,8 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     llm_def = LLM_PROVIDERS[llm_id]
     llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
     llm_config: dict[str, Any] = {"model": llm_model}
+    if llm_id == "openai" and llm_model == "gpt-5-mini":
+        llm_config["is_reasoning_model"] = True
     llm_url = flags.get("oss_llm_url") or llm_def.get("default_url")
     if llm_url and llm_def.get("base_url_key"):
         llm_config[llm_def["base_url_key"]] = llm_url

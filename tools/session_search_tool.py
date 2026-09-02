@@ -1100,9 +1100,9 @@ def session_search(
     owned_dbs: List[Any] = []
     if db is None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
-            db = SessionDB()
+            db = get_shared_session_db()
             owned_dbs.append(db)
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
@@ -1128,7 +1128,8 @@ def session_search(
     finally:
         for owned_db in reversed(owned_dbs):
             try:
-                owned_db.close()
+                from hermes_state import release_or_close
+                release_or_close(owned_db)
             except Exception:
                 logging.debug("Failed to close session_search SessionDB", exc_info=True)
 
@@ -1145,7 +1146,7 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past Hermes sessions (FTS5 over the local session DB), or read/"
+        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
         "scroll inside one. Four shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "

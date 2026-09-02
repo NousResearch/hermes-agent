@@ -195,6 +195,20 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
+def _display_create_dir() -> str:
+    """Display string for the skill-creation directory (schema/instruction text).
+
+    Renders ``skills.create_dir`` when configured so every instruction that
+    names the creation path follows the config, falling back to the
+    profile-local skills dir.
+    """
+    try:
+        from agent.skill_utils import display_skill_create_dir
+        return display_skill_create_dir()
+    except Exception:
+        return f"{display_hermes_home()}/skills/"
+
+
 def _containing_skills_root(skill_path: Path) -> Path:
     """Return the skills root directory (local or external_dirs entry) that
     contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
@@ -670,10 +684,23 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    Honors ``skills.create_dir`` from config.yaml: when configured, new
+    skills are created there (e.g. a shared brain/fleet directory) instead
+    of the profile-local skills dir.  Falls back to the local dir when unset.
+    """
+    base = _skills_dir()
+    try:
+        from agent.skill_utils import get_skill_create_dir
+        create_dir = get_skill_create_dir()
+        if create_dir is not None:
+            base = create_dir
+    except Exception:
+        logger.debug("skills.create_dir lookup failed", exc_info=True)
     if category:
-        return _skills_dir() / category / name
-    return _skills_dir() / name
+        return base / category / name
+    return base / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -683,16 +710,53 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Accepts both the bare directory name (``axolotl``) and the categorized
+    relative path (``mlops/axolotl``) — the same two forms skill_view
+    resolves, and the form skill_view's ambiguity hint explicitly tells
+    the caller to use. The bare-name match compares the skill's own
+    directory name (``parent.name``), so bare lookups keep working for
+    category-nested skills.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    # Resolve the local skills root once — the categorized form matches the
+    # skill dir's path RELATIVE to that root. Only computed lazily (bare-name
+    # lookups never need it) and never for external dirs (relative_to raises).
+    _resolved_root: Optional[Path] = None
+
+    def _local_root() -> Path:
+        nonlocal _resolved_root
+        if _resolved_root is None:
+            try:
+                _resolved_root = _skills_dir().resolve()
+            except OSError:
+                logger.debug(
+                    "skills dir resolve failed; categorized lookups fall back to the unresolved path",
+                    exc_info=True,
+                )
+                _resolved_root = _skills_dir()
+        return _resolved_root
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
+            # Fast path first: the bare directory name. Avoids the resolve()
+            # machinery entirely on the common match.
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
+            # Categorized form (``category/skill-name``): compare the skill
+            # dir's POSIX relative path so the lookup works on Windows too.
+            if "/" in name or "\\" in name:
+                try:
+                    rel = skill_md.parent.resolve().relative_to(_local_root())
+                except ValueError:
+                    continue
+                if rel.as_posix() == name:
+                    return {"path": skill_md.parent}
     return None
 
 
@@ -991,10 +1055,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     except Exception:
         pass
 
+    try:
+        _display_path = str(skill_dir.relative_to(_skills_dir()))
+    except ValueError:
+        # Skill created under skills.create_dir — not relative to the
+        # profile-local root, so show the absolute path.
+        _display_path = str(skill_dir)
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(_skills_dir())),
+        "path": _display_path,
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -1112,9 +1182,26 @@ def _patch_skill(
     Requires a unique match unless replace_all is True.
     """
     if not old_string:
-        return {"success": False, "error": "old_string is required for 'patch'."}
+        # A bare "required" error is a dead end: the model cannot tell whether it
+        # omitted the arg or supplied it wrongly, so it retries blindly and often
+        # escapes to action='write_file', clobbering the whole skill file. Tell it
+        # how to recover. Upstream: NousResearch/hermes-agent#33064.
+        return {
+            "success": False,
+            "error": (
+                "old_string is required for 'patch' and must be the EXACT text currently in the "
+                "file. Read the target file first (read_file on the skill's SKILL.md, or the file "
+                "named by file_path) and copy the snippet verbatim, then retry 'patch'. "
+                "Do NOT fall back to action='write_file' — that rewrites the entire file and "
+                "destroys unrelated content."
+            ),
+        }
     if new_string is None:
         return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
+    # No old_string == new_string guard here: fuzzy_find_and_replace already
+    # rejects that with "old_string and new_string are identical"
+    # (tools/fuzzy_match.py), and its error carries a file_preview this layer
+    # cannot produce. Duplicating it here would only shadow the richer message.
 
     existing = _find_skill(name)
     if not existing:
@@ -1682,6 +1769,8 @@ def _skill_manage_batch(
                 return tool_error(f"Could not snapshot '{nm}' for atomic batch: {exc}", success=False)
         snapshots[nm] = (pre_dir, snap)
 
+    rollback_failed = False
+
     def _rollback() -> str:
         notes = []
         for nm, (pre_dir, snap) in snapshots.items():
@@ -1690,13 +1779,38 @@ def _skill_manage_batch(
                 post_dir = Path(post["path"]) if post else None
                 if snap is not None:
                     if post_dir is not None and post_dir.is_dir():
-                        shutil.rmtree(post_dir)
-                    shutil.copytree(snap, pre_dir)
+                        # Never destroy the only other copy before the
+                        # restore lands. Deleting first turned a failed
+                        # copytree (disk full, locked file) into total
+                        # skill loss once the finally below removed the
+                        # snapshot too. Move the broken state aside, and
+                        # delete it only after the snapshot is back.
+                        aside = post_dir.with_name(post_dir.name + ".rollback-broken")
+                        shutil.rmtree(aside, ignore_errors=True)
+                        post_dir.rename(aside)
+                        try:
+                            shutil.copytree(snap, pre_dir)
+                        except Exception:
+                            # Restore failed: put the broken state back so
+                            # the skill survives (half applied) rather than
+                            # leaving nothing.
+                            shutil.rmtree(pre_dir, ignore_errors=True)
+                            aside.rename(pre_dir)
+                            raise
+                        shutil.rmtree(aside, ignore_errors=True)
+                    else:
+                        shutil.copytree(snap, pre_dir)
                 elif post_dir is not None and post_dir.is_dir():
                     # Batch created this skill: remove the partial result.
                     shutil.rmtree(post_dir)
             except Exception as exc:  # noqa: BLE001
-                notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})")
+                notes.append(
+                    f"ROLLBACK FAILED for '{nm}' ({exc}); snapshot preserved at '{snap}'"
+                    if snap is not None
+                    else f"ROLLBACK FAILED for '{nm}' ({exc})"
+                )
+        nonlocal rollback_failed
+        rollback_failed = bool(notes)
         return "; ".join(notes) if notes else "all touched skills rolled back"
 
     # --- execute ops through the normal single-op path (gate bypassed:
@@ -1748,7 +1862,16 @@ def _skill_manage_batch(
                             "success": True})
     finally:
         _skill_gate_bypass.reset(token)
-        shutil.rmtree(snap_root, ignore_errors=True)
+        if rollback_failed:
+            # Keep the snapshots so the operator can still recover by
+            # hand. Deleting them here is what turned one failed restore
+            # into permanent skill loss.
+            logger.warning(
+                "skill_manage batch rollback failed, snapshots kept at %s",
+                snap_root,
+            )
+        else:
+            shutil.rmtree(snap_root, ignore_errors=True)
 
     return json.dumps(
         {"success": True, "operations_applied": len(results),
@@ -1864,7 +1987,15 @@ def skill_manage(
         from tools import skill_ledger as _ledger
         _pre = _find_skill(name)
         _ledger_before_dir = _pre["path"] if _pre else None
-        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+        # delete destroys the whole package; consolidation may have re-homed
+        # support files out of the tree first, so complete the capture from
+        # the newest curator backup or rollback restores a hollow skill
+        # (#96962). Other actions capture disk state only.
+        _ledger_before = _ledger.capture_before(
+            _ledger_before_dir,
+            complete_package=(action == "delete"),
+            skill=name,
+        )
     except Exception:
         pass
 
@@ -1892,15 +2023,10 @@ def skill_manage(
         if content:
             result = _edit_skill(name, content)
         else:
-            if not old_string:
-                return tool_error(
-                    "patch needs old_string/new_string for a targeted "
-                    "replacement, or content for a full SKILL.md rewrite "
-                    "(read it first with skill_view()).",
-                    success=False,
-                )
-            if new_string is None:
-                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            # Targeted-replacement validation lives in _patch_skill so the
+            # public tool and the helper return the same actionable guidance.
+            # A bare "required" error here would shadow it and leave the
+            # model with nowhere to go but action='write_file'. #33064.
             result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -2014,7 +2140,7 @@ SKILL_MANAGE_SCHEMA = {
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{display_hermes_home()}/skills/; must precede that skill's other "
+        f"{_display_create_dir()}; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "

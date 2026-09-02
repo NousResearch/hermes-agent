@@ -557,6 +557,13 @@ def auth_list_command(args) -> None:
             source = _display_source(entry.source)
             print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
         print()
+    _print_oauth_heal_notices()
+
+
+def _print_oauth_heal_notices() -> None:
+    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
+    for note in auth_mod.consume_oauth_heal_notices():
+        print(f"note: {note}")
 
 
 def auth_remove_command(args) -> None:
@@ -608,7 +615,12 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        # load_pool() runs the forked-grant heal (#100339); do it before the
+        # status read so the report reflects the consolidated grant.
+        load_pool(provider)
     status = auth_mod.get_auth_status(provider)
+    _print_oauth_heal_notices()
     if not status.get("logged_in"):
         reason = status.get("error")
         if reason:

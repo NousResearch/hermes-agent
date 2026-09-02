@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -156,7 +157,7 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         self._running = True
 
@@ -200,7 +201,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         try:
             for chunk in chunks:

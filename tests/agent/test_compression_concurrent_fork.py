@@ -820,6 +820,27 @@ def test_commit_fence_waits_for_an_active_commit() -> None:
     assert result["cancelled"] is False
 
 
+def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None:
+    """A total-ceiling timeout must exclude retries while its worker is alive."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    released = threading.Event()
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    fence.register_cancelled_lock_release(released.set)
+    fence.retain_compression_lock_until_worker_done()
+
+    now = time.monotonic()
+    with patch(
+        "agent.conversation_compression.time.monotonic",
+        return_value=now + 2.0,
+    ):
+        assert fence.is_cancelled
+        assert fence.try_cancel_before_commit() is True
+    fence.release_cancelled_compression_lock()
+
+    assert not released.is_set()
+
+
 def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     """A stale agent must continue on the winner's compacted child transcript."""
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -2206,3 +2227,35 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
+
+
+def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
+    """Regression #97948 symptom B: a failed split/archive must arm the
+    compression failure cooldown so the next automatic turn cannot
+    immediately re-run the identical doomed compression."""
+    from agent.conversation_compression import _SPLIT_FAILURE_COOLDOWN_SECONDS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "SPLIT_FAIL_COOLDOWN_TEST"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", True)
+    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    cooldown_calls = (
+        agent.context_compressor._record_compression_failure_cooldown.call_args_list
+    )
+    assert len(cooldown_calls) == 1, (
+        "split failure must arm the failure cooldown (#97948 symptom B)"
+    )
+    seconds, error = cooldown_calls[0].args
+    assert seconds == _SPLIT_FAILURE_COOLDOWN_SECONDS
+    assert "session_split_failed" in str(error)

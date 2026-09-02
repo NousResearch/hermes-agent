@@ -168,7 +168,7 @@ _LEGACY_PREFERENCE = (
 
 # Keyless free-tier walk — strictly LAST-resort, tried only after the
 # availability-filtered legacy walk finds nothing (i.e. the user has zero
-# web credentials and no importable ddgs). All five vendors expose public
+# web credentials and no importable ddgs). Ring vendors expose public
 # anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
 # traffic round-robins across the ring per request (the ring cursor lives
 # in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
@@ -177,7 +177,6 @@ _LEGACY_PREFERENCE = (
 _KEYLESS_PREFERENCE = (
     "exa",
     "parallel",
-    "tavily",
     "firecrawl",
     "keenable",
 )

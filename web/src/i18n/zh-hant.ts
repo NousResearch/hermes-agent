@@ -468,6 +468,8 @@ export const zhHant: Translations = {
     copyCliCommand: "複製 CLI 指令（外部 / 備援用）",
     connect: "連線",
     sessionExpires: "工作階段將於 {time} 後過期",
+    sessionExpiredNoError:
+      "登入已過期，且未能連線到提供方。這通常表示登入頁面在開啟的分頁中卡住了（伺服器端問題）——請在該分頁完成登入後點擊重試。若仍失敗，請改用 API 金鑰或 CLI。",
     initiatingLogin: "正在啟動登入流程…",
     exchangingCode: "正在交換權杖…",
     connectedClosing: "已連線！正在關閉…",

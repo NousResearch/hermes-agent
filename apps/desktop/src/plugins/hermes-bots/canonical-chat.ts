@@ -42,8 +42,10 @@ const canonicalCreations = new Map<string, CanonicalCreation>()
 export const PROFILE_SESSION_LIST_LIMIT = 200
 
 /** The one canonical title. (profile, CANONICAL_CHAT_TITLE) IS the bot's
- *  forever-chat identity — see the header above. */
-const CANONICAL_CHAT_TITLE = 'Bot Chat'
+ *  forever-chat identity — see the header above. Exported for the roster
+ *  click path's tile-staleness probe (hermes-agent#90102), which must
+ *  recognize canonical-titled tabs without restating the literal. */
+export const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no
@@ -211,8 +213,25 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   }
 
   const rows = res?.sessions ?? []
+  const match = rows.find(row => isCanonicalBotChatHistory(row))
 
-  return rows.find(row => isCanonicalBotChatHistory(row)) || null
+  if (match) {
+    return match
+  }
+
+  // A zero-row result is NOT the same as a thrown error, but it is just as
+  // capable of forking the forever chat: a profile backend mid-restart can
+  // answer `session.list` successfully with an empty list rather than
+  // failing it, and `|| null` used to read that identically to "this bot
+  // never had a chat" (#98383). The roster's own `canonical_session` is the
+  // last positive confirmation this profile HAD one — when that exists,
+  // an empty lookup is unconfirmed absence, not confirmed absence, so fail
+  // closed the same way a thrown RPC error already does instead of minting.
+  if (bot?.canonical_session?.id) {
+    throw new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
+  }
+
+  return null
 }
 
 interface CreateCanonicalChatOptions {

@@ -653,7 +653,9 @@ def _cmd_purge(args) -> int:
 
     purged = 0
     for p in sorted(candidates):
-        before = skill_ledger.capture_before(p)
+        before = skill_ledger.capture_before(
+            p, complete_package=True, skill=p.name
+        )
         try:
             shutil.rmtree(p)
         except OSError as e:

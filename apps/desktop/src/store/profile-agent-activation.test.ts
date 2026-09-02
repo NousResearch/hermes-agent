@@ -36,7 +36,16 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } = await import('./profile')
-const { $connection } = await import('./session')
+
+const {
+  $connection,
+  $currentModel,
+  $currentProvider,
+  setComposerSelectionOwner,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider
+} = await import('./session')
 
 const agentConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: 'https://homelab.invalid', mode: 'remote', profile: 'research', ...over }) as HermesConnection
@@ -50,6 +59,9 @@ const getConnectionFor =
   vi.fn<(payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>>()
 
 beforeEach(() => {
+  const localStorage = window.localStorage
+
+  localStorage.clear()
   getConnection.mockReset()
   getConnectionFor.mockReset()
   ensureGatewayForAgent.mockClear()
@@ -57,7 +69,8 @@ beforeEach(() => {
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
-  vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor } })
+  vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor }, localStorage })
+  setComposerSelectionOwner('homelab', 'default')
 })
 
 afterEach(() => {
@@ -88,6 +101,67 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect($activeGatewayProfile.get()).toBe('research')
     // Best-effort: boot/reconnect resyncs later; we must not null it out here.
     expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('reseeds and persists under the activated owner when its descriptor fetch fails', async () => {
+    setComposerSelectionOwner('homelab', 'default')
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+    getConnectionFor.mockRejectedValue(new Error('source unreachable'))
+
+    // Mirrors ContribWiring's gateway-scope effect: the active-profile
+    // publication forces the target profile's model/provider defaults.
+    const unbind = $activeGatewayProfile.subscribe(profile => {
+      if (profile === 'research') {
+        setCurrentModel('local/model')
+        setCurrentProvider('custom:local')
+        setCurrentModelSource('default')
+      }
+    })
+
+    await ensureGatewayAgent('homelab', 'research')
+    unbind()
+
+    expect($connection.get()?.mode).toBe('local')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+
+    setComposerSelectionOwner('homelab', 'default')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+
+    setComposerSelectionOwner('homelab', 'research')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+  })
+
+  it('does not persist a legacy profile reseed when its owner descriptor is unresolved', async () => {
+    setComposerSelectionOwner('homelab', 'default')
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+    getConnection.mockRejectedValue(new Error('source unreachable'))
+
+    const unbind = $activeGatewayProfile.subscribe(profile => {
+      if (profile === 'research') {
+        setCurrentModel('unresolved-model')
+        setCurrentProvider('unresolved-provider')
+        setCurrentModelSource('default')
+      }
+    })
+
+    await ensureGatewayProfile('research')
+    unbind()
+
+    setComposerSelectionOwner('homelab', 'default')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+    expect(
+      [...Array(window.localStorage.length)].map((_, index) =>
+        window.localStorage.getItem(window.localStorage.key(index) || '')
+      )
+    ).not.toContain('unresolved-model')
   })
 
   it('does not republish a registry identity invalidated during activation', async () => {

@@ -65,10 +65,31 @@ class TestBuildOSSConfig:
         oss, env_writes = build_oss_config(flags)
         assert oss["llm"]["provider"] == "openai"
         assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
         assert oss["embedder"]["provider"] == "openai"
         assert oss["embedder"]["config"]["model"] == "text-embedding-3-small"
         assert oss["vector_store"]["provider"] == "qdrant"
         assert env_writes["OPENAI_API_KEY"] == "sk-oai"
+
+
+    def test_explicit_gpt_5_mini_is_reasoning_model(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5-mini",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
+
+
+    def test_custom_openai_model_is_not_forced_to_reasoning(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5.2",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5.2"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
 
 
     def test_ollama_no_key_needed(self):
@@ -77,6 +98,7 @@ class TestBuildOSSConfig:
         assert oss["llm"]["provider"] == "ollama"
         assert "model" in oss["llm"]["config"]
         assert oss["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
         assert oss["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
         assert env_writes == {}
 

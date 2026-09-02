@@ -165,7 +165,15 @@ export const StatusItemRow = memo(function StatusItemRow({
   return (
     <Fragment>
       <StatusRow
-        leading={leadingGlyph(item, s)}
+        leading={
+          item.depth ? (
+            <span className="flex items-center" style={{ paddingLeft: `${Math.min(item.depth, 4) * 0.8}rem` }}>
+              {leadingGlyph(item, s)}
+            </span>
+          ) : (
+            leadingGlyph(item, s)
+          )
+        }
         onActivate={onActivate}
         trailing={
           todoAction ??

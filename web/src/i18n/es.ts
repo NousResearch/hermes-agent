@@ -470,6 +470,8 @@ export const es: Translations = {
     copyCliCommand: "Copiar comando CLI (para externo / alternativa)",
     connect: "Conectar",
     sessionExpires: "La sesión caduca en {time}",
+    sessionExpiredNoError:
+      "El inicio de sesión expiró sin llegar al proveedor. Esto suele significar que la página de inicio de sesión se quedó bloqueada en la pestaña abierta (problema del lado del servidor): termina de iniciar sesión allí y luego haz clic en Reintentar. Si sigue fallando, usa una clave API o la CLI en su lugar.",
     initiatingLogin: "Iniciando flujo de inicio de sesión…",
     exchangingCode: "Intercambiando código por tokens…",
     connectedClosing: "¡Conectado! Cerrando…",

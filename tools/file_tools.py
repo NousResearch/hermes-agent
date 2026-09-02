@@ -256,7 +256,11 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    # Scope-aware: under gateway multiplexing the routed profile's cwd lives in
+    # the per-turn terminal scope, not the process env (#68559).
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -1976,11 +1980,29 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # truncated (large file with more content than limit covered).
         # Outside the _read_tracker_lock so the registry's own locking
         # isn't nested under ours.
+        _partial = (offset > 1) or bool(result_dict.get("truncated"))
         try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
             file_state.record_read(task_id, resolved_str, partial=_partial)
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
+
+        # Background-review read-before-write guard integration (#61521):
+        # when the self-improvement review fork reads a skill file with
+        # read_file (now whitelisted dispatch-side), register the read the
+        # same way skill_view does, so a follow-up
+        # skill_manage(action='patch') on the loaded file is accepted.
+        # A partial read doesn't count — the guard requires the CURRENT
+        # full content to have been seen. No-op outside review forks
+        # (mark_background_review_skill_read gates on is_background_review).
+        if not _partial:
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(Path(resolved_str))
+            except Exception:
+                logger.debug(
+                    "background-review read-mark failed", exc_info=True
+                )
 
         if count >= 4:
             # Hard block: stop returning content to break the loop

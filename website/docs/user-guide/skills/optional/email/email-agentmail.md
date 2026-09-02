@@ -15,7 +15,7 @@ Use when an agent needs AgentMail CLI email inboxes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/email/agentmail` |
-| Path | `optional-skills/email/agentmail` |
+| Path | `optional-skills/email\agentmail` |
 | Version | `1.0.0` |
 | Author | Haakam Aujla (Haakam21), AgentMail |
 | License | MIT |
@@ -58,7 +58,7 @@ npm install -g agentmail-cli@latest
 export AGENTMAIL_API_KEY="am_..."
 ```
 
-No API key yet? Use [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/signup.md).
+No API key yet? Use [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/signup.md).
 
 ## How to Run
 
@@ -74,20 +74,20 @@ agentmail inboxes list --format json
 - [AgentMail](https://agentmail.to): product landing page.
 - [Console](https://console.agentmail.to): API keys and account management.
 - [Docs](https://docs.agentmail.to): full product documentation.
-- [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/signup.md): self-signup and OTP verification.
-- [core.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/core.md): inboxes, messages, threads, labels, attachments.
-- [webhooks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/webhooks.md): events to a public HTTPS server.
-- [websockets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/websockets.md): events to a local agent process.
-- [mcp.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/mcp.md): MCP integration.
+- [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/signup.md): self-signup and OTP verification.
+- [core.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/core.md): inboxes, messages, threads, labels, attachments.
+- [webhooks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/webhooks.md): events to a public HTTPS server.
+- [websockets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/websockets.md): events to a local agent process.
+- [mcp.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/mcp.md): MCP integration.
 
 ## Procedure
 
 1. Install `agentmail-cli@latest` and verify `agentmail inboxes list --format json`.
-2. If no API key is available, complete [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/signup.md).
-3. Use [core.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/core.md) for inbox, send, read, reply, forward,
+2. If no API key is available, complete [signup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/signup.md).
+3. Use [core.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/core.md) for inbox, send, read, reply, forward,
    label, thread, and attachment flows.
-4. Add [webhooks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/webhooks.md) or
-   [websockets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email/agentmail/references/websockets.md) only when polling is not enough.
+4. Add [webhooks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/webhooks.md) or
+   [websockets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/email\agentmail/references/websockets.md) only when polling is not enough.
 
 ## Pitfalls
 

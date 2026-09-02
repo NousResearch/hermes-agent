@@ -91,9 +91,11 @@ class TestOpenCodeFreeModelLists:
         for mid in _PROVIDER_MODELS["opencode-free"]:
             assert is_opencode_zen_free_model(mid), mid
 
-    def test_ox_alpha_is_listed(self):
+    def test_delisted_ox_alpha_not_in_floor(self):
+        """x-preview-f-free was delisted by the relay 2026-08-26 (401s keyless);
+        the offline floor must not offer it (#95914)."""
         from hermes_cli.models import _PROVIDER_MODELS
-        assert "x-preview-f-free" in _PROVIDER_MODELS["opencode-free"]
+        assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
 
 
 class TestOpenCodeFreeRuntimeKeyless:

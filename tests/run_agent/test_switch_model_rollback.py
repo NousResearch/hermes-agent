@@ -47,6 +47,7 @@ def _make_agent_openrouter():
     agent._fallback_model = None
     agent._config_context_length = None
     setattr(agent, "_model_explicitly_selected", False)
+    agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
 
@@ -75,6 +76,7 @@ def _make_agent_anthropic():
     agent._fallback_model = None
     agent._config_context_length = None
     setattr(agent, "_model_explicitly_selected", False)
+    agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
 
@@ -111,6 +113,7 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
     assert getattr(agent, "_model_explicitly_selected") is False
+    assert agent.runtime_capabilities == {"native_compaction": False}
 
 
 def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():

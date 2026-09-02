@@ -1,5 +1,6 @@
 """Shared gateway restart constants and supervisor detection helpers."""
 
+import math
 import os
 from collections.abc import Mapping
 
@@ -15,6 +16,25 @@ GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 # restarting the gateway.  See #51228.
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
+
+def is_global_startup_conflict(error_code: str | None) -> bool:
+    """Return True when an adapter's fatal error is a single-writer ownership conflict.
+
+    ``BasePlatformAdapter._acquire_platform_lock`` emits ``{scope}_lock``
+    with ``retryable=True`` on purpose: a *mid-run* reconnect must be able to
+    recover once the live holder exits or a stale record is cleared (#54167).
+    At startup, though, a live foreign holder is a configuration conflict —
+    two gateways cannot poll one bot token — so the startup router must not
+    treat that flag as "transient blip, retry-queue forever".  This matches by
+    error CODE only (the ``{scope}_lock`` / ``lock_conflict`` families every
+    adapter emits for scoped-lock and identity conflicts), never by message
+    text.
+    """
+    code = (error_code or "").strip().lower()
+    if not code:
+        return False
+    return code == "lock_conflict" or code.endswith("_lock")
+
 # Set by ``hermes gateway run --external-supervisor``. Unlike systemd's
 # INVOCATION_ID and launchd's XPC_SERVICE_NAME, this survives wrappers that
 # intentionally replace the child environment (for example ``sudo env -i``).
@@ -23,6 +43,10 @@ EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )
+DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT = float(
+    DEFAULT_CONFIG["gateway"]["signal_interrupt_grace_timeout"]
+)
+DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT = 5.0
 
 # In-band restart (``/restart``, SIGUSR1, self-restart from a child CLI)
 # waits for active turns to finish *before* ``stop()`` begins. Distinct
@@ -238,3 +262,17 @@ def resolve_restart_exit_wait_budget(
     except (TypeError, ValueError):
         margin = 0.0
     return drain + after_turn + margin
+
+
+def parse_signal_interrupt_grace_timeout(raw: object) -> float:
+    """Parse the unexpected-signal post-interrupt grace timeout."""
+    try:
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            value = DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+        else:
+            value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    if not math.isfinite(value):
+        return DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    return max(0.0, value)

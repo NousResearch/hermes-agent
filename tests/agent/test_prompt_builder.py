@@ -59,12 +59,20 @@ def _drain_truncation_warnings():
 
 
 class TestGuidanceConstants:
-    def test_memory_guidance_discourages_task_logs(self):
-        assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
-        assert "session_search" in MEMORY_GUIDANCE
-        assert "like a diary" not in MEMORY_GUIDANCE
-        assert ">80%" not in MEMORY_GUIDANCE
+    def test_memory_guidance_keeps_form_rule_and_routing(self):
+        """Dieted (#95681): WHAT belongs in memory is the memory tool
+        schema's job (taught on every call). This block keeps only the
+        declarative-form rule and the staleness/skills routing."""
+        from agent.prompt_builder import MEMORY_GUIDANCE
+
+        assert "declarative facts" in MEMORY_GUIDANCE
+        assert "imperative phrasing" in MEMORY_GUIDANCE
+        assert "stale within a week" in MEMORY_GUIDANCE
+        assert "Save proactively" in MEMORY_GUIDANCE  # positive posture leads
+        assert "workflows belong" in MEMORY_GUIDANCE
+        # The category/SKIP curricula must NOT be re-taught here.
+        assert "PR numbers" not in MEMORY_GUIDANCE
+        assert "tool quirks" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
@@ -705,7 +713,9 @@ class TestPromptBuilderConstants:
         ), "CLI hint should explicitly discourage MEDIA: tags."
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
-        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+        # Dieted (#95681): messaging hints now share the _MEDIA_NATIVE
+        # spine ("write MEDIA:/absolute/path..."), not per-hint prose.
+        assert "MEDIA:/absolute/path" in PLATFORM_HINTS["telegram"]
 
 
 

@@ -7,6 +7,7 @@ reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
+from contextlib import contextmanager
 
 import pytest
 import yaml
@@ -352,6 +353,47 @@ class TestProfileScopedModel:
 
 
 
+
+    def test_model_options_uses_config_only_scope_for_selected_profile(
+        self, client, monkeypatch
+    ):
+        """Regression (#58576): _profile_scope holds _SKILLS_PROFILE_LOCK
+        across its body, and the payload build can block up to 15s on a
+        models.dev cache miss — a cold request would starve concurrent
+        /api/config on the same lock. The handler must scope the worker
+        through _config_profile_scope (contextvar only, no lock) for the
+        selected profile."""
+        import hermes_cli.web_server as web_server
+
+        scopes = []
+
+        @contextmanager
+        def _recording_config_scope(profile):
+            scopes.append(("config", profile))
+            yield object()
+
+        @contextmanager
+        def _recording_profile_scope(profile):
+            scopes.append(("full", profile))
+            yield object()
+
+        monkeypatch.setattr(
+            web_server, "_config_profile_scope", _recording_config_scope
+        )
+        monkeypatch.setattr(web_server, "_profile_scope", _recording_profile_scope)
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context", lambda: object()
+        )
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_model_options_payload",
+            lambda _ctx, **kwargs: {"providers": [], "model": "", "provider": ""},
+        )
+
+        resp = client.get("/api/model/options", params={"profile": "worker_beta"})
+        assert resp.status_code == 200
+        # Only the config-only scope may wrap the payload build; entering
+        # _profile_scope would hold _SKILLS_PROFILE_LOCK across it (#58576).
+        assert scopes == [("config", "worker_beta")]
 
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200

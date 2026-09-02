@@ -58,6 +58,7 @@ except ImportError:  # pragma: no cover - dependency gate
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -141,7 +142,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     some system CA stores (notably Homebrew's OpenSSL on macOS Apple Silicon).
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
-    ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+    ``SSL_CERT_FILE`` env var when ``gateway.trust_env`` is on).
 
     Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle
     connections drain promptly behind proxies like Cloudflare Warp that
@@ -1048,7 +1049,7 @@ async def qr_login(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
         try:
             qr_resp = await _api_get(
                 session,
@@ -1318,13 +1319,13 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._poll_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector())
         # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
         # "Timeout context manager should be used inside a task" errors when
         # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
         # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
+        self._send_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1452,7 +1453,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return
         old = self._poll_session
         self._poll_session = aiohttp.ClientSession(
-            trust_env=True, connector=_make_ssl_connector()
+            trust_env=gateway_trust_env(), connector=_make_ssl_connector()
         )
         if old is not None and not old.closed:
             try:
@@ -2407,7 +2408,7 @@ async def send_weixin_direct(
             "context_token_used": bool(context_token),
         }
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(
             PlatformConfig(
                 enabled=True,

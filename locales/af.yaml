@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
   background:
-    usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
+    usage:                 "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
+
+  btw:
+    usage:                 "Gebruik: /btw <vraag>\nVoorbeeld: /btw in watter lêer was daardie fout?\n\nBeantwoord 'n vinnige newevraag oor hierdie gesprek sonder om dit te onderbreek. Vir 'n onafhanklike agtergrondtaak, gebruik /bg <prompt>."
+    no_history:            "Nog geen gesprek nie — stuur jou vraag eerder as 'n gewone boodskap."
+    no_provider:           "❌ Kan nie newevraag beantwoord nie: geen verskaffer-geloofsbriewe opgestel nie."
+    started:               "💬 Newevraag: \"{preview}\"\nBeantwoord vanaf 'n momentopname van hierdie gesprek — die huidige werk gaan voort."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw het misluk: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
     aborted:               "⚠️ Kompressie gestaak ({error}). Geen boodskappe is laat val nie — die gesprek is onveranderd. Voer /compress uit om weer te probeer, /reset vir 'n skoon sessie, of kyk na jou auxiliary.compression-modelkonfigurasie."
     aux_failed:            "ℹ️ Opgestelde saamperseringsmodel `{model}` het misluk ({error}). Herstel met jou hoofmodel — konteks is intakt — maar jy mag dalk `auxiliary.compression.model` in config.yaml wil nagaan."
+    turnhold_deferred:     "ℹ️ Kontekskompressie uitgestel — opsomming stroom nog. Gaan hierdie beurt sonder kompressie voort."
     failed:                "Saampersing het misluk: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
     choice_fast:           "fast — Priority Processing aan"
     choice_normal:         "normal — standaardverwerking"
+    choice_auto:           "auto — vinnig vir die eerste sekondes van elke beurt"
+    choice_cold:           "cold — vinnig slegs vir die eerste beurt van 'n sessie"
 
   footer:
     status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
@@ -260,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
+    all_requires_admin: "_Let wel: `--all` (kruis-geselslys) vereis 'n opgestelde administrateur; slegs hierdie geselsie se sessies word gewys._"
     list_header:           "📋 **Benoemde Sessies**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

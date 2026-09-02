@@ -8,13 +8,13 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HELPER = REPO_ROOT / "skills/github/github-auth/scripts/git-credential-token.py"
+HELPER = REPO_ROOT / "skills/software-development/github/scripts/git-credential-token.py"
 LEGACY_SED = r"sed 's|https://[^:]*:\([^@]*\)@.*|\1|'"
 SHIPPED_TREES = (
-    REPO_ROOT / "skills/github",
-    REPO_ROOT / "website/docs/user-guide/skills/bundled/github",
+    REPO_ROOT / "skills/software-development/github",
+    REPO_ROOT / "website/docs/user-guide/skills/bundled/software-development",
     REPO_ROOT
-    / "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/github",
+    / "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/software-development",
 )
 
 

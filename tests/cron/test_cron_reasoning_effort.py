@@ -194,7 +194,7 @@ class TestCronjobToolReasoningEffort:
     def _tool_handler(self):
         import tools.cronjob_tools as mod
 
-        return mod.registry._tools["cronjob"].handler
+        return mod.registry._tools["cronjob_manage"].handler
 
     def test_schema_does_not_expose_reasoning_effort(self):
         """Policy pin: the model-facing surface must NOT offer the

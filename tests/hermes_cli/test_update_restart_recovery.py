@@ -19,6 +19,7 @@ import sys
 import textwrap
 from types import SimpleNamespace
 
+from hermes_cli import update_abort_recovery as abort_recovery
 from hermes_cli import update_cmd
 
 
@@ -61,7 +62,7 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
         calls.append((argv, kwargs))
         return _successful_recovery_result(verified=["coder", "default"])
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     plan = SimpleNamespace(
         runtimes=[
             _runtime("default", "systemd"),
@@ -86,10 +87,11 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
     assert argv[0] == sys.executable
     assert argv[1:4] == ["-m", "hermes_cli.update_restart_recovery", "--stdin"]
     payload = json.loads(kwargs["input"])
-    assert payload == {
-        "profiles": ["coder", "default"],
-        "supervisors": {"coder": "launchd", "default": "systemd"},
-    }
+    assert payload["profiles"] == ["coder", "default"]
+    assert payload["supervisors"] == {"coder": "launchd", "default": "systemd"}
+    # Serve units travel in the same payload so one fresh child covers both
+    # runtime families (#92145).
+    assert set(payload["serve_units"]) == {"recover", "skip"}
     assert kwargs["text"] is True
     assert kwargs["capture_output"] is True
     assert kwargs["check"] is False
@@ -135,7 +137,7 @@ def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatc
         calls.append((argv, kwargs))
         return _successful_recovery_result(verified=["coder"])
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     plan = SimpleNamespace(
         runtimes=[_runtime("default", "systemd"), _runtime("coder", "systemd")]
     )
@@ -188,11 +190,21 @@ def test_abort_recovery_rejects_malformed_json_success(monkeypatch):
 
 
 def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):
+    """No gateway authority and no serve authority means no child at all.
+
+    On a Linux host with systemctl the child is spawned anyway for the
+    serve-unit pass (test_serve_only_fleet_still_spawns_the_recovery_child);
+    this test pins the OTHER side of that contract, so the serve authority
+    probe is explicitly disabled here.
+    """
     calls = []
     monkeypatch.setattr(
         update_cmd.subprocess,
         "run",
         lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        abort_recovery, "_serve_unit_recovery_available", lambda: False
     )
     plan = SimpleNamespace(runtimes=[_runtime("manual-box", "manual")])
 
@@ -224,7 +236,7 @@ def test_abort_recovery_records_serve_runtimes_as_skipped_with_reason(monkeypatc
     assert set(by_kind) == {"serve", "dashboard"}
     assert "desktop app" in by_kind["serve"]["reason"]
     assert by_kind["dashboard"]["profile"] == "ops"
-    assert "relaunch authority" in by_kind["dashboard"]["reason"]
+    assert "relaunch" in by_kind["dashboard"]["reason"]
 
 
 def test_service_matching_is_exact_for_overlapping_profile_names():
@@ -375,6 +387,7 @@ def test_recovery_module_empty_payload_is_a_real_clean_process():
         "failed": [],
         "relaunch_attempted": [],
         "verified": [],
+        "serve_units": {"verified": [], "failed": []},
     }
 
 
@@ -455,6 +468,7 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
         "failed": [],
         "relaunch_attempted": ["coder"],
         "verified": ["default"],
+        "serve_units": {"verified": [], "failed": []},
     }
     restarts = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]

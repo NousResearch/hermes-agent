@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
 
   background:
-    usage:                 "Kullanım: /background <prompt>\nÖrnek: /background Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
+    usage:                 "Kullanım: /bg <prompt>\nÖrnek: /bg Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
     started:               "🔄 Arka plan görevi başlatıldı: \"{preview}\"\nGörev kimliği: {task_id}\nSohbete devam edebilirsin — sonuçlar tamamlandığında burada görünecek."
+
+  btw:
+    usage:                 "Kullanım: /btw <soru>\nÖrnek: /btw o hata hangi dosyadaydı?\n\nBu konuşma hakkında hızlı bir yan soruyu, konuşmayı kesmeden yanıtlar. Bağımsız bir arka plan görevi için /bg <prompt> kullan."
+    no_history:            "Henüz konuşma yok — sorunu normal bir mesaj olarak gönder."
+    no_provider:           "❌ Yan soru yanıtlanamıyor: sağlayıcı kimlik bilgileri yapılandırılmamış."
+    started:               "💬 Yan soru: \"{preview}\"\nBu konuşmanın anlık görüntüsünden yanıtlanıyor — mevcut çalışma devam ediyor."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw başarısız oldu: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
     aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /reset komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."
     aux_failed:            "ℹ️ Yapılandırılmış sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
+    turnhold_deferred:     "ℹ️ Bağlam sıkıştırma ertelendi — özet hâlâ akışta. Bu tur sıkıştırma olmadan devam ediliyor."
     failed:                "Sıkıştırma başarısız: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMevcut mod: `{mode}`\\n\\nBir seçenek seçin:"
     choice_fast:           "fast — Priority Processing açık"
     choice_normal:         "normal — standart işleme"
+    choice_auto:           "auto — her turun ilk saniyelerinde hızlı"
+    choice_cold:           "cold — yalnızca oturumun ilk turunda hızlı"
 
   footer:
     status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
@@ -260,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
+    all_requires_admin: "_Not: `--all` (sohbetler arası listeleme) yapılandırılmış bir yönetici gerektirir; yalnızca bu sohbetin oturumları gösteriliyor._"
     list_header:           "📋 **Adlandırılmış Oturumlar**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

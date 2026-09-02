@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 # trigger so the server always gets the first shot at compaction.
 LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 
+# Deterministic fallback when automatic mode cannot inspect a local trigger.
 DEFAULT_COMPACT_THRESHOLD = 200_000
 
 # Model-family gate. Substring match on the lowercased model id so dated
@@ -65,6 +66,27 @@ _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 def is_native_compaction_model(model: Optional[str]) -> bool:
     """True when the model is in the gpt-5.6 family."""
     return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+
+
+def resolve_native_compaction_capabilities(
+    *,
+    model: Optional[str],
+    base_url: Optional[str],
+    provider: Optional[str] = None,
+    is_codex_backend: bool = False,
+) -> Dict[str, bool]:
+    """Resolve the native-compaction capability for a runtime destination.
+
+    The result is deliberately explicit: a resolved ``False`` is different
+    from an unresolved capability and must survive model switches unchanged.
+    """
+    normalized_provider = (provider or "").strip().lower()
+    direct_default = normalized_provider == "openai" and not base_url
+    eligible = is_native_compaction_model(model) and (
+        direct_default
+        or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend)
+    )
+    return {"native_compaction": eligible}
 
 
 def is_direct_openai_route(
@@ -86,33 +108,41 @@ def resolve_compact_threshold(
     configured_threshold: Any,
     local_trigger_tokens: Any = None,
 ) -> int:
-    """Clamp the configured native threshold below the local compressor trigger.
+    """Resolve automatic mode or clamp an explicit native threshold.
 
-    Without the clamp a native threshold above the local trigger would let the
-    local summarizer fire first every time, making native compaction dead
-    config. ``local_trigger_tokens`` is ``ContextCompressor.threshold_tokens``
-    when a compressor is attached, else None.
+    An omitted or invalid setting follows the resolved local compressor trigger.
+    An explicit positive integer remains absolute unless it must be clamped so
+    native compaction fires first. ``local_trigger_tokens`` is
+    ``ContextCompressor.threshold_tokens`` when a compressor is attached.
     """
-    try:
-        configured = int(configured_threshold)
-    except (TypeError, ValueError):
-        configured = DEFAULT_COMPACT_THRESHOLD
-    if isinstance(configured_threshold, bool) or configured <= 0:
-        configured = DEFAULT_COMPACT_THRESHOLD
-
     local = None
     try:
         if local_trigger_tokens is not None and not isinstance(local_trigger_tokens, bool):
             local = int(local_trigger_tokens)
     except (TypeError, ValueError):
         local = None
-    if local is None or local <= 0:
-        return configured
+    if local is not None and local <= 0:
+        local = None
 
-    if local > LOCAL_TRIGGER_SAFETY_MARGIN:
-        upper = local - LOCAL_TRIGGER_SAFETY_MARGIN
-    else:
-        upper = max(1_024, int(local * 0.8))
+    upper = None
+    if local is not None:
+        if local > LOCAL_TRIGGER_SAFETY_MARGIN:
+            upper = max(1_024, local - LOCAL_TRIGGER_SAFETY_MARGIN)
+        else:
+            upper = max(1_024, int(local * 0.8))
+
+    try:
+        configured = (
+            None
+            if isinstance(configured_threshold, (bool, float))
+            else int(configured_threshold)
+        )
+    except (TypeError, ValueError):
+        configured = None
+    if isinstance(configured_threshold, bool) or configured is None or configured <= 0:
+        return upper if upper is not None else DEFAULT_COMPACT_THRESHOLD
+    if upper is None:
+        return configured
     return max(1_024, min(configured, upper))
 
 
@@ -151,6 +181,10 @@ def native_compaction_context_management(
     (``agent.codex_responses_native_compaction = False``, set by the
     conversation loop's rejection recovery) takes effect on the next call.
     """
+    capabilities = getattr(agent, "runtime_capabilities", None)
+    if isinstance(capabilities, dict):
+        if not bool(capabilities.get("native_compaction", False)):
+            return None
     if not bool(getattr(agent, "codex_responses_native_compaction", False)):
         return None
     # compression.enabled: false disables ALL automatic compaction, native
@@ -169,14 +203,17 @@ def native_compaction_context_management(
         return None
     if not is_native_compaction_model(getattr(agent, "model", None)):
         return None
-    if not is_direct_openai_route(
+    trusted_proxy = bool(
+        getattr(agent, "capabilities", {}).get("openai_native_compaction", False)
+    )
+    if not trusted_proxy and not is_direct_openai_route(
         getattr(agent, "base_url", None), is_codex_backend=is_codex_backend
     ):
         return None
 
     compressor = getattr(agent, "context_compressor", None)
     threshold = resolve_compact_threshold(
-        getattr(agent, "codex_responses_compact_threshold", DEFAULT_COMPACT_THRESHOLD),
+        getattr(agent, "codex_responses_compact_threshold", None),
         getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
     )
     return [{"type": "compaction", "compact_threshold": threshold}]
@@ -198,10 +235,11 @@ def _approx_tokens(text: str) -> int:
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
-    """Extract measurable text from string, list content, output_text, or nested metadata text.
+    """Extract measurable text from message content and fallback fields.
 
-    Returns None when the item carries no measurable text.
-    Handles string content, multipart lists (input_text/text/output_text), and fallback keys.
+    Returns None when the item carries no measurable text. Handles string
+    content, multipart lists (input_text/text/output_text), and nested
+    metadata text.
     """
     if not isinstance(item, dict):
         return None
@@ -231,6 +269,30 @@ def _extract_item_text(item: Any) -> Optional[str]:
         return text if text.strip() else None
 
     return None
+
+
+def _has_retainable_image_content(item: Any) -> bool:
+    """Return True for a converted Responses message with a valid image part.
+
+    The pruning boundary receives normalized Responses items, so only the
+    adapter-owned ``input_image`` shape is authority here. Unknown, malformed,
+    or empty multipart placeholders must not become durable history merely
+    because their list is non-empty.
+    """
+    if not isinstance(item, dict):
+        return False
+    content = item.get("content")
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type") or "").strip().lower() != "input_image":
+            continue
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            return True
+    return False
 
 
 def _is_summary_item(item: Any) -> bool:
@@ -277,7 +339,8 @@ def prune_pre_checkpoint_items(
     - Retained user messages are kept verbatim within
       ``retained_user_token_budget``; the boundary message is head-truncated
       when it only partially fits (string content only) — goals are usually
-      stated up front, so the head is the valuable end.
+      stated up front, so the head is the valuable end. A recognized
+      image-only user message is retained whole at one-token cost.
     - Compression summary messages (``_is_summary_item``, the canonical
       ``agent.context_compressor`` provenance check) are retained whole
       within ``retained_summary_token_budget``. A summary is never
@@ -388,14 +451,11 @@ def prune_pre_checkpoint_items(
             continue
 
         text = _extract_item_text(item)
+        has_retainable_image = is_user and _has_retainable_image_content(item)
+        if text is None and not has_retainable_image:
+            continue
         if text is None:
-            continue
-        # Image-only user messages have empty text but non-empty content —
-        # main retains them at 1-token cost (images count as zero, matching
-        # Codex's retention accounting). Don't skip them just because text
-        # is falsy.
-        if not text and not is_user:
-            continue
+            text = ""
 
         if is_summary:
             result = _try_retain_summary(text)

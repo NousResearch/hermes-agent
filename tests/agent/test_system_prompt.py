@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
@@ -64,6 +65,50 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("bundled contributor instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=True,
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("chosen workspace instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=False,
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "chosen workspace instructions" in context
 
 
 def _stable_prompt(agent):
@@ -290,9 +335,13 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
+    # Production renders this as str(get_hermes_home()) + "/profiles/<name>/",
+    # and str(Path("/hermes")) is platform-dependent (backslash on Windows) —
+    # build the expectation the same way instead of hardcoding "/hermes".
+    _home_str = str(Path("/hermes"))
     expected_profile = (
         "Active Hermes profile: default. Other profiles (if any) live "
-        "under /hermes/profiles/<name>/. Each profile has its own skills/, "
+        f"under {_home_str}/profiles/<name>/. Each profile has its own skills/, "
         "plugins/, cron/, and memories/ that affect a different session than "
         "this one. Do not modify another profile's skills/plugins/cron/memories "
         "unless the user explicitly directs you to."
@@ -342,7 +391,7 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
             }
             stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
+        assert "Standard Markdown auto-converts" in stable
         assert "lean into it" not in stable
         assert "task lists" not in stable
 
@@ -401,7 +450,7 @@ class TestTelegramRichMessagesHint:
         with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
             mock_cfg.return_value = {}
             stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
+        assert "Standard Markdown auto-converts" in stable
         assert "lean into it" not in stable
 
 
@@ -443,7 +492,7 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
             }
             stable = _stable_prompt(agent)
-        assert "Standard Markdown is automatically converted" in stable
+        assert "Standard Markdown auto-converts" in stable
         assert "lean into it" not in stable
 
 
@@ -542,3 +591,175 @@ class TestMemoryProviderSystemPromptGating:
         full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
                       enabled_toolsets=["web_search"], disabled_toolsets=None)
         assert block not in full
+
+
+class TestSessionStartLike:
+    """'Conversation started:' must reference the session's real start, not
+    the date the system prompt was (re)built.  Builds happen on compression,
+    fresh-agent gateway turns, and resume paths; stamping build time made a
+    chat drift 'started' forward across midnight."""
+
+    def test_uses_session_id_embedded_timestamp(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260101_120000_abc123",
+            session_start=datetime(2026, 1, 1, 12, 0),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+        assert start.tzinfo is not None
+
+    def test_prefers_lineage_root_over_rotated_segment_id(self):
+        """Compaction rotates session ids; each rotation embeds its own
+        mint time. The birth date must come from the lineage ROOT so a
+        Bot Mode forever-chat keeps knowing when it was first born
+        (#98426)."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                assert sid == "20260615_090000_seg9"
+                return "20260101_120000_root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    def test_lineage_walk_failure_falls_open_to_segment_id(self):
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                raise RuntimeError("db locked")
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_nontimestamp_root_falls_through_to_segment_id(self):
+        """A root id without an embedded stamp (legacy/imported lineage)
+        must not break the ladder — rung 1 still applies."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                return "imported-legacy-root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_falls_back_to_session_start(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(session_id="", session_start=datetime(2026, 1, 1, 12, 0))
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    def test_falls_back_to_now_when_no_start_known(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        assert _session_start_like(SimpleNamespace(session_id=""), now) == now
+
+    def test_nonmatching_session_id_uses_session_start(self):
+        from agent.system_prompt import _session_start_like
+
+        now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="plugin-section-test",
+            session_start=datetime(2026, 1, 1, 7, 30),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+
+def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
+    """Regression: a session that started on Jan 1 must still read
+    'Conversation started: Thursday, January 01' even when the prompt is
+    rebuilt on Jan 2 (the rebuild-drift bug)."""
+    import agent.system_prompt as system_prompt
+
+    agent = _make_agent(
+        valid_tool_names=["read_file"],
+        _parallel_tool_call_guidance=False,
+        session_id="20260101_120000_abc123",
+    )
+    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
+    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=([], [], []),
+        ),
+        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        # The system prompt is rebuilt a day LATER than the session start.
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
+    ):
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+
+    assert "Conversation started: Thursday, January 01, 2026" in prompt
+    assert "Conversation started: Friday" not in prompt
+
+class TestConversationStartedTwoLine:
+    """Maintainer design on top of #96224's anchor: long-lived sessions get a
+    second 'as of the last context rebuild' line so a model in a forever-chat
+    (Bot Mode, messenger channels) is not led to believe it still lives on
+    the session's birth day. Same-day sessions keep the one-line shape."""
+
+    def _agent(self, session_id):
+        return _make_agent(
+            session_id=session_id, session_start=None,
+            _bot_chat_timeless_prompt=False,
+        )
+
+    def _volatile(self, agent):
+        import agent.system_prompt as sp
+        parts = sp.build_system_prompt_parts(agent)
+        return parts["volatile"]
+
+    def test_old_session_gets_rebuild_date_line(self):
+        vol = self._volatile(self._agent("20200110_090000_old"))
+        assert "Conversation started:" in vol
+        assert "as of the last context rebuild" in vol
+        assert "trust this over the start date" in vol
+
+    def test_same_day_session_keeps_single_line(self):
+        from hermes_time import now as hermes_now
+        sid = hermes_now().strftime("%Y%m%d_%H%M%S_fresh")
+        vol = self._volatile(self._agent(sid))
+        assert "Conversation started:" in vol
+        assert "as of the last context rebuild" not in vol
+
+    def test_timeless_bot_chat_unaffected(self):
+        agent = self._agent("20200110_090000_old")
+        agent._bot_chat_timeless_prompt = True
+        vol = self._volatile(agent)
+        assert "Conversation started:" not in vol
+        assert "as of the last context rebuild" not in vol
+

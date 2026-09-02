@@ -72,6 +72,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
   groupChatMemberBots,
@@ -1233,6 +1234,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         </div>
       ) : null}
       {header}
+      <GroupHoldStatus
+        holds={room.holds}
+        memberLabel={member => displayName(member, botRosterMeta(member, allMeta))}
+        members={members}
+      />
       {activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="grid gap-1.5 px-2.5 pb-2">

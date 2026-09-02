@@ -97,8 +97,11 @@ class TestDetectDefaultDarwin:
         [
             ("com.google.Chrome", "chrome"),
             ("com.brave.Browser", "brave"),
+            ("com.brave.Browser.origin", "brave-origin"),
             ("com.microsoft.edgemac", "edge"),
             ("org.chromium.Chromium", "chromium"),
+            ("com.brave.Browser.origin.beta", bc.UNSUPPORTED_CHANNEL),
+            ("com.brave.Browser.origin.nightly", bc.UNSUPPORTED_CHANNEL),
         ],
     )
     def test_bundle_map(self, bundle, expected):
@@ -122,6 +125,9 @@ class TestDetectDefaultLinux:
             ("org.chromium.Chromium.desktop", "chromium"),
             ("brave-browser.desktop", "brave"),
             ("com.brave.Browser.desktop", "brave"),
+            ("brave-origin.desktop", "brave-origin"),
+            ("brave-origin-beta.desktop", bc.UNSUPPORTED_CHANNEL),
+            ("brave-origin-nightly.desktop", bc.UNSUPPORTED_CHANNEL),
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
             ("firefox.desktop", None),

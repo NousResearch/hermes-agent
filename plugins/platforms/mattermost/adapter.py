@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -100,7 +101,7 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
     """Return True when Mattermost has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
     token = (getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
-    url = (extra.get("url", "") or os.getenv("MATTERMOST_URL", "")).strip()
+    url = (extra.get("url", "") or _get_scoped_secret("MATTERMOST_URL", "")).strip()
     if not token:
         logger.debug("Mattermost: MATTERMOST_TOKEN not set")
         return False
@@ -120,7 +121,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         self._base_url: str = (
             config.extra.get("url", "")
-            or os.getenv("MATTERMOST_URL", "")
+            or _get_scoped_secret("MATTERMOST_URL", "")
         ).rstrip("/")
         self._token: str = config.token or _get_scoped_secret("MATTERMOST_TOKEN", "")
 
@@ -137,7 +138,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "")
-            or os.getenv("MATTERMOST_REPLY_MODE", "off")
+            or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
         self._last_post_status: Optional[int] = None
@@ -316,7 +317,8 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
         )
         self._closing = False
 
@@ -870,7 +872,7 @@ class MattermostAdapter(BasePlatformAdapter):
             # ignored, even if @mentioned.  DMs are already excluded above.
             allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
             if allowed_raw is None:
-                allowed_raw = os.getenv("MATTERMOST_ALLOWED_CHANNELS", "")
+                allowed_raw = _get_scoped_secret("MATTERMOST_ALLOWED_CHANNELS", "")
             if isinstance(allowed_raw, list):
                 allowed_channels = {str(c).strip() for c in allowed_raw if str(c).strip()}
             else:
@@ -884,12 +886,18 @@ class MattermostAdapter(BasePlatformAdapter):
                 )
                 return
 
-            require_mention = os.getenv(
-                "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in {"false", "0", "no"}
+            require_mention_raw = self.config.extra.get("require_mention") if self.config.extra else None
+            if require_mention_raw is None:
+                require_mention_raw = _get_scoped_secret("MATTERMOST_REQUIRE_MENTION", "true")
+            require_mention = str(require_mention_raw).lower() not in {"false", "0", "no"}
 
-            free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            free_channels_raw = self.config.extra.get("free_response_channels") if self.config.extra else None
+            if free_channels_raw is None:
+                free_channels_raw = _get_scoped_secret("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
+            if isinstance(free_channels_raw, list):
+                free_channels = {str(ch).strip() for ch in free_channels_raw if str(ch).strip()}
+            else:
+                free_channels = {ch.strip() for ch in str(free_channels_raw).split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
             mention_patterns = [
@@ -1057,7 +1065,7 @@ async def _standalone_send(
 
     base_url = (
         (getattr(pconfig, "extra", {}) or {}).get("url")
-        or os.getenv("MATTERMOST_URL", "")
+        or _get_scoped_secret("MATTERMOST_URL", "")
     ).rstrip("/")
     token = (getattr(pconfig, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     if not base_url or not token:
@@ -1232,40 +1240,62 @@ def interactive_setup() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _profile_scoped_config_load() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed and connected inside
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active) --
+    the same discriminator the Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk
+    adapters use for this bug class (#98738 / #72348 / #80099). The DEFAULT
+    profile under multiplexing runs unscoped: ``os.environ`` holds its own
+    bridge output there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
-    """Translate ``config.yaml`` ``mattermost:`` keys into env vars.
+    """Translate ``config.yaml`` ``mattermost:`` keys into env vars and
+    ``PlatformConfig.extra`` entries.
 
     Implements the ``apply_yaml_config_fn`` contract (#24836 / #25443).
     Mirrors the legacy ``mattermost_cfg`` block that used to live in
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
-    The MattermostAdapter reads its runtime configuration via
-    ``os.getenv()`` for ``MATTERMOST_REQUIRE_MENTION``,
-    ``MATTERMOST_FREE_RESPONSE_CHANNELS``, and
-    ``MATTERMOST_ALLOWED_CHANNELS``.  Rather than rewrite those call sites
-    to read from ``PlatformConfig.extra``, this hook keeps the env-driven
-    model and merely owns the YAML→env translation here, next to the
-    adapter that consumes it.
-
-    Env vars take precedence over YAML — every assignment is guarded
-    by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    Env vars take precedence over YAML for single-profile deployments --
+    each env write is guarded by ``not os.getenv(...)`` so an explicit env
+    var survives a config.yaml update. Under a multiplexed secondary
+    profile's scope, the env write is skipped entirely (it would otherwise
+    leak into the process-global ``os.environ`` and be inherited by every
+    other profile); instead the values are returned so the caller merges
+    them into this profile's own ``PlatformConfig.extra``, which the
+    require_mention/free_response_channels/allowed_channels read sites now
+    check first.
     """
-    if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
-        os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    _skip_env_bridge = _profile_scoped_config_load()
+    seeded: dict = {}
+    if "require_mention" in mattermost_cfg:
+        seeded["require_mention"] = mattermost_cfg["require_mention"]
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
+            os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = str(frc)
+    if frc is not None:
+        seeded["free_response_channels"] = frc
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
+            _frc = ",".join(str(v) for v in frc) if isinstance(frc, list) else str(frc)
+            os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = _frc
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = mattermost_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    if ac is not None:
+        seeded["allowed_channels"] = ac
+        if not _skip_env_bridge and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
+            _ac = ",".join(str(v) for v in ac) if isinstance(ac, list) else str(ac)
+            os.environ["MATTERMOST_ALLOWED_CHANNELS"] = _ac
+    return seeded or None
 
 
 # ---------------------------------------------------------------------------

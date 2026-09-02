@@ -100,15 +100,23 @@ def _prune_replaced_custom_model_config_credentials(
     try:
         from agent.credential_pool import (
             CUSTOM_POOL_PREFIX,
-            get_custom_provider_pool_key,
+            custom_provider_pool_key_candidates,
         )
         from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-        active_pool_key = get_custom_provider_pool_key(
-            base_url,
-            provider_name=provider_name or None,
-        )
-        if not active_pool_key:
+        # A keyed ``providers.<key>`` endpoint stores under the durable slug
+        # while legacy-named pools keep the ``custom:<display-name>`` key, so
+        # every identity the active endpoint may occupy must be skipped —
+        # comparing against a single preferred key false-prunes the provider's
+        # own legacy-named pool (verified regression from PR #100413 review).
+        active_pool_keys = {
+            str(key).strip().lower()
+            for key in custom_provider_pool_key_candidates(
+                base_url,
+                provider_name=provider_name or None,
+            )
+        }
+        if not active_pool_keys:
             return
         pools = read_credential_pool(None)
         if not isinstance(pools, dict):
@@ -117,7 +125,7 @@ def _prune_replaced_custom_model_config_credentials(
             if (
                 not isinstance(pool_key, str)
                 or not pool_key.startswith(CUSTOM_POOL_PREFIX)
-                or pool_key == active_pool_key
+                or pool_key in active_pool_keys
                 or not isinstance(entries, list)
             ):
                 continue
@@ -531,6 +539,15 @@ def _model_flow_nous(config, current_model="", args=None):
     # of CLI release cadence.
     unavailable_models: list[str] = []
     unavailable_message = ""
+
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach. Narrow before the tier split, so an id the policy rescues
+    # still has to pass the free/paid predicate instead of going around it.
+    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+    _policy_allowed = nous_policy_allowed_ids()
+    _policy_narrowed = False
+
     if free_tier:
         try:
             from hermes_cli.nous_account import (
@@ -551,6 +568,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_free_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
         )
@@ -558,6 +580,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_paid_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")
@@ -572,6 +599,11 @@ def _model_flow_nous(config, current_model="", args=None):
             print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return
 
+    from hermes_cli.nous_account import nous_policy_notice
+
+    _policy_notice = nous_policy_notice(removed=_policy_narrowed)
+    if _policy_notice:
+        print(_policy_notice)
     print(
         f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )

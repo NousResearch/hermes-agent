@@ -335,8 +335,113 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    hosted_task = params.get("_hosted_task")
+    hosted_terminal_callback = params.get("_hosted_terminal_callback")
+    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    if internal_hosted_submit:
+        if session.get("source") != "bot_room":
+            return _err(rid, 4120, "hosted room turns require a bot_room session")
+        if not isinstance(hosted_task, dict) or not callable(hosted_terminal_callback):
+            return _err(rid, 4120, "invalid hosted room turn proof")
+        required_hosted_fields = {
+            "room_id",
+            "task_id",
+            "thread_id",
+            "turn_id",
+            "execution_generation",
+        }
+        if set(hosted_task) != required_hosted_fields or not all(
+            isinstance(hosted_task.get(field), str) and hosted_task[field]
+            for field in required_hosted_fields - {"execution_generation"}
+        ) or not isinstance(hosted_task.get("execution_generation"), int):
+            return _err(rid, 4120, "invalid hosted room turn proof")
+    else:
+        # Older Desktop builds know the `Group: <room-id>` session title but
+        # not the hosted authority marker. Once a gateway owns that room, a
+        # direct prompt into its member session would start a second renderer
+        # driver. Fence it server-side instead of trusting client awareness.
+        title = str(session.get("title") or "")
+        if title.startswith("Group: "):
+            room_id = title.removeprefix("Group: ").strip()
+            if room_id:
+                try:
+                    from gateway.hosted_rooms import (
+                        HostedRoomError,
+                        RoomProbeUnavailableError,
+                        default_db_path,
+                        probe_hosted_room,
+                        probe_peer_room_reservation,
+                    )
+
+                    hosted = probe_hosted_room(default_db_path(), room_id=room_id)
+                    peer = False
+                    if not hosted:
+                        from hermes_constants import named_profile_home
+
+                        session_profile_home = named_profile_home(
+                            str(session.get("profile_home") or "")
+                        )
+                        requested_profile = (
+                            (
+                                session_profile_home.name
+                                if session_profile_home is not None
+                                else ""
+                            )
+                            or str(params.get("profile") or "").strip()
+                            or str(_current_profile_name() or "default").strip()
+                        )
+                        peer = probe_peer_room_reservation(
+                            default_db_path(),
+                            room_id=room_id,
+                            target_profile=requested_profile,
+                        )
+                except RoomProbeUnavailableError:
+                    return _err(
+                        rid,
+                        5122,
+                        "Could not verify this group. Try again after the gateway recovers.",
+                    )
+                except HostedRoomError:
+                    # Legacy Desktop sessions used the display name after
+                    # "Group: "; those names are not hosted room ids.
+                    pass
+                except Exception:
+                    return _err(
+                        rid,
+                        5122,
+                        "Could not verify this group. Try again after the gateway recovers.",
+                    )
+                else:
+                    if hosted or peer:
+                        return _err(
+                            rid,
+                            4122,
+                            (
+                                "This room is managed by its gateway. "
+                                if hosted
+                                else "This room is managed by its home host. "
+                            )
+                            + "Update Hermes Desktop to continue it.",
+                        )
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        return _err(rid, 4090, limit_message)
+        # The refusal reason travels as machine-readable data, not as prose.
+        #
+        # An automated client has to tell "the machine is at capacity, retry later"
+        # from "this session has a live owner, and your write would interleave with
+        # theirs". Those call for different behaviour, and a client that had to
+        # distinguish them by matching the message text would silently change
+        # behaviour the next time the wording improved.
+        #
+        # Refused HERE, before the busy-queue check, before _ensure_session_db_row
+        # and before _start_agent_build: no user row is persisted and no model turn
+        # begins, so a refusal leaves the session exactly as it was.
+        reason = getattr(limit_message, "reason", None)
+        return _err(
+            rid,
+            4090,
+            str(limit_message),
+            {"reason": reason} if reason else None,
+        )
     # Which desktop window this message was typed into. Rewritten on every
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
@@ -357,6 +462,12 @@ def _(rid, params: dict) -> dict:
         )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
+    if internal_hosted_submit and turn_isolation:
+        return _err(
+            rid,
+            4121,
+            "hosted room turns do not support isolated compute workers yet",
+        )
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
@@ -366,6 +477,8 @@ def _(rid, params: dict) -> dict:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
+                if internal_hosted_submit:
+                    return _err(rid, 4091, "hosted room member session is busy")
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
@@ -812,6 +925,8 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
+        if internal_hosted_submit:
+            session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
 
     if turn_isolation:
@@ -839,7 +954,17 @@ def _(rid, params: dict) -> dict:
     # Disk-full must fail the RPC (not stream silently): desktop maps the error
     # string to a "disk full" toast so the user knows why the send vanished.
     try:
-        _ensure_session_db_row(session)
+        if _ensure_session_db_row(session) is False:
+            # Store unavailable: failing the RPC is the only user-visible
+            # signal — same principle as the disk-full path above (#98924).
+            # _db_error carries the SessionDB open failure for the toast.
+            return _err(
+                rid,
+                5072,
+                "session storage unavailable: "
+                f"{_db_error or 'state.db could not be opened'} — the message "
+                "was not saved; repair state.db and try again",
+            )
         # A branch becomes real here: copy its parent's transcript into the row so it
         # resumes with full context (the agent won't persist the seed itself).
         _persist_branch_seed(session)
@@ -862,7 +987,18 @@ def _(rid, params: dict) -> dict:
             5071,
             f"session storage could not be written: {exc}",
         )
-    _start_agent_build(sid, session)
+    # A completed FAILED build must not wedge the session: the error frame
+    # says retryable, so a new send (or the error card's Retry) rebuilds the
+    # agent with fresh provider resolution instead of replaying the cached
+    # failure forever. Before this, only a model switch reset the failed
+    # generation — a session that failed once (local server off) kept
+    # erroring after the server came back, while new sessions worked. Falls
+    # through to the normal build when there is no completed failure to
+    # clear.
+    if not _restart_completed_failed_agent_build(
+        sid, session, session.get("agent_ready")
+    ):
+        _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         # Patient wait (#63078): the user's message is already the accepted
@@ -908,7 +1044,14 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            terminal_callback=hosted_terminal_callback,
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -1380,6 +1523,77 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"task_id": task_id})
 
 
+@method("prompt.btw")
+def _(rid, params: dict) -> dict:
+    """Answer a side question about the session without touching its history.
+
+    Snapshots the live conversation (in-flight ``_session_messages`` when a
+    turn is running, else the persisted ``session["history"]``) and runs a
+    one-shot auxiliary LLM call against it (``agent/side_question.py``). The
+    session's history, role alternation, and prompt cache are untouched; the
+    answer arrives as a ``btw.complete`` event.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    text, parent = params.get("text", ""), params.get("session_id", "")
+    if not text:
+        return _err(rid, 4012, "text required")
+    task_id = f"btw_{uuid.uuid4().hex[:6]}"
+
+    agent = session.get("agent")
+    snapshot = list(
+        getattr(agent, "_session_messages", None)
+        or session.get("history")
+        or []
+    )
+    main_runtime = {
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+        "api_mode": getattr(agent, "api_mode", None),
+    }
+
+    def run():
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        try:
+            from agent.side_question import answer_side_question
+
+            _profile_home_str = session.get("profile_home")
+            home_token = (
+                set_hermes_home_override(_profile_home_str)
+                if _profile_home_str
+                else None
+            )
+            try:
+                answer = answer_side_question(
+                    text,
+                    snapshot,
+                    parent_agent=agent,
+                    main_runtime=main_runtime,
+                )
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
+            _emit(
+                "btw.complete",
+                parent,
+                {"task_id": task_id, "question": text, "text": answer or ""},
+            )
+        except Exception as e:
+            _emit(
+                "btw.complete",
+                parent,
+                {"task_id": task_id, "question": text, "text": f"error: {e}"},
+            )
+        finally:
+            _clear_session_context(session_tokens)
+
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"task_id": task_id})
+
+
 @method("preview.restart")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -1518,6 +1732,8 @@ def _(rid, params: dict) -> dict:
     # from _pending) while the card is still visible — common when a WebSocket
     # reconnect during the wait drops tool.complete. A late answer must resolve
     # gracefully instead of hitting the raw 4009 "no pending answer request".
+    if proxied := _respond_compute_host_clarify(rid, params):
+        return proxied
     return _respond(rid, params, "answer", allow_expired=True)
 
 

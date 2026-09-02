@@ -439,115 +439,6 @@ def exa_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Tavily keyless (api.tavily.com — X-Tavily-Access-Mode: keyless)
-# ---------------------------------------------------------------------------
-
-
-TAVILY_API_URL = "https://api.tavily.com"
-
-
-def _tavily_keyless_post(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to Tavily with keyless headers; raise KeylessMCPError on failure."""
-    import requests
-
-    try:
-        response = requests.post(
-            f"{TAVILY_API_URL}/{endpoint.lstrip('/')}",
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "X-Client-Name": "hermes-agent",
-                "X-Tavily-Access-Mode": "keyless",
-            },
-            timeout=_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException as exc:
-        raise KeylessMCPError(f"request failed: {exc}") from exc
-    if response.status_code >= 400:
-        raise KeylessMCPError(
-            (response.text or "").strip() or f"HTTP {response.status_code}"
-        )
-    return response.json()
-
-
-def tavily_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Keyless Tavily search → legacy search response shape."""
-    try:
-        data = _tavily_keyless_post(
-            "search", {"query": query, "max_results": max(1, int(limit))}
-        )
-    except KeylessMCPError as exc:
-        return {
-            "success": False,
-            "error": (
-                f"Keyless Tavily search failed: {exc}. "
-                "Set TAVILY_API_KEY (https://app.tavily.com) or another web "
-                "backend via `hermes tools` for reliable service."
-            ),
-        }
-    web_results = []
-    for i, result in enumerate(data.get("results") or []):
-        web_results.append(
-            {
-                "url": result.get("url") or "",
-                "title": result.get("title") or "",
-                "description": result.get("content") or "",
-                "position": i + 1,
-            }
-        )
-    return {"success": True, "data": {"web": web_results}}
-
-
-def tavily_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
-    """Keyless Tavily extract → legacy extract result list."""
-    try:
-        data = _tavily_keyless_post("extract", {"urls": list(urls)})
-    except KeylessMCPError as exc:
-        message = (
-            f"Keyless Tavily extract failed: {exc}. "
-            "Set TAVILY_API_KEY (https://app.tavily.com) or another web "
-            "backend via `hermes tools` for reliable service."
-        )
-        return [
-            {"url": u, "title": "", "content": "", "error": message}
-            for u in urls
-        ]
-    results: List[Dict[str, Any]] = []
-    seen = set()
-    for result in data.get("results") or []:
-        url = result.get("url") or ""
-        raw = result.get("raw_content") or result.get("content") or ""
-        seen.add(url)
-        results.append(
-            {
-                "url": url,
-                "title": result.get("title") or "",
-                "content": raw,
-                "raw_content": raw,
-                "metadata": {"sourceURL": url, "title": result.get("title") or ""},
-            }
-        )
-    for fail in data.get("failed_results") or []:
-        url = (fail.get("url") if isinstance(fail, dict) else str(fail)) or ""
-        seen.add(url)
-        results.append(
-            {
-                "url": url,
-                "title": "",
-                "content": "",
-                "error": (fail.get("error") if isinstance(fail, dict) else None)
-                or "extraction failed",
-            }
-        )
-    for u in urls:
-        if u not in seen:
-            results.append(
-                {"url": u, "title": "", "content": "", "error": "no content returned"}
-            )
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Firecrawl keyless (public cloud API, no auth header)
 # ---------------------------------------------------------------------------
 
@@ -731,12 +622,11 @@ def keenable_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
 # Round-robin ring + next-in-line failover (rate-limited free tiers)
 # ---------------------------------------------------------------------------
 
-_KEYLESS_RING = ("exa", "parallel", "tavily", "firecrawl", "keenable")
+_KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
 
 _KEYLESS_SEARCHERS = {
     "exa": lambda query, limit: exa_search_keyless(query, limit),
     "parallel": lambda query, limit: parallel_search_keyless(query, limit),
-    "tavily": lambda query, limit: tavily_search_keyless(query, limit),
     "firecrawl": lambda query, limit: firecrawl_search_keyless(query, limit),
     "keenable": lambda query, limit: keenable_search_keyless(query, limit),
 }
@@ -744,7 +634,6 @@ _KEYLESS_SEARCHERS = {
 _KEYLESS_EXTRACTORS = {
     "exa": lambda urls: exa_extract_keyless(urls),
     "parallel": lambda urls: parallel_extract_keyless(urls),
-    "tavily": lambda urls: tavily_extract_keyless(urls),
     "firecrawl": lambda urls: firecrawl_extract_keyless(urls),
     "keenable": lambda urls: keenable_extract_keyless(urls),
 }

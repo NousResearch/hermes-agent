@@ -8,6 +8,7 @@ import {
   handleTodoToggleHotkey,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
+  shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -71,6 +72,22 @@ describe('handleTodoToggleHotkey', () => {
     expect(handleTodoToggleHotkey('t', { ctrl: false }, true, toggle)).toBe(false)
     expect(handleTodoToggleHotkey('t', { ctrl: true }, false, toggle)).toBe(false)
     expect(toggle).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('shouldDetachEditedHistoryInput', () => {
+  const history = ['older message', 'line one\nline two']
+
+  it('detaches a recalled entry as soon as the user edits it', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one edited\nline two')).toBe(true)
+  })
+
+  it('keeps unchanged recalled entries in history navigation', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one\nline two')).toBe(false)
+  })
+
+  it('does not detach an ordinary current draft', () => {
+    expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
   })
 })
 

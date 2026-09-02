@@ -7,7 +7,7 @@ interface StatusSectionProps {
    *  `Button` with `size="micro"` + `variant="text"` or `"link"`. */
   accessory?: ReactNode
   children: ReactNode
-  /** Optional inline status shown only while the group is collapsed. */
+  /** Optional inline status next to the label (running spinner, etc). */
   collapsedIndicator?: ReactNode
   collapsed?: boolean
   defaultCollapsed?: boolean

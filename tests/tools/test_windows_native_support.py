@@ -128,7 +128,8 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
-        status.terminate_pid(12345, force=True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        status.terminate_pid(12345, force=True, expected_start_time=123456)
 
         assert captured["args"][0] == "taskkill"
         assert "/PID" in captured["args"]
@@ -147,8 +148,9 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
         with pytest.raises(OSError, match="cannot be terminated"):
-            status.terminate_pid(12345, force=True)
+            status.terminate_pid(12345, force=True, expected_start_time=123456)
 
     def test_graceful_on_windows_uses_os_kill_sigterm(self, monkeypatch):
         """Non-force path calls os.kill with SIGTERM (Windows has no SIGKILL).
@@ -186,7 +188,8 @@ class TestTerminatePidRoutingOnWindows:
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
         monkeypatch.setattr(status.os, "kill", fake_kill)
-        status.terminate_pid(42, force=True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        status.terminate_pid(42, force=True, expected_start_time=123456)
 
         assert captured["pid"] == 42
         assert captured["sig"] == signal.SIGTERM

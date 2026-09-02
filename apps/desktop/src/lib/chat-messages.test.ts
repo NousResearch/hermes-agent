@@ -1248,13 +1248,23 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
-  it('handles empty final text', () => {
+  it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'streamed' })
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('treats whitespace-only final text as non-authoritative (#95514)', () => {
+    const parts = [{ type: 'text' as const, text: 'already on screen' }]
+
+    const result = mergeFinalAssistantText(parts, '   \n\t')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
 })
 

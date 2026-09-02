@@ -196,6 +196,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
+    "tencent-tokenplan": HermesOverlay(
+        transport="anthropic_messages",
+        base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        base_url_env_var="TOKENPLAN_BASE_URL",
+    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
@@ -223,6 +228,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("UPSTAGE_API_KEY",),
         base_url_override="https://api.upstage.ai/v1",
         base_url_env_var="UPSTAGE_BASE_URL",
+    ),
+    "nebius-token-factory": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
+        base_url_override="https://api.tokenfactory.nebius.com/v1",
+        base_url_env_var="NEBIUS_BASE_URL",
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
@@ -378,6 +389,8 @@ ALIASES: Dict[str, str] = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "tokenplan": "tencent-tokenplan",
+    "tencent-lkeap": "tencent-tokenplan",
 
     # bedrock
     "aws": "bedrock",
@@ -404,6 +417,12 @@ ALIASES: Dict[str, str] = {
     "actual-computer": "actual",
     "actualcomputer": "actual",
     "aci": "actual",
+    # Nebius Token Factory
+    "nebius": "nebius-token-factory",
+    "nebius-tokenfactory": "nebius-token-factory",
+    "nebius-tf": "nebius-token-factory",
+    "token-factory": "nebius-token-factory",
+    "tokenfactory": "nebius-token-factory",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -432,6 +451,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "upstage": "Upstage Solar",
     "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",
+    "nebius-token-factory": "Nebius Token Factory",
+    "tencent-tokenplan": "Tencent TokenPlan",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
@@ -663,6 +684,10 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
       - api.meta.ai only achieves KV-cache hits on /v1/responses with
         prompt_cache_retention; /v1/chat/completions returns 0 cached
         tokens (measured 0% vs 93-99% on /responses with retention).
+      - api.router.com (Ramp Router) is Responses-native: per-model
+        reasoning-effort validation, reasoning summaries, and prompt
+        caching live on /v1/responses; /v1/chat/completions is only a
+        minimal compatibility shim translated onto it.
       - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
       - Kimi's ``/coding`` endpoint speaks native Messages.
       - AWS Bedrock runtime hosts speak Converse.
@@ -694,6 +719,13 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     # Responses API with prompt_cache_retention; chat/completions stays
     # cache-cold (0% vs 93-99% measured). Exact-hostname match per #32243.
     if hostname == "api.meta.ai":
+        return "codex_responses"
+    # Ramp Router (api.router.com) is Responses-native: reasoning-effort
+    # validation, reasoning summaries, and prompt caching live on
+    # /v1/responses, and /v1/chat/completions is only a minimal
+    # compatibility shim (docs.router.com/api/endpoint). Exact-hostname
+    # match per #32243.
+    if hostname == "api.router.com":
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
         return "bedrock_converse"
@@ -990,6 +1022,29 @@ def resolve_provider_full(
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
+
+    # 2c. Managed local runtime: the llamacpp aliases are a real provider
+    # whenever the managed server (or a detected external one) resolves —
+    # no credential and no providers: entry required, the credential is
+    # reachability. Without this rung the model-switch path rejected the
+    # very provider the Local Models 'Use' flow writes to config
+    # ("Unknown provider 'llamacpp'" from the desktop dropdown).
+    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
+        except Exception:
+            endpoint = None
+        if endpoint:
+            return ProviderDef(
+                id="llamacpp",
+                name="Local",
+                transport="openai_chat",
+                api_key_env_vars=(),
+                base_url=endpoint["base_url"],
+                source="local-runtime",
+            )
 
     # 3. Try models.dev directly (for providers not in our ALIASES)
     try:

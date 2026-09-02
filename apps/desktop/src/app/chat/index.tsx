@@ -82,7 +82,10 @@ import { advanceTranscriptWindow, type TranscriptWindowState } from './transcrip
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
+  modelOptionsOwnerConnectionId?: string
+  modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
+  requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
@@ -358,7 +361,10 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
+  modelOptionsOwnerConnectionId,
+  modelOptionsProfile,
   modelMenuContent,
+  requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
@@ -538,8 +544,18 @@ const ChatViewContent = memo(function ChatViewContent({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
-    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
+    queryKey: modelOptionsQueryKey(
+      modelOptionsProfile || activeGatewayProfile,
+      activeSessionId,
+      modelOptionsOwnerConnectionId
+    ),
+    queryFn: () =>
+      requestModelOptions({
+        gateway: gateway || undefined,
+        profile: modelOptionsProfile || activeGatewayProfile,
+        request: requestModelOptionsForOwner,
+        sessionId: activeSessionId
+      }),
     enabled: gatewayOpen
   })
 
@@ -682,7 +698,7 @@ const ChatViewContent = memo(function ChatViewContent({
               </ErrorState>
             </div>
           )}
-          {showChatBar && <ScrollToBottomButton />}
+          {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
           {/* Vibe hearts rise from the composer only when no pet is out (else
               they play on the pet). Fired by the core `reaction` event. */}
           {!petPresent && (

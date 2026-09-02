@@ -5,7 +5,7 @@ import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
-import { setSessionTodoSnapshot } from '@/store/todos'
+import { restoreSessionTodosFromSnapshot, setSessionTodoSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -20,11 +20,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { flushQueuedDeltas, nativeSubagentSessionsRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'todo.updated') {
-    if (sessionId) {
+    if (sessionId && !sessionInterrupted(sessionId)) {
       const snapshot = todoSnapshotFromGatewayPayload(payload, sessionId)
 
       if (snapshot) {
         setSessionTodoSnapshot(snapshot)
+      } else {
+        restoreSessionTodosFromSnapshot(sessionId, payload, true)
       }
     }
 

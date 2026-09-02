@@ -28,7 +28,8 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   return { ...sdk, host: { ...sdk.host, request } }
 })
 
-const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')
+const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows, routineLastResult } =
+  await import('./cron')
 
 const activeJob: RoutineJob = {
   deliver: 'bot-chat',
@@ -86,6 +87,22 @@ describe('the facts the row never showed', () => {
 
     expect(valueOf(passthrough, 'Schedule (raw)')).toBeUndefined()
     expect(valueOf(passthrough, 'Schedule')).toBe('0 9 * * 1-5')
+  })
+
+  it('spells out every last_status the scheduler writes', () => {
+    // The gateway's literal set is closed; each one gets a human reading, and
+    // delivery_failed in particular must not read as a success.
+    expect(routineLastResult('ok')).toBe('Succeeded')
+    expect(routineLastResult('error')).toBe('Failed')
+    expect(routineLastResult('delivery_failed')).toBe('Ran, but delivery failed')
+    expect(routineLastResult('blocked_config')).toBe('Blocked by configuration (not run)')
+    // Unknown literals pass through rather than vanish.
+    expect(routineLastResult('something_new')).toBe('something_new')
+    expect(routineLastResult(undefined)).toBeNull()
+
+    expect(valueOf(routineDetailRows({ ...activeJob, last_status: 'delivery_failed' }), 'Last result')).toBe(
+      'Ran, but delivery failed'
+    )
   })
 
   it('explains a failing or scheduler-paused job in failure order', () => {

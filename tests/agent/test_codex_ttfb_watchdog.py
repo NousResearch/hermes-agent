@@ -108,6 +108,89 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch):
+    """The watchdog must publish a per-request token and clear it on the kill.
+
+    ``run_codex_stream`` reads ``agent._active_codex_stream_request_token`` to
+    tell whether it is still the owning attempt. Without an install here the
+    whole retirement guard would be inert, and without the clear on kill a
+    retired worker would keep normalizing partial deltas into a "completed"
+    response.
+
+    The worker also unwinds with its own local error after the force-close;
+    that error must not replace the watchdog's retryable ``TimeoutError``.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    closes: list = []
+    seen = {"token_while_running": None}
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        seen["token_while_running"] = getattr(
+            agent, "_active_codex_stream_request_token", None
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if getattr(agent, "_active_codex_stream_request_token", None) is None:
+                # Retired by the watchdog — mimic the transport unwinding.
+                raise RuntimeError("retired worker stream ended without terminal")
+            time.sleep(0.02)
+        raise RuntimeError("test timed out waiting for retirement")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert seen["token_while_running"] is not None, (
+        "interruptible_api_call must install a request token before the worker runs"
+    )
+    assert "TTFB" in str(excinfo.value)
+    assert "retired worker" not in str(excinfo.value)
+    assert "codex_ttfb_kill" in closes
+    assert getattr(agent, "_active_codex_stream_request_token", None) is None
+
+
+def test_non_codex_api_mode_installs_no_request_token(tmp_path, monkeypatch):
+    """The token is codex_responses-only — other api_modes stay untouched."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.api_mode = "chat_completions"
+
+    seen = {"token": "unset"}
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+
+    def fake_dispatch(_agent, _api_kwargs, *, make_client):
+        make_client("test")
+        seen["token"] = getattr(
+            _agent, "_active_codex_stream_request_token", "absent"
+        )
+        return SimpleNamespace(choices=[])
+
+    monkeypatch.setattr(h, "_dispatch_nonstreaming_api_request", fake_dispatch)
+
+    h.interruptible_api_call(agent, {"model": "gpt-5.5", "messages": []})
+
+    assert seen["token"] in (None, "absent")
+
+
 
 
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):

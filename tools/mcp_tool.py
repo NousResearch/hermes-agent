@@ -590,6 +590,13 @@ _MAX_BACKOFF_SECONDS = 60
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
+# How long a tool call waits for a respawned stdio child after its subprocess
+# was found dead — a gateway restart kills every MCP stdio child,
+# and the next call from a still-live session would otherwise fail for no real
+# reason). Bounded: when the wait elapses the call reports the dead transport
+# instead of looping, so a genuinely broken server still parks via the
+# rapid-drop budget in run() rather than hot-cycling respawns.
+_STDIO_RESPAWN_WAIT_SEC = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
 # from N servers land in synchronized bursts.
@@ -2856,7 +2863,7 @@ class MCPServerTask:
                 # is currently owned by another server.
                 if registry.get_toolset_for_tool(tool_name) != toolset_name:
                     continue
-                registry.deregister(tool_name)
+                registry.deregister(tool_name, scope=_server_registry_scope(self.name))
                 _forget_mcp_tool_server(tool_name)
 
             # 3. Re-register with the fresh list. The helper may skip names that
@@ -2874,7 +2881,7 @@ class MCPServerTask:
             for tool_name in old_tool_names - registered_name_set:
                 if registry.get_toolset_for_tool(tool_name) != toolset_name:
                     continue
-                registry.deregister(tool_name)
+                registry.deregister(tool_name, scope=_server_registry_scope(self.name))
                 _forget_mcp_tool_server(tool_name)
             self._registered_tool_names = registered_names
 
@@ -2920,21 +2927,44 @@ class MCPServerTask:
                 await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
                 return
             except Exception as exc:
-                # Only a "method not found" means ping is unsupported. Any
-                # other error (timeout, closed transport, session expired) is
-                # a real liveness failure — propagate so we reconnect.
-                if not _is_method_not_found_error(exc):
+                if _is_method_not_found_error(exc):
+                    # Structural -32601 or "Unknown method" — ping is
+                    # definitively unsupported.
+                    if not self._advertises_tools():
+                        raise
+                    self._ping_unsupported = True
+                    logger.info(
+                        "MCP server '%s': does not implement the optional "
+                        "'ping' utility (-32601); using 'list_tools' for "
+                        "keepalive on this connection.",
+                        self.name,
+                    )
+                elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)) and self._advertises_tools():
+                    # A server that silently drops ping (no response at all)
+                    # produces a TimeoutError indistinguishable from a dead
+                    # transport. Before declaring it dead, try list_tools as
+                    # a confirmation probe (#97245). If the transport is
+                    # genuinely broken, list_tools will also fail and we
+                    # propagate that failure.
+                    try:
+                        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+                    except Exception:
+                        # Both probes failed — genuine liveness failure.
+                        raise exc from None
+                    # Transport alive, ping just isn't answered. Latch the
+                    # fallback so subsequent keepalives skip the 30s wait.
+                    self._ping_unsupported = True
+                    logger.info(
+                        "MCP server '%s': ping timed out but list_tools "
+                        "succeeded — server silently drops ping; using "
+                        "'list_tools' for keepalive on this connection.",
+                        self.name,
+                    )
+                    return
+                else:
+                    # Any other error (closed transport, session expired,
+                    # etc.) is a real liveness failure — propagate.
                     raise
-                if not self._advertises_tools():
-                    # No ping, no tools → no cheaper probe to fall back to.
-                    raise
-                self._ping_unsupported = True
-                logger.info(
-                    "MCP server '%s': does not implement the optional 'ping' "
-                    "utility (-32601); using 'list_tools' for keepalive on "
-                    "this connection.",
-                    self.name,
-                )
 
         # Fallback probe for servers without ping support.
         await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
@@ -4507,7 +4537,7 @@ class MCPServerTask:
         from tools.registry import registry
 
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name)
+            registry.deregister(tool_name, scope=_server_registry_scope(self.name))
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
 
@@ -4535,6 +4565,10 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+# Profile registry scope that owns each live connection (None outside
+# multiplex). A multiplexed /reload-mcp tears down only its own profile's
+# servers; process shutdown still takes everything.
+_server_scope_keys: Dict[str, Optional[str]] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 # Lazy MCP startup (#56832): servers whose tools were registered from the
@@ -5290,6 +5324,123 @@ def _handle_session_expired_and_retry(
     return None
 
 
+class _StdioChildExited(RuntimeError):
+    """A server's stdio subprocess was gone when (or while) a call ran.
+
+    Deliberately NOT a TimeoutError: nothing timed out — the child was
+    already dead, usually because a gateway restart killed every MCP stdio
+    subprocess out from under a still-live agent session. The old wording
+    ("failing the call fast instead of waiting 300s") sent an investigation
+    into the remote server for an afternoon; the server was healthy.
+
+    Handled by :func:`_handle_stdio_child_exited_and_retry`, which respawns
+    and retries the call once before any error reaches the model.
+    """
+
+
+def _handle_stdio_child_exited_and_retry(
+    server_name: str,
+    exc: Exception,
+    retry_call,
+    op_description: str,
+):
+    """Respawn a dead stdio child and retry the call once.
+
+    A gateway restart kills every MCP stdio subprocess. An agent session that
+    outlives the restart still holds the dead child, so its next tool call
+    used to fail in 0.00s — before anything reached the network — while the
+    subprocess was respawned seconds later. Cron runs spanning a restart lost
+    tool calls this way, silently.
+
+    Why retrying here cannot hot-cycle respawns: this function never spawns
+    anything. It sets ``_reconnect_event`` (one signal, same as before) and
+    waits for the server task to publish a fresh session. Spawn frequency
+    stays governed entirely by ``run()``'s rapid-drop budget, which parks a
+    transport that keeps dropping without proving healthy (#62212). The retry
+    is single-shot: a child that dies again immediately reports and stops,
+    so a genuinely broken server converges on the park instead of looping.
+
+    Returns:
+        A JSON string when this was a dead-stdio failure (retry result, or a
+        clean error), or ``None`` when ``exc`` is something else and the
+        caller should use its generic error path.
+    """
+    if not isinstance(exc, _StdioChildExited):
+        return None
+
+    with _lock:
+        srv = _servers.get(server_name)
+
+    reconnected = False
+    if srv is not None and hasattr(srv, "_reconnect_event"):
+        logger.info(
+            "MCP server '%s': %s found the stdio subprocess dead (%s); "
+            "respawning and retrying once.",
+            server_name, op_description, exc,
+        )
+        loop = _mcp_loop
+        if loop is not None and loop.is_running():
+            reconnected = _signal_reconnect_and_wait(
+                server_name,
+                srv,
+                op_description=op_description,
+                timeout=_STDIO_RESPAWN_WAIT_SEC,
+            )
+        else:
+            # No MCP loop to wait on (non-async adapters, tests) — still ask
+            # for the respawn so the next call lands on a live transport.
+            _signal_reconnect(srv)
+
+    if reconnected:
+        try:
+            result = retry_call()
+        except _StdioChildExited as retry_exc:
+            # Respawned and died again straight away: this is a broken
+            # server, not a restart artifact. Stop here — run()'s budget
+            # takes it to the park.
+            logger.warning(
+                "MCP server '%s': %s stdio subprocess exited again right "
+                "after respawn (%s); not retrying further.",
+                server_name, op_description, retry_exc,
+            )
+            _bump_server_error(server_name)
+            return tool_error(
+                f"MCP server '{server_name}' respawned its stdio subprocess "
+                f"and it exited again immediately. The server is not "
+                f"starting cleanly — do NOT retry this tool; ask the user to "
+                f"check the server's command and its stderr log."
+            )
+        except Exception as retry_exc:
+            logger.warning(
+                "MCP %s/%s retry after stdio respawn failed: %s",
+                server_name, op_description, retry_exc,
+            )
+            _bump_server_error(server_name)
+            return tool_error(_sanitize_error(
+                f"MCP call failed after respawning the stdio subprocess for "
+                f"'{server_name}': {type(retry_exc).__name__}: "
+                f"{_exc_str(retry_exc)}"
+            ))
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _reset_server_error(server_name)
+            else:
+                _bump_server_error(server_name)
+        except (json.JSONDecodeError, TypeError):
+            _reset_server_error(server_name)
+        return result
+
+    _bump_server_error(server_name)
+    return tool_error(
+        f"MCP server '{server_name}' stdio subprocess had exited (this is "
+        f"not a timeout — the call never reached the server). A respawn was "
+        f"requested but no fresh session came back within "
+        f"{_STDIO_RESPAWN_WAIT_SEC:.0f}s. Wait a few seconds before retrying; "
+        f"if it keeps failing the server is not starting and needs the user."
+    )
+
+
 # Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
 # Raw identity matters: distinct names such as ``foo-bar`` and ``foo_bar`` both
 # sanitize to ``foo_bar`` but must not share policy.
@@ -5308,6 +5459,36 @@ _mcp_thread: Optional[threading.Thread] = None
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
+
+
+def _mcp_registry_scope() -> Optional[str]:
+    """Registry scope owning MCP registrations made from the current context.
+
+    Under a profile multiplexer each profile's MCP tools live in that
+    profile's registry overlay (the same overlay its plugins use) so two
+    profiles' servers never share one process-global slot. Single-profile
+    processes keep MCP tools process-global (``None``).
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return None
+    from tools.registry import registry
+
+    return registry.current_scope_key()
+
+
+def _server_registry_scope(name: str) -> Optional[str]:
+    """Scope owning server *name*'s tools: recorded at connect, else current.
+
+    Teardown paths run on the MCP loop (process exit, reconnect exhaustion),
+    which does not carry the discovering profile's context, so the scope
+    captured when the server was adopted into ``_servers`` is authoritative.
+    """
+    if name in _server_scope_keys:
+        return _server_scope_keys[name]
+    return _mcp_registry_scope()
+
 
 # ---------------------------------------------------------------------------
 # Cross-process MCP discovery guard
@@ -5466,11 +5647,26 @@ def _snapshot_child_pids() -> set:
     """
     my_pid = os.getpid()
 
-    # Linux: read from /proc
+    # Linux: read from /proc. ``/proc/<pid>/task/<tid>/children`` is
+    # per-THREAD — a child forked from thread T is listed only under T's
+    # task dir. stdio_client() spawns from the background MCP loop thread,
+    # so reading only the main thread's file (``task/<pid>/children``)
+    # returned an empty set on every Linux install and left
+    # ``_stdio_child_pids`` / ``_stdio_pids`` empty: the #81995 dead-child
+    # fast-fail, the #96452 respawn signal, and the killpg shutdown sweep
+    # never saw the subprocess. Union the children of every task instead.
     try:
-        children_path = f"/proc/{my_pid}/task/{my_pid}/children"
-        with open(children_path, encoding="utf-8") as f:
-            return {int(p) for p in f.read().split() if p.strip()}
+        task_dir = f"/proc/{my_pid}/task"
+        tids = os.listdir(task_dir)
+        found: set = set()
+        for tid in tids:
+            try:
+                with open(f"{task_dir}/{tid}/children", encoding="utf-8") as f:
+                    found.update(int(p) for p in f.read().split() if p.strip())
+            except (FileNotFoundError, OSError, ValueError):
+                # Thread exited between listdir and open — skip it.
+                continue
+        return found
     except (FileNotFoundError, OSError, ValueError):
         pass
 
@@ -6025,7 +6221,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         from tools.registry import registry
 
         for tool_name in phantom_names:
-            registry.deregister(tool_name)
+            registry.deregister(tool_name, scope=_server_registry_scope(server_name))
             _forget_mcp_tool_server(tool_name)
         logger.info(
             "MCP server '%s': deregistered %d phantom cached tool(s) not "
@@ -6222,27 +6418,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         and _stdio_dead_result
                     ):
                         # Dead children but stale server.session, so the
-                        # transport-down path above never fired — signal the
-                        # server task to respawn and return a clean
-                        # reconnecting error. No explicit _bump_server_error:
-                        # the error return flows through the handler's JSON
-                        # parse, which already bumps once.
-                        if _signal_reconnect(server):
-                            return tool_error(
-                                f"MCP server '{server_name}' stdio subprocess is "
-                                f"dead and reconnect was requested. Do NOT retry "
-                                f"immediately — give it a few seconds to respawn."
-                            )
-                        raise TimeoutError(
-                            f"MCP stdio subprocess for '{server_name}' has "
-                            f"exited; failing the call fast instead of "
-                            f"waiting {float(tool_timeout):.0f}s"
+                        # transport-down path above never fired. Hand this to
+                        # the handler's respawn-and-retry path —
+                        # it is not a timeout, and a gateway restart that
+                        # killed the child must not cost the caller a call.
+                        raise _StdioChildExited(
+                            f"MCP stdio subprocess for '{server_name}' had "
+                            f"already exited when the call was dispatched"
                         )
                     _call_coro = server.session.call_tool(tool_name, arguments=args)
                     _watch_children = getattr(server, "_watch_stdio_children", None)
                     _watch_ok = (
                         _watch_children is not None
-                        and inspect.isawaitable(_watch_children())
+                        and inspect.iscoroutinefunction(_watch_children)
                         and asyncio.iscoroutine(_call_coro)
                     )
                     if not _watch_ok:
@@ -6272,16 +6460,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                                 # Same stale-session problem as the pre-call
                                 # gate above: the subprocess died mid-call but
                                 # nothing clears server.session, so without a
-                                # reconnect signal the server would stay dead
-                                # until the idle keepalive probe notices.
-                                _signal_reconnect(server)
-                                raise TimeoutError(
-                                    f"MCP stdio subprocess for '{server_name}' "
-                                    f"exited mid-call; failing the call fast "
-                                    f"instead of waiting "
-                                    f"{float(tool_timeout):.0f}s; reconnect "
-                                    f"requested — give it a few seconds to "
-                                    f"respawn before retrying"
+                                # reconnect the server would stay dead until
+                                # the idle keepalive probe notices. The
+                                # handler's respawn-and-retry path owns the
+                                # reconnect signal.
+                                raise _StdioChildExited(
+                                    f"MCP stdio subprocess for "
+                                    f"'{server_name}' exited mid-call"
                                 )
                             result = await rpc_task
                         finally:
@@ -6441,6 +6626,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            # Dead stdio child: respawn and retry once before any
+            # error reaches the model — a gateway restart kills every MCP
+            # subprocess, and the call it lands on is not really a failure.
+            recovered = _handle_stdio_child_exited_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall
             # through for non-auth exceptions.
@@ -7446,6 +7641,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=candidate["check_fn"],
             is_async=False,
             description=candidate["schema"]["description"],
+            scope=_server_registry_scope(name),
         )
 
         # The pre-check above is advisory only. Multiple servers connect in
@@ -7621,6 +7817,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            scope=_mcp_registry_scope(),
         )
         if registry.get_toolset_for_tool(registry_name) != toolset_name:
             continue
@@ -7654,6 +7851,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             check_fn=check_fn,
             is_async=False,
             description=schema.get("description") or "",
+            scope=_mcp_registry_scope(),
         )
         if registry.get_toolset_for_tool(util_name) != toolset_name:
             continue
@@ -7711,6 +7909,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             # self-probe, so adopt it into the registry for shutdown/revival.
             with _lock:
                 _servers[name] = server
+                _server_scope_keys[name] = _mcp_registry_scope()
         elif server is not None:
             await server.shutdown()
         raise
@@ -7721,6 +7920,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
         _servers[name] = server
+        _server_scope_keys[name] = _mcp_registry_scope()
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -8246,6 +8446,7 @@ def refresh_agent_mcp_tools(
     disabled_override=None,
     quiet_mode: bool = True,
     content_aware: bool = False,
+    preserve_prefix: bool = False,
 ) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 
@@ -8273,6 +8474,22 @@ def refresh_agent_mcp_tools(
     surface.  The new ``(tools, valid_tool_names)`` pair is published together
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
+
+    ``preserve_prefix`` is for the callers that rebuild inside a live
+    conversation (the between-turns prologue).  There the tool array is a
+    cached request prefix: every provider that renders ``tools`` ahead of the
+    messages re-prefills the entire history behind any byte that moves.  A
+    plain rebuild moves two kinds of bytes — it drops a tool whose ``check_fn``
+    merely flapped (a headless browser probe, an expired credential, a docker
+    blip), and it splices a late-landing tool into sorted position, which can
+    be index 0.  With ``preserve_prefix`` the live order is authoritative:
+    existing tools keep their slot (schemas still refresh), a tool that is
+    still *registered* but momentarily unavailable is carried forward, a tool
+    that genuinely left the registry is still dropped, and new tools are
+    appended at the tail so the prefix only ever grows.  Carrying an
+    unavailable tool forward changes nothing about dispatch — ``check_fn``
+    gates exposure at snapshot time, never invocation, and every handler
+    already owns its own unavailability error.
 
     Returns the set of newly-added tool names (empty when nothing changed), so
     callers can decide whether to notify the user / re-emit session info.  The
@@ -8329,6 +8546,18 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Snapshot registry membership OUTSIDE ``_agent_tools_lock`` — it is the
+    # only input ``preserve_prefix`` needs beyond the two tool lists, and
+    # taking ``registry._lock`` under the tools lock would be the first place
+    # in the process to nest those two.
+    registered_names: set = set()
+    if preserve_prefix:
+        try:
+            registered_names = {entry.name for entry in registry.get_all_entries()}
+        except Exception:  # noqa: BLE001
+            # Fail open to the plain rebuild rather than pinning a stale list.
+            preserve_prefix = False
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
@@ -8342,10 +8571,12 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
-        current = {
-            t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
-        }
+        current_defs = list(getattr(agent, "tools", None) or [])
+        current = {t["function"]["name"] for t in current_defs}
+        if preserve_prefix:
+            new_defs, new_names = _merge_preserving_prefix(
+                current_defs, new_defs, registered_names,
+            )
         if new_names == current:
             # Same NAME set. For MCP-reload callers that is "no change" —
             # leave the live snapshot untouched (no churn). Content-aware
@@ -8380,7 +8611,117 @@ def refresh_agent_mcp_tools(
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+        added = new_names - current
+    # Every published snapshot re-pins the session's tool order so a later
+    # rebuild-for-existing-session (gateway agent-cache eviction) restores
+    # exactly these names — see ``restore_agent_tool_prefix``.
+    persist_agent_tool_names(agent)
+    return added
+
+
+def reprobe_tool_availability() -> None:
+    """Explicit ``/reload-mcp`` hatch out of the tools[] freeze.
+
+    Availability-gated tools (``check_fn``: Docker, HASS_TOKEN, OAuth…) are
+    frozen for the life of a session; a credential or daemon that appears
+    mid-session is only picked up when the user consciously asks. Drop the
+    ``check_fn`` verdict cache AND the ``get_tool_definitions`` memo (keyed on
+    registry generation, so it would otherwise replay the stale verdicts).
+    """
+    from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+
+def persist_agent_tool_names(agent) -> None:
+    """Best-effort: write ``agent.tools`` names to the session row (freeze pin)."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not db or not session_id:
+        return
+    try:
+        db.update_session_tool_names(
+            session_id,
+            [t["function"]["name"] for t in (getattr(agent, "tools", None) or [])],
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("tool_names persist skipped", exc_info=True)
+
+
+def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
+    """Fold a freshly built agent's ``tools`` onto the session's saved order.
+
+    Closes the second door on the tools[] freeze: the gateway rebuilds a NEW
+    ``AIAgent`` for an existing session after agent-cache eviction, and
+    ``agent_init`` re-derives ``agent.tools`` from live ``check_fn`` probes
+    with no predecessor to preserve. The saved name list stands in for that
+    predecessor: a saved tool that is still registered but failed its probe
+    this time is carried forward from the registry's schema, a deregistered
+    one is dropped, and genuinely new tools append at the tail — the same
+    ``_merge_preserving_prefix`` rule the between-turns refresh uses.
+    Returns True when the snapshot was changed.
+    """
+    if not saved_names:
+        return False
+    from tools.registry import registry
+
+    fresh_defs = list(getattr(agent, "tools", None) or [])
+    fresh = {t["function"]["name"]: t for t in fresh_defs}
+    saved_defs = []
+    for name in saved_names:
+        entry_def = fresh.get(name)
+        if entry_def is None:
+            entry = registry.get_entry(name)
+            if entry is None:
+                continue
+            entry_def = {"type": "function", "function": {**entry.schema, "name": entry.name}}
+        saved_defs.append(entry_def)
+    registered_names = {entry.name for entry in registry.get_all_entries()}
+    merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    with _agent_tools_lock:
+        if merged == fresh_defs:
+            return False
+        agent.tools = merged
+        agent.valid_tool_names = merged_names
+    if [t["function"]["name"] for t in merged] != list(saved_names):
+        persist_agent_tool_names(agent)
+    return True
+
+
+def _merge_preserving_prefix(
+    current_defs: list, new_defs: list, registered_names: set,
+) -> tuple[list, set]:
+    """Fold a fresh tool snapshot into a live one without moving existing bytes.
+
+    The live tool array is a cached request prefix, so the merge is ordered by
+    ``current_defs``, not by the fresh list:
+
+    * a name in both keeps its slot and takes the fresh schema (dynamic
+      overrides — delegate_task limits, execute_code stubs — still land);
+    * a name only in the live list is carried forward when it is still
+      registered (its ``check_fn`` flapped) and dropped when it is not (the
+      MCP server or plugin genuinely went away);
+    * a name only in the fresh list is appended at the tail, so a late-landing
+      MCP tool extends the prefix instead of splicing into sorted position.
+    """
+    fresh = {}
+    for entry in new_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        if name:
+            fresh[name] = entry
+
+    merged = []
+    for entry in current_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        replacement = fresh.pop(name, None)
+        if replacement is not None:
+            merged.append(replacement)
+        elif name and name in registered_names:
+            merged.append(entry)
+    merged.extend(fresh.values())
+    return merged, {(t.get("function") or {}).get("name", "") for t in merged}
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
@@ -8452,15 +8793,24 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     return staged_engine_names
 
 
-def shutdown_mcp_servers():
-    """Close all MCP server connections and stop the background loop.
+def shutdown_mcp_servers(*, scope: Optional[str] = None):
+    """Close MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    ``scope`` (a registry scope key) restricts teardown to the servers one
+    multiplexed profile owns — its ``/reload-mcp`` must not kill the other
+    profiles' connections — and leaves the shared loop running when anything
+    else is still connected. Without it every server goes, as before.
     """
     with _lock:
-        servers_snapshot = list(_servers.values())
+        selected = [
+            name for name in _servers
+            if scope is None or _server_scope_keys.get(name) == scope
+        ]
+        servers_snapshot = [_servers[name] for name in selected]
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still
     # be populated here — a server that failed to connect is never recorded
@@ -8472,7 +8822,7 @@ def shutdown_mcp_servers():
         with _lock:
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
-        _stop_mcp_loop()
+        _stop_mcp_loop(only_if_idle=scope is not None)
         return
 
     async def _shutdown():
@@ -8486,7 +8836,9 @@ def shutdown_mcp_servers():
                     "Error closing MCP server '%s': %s", server.name, result,
                 )
         with _lock:
-            _servers.clear()
+            for name in selected:
+                _servers.pop(name, None)
+                _server_scope_keys.pop(name, None)
             # Drop connect-retry cooldowns too: a full shutdown/restart
             # should re-attempt every server immediately, not honour a
             # stale per-server backoff from before the restart (#50394).
@@ -8516,7 +8868,7 @@ def shutdown_mcp_servers():
         _server_connect_retry_after.clear()
         _server_connect_failures.clear()
 
-    _stop_mcp_loop()
+    _stop_mcp_loop(only_if_idle=scope is not None)
 
 
 def _kill_orphaned_mcp_children(

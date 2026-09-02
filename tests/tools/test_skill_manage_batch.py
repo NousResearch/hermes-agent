@@ -176,6 +176,42 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertNotIn("Step A.", content)
         self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "beta")))
 
+    def test_failed_restore_never_destroys_the_skill(self):
+        """Rollback used to rmtree the live skill directory BEFORE
+        copytree restored the snapshot. When copytree failed (disk full,
+        locked file) the except only appended a note and the finally then
+        deleted the snapshot too: nothing survived. The broken state must
+        be moved aside and only deleted once the restore succeeded."""
+        from unittest.mock import patch as _patch
+
+        import shutil as _shutil
+
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        state = {"n": 0}
+        real_copytree = _shutil.copytree
+
+        def flaky_copytree(src, dst, *a, **k):
+            state["n"] += 1
+            if state["n"] == 2:  # call 1 snapshots, call 2 is the restore
+                raise OSError("disk full")
+            return real_copytree(src, dst, *a, **k)
+
+        with _patch("shutil.copytree", side_effect=flaky_copytree):
+            r = self._call("probe", [
+                {"action": "patch",
+                 "old_string": "Step 1.", "new_string": "Step ONE."},
+                {"action": "write_file",
+                 "file_path": "bad/nope.md", "file_content": "x"},
+            ])
+        self.assertFalse(r["success"], r)
+        self.assertIn("ROLLBACK FAILED", r["error"])
+        # The skill directory was NOT destroyed by the failed rollback:
+        # the half applied state survives instead of nothing at all.
+        skill_md = os.path.join(self.home, "skills", "probe", "SKILL.md")
+        self.assertTrue(os.path.exists(skill_md))
+        content = open(skill_md).read()
+        self.assertIn("Step ONE.", content)
+
     def test_single_op_path_unchanged(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         raw = self.smt.skill_manage(

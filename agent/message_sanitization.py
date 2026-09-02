@@ -624,6 +624,7 @@ __all__ = [
     "reasoning_echo_family",
     "matches_reasoning_echo_family",
     "needs_reasoning_echo",
+    "stale_thinking_reaches_wire",
     "apply_reasoning_content_policy",
     "reapply_reasoning_echo",
 ]
@@ -891,6 +892,34 @@ def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | No
 def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     """True when the endpoint requires reasoning_content echo-back."""
     return reasoning_echo_family(provider, model, base_url) is not None
+
+
+def stale_thinking_reaches_wire(
+    api_mode: Any, provider: Any, model: Any, base_url: Any
+) -> bool:
+    """True when stale assistant ``reasoning``/``reasoning_content`` text is
+    actually replayed on the wire for the active route.
+
+    This is the single wire-truth predicate the compaction TRIGGER estimator
+    and the tail-budget walks must share (#84371): when they disagree, a
+    reasoning-heavy session can simultaneously look over-threshold to
+    preflight and fully tail-protected to the walk — an infinite ineffective
+    compaction loop.
+
+    * ``codex_responses``: the Responses input builder
+      (``_chat_messages_to_responses_input``) never reads the text keys —
+      reasoning continuity rides the encrypted ``codex_reasoning_items``
+      sidecar, which both estimators already charge unconditionally. Stale
+      thinking TEXT never ships → ``False``.
+    * chat-completions echo-back families (DeepSeek/Kimi/MiMo thinking
+      mode): ``apply_reasoning_content_policy`` replays the stored
+      ``reasoning_content`` verbatim on EVERY assistant turn → ``True``.
+    * everything else: stripped or one-space-padded at send time (#73624)
+      → ``False``.
+    """
+    if (api_mode or "") == "codex_responses":
+        return False
+    return needs_reasoning_echo(provider, model, base_url)
 
 
 def apply_reasoning_content_policy(

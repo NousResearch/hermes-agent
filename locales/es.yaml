@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Comandos aprobados (patrón aprobado permanentemente) ({count} comandos). El agente se está reanudando..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nEjemplo: /background Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando termine."
+    usage:                 "Uso: /bg <prompt>\nEjemplo: /bg Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando termine."
     started:               "🔄 Tarea en segundo plano iniciada: \"{preview}\"\nID de tarea: {task_id}\nPuedes seguir chateando — los resultados aparecerán aquí cuando terminen."
+
+  btw:
+    usage:                 "Uso: /btw <pregunta>\nEjemplo: /btw ¿en qué archivo estaba ese error?\n\nResponde una pregunta rápida sobre esta conversación sin interrumpirla. Para una tarea independiente en segundo plano, usa /bg <prompt>."
+    no_history:            "Aún no hay conversación — envía tu pregunta como un mensaje normal."
+    no_provider:           "❌ No se puede responder la pregunta: no hay credenciales de proveedor configuradas."
+    started:               "💬 Pregunta aparte: \"{preview}\"\nRespondiendo desde una instantánea de esta conversación — el trabajo actual continúa."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw falló: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Base de datos de sesiones no disponible."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Falló la generación del resumen ({error}). Se eliminaron {count} mensaje(s) históricos y se reemplazaron por un marcador; el contexto anterior ya no se puede recuperar. Considera revisar la configuración del modelo auxiliary.compression."
     aborted:               "⚠️ Compresión abortada ({error}). No se eliminó ningún mensaje — la conversación está intacta. Ejecuta /compress para reintentar, /reset para una sesión limpia, o revisa la configuración de tu modelo auxiliary.compression."
     aux_failed:            "ℹ️ El modelo de compresión configurado `{model}` falló ({error}). Recuperado con tu modelo principal — el contexto está intacto — pero quizá quieras revisar `auxiliary.compression.model` en config.yaml."
+    turnhold_deferred:     "ℹ️ Compresión de contexto aplazada — el resumen aún se está transmitiendo. Se continúa sin compresión en este turno."
     failed:                "Compresión fallida: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nModo actual: `{mode}`\\n\\nElige una opción:"
     choice_fast:           "fast — Priority Processing activado"
     choice_normal:         "normal — procesamiento estándar"
+    choice_auto:           "auto — rápido en los primeros segundos de cada turno"
+    choice_cold:           "cold — rápido solo en el primer turno de una sesión"
 
   footer:
     status:                "📎 Pie de ejecución: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
@@ -257,6 +268,7 @@ gateway:
     matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
+    all_requires_admin: "_Nota: `--all` (listado entre chats) requiere un administrador configurado; se muestran solo las sesiones de este chat._"
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

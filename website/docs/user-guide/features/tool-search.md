@@ -156,6 +156,12 @@ to any progressive-disclosure design, not specific to this implementation:
   result enters the conversation history (so it does get cached on
   subsequent turns) but it never benefits from the system-prompt cache
   prefix.
+- **No provider-native validation for deferred schemas.** `tool_describe`
+  lets the model read a deferred tool's schema, but the provider still sees
+  only the generic `tool_call.arguments` object. Hermes therefore coerces and
+  validates the underlying arguments locally before dispatch; the concrete
+  tool or MCP server remains responsible for schemas Hermes cannot safely
+  validate, such as malformed schemas or external references.
 - **Model-quality dependence.** Tool Search assumes the model can write a
   reasonable search query for the tool it wants. Smaller models do this
   less well; the published Anthropic numbers (49% → 74% on Opus 4 with

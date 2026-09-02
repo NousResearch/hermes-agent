@@ -56,6 +56,11 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
     )
     gui_parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Show the local-models UI in the desktop app (models pane, quickstart, picker rows)",
+    )
+    gui_parser.add_argument(
         "--force-build",
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",

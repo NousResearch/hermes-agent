@@ -118,7 +118,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
     clock = _Clock()
     opened: list[object] = []
 
-    def fail_once_session_db():
+    def fail_once_session_db(db_path=None):
         if not opened:
             opened.append(None)
             raise OSError("temporary open failure")
@@ -126,7 +126,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state, "SessionDB", fail_once_session_db)
+    monkeypatch.setattr(hermes_state, "get_shared_session_db", fail_once_session_db)
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
 
     store = object.__new__(SessionStore)
@@ -147,7 +147,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
 
     runner_opened: list[object] = []
 
-    def runner_fail_once():
+    def runner_fail_once(db_path=None):
         if not runner_opened:
             runner_opened.append(None)
             raise OSError("temporary open failure")
@@ -155,7 +155,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         runner_opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state, "SessionDB", runner_fail_once)
+    monkeypatch.setattr(hermes_state, "get_shared_session_db", runner_fail_once)
     monkeypatch.setattr(hermes_state, "AsyncSessionDB", lambda db: ("async", db))
     runner = object.__new__(GatewayRunner)
     runner._session_db_pinned = _SESSION_DB_UNPINNED

@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -31,6 +32,7 @@ from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 # Stderr fingerprint of the deprecated `gh copilot` CLI extension
@@ -185,6 +187,71 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _model_selection_request(
+    session: dict[str, Any], requested_model: str
+) -> tuple[str, dict[str, str]] | None:
+    """Return the ACP request that selects ``requested_model`` for ``session``.
+
+    Prefer stable v1 ``session/set_config_option``. Fall back to Copilot's
+    pre-stabilization ``session/set_model`` extension only when no model
+    config option is advertised. A reported model list is authoritative:
+    unknown and policy-disabled ids return None instead of being sent.
+    """
+    session_id = str(session.get("sessionId") or "").strip()
+    requested_model = str(requested_model or "").strip()
+    if not session_id or not requested_model or requested_model == "copilot-acp":
+        return None
+
+    config_options = [
+        o for o in (session.get("configOptions") or []) if isinstance(o, dict)
+    ]
+    model_option = next(
+        (
+            o for o in config_options
+            if o.get("category") == "model" or o.get("id") == "model"
+        ),
+        None,
+    )
+    if model_option is not None:
+        enabled_values = {
+            str(o.get("value") or "").strip()
+            for o in (model_option.get("options") or [])
+            if isinstance(o, dict)
+            and str(
+                ((o.get("_meta") or {}).get("copilotEnablement")) or ""
+            ).strip().lower() != "disabled"
+        }
+        if requested_model not in enabled_values:
+            return None
+        return (
+            "session/set_config_option",
+            {
+                "sessionId": session_id,
+                "configId": str(model_option.get("id") or "model"),
+                "value": requested_model,
+            },
+        )
+
+    advertised = [
+        m
+        for m in ((session.get("models") or {}).get("availableModels") or [])
+        if isinstance(m, dict)
+    ]
+    available = {
+        str(m.get("modelId") or "").strip()
+        for m in advertised
+        if str(
+            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+        ).strip().lower() != "disabled"
+    }
+    if available and requested_model not in available:
+        return None
+    return (
+        "session/set_model",
+        {"sessionId": session_id, "modelId": requested_model},
+    )
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -197,8 +264,11 @@ def _format_messages_as_prompt(
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
-    if model:
-        sections.append(f"Hermes requested model hint: {model}")
+    # Deliberately no "requested model" line in the prompt: the model is
+    # applied for real via ACP session/set_model, and when the backend can't
+    # honor it (org-policy-disabled id) a prompt-text mention makes the
+    # serving model FALSELY self-identify as the requested one. Identity
+    # must come from the backend, not from prompt suggestion.
 
     # Copilot has no tools of its own that would collide with Hermes', so it
     # forwards the whole toolset (no allowlist).
@@ -288,6 +358,12 @@ class _ACPChatNamespace:
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
 
+    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess
+    # over stdio, so it is already a complete client (never re-dispatch it
+    # through a wire adapter) and is safe to use from async code as-is.
+    HERMES_SKIP_TRANSPORT_WRAP = True
+    HERMES_SKIP_ASYNC_WRAP = True
+
     def __init__(
         self,
         *,
@@ -365,6 +441,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            model=model,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -393,7 +470,13 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> tuple[str, str]:
         # Fast-fail when the CLI doesn't support the ACP args we'd pass.
         # Without this guard, a CLI like Claude Code v2.x exits with
         # ``error: unknown option '--acp'`` immediately, then the parent
@@ -415,6 +498,13 @@ class CopilotACPClient:
                 f"HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS "
                 f"to a working pair."
             )
+
+        # Note the model Hermes selected; it is applied after session/new via
+        # the ACP-native `session/set_model` call. The CLI's `--model` spawn
+        # flag is deliberately NOT used here: `copilot --acp` validates it
+        # (an unknown id aborts the spawn) but then ignores it for the actual
+        # session, so it adds a failure mode without selecting anything.
+        requested_model = str(model or "").strip()
 
         try:
             # Hide the console the CLI child would otherwise flash on Windows
@@ -559,6 +649,31 @@ class CopilotACPClient:
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            # Select the model Hermes asked for. Prefer the stable ACP v1
+            # session-config API: session/new advertises a category="model"
+            # select option and session/set_config_option updates it. Copilot
+            # still exposes the older models/session/set_model extension too,
+            # so retain that only as compatibility fallback for older agents.
+            if requested_model and requested_model != "copilot-acp":
+                try:
+                    selection = _model_selection_request(session, requested_model)
+                    if selection is not None:
+                        method, params = selection
+                        _request(method, params)
+                    else:
+                        logger.warning(
+                            "Copilot ACP does not offer model %r; using the "
+                            "session default.",
+                            requested_model,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Copilot ACP model selection for %r failed; continuing "
+                        "with the session default: %s",
+                        requested_model,
+                        exc,
+                    )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

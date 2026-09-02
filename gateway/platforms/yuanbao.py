@@ -1774,7 +1774,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
     # Slash command allowlist that bot owner can execute in group without @Bot
     ALLOWLIST: frozenset = frozenset({
         "/new", "/reset", "/retry", "/undo", "/stop",
-        "/approve", "/deny", "/background", "/bg",
+        "/approve", "/deny", "/bg",
         "/btw", "/queue", "/q",
     })
 

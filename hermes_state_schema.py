@@ -8,13 +8,17 @@ own; methods access the host's attributes (``self._conn``, ``self.db_path``,
 module-level constants live in hermes_state_common.
 """
 
+import datetime
 import logging
 import json
 import sqlite3
 import time
+import uuid
 from typing import Dict, Optional, Sequence
 
+
 from hermes_constants import get_hermes_home
+from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
@@ -39,6 +43,15 @@ logger = logging.getLogger("hermes_state")
 
 _FTS_HOLDER_ESCALATE_ATTEMPTS = 3
 _FTS_HOLDER_ESCALATE_SECONDS = 60.0
+# Minimum spacing between in-process retries of a deferred stale-FTS rebuild
+# (``retry_deferred_fts_recovery``). The startup open already paid the full
+# admission wait once; later retries are non-blocking probes on this cadence
+# so a live holder never stalls a long-lived writer.
+_FTS_STALE_RETRY_SECONDS = 60.0
+# Each failed retry doubles the spacing up to this cap, so a holder that never
+# goes away (a second long-lived writer) costs one deferral warning per hour,
+# not one per minute. A successful rebuild clears the stale state entirely.
+_FTS_STALE_RETRY_MAX_SECONDS = 3600.0
 
 # Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
 # in-memory SQLite database, so derive the statements once per process.
@@ -385,21 +398,47 @@ class SessionSchemaMixin:
         try:
             cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
             return True
-        except sqlite3.OperationalError as exc:
-            if self._is_fts5_unavailable_error(exc):
-                # Only disable FTS entirely when the whole module is missing.
-                # A missing trigram tokenizer only affects trigram searches.
-                if self._is_trigram_unavailable_error(exc):
-                    self._warn_trigram_unavailable(exc)
-                else:
-                    self._warn_fts5_unavailable(exc)
-                return None
-            if "no such table" in str(exc).lower():
-                return False
-            raise
+        except (sqlite3.OperationalError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError can occur when FTS shadow tables or content
+            # columns hold invalid UTF-8 bytes. On some Python/SQLite builds
+            # it surfaces as a bare UnicodeDecodeError (ValueError subclass,
+            # not sqlite3.Error); on others as OperationalError("Could not
+            # decode to UTF-8 column ..."). Catch both so the probe never
+            # kills the connection or raises to writable-init/recovery flows.
+            if isinstance(exc, sqlite3.OperationalError):
+                if self._is_fts5_unavailable_error(exc):
+                    # Only disable FTS entirely when the whole module is missing.
+                    # A missing trigram tokenizer only affects trigram searches.
+                    if self._is_trigram_unavailable_error(exc):
+                        self._warn_trigram_unavailable(exc)
+                    else:
+                        self._warn_fts5_unavailable(exc)
+                    return None
+                if "no such table" in str(exc).lower():
+                    return False
+                # Re-raise any other OperationalError (e.g. malformed schema,
+                # corrupt vtable that isn't a decode error).
+                if "decode to utf-8" not in str(exc).lower():
+                    raise
+            # Swallow: decode error means the index is degraded but the
+            # store remains accessible. Writable init / recovery will
+            # schedule a rebuild or degrade to LIKE.
+            logger.warning(
+                "%s probe encountered invalid UTF-8 in FTS content; "
+                "search may return incomplete results until FTS is rebuilt: %s",
+                table_name,
+                exc,
+            )
+            return None
 
-    def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool) -> bool:
-        """Atomically rebuild stale base/trigram indexes and resume syncing."""
+    def _recover_stale_fts(
+        self, cursor: sqlite3.Cursor, *, legacy: bool, timeout_seconds=None
+    ) -> bool:
+        """Atomically rebuild stale base/trigram indexes and resume syncing.
+
+        *timeout_seconds* bounds the cross-process admission wait; None uses
+        the full startup budget, ``0`` is the non-blocking in-process retry.
+        """
         foreign_holders = self._foreign_state_db_holders()
         if foreign_holders:
             now = time.time()
@@ -478,7 +517,9 @@ class SessionSchemaMixin:
         # authority (fail closed). Losing the race means another process is
         # already performing this exact recovery; the stale breadcrumb stays
         # set, so this process simply keeps FTS detached and retries later.
-        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+        with fts_rebuild_admission(
+            getattr(self, "db_path", None), timeout_seconds=timeout_seconds
+        ) as admitted:
             if not admitted:
                 logger.warning(
                     "Deferred stale state.db FTS rebuild: another process "
@@ -488,13 +529,73 @@ class SessionSchemaMixin:
                 return False
             return self._recover_stale_fts_locked(cursor, legacy=legacy)
 
+    def retry_deferred_fts_recovery(self) -> bool:
+        """Retry a deferred stale-FTS rebuild on this open SessionDB.
+
+        ``_recover_stale_fts`` runs at open and fails closed when foreign
+        holders or the rebuild lock are busy, leaving ``_fts_stale`` set and
+        search on the LIKE fallback. Live write/search paths must never start
+        a full rebuild (#97940), so on a short-lived CLI that deferral is
+        cleared by the next process open — but a gateway opens state.db
+        once and stays up for days, so "next open" never came (#100108).
+        This is the in-process retry: bounded backoff from
+        ``_FTS_STALE_RETRY_SECONDS`` doubling to ``_FTS_STALE_RETRY_MAX_SECONDS``,
+        non-blocking admission (``timeout=0``) so a live holder is skipped and
+        tried again later, no new thread — the caller is an existing periodic
+        tick (gateway housekeeping).
+
+        Returns True only when the index was rebuilt and sync triggers
+        restored. Never raises.
+        """
+        if not getattr(self, "_fts_stale", False):
+            return False
+        if getattr(self, "read_only", False) or getattr(self, "_conn", None) is None:
+            return False
+        now = time.monotonic()
+        if now < getattr(self, "_fts_stale_retry_after", 0.0):
+            return False
+        interval = float(getattr(self, "_fts_stale_retry_interval", 0.0))
+        if interval <= 0.0:
+            interval = _FTS_STALE_RETRY_SECONDS
+        self._fts_stale_retry_after = now + interval
+        self._fts_stale_retry_interval = min(
+            max(interval, _FTS_STALE_RETRY_SECONDS, 1.0) * 2.0,
+            _FTS_STALE_RETRY_MAX_SECONDS,
+        )
+        try:
+            with self._lock:
+                if self._conn is None or not self._fts_stale:
+                    return False
+                cursor = self._conn.cursor()
+                legacy = self._db_has_legacy_inline_fts(cursor)
+                recovered = self._recover_stale_fts(
+                    cursor, legacy=legacy, timeout_seconds=0.0
+                )
+                if recovered:
+                    # CJK was detached alongside the base indexes; its own
+                    # ensure path decides when it comes back online.
+                    self._ensure_fts_cjk_schema(cursor)
+                    self._fts_stale_retry_interval = 0.0
+                try:
+                    self._conn.commit()
+                except sqlite3.Error:
+                    pass
+                return recovered
+        except Exception:  # noqa: BLE001 - background retry must never raise
+            logger.warning(
+                "In-process retry of the deferred stale state.db FTS rebuild "
+                "failed; will retry later.",
+                exc_info=True,
+            )
+            return False
+
     def _recover_stale_fts_locked(
         self, cursor: sqlite3.Cursor, *, legacy: bool
     ) -> bool:
         """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority."""
         try:
             trigram_status = self._fts_table_probe(cursor, "messages_fts_trigram")
-        except sqlite3.DatabaseError:
+        except (sqlite3.DatabaseError, UnicodeDecodeError):
             # A corrupt vtable may fail even a LIMIT 0 probe. It still needs
             # to be included in the drop-and-recreate recovery below.
             trigram_status = True
@@ -948,6 +1049,19 @@ class SessionSchemaMixin:
         The schema_version table is retained for future data migrations
         (transforming existing rows) which cannot be handled declaratively.
         """
+        # Declare a startup-watchdog progress lease before potentially long
+        # synchronous work: on multi-GB state.db files the reconciliation +
+        # version-gated data migrations below are legitimately slow and can
+        # be I/O-bound (near-zero CPU), which the watchdog's CPU fallback
+        # would misread as a parked deadlock (OOF-298 / PR #89750).
+        # Single lease is deliberate: this is the one pre-loop phase that can
+        # legitimately exceed the 300s default deadline (multi-GB DBs), and
+        # the lease is clamped to _MAX_LEASE_S=900. Honest worst case: a
+        # genuinely wedged DB init delays supervisor respawn by up to the
+        # lease duration. Per-chunk renewal would shrink that, but adds
+        # complexity to the migration loops for a rare failure mode.
+        report_startup_progress(600.0, phase="state_db_init_schema")
+
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
@@ -1032,8 +1146,25 @@ class SessionSchemaMixin:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
             )
+            # Record store provenance on creation so fresh vs wiped stores are distinguishable (#97568)
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            instance_id = str(uuid.uuid4())
+            cursor.executemany(
+                "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                [
+                    ("store_instance_id", instance_id),
+                    ("store_created_at_utc", now_iso),
+                ],
+            )
+
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            # Renew the progress lease: the version-gated chain below can
+            # rewrite whole tables (PK rebuilds, backfills) on large DBs.
+            # Same deliberate single-lease trade-off as _init_schema: honest
+            # worst case is up to the lease duration of zombie time on a
+            # wedged migration, accepted over per-chunk renewal complexity.
+            report_startup_progress(600.0, phase="state_db_data_migrations")
             # Data migrations that can't be expressed declaratively (row
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by
@@ -1456,7 +1587,8 @@ class SessionSchemaMixin:
         breadcrumb is persisted, mirroring ``_enter_fts_fail_open``'s
         ordering contract: triggers must never be live over an index with an
         unrebuilt gap. FTS stays detached for this instance; the winner's
-        rebuild — or ``_recover_stale_fts`` at the next startup — restores
+        rebuild — or ``retry_deferred_fts_recovery`` from the gateway
+        housekeeping tick, or ``_recover_stale_fts`` at the next startup — restores
         the index and triggers atomically.
         """
         with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:

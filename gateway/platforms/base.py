@@ -53,6 +53,45 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+
+
+def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
+    """Best-effort ffmpeg transcode of any audio file to Ogg/Opus (voip-tuned).
+
+    The shared engine behind native voice-bubble delivery for platforms whose
+    voice channel only accepts Opus/OGG (Telegram sendVoice, Feishu opus
+    audio, Matrix MSC3245, WhatsApp voice notes). Returns the path of a NEW
+    temp ``.ogg`` file (caller owns cleanup), or ``None`` when ffmpeg is
+    missing or the conversion fails — callers keep their previous fallback
+    (document/attachment delivery). Blocking; call via ``asyncio.to_thread``
+    from async code.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    fd, ogg_path = _tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
+    os.close(fd)
+    try:
+        result = _subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-i", str(path),
+             "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
+             "-application", "voip", "-compression_level", "10", ogg_path],
+            capture_output=True, timeout=60, stdin=_subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        logger.debug("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # Delivery-time history is best-effort dedup metadata, not canonical state.
 # Keep this comfortably below the Discord heartbeat watchdog window and fail
@@ -113,6 +152,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    # Routed Hermes profile for shared state.db namespaces (topic bindings
+    # under multiplex / profile_routes). Outbound prune paths must not
+    # assume the transport adapter's static profile stamp.
+    profile = str(getattr(source, "profile", None) or "").strip()
+    if profile:
+        metadata["hermes_profile"] = profile
     return metadata
 
 
@@ -175,6 +220,12 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     if normalized_ext not in _AUDIO_EXTS:
         return False
     if _platform_name(platform) == "telegram":
+        if is_voice:
+            # Explicit [[audio_as_voice]] intent: ANY audio format routes to
+            # the voice sender — the adapter transcodes non-Opus input to
+            # Ogg/Opus on the fly (transcode_to_ogg_opus), so the intent no
+            # longer dead-ends into document delivery for .mp3/.wav/etc.
+            return True
         if normalized_ext in _TELEGRAM_VOICE_EXTS:
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
@@ -435,7 +486,8 @@ def resolve_proxy_url(
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
     Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
-    of ``target_hosts``.
+    of ``target_hosts``. Steps 1-2 are skipped when ``gateway.trust_env`` is
+    false in config.yaml (see :func:`gateway_trust_env`).
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
@@ -443,6 +495,10 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+    if not gateway_trust_env():
+        # gateway.trust_env: false — ignore inherited generic proxy env and
+        # system proxy; only the explicit per-platform var above is honored.
+        return None
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
@@ -484,6 +540,28 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
             )
             return {}
     return {"proxy": proxy_url}
+
+
+def gateway_trust_env() -> bool:
+    """Return the ``trust_env`` value every gateway ``aiohttp.ClientSession`` uses.
+
+    Reads ``gateway.trust_env`` from config.yaml (default ``True``: honor
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY`` / ``SSL_CERT_FILE`` from the
+    process environment). Set it to ``false`` when the gateway inherits a
+    proxy env it should not use — e.g. a Windows Scheduled Task picking up a
+    Clash/V2Ray ``HTTP_PROXY`` the interactive shell never sees (#48820).
+    One knob for all platform adapters; fail-open to the default if config
+    is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly as _load_config
+        gw = (_load_config() or {}).get("gateway") or {}
+    except Exception:
+        return True
+    value = gw.get("trust_env", True) if isinstance(gw, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value) if value is not None else True
 
 
 def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
@@ -1469,6 +1547,25 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _tenv(name: str, default: str = "") -> str:
+    """Scope-aware TERMINAL_* read (tools.terminal_scope.terminal_env).
+
+    Media-path translation runs in the gateway process concurrently for
+    several profiles; the per-turn terminal scope carries the ACTIVE
+    profile's terminal settings, while a raw os.getenv would read whatever
+    profile's config a previous turn pinned into the process env.
+
+    Only an import failure falls back: an active refusal scope must raise —
+    reconstructing mounts/backends from ambient env under refusal would
+    rebuild another profile's terminal policy.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.getenv(name, default)
+    return terminal_env(name, default)
+
+
 def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     """Parse configured Docker volume mounts into ``(host_path, container_path)``.
 
@@ -1477,7 +1574,7 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     Named volumes and non-absolute hosts are skipped because they cannot be
     resolved on the gateway host for media delivery.
     """
-    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
     if not raw:
         return []
     try:
@@ -1541,11 +1638,11 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     """
     candidates: List[str] = []
     try:
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
     except Exception:
         return ["default"]
     # Explicit trusted-profiles opt-in: one shared container identity.
-    shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
     if shared:
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
     try:
@@ -1571,9 +1668,9 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     actually resolves — the profile sandbox dir existing does not mean the
     file lives there when it was produced in a legacy per-session container.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -1581,13 +1678,13 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     }:
         return []
     # Explicit cwd mount takes over /workspace when enabled.
-    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
+    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
         try:
             host = Path(os.path.expanduser(cwd)).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
@@ -1615,9 +1712,9 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
     produced a real host file the gateway couldn't find. Ordered best-first:
     the profile-scoped layout, then the legacy bug-window per-session layout.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+    if _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -1647,7 +1744,7 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
     longer prefixes than the ``/root`` home mount, so longest-prefix matching
     picks the cache translation over the home translation for them.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
@@ -1668,7 +1765,7 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
     file seemingly vanished. Point at the sandbox/session mismatch instead.
     Gated to Docker mode so host-path rejections stay quiet.
     """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+    if _tenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return
     logger.warning(
         "Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
@@ -2408,6 +2505,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Per-attachment text-inlining contract. None/absent preserves the legacy
+    # assumption that text/* adapters already injected content into ``text``.
+    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -2792,10 +2892,22 @@ def merge_pending_message_event(
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
         incoming_has_media = bool(event.media_urls)
+        incoming_inline_flags: List[Optional[bool]] = []
+        if incoming_has_media:
+            existing_inline_flags = list(getattr(existing, "media_text_inlined", []) or [])
+            existing_inline_flags.extend(
+                [None] * max(0, len(existing.media_urls) - len(existing_inline_flags))
+            )
+            incoming_inline_flags = list(getattr(event, "media_text_inlined", []) or [])
+            incoming_inline_flags.extend(
+                [None] * max(0, len(event.media_urls) - len(incoming_inline_flags))
+            )
+            existing.media_text_inlined = existing_inline_flags
 
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
@@ -2805,6 +2917,7 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -3847,6 +3960,9 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         chat_type: Optional[str] = None,
         chat_id: Optional[str] = None,
+        *,
+        is_bot: bool = False,
+        thread_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Return whether ``user_id`` is on the allowlist, if a check is configured.
 
@@ -3854,11 +3970,36 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        ``is_bot`` / ``thread_id`` are forwarded as keywords only when set, so
+        the gateway callback can apply its bot policy (``*_ALLOW_BOTS``) and
+        thread-level profile routes while legacy three-positional callbacks
+        keep working unchanged.
+
+        Only the literal booleans are propagated. A callback that returns
+        anything else is treated as "unknown" rather than coerced with
+        ``bool()``: callers that gate a credentialed side effect on an
+        explicit ``is True`` must not have a truthy non-boolean (a status
+        string, a sentinel object) silently promoted to an authorization.
         """
         if not user_id or self._authorization_check is None:
             return None
+        extra: Dict[str, Any] = {}
+        if is_bot:
+            extra["is_bot"] = True
+        if thread_id is not None:
+            extra["thread_id"] = thread_id
         try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
+            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
+            if result is True:
+                return True
+            if result is False:
+                return False
+            logger.warning(
+                "[%s] Authorization check returned %s for user %s; treating as unknown",
+                self.name, type(result).__name__, user_id,
+            )
+            return None
         except Exception:
             logger.warning(
                 "[%s] Authorization check raised for user %s; treating as unknown",
@@ -6301,7 +6442,7 @@ class BasePlatformAdapter(ABC):
                     return
 
                 # Other bypass commands (/approve, /deny, /status,
-                # /background, /restart) just need direct dispatch — they
+                # /bg, /restart) just need direct dispatch — they
                 # don't cancel the running task.
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
@@ -6957,6 +7098,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
+                                is_voice=is_voice,
                             )
                         elif ext in _VIDEO_EXTS:
                             logger.info(

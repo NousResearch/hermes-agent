@@ -306,6 +306,17 @@ class TTSSpeakRequest(BaseModel):
     text: str
 
 
+class TTSLeaseRequest(BaseModel):
+    """Body for ``POST /api/audio/tts-lease``.
+
+    ``lease`` names the toggle/surface holding the lease (``desktop:read-aloud``,
+    ``desktop:conversation``); ``active`` True acquires + warms, False releases.
+    """
+
+    lease: str
+    active: bool = True
+
+
 # --- from web_server.py (originally lines 11549-11551) ---
 
 class OAuthSubmitBody(BaseModel):

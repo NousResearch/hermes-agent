@@ -224,10 +224,53 @@ class TestRunBoundedSync:
         assert result.timed_out is True
         release.set()
 
+    def test_keyboard_interrupt_lands_before_full_deadline(self):
+        """Sliced Event.wait must observe SetAsyncExc within one poll slice."""
+        release = threading.Event()
+        holder: dict = {}
+
+        def _run():
+            try:
+                holder["result"] = run_bounded_sync(
+                    lambda: release.wait(30),
+                    10.0,
+                    label="ki",
+                )
+            except KeyboardInterrupt:
+                holder["exc"] = "KeyboardInterrupt"
+
+        t = threading.Thread(target=_run)
+        t.start()
+        time.sleep(0.15)
+        import ctypes
+
+        assert t.ident is not None
+        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(t.ident), ctypes.py_object(KeyboardInterrupt),
+        )
+        assert ret == 1
+        t.join(timeout=2.0)
+        release.set()
+        assert not t.is_alive()
+        assert holder.get("exc") == "KeyboardInterrupt"
+
     def test_deadline_expired_is_a_timeout_error(self):
         # Error-classification contract: our deadline must be catchable as
         # TimeoutError but distinguishable by type from transport timeouts.
         assert issubclass(DeadlineExpired, TimeoutError)
+
+    def test_worker_inherits_caller_contextvars(self):
+        """Profile secret scope / session id must survive the thread hop."""
+        import contextvars
+
+        var = contextvars.ContextVar("deadline_sync_ctx")
+        token = var.set("from-caller")
+        try:
+            result = run_bounded_sync(lambda: var.get(None), 5.0, label="ctx")
+        finally:
+            var.reset(token)
+        assert result.timed_out is False
+        assert result.value == "from-caller"
 
 
 # ---------------------------------------------------------------------------

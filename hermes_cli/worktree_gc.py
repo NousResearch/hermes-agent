@@ -181,6 +181,10 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeReco
     merge_cache = _cli._load_worktree_merge_cache()
     cache_size_before = len(merge_cache)
 
+    # One ls-remote resolves "is this branch pushed as-is?" for the whole
+    # sweep. None (offline) degrades every pushed-tier verdict to keep.
+    remote_heads = _cli._fetch_remote_branch_heads(repo_root)
+
     now = time.time()
     records: List[TreeRecord] = []
     for entry in sorted(worktrees_dir.iterdir()):
@@ -226,6 +230,24 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeReco
                 max_ahead=_MAX_CHERRY_AHEAD,
             )
             if not merged:
+                # Pushed-branch tier: single-branch fetch refspecs (the
+                # managed-install default) leave pushed PR branches with no
+                # refs/remotes/* entry, so `git log HEAD --not --remotes`
+                # reads them as unpushed forever. A local head that EXACTLY
+                # matches the remote branch has nothing origin lacks — the
+                # checkout is redundant; only the branch ref stays.
+                if _cli._worktree_branch_pushed_exact(
+                    str(entry), remote_heads, timeout=10
+                ):
+                    if untracked:
+                        rec("reap-keep-branch",
+                            f"pushed to origin (open-PR lane); branch kept; "
+                            f"{len(untracked)} untracked file(s) will be archived",
+                            untracked)
+                    else:
+                        rec("reap-keep-branch",
+                            "pushed to origin (open-PR lane); branch kept")
+                    continue
                 rec("keep", "unpushed commits not found upstream")
                 continue
 
@@ -256,15 +278,16 @@ def reclaim_worktrees(
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
     actions: List[str] = []
+    _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}
     for record in records:
-        if record.verdict not in {"reap", "reap-archive"}:
+        if record.verdict not in _REAP_VERDICTS:
             continue
         if dry_run:
             actions.append(f"would remove {record.name} ({record.reason})")
             continue
 
         entry = Path(record.path)
-        if record.verdict == "reap-archive" and record.untracked:
+        if record.untracked:
             archive = _archive_untracked(entry, record.untracked)
             if archive is None:
                 actions.append(f"kept {record.name} (archive of untracked files failed)")
@@ -285,6 +308,11 @@ def reclaim_worktrees(
             if remove_result.returncode != 0:
                 actions.append(
                     f"failed to remove {record.name}: {remove_result.stderr.strip()}"
+                )
+                continue
+            if record.verdict == "reap-keep-branch":
+                actions.append(
+                    f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"
                 )
                 continue
             if record.branch and record.branch not in _PROTECTED_BRANCHES:

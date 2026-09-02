@@ -254,7 +254,7 @@ def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
     use.  This is the pair the Node sidecar feeds to ``spectrum-ts``; the id
     is the unified project id (dashboard id == spectrumProjectId).
     """
-    env_id = os.getenv("PHOTON_PROJECT_ID")
+    env_id = _get_scoped_secret("PHOTON_PROJECT_ID")
     env_sec = _get_scoped_secret("PHOTON_PROJECT_SECRET")
     if env_id and env_sec:
         return env_id, env_sec
@@ -277,7 +277,7 @@ def load_dashboard_project_id() -> Optional[str]:
     rewrote (it now 404s), while the Spectrum id always matches the live row.
     Falls back to the legacy keys for older records.
     """
-    env_id = os.getenv("PHOTON_DASHBOARD_PROJECT_ID")
+    env_id = _get_scoped_secret("PHOTON_DASHBOARD_PROJECT_ID")
     if env_id:
         return env_id
     auth = _load_auth()

@@ -43,6 +43,7 @@ def _isolate(tmp_path, monkeypatch):
     # Never touch the developer's real ~/.local/bin/lightpanda.
     monkeypatch.setattr(lp, "_home_candidates", lambda: [])
     monkeypatch.setattr(lp, "_safe_start_time", lambda pid: 111)
+    monkeypatch.setattr(lp, "_supports_http_cache", True)
     with lp._servers_lock:
         lp._servers.clear()
     yield state
@@ -141,6 +142,39 @@ class TestLaunch:
         assert second["argv"][second["argv"].index("--http-cache-dir") + 1] == cache
         assert Path(cache).is_dir()
         assert not list(Path(cache).glob("*.json"))  # never confused with a session record
+
+    def test_no_http_cache_flag_on_old_binary(self, monkeypatch, _isolate):
+        monkeypatch.setattr(lp, "_supports_http_cache", False)
+        _, err, calls = self._launch(monkeypatch)
+        assert err is None
+        assert "--http-cache-dir" not in calls["argv"]
+        assert calls["argv"][-1] == "43111"
+
+    def test_http_cache_probe_caches_and_detects_flag(self, monkeypatch, tmp_path):
+        exe = _exe(tmp_path / "lightpanda")
+        runs = []
+
+        class FakeRun:
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def fake_run(argv, **kwargs):
+            runs.append(argv)
+            return FakeRun("--http-cache-dir <PATH>" if len(runs) == 1 else "")
+
+        monkeypatch.setattr(lp, "_supports_http_cache", None)
+        monkeypatch.setattr(lp.subprocess, "run", fake_run)
+        assert lp._binary_supports_http_cache(str(exe)) is True
+        assert lp._binary_supports_http_cache(str(exe)) is True  # cached, single probe
+        assert len(runs) == 1
+
+        monkeypatch.setattr(lp, "_supports_http_cache", None)
+
+        def fake_run_old(argv, **kwargs):
+            return FakeRun("no such flag here")
+
+        monkeypatch.setattr(lp.subprocess, "run", fake_run_old)
+        assert lp._binary_supports_http_cache(str(exe)) is False
 
     def test_block_private_networks_flag(self, monkeypatch):
         _, err, calls = self._launch(monkeypatch, block_private_networks=True)

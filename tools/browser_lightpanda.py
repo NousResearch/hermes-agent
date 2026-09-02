@@ -119,13 +119,41 @@ def _http_cache_dir() -> Path:
     """Filesystem HTTP cache shared by every Lightpanda this Hermes spawns.
 
     Shared rather than per-session so a cached asset survives session churn.
-    Lightpanda holds it in sqlite (WAL); a write that loses a race is a cache
-    miss, never a failed page load, and ``--http-cache-entry-limit`` (default
-    1000) bounds it without Hermes managing eviction.
+    Lightpanda holds it in sqlite (WAL) with a best-effort write path, and
+    ``--http-cache-entry-limit`` (upstream default 1000, not passed here)
+    bounds it without Hermes managing eviction.
     """
     path = _state_dir() / "http-cache"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+_supports_http_cache: Optional[bool] = None
+
+
+def _binary_supports_http_cache(binary: str) -> bool:
+    """True if ``lightpanda serve`` accepts ``--http-cache-dir``.
+
+    The flag landed upstream in 0.3.x; older binaries fatally reject it
+    ("unknown argument"), which would break every launch. Probing ``help``
+    output keeps working across future flag additions without parsing
+    versions, and is cached for the process lifetime.
+    """
+    global _supports_http_cache
+    if _supports_http_cache is None:
+        try:
+            out = subprocess.run(
+                [binary, "help"], capture_output=True, text=True, timeout=10
+            )
+            _supports_http_cache = "--http-cache-dir" in out.stdout
+        except Exception as e:
+            logger.debug("lightpanda http-cache probe failed (%s); assuming no", e)
+            _supports_http_cache = False
+    if not _supports_http_cache:
+        logger.debug(
+            "lightpanda %s predates --http-cache-dir; serving without a cache", binary
+        )
+    return _supports_http_cache
 
 
 def _record_path(session_name: str) -> Path:
@@ -229,10 +257,9 @@ def launch_lightpanda(
         )
 
     port = _pick_free_loopback_port()
-    argv = [
-        binary, "serve", "--host", "127.0.0.1", "--port", str(port),
-        "--http-cache-dir", str(_http_cache_dir()),
-    ]
+    argv = [binary, "serve", "--host", "127.0.0.1", "--port", str(port)]
+    if _binary_supports_http_cache(binary):
+        argv += ["--http-cache-dir", str(_http_cache_dir())]
     if block_private_networks:
         argv.append("--block-private-networks")
     log_path = str(_state_dir() / f"{session_name}.log")

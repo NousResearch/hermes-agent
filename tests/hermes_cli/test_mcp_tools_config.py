@@ -73,3 +73,20 @@ def test_empty_tools_server_skipped(capsys):
     assert len(checklist_calls) == 0
     captured = capsys.readouterr()
     assert "no tools found" in captured.out
+
+
+def test_server_enabled_honors_disabled_flag():
+    """#89441: the runtime MCP gates must treat `disabled: true` as OFF even
+    when `enabled` is unset (the per-server key profiles.configure writes),
+    and `enabled: false` must keep working."""
+    from tools.mcp_tool import _server_enabled
+
+    assert _server_enabled({"command": "npx"}) is True
+    assert _server_enabled({"command": "npx", "enabled": True}) is True
+    assert _server_enabled({"command": "npx", "disabled": False}) is True
+    assert _server_enabled({"command": "npx", "disabled": False, "enabled": True}) is True
+
+    assert _server_enabled({"command": "npx", "enabled": False}) is False
+    assert _server_enabled({"command": "npx", "disabled": True}) is False
+    assert _server_enabled({"command": "npx", "disabled": "true"}) is False
+    assert _server_enabled({"command": "npx", "enabled": True, "disabled": True}) is False

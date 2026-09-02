@@ -1128,6 +1128,142 @@ def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
     assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
 
 
+# ── Per-profile toolset pin (tools.enabled_toolsets, #89441) ──────────────
+
+
+def _pin_candidates_for_cli() -> tuple:
+    """Configurable toolsets a default ``[hermes-cli]`` resolution enables."""
+    unpinned = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    configurable = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
+    candidates = sorted(unpinned & configurable)
+    assert candidates, "sanity: cli resolution contains configurable toolsets"
+    return candidates
+
+
+def test_tools_enabled_toolsets_pin_restricts_runtime_resolution():
+    """#89441: profiles.configure persists tools.enabled_toolsets, but the
+    runtime resolver ignored it. When the pin is set it must restrict the
+    resolution to the pinned configurable toolsets."""
+    pin_candidates = _pin_candidates_for_cli()
+    pinned = pin_candidates[: max(1, len(pin_candidates) - 1)]
+    dropped = set(pin_candidates) - set(pinned)
+    assert dropped, "sanity: pin drops at least one configurable toolset"
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    config["tools"] = {"enabled_toolsets": pinned}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert set(pinned) <= enabled
+    assert not (dropped & enabled)
+
+
+def test_tools_enabled_toolsets_pin_absent_keeps_behavior_unchanged():
+    """No pin (or an empty one — profiles.configure removes the key when the
+    list clears) means the profile is unpinned: resolution must be identical
+    to the pre-fix behavior."""
+    unpinned = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert unpinned
+
+    for pin in (None, [], ""):
+        config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+        if pin is not None:
+            config["tools"] = {"enabled_toolsets": pin}
+        assert (
+            _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+            == unpinned
+        )
+
+
+def test_tools_enabled_toolsets_pin_json_array_string_form():
+    """The pin may arrive as a JSON-array string from `hermes config set`;
+    it must be parsed like agent.disabled_toolsets (#86661), not treated as
+    a single dead toolset name that filters nothing."""
+    import json as _json
+
+    pin_candidates = _pin_candidates_for_cli()
+    pinned = pin_candidates[: max(1, len(pin_candidates) - 1)]
+    dropped = set(pin_candidates) - set(pinned)
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    config["tools"] = {"enabled_toolsets": _json.dumps(pinned)}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert set(pinned) <= enabled
+    assert not (dropped & enabled)
+
+
+def test_tools_enabled_toolsets_pin_keeps_mcp_servers_and_platform_native():
+    """The pin only covers configurable + plugin toolsets — MCP servers
+    (governed by their own per-server enabled/disabled flags) and
+    non-configurable platform toolsets (kanban) must pass through a pinned
+    profile untouched, or pinning any toolset would silently kill every MCP
+    server for that profile."""
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli", "kanban"]},
+        "mcp_servers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+            }
+        },
+        "tools": {"enabled_toolsets": ["terminal"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
+
+    assert "filesystem" in enabled
+    assert "kanban" in enabled
+    assert "terminal" in enabled
+
+
+def test_mcp_disabled_server_excluded_from_platform_resolution():
+    """#89441: profiles.configure persists per-profile MCP toggles via the
+    per-server ``disabled`` key; runtime resolution must not include the
+    tools of a server toggled off that way (and ``enabled: false`` must
+    keep working)."""
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "mcp_servers": {
+            "filesystem": {"command": "npx"},
+            "gitlab": {"command": "npx", "disabled": True},
+            "legacy-off": {"command": "npx", "enabled": False},
+        },
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
+
+    assert "filesystem" in enabled
+    assert "gitlab" not in enabled
+    assert "legacy-off" not in enabled
+
+
+def test_enabled_mcp_server_names_honors_disabled_flag():
+    """The shared MCP membership resolver must agree with the catalog: a
+    server with ``disabled: true`` and no ``enabled`` key is OFF."""
+    from hermes_cli.tools_config import enabled_mcp_server_names
+
+    names = enabled_mcp_server_names(
+        {
+            "mcp_servers": {
+                "off-server": {"command": "npx", "disabled": True},
+                "off-string": {"command": "npx", "disabled": "true"},
+                "on-server": {"command": "npx"},
+                "on-explicit": {"command": "npx", "enabled": True},
+                "legacy-off": {"command": "npx", "enabled": False},
+            }
+        }
+    )
+
+    assert {"on-server", "on-explicit"} <= names
+    assert not ({"off-server", "off-string", "legacy-off"} & names)
+
+
 @_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small

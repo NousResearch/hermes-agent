@@ -7555,6 +7555,20 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _server_enabled(cfg: dict) -> bool:
+    """Whether a configured MCP server is enabled.
+
+    Honours both ``enabled`` and ``disabled``: the server is ON only when
+    ``enabled`` is truthy (default) AND ``disabled`` is not truthy.
+    ``profiles.configure`` persists per-profile MCP toggles via the
+    per-server ``disabled`` key, so every runtime gate must consult it or
+    the toggle is describe-visible only (#89441).
+    """
+    if _parse_boolish(cfg.get("disabled", False), default=False):
+        return False
+    return _parse_boolish(cfg.get("enabled", True), default=True)
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Return an optional positive lifecycle timeout from top-level/nested config."""
     raw = config.get(key)
@@ -8214,7 +8228,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             # Servers already lazily registered from the schema cache are
             # not re-registered; they connect on first tool use (#56832).
             and k not in _lazy_server_configs
-            and _parse_boolish(v.get("enabled", True), default=True)
+            and _server_enabled(v)
             # Skip a server still serving its post-failure backoff. Without
             # this, a server that fails to connect (and is therefore never
             # recorded in ``_servers``) would be re-spawned on every worker
@@ -8481,7 +8495,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
                 for name, cfg in servers.items()
                 if name not in _servers
                 and name not in connecting
-                and _parse_boolish(cfg.get("enabled", True), default=True)
+                and _server_enabled(cfg)
             ]
 
         tool_names = register_mcp_servers(servers)
@@ -8552,7 +8566,7 @@ def get_mcp_status() -> List[dict]:
 
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
-        enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+        enabled = _server_enabled(cfg)
         server = active_servers.get(name)
         if server and server.session is not None:
             entry = {
@@ -8630,7 +8644,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 
     enabled = {
         k: v for k, v in servers_config.items()
-        if _parse_boolish(v.get("enabled", True), default=True)
+        if _server_enabled(v)
     }
     if not enabled:
         return {}

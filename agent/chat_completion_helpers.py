@@ -2032,6 +2032,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             max_tokens=agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
+            service_tier=getattr(agent, "_bedrock_service_tier", None),
+            performance_config=getattr(agent, "_bedrock_performance_config", None),
         )
 
     # Rotation-stable logical cache scope, shared by every OpenAI-wire branch

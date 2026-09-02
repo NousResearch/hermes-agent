@@ -574,6 +574,69 @@ def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> s
     return resolve_bedrock_region()
 
 
+# ---------------------------------------------------------------------------
+# Service tier / latency
+# ---------------------------------------------------------------------------
+# Bedrock prices and schedules each request according to its service tier, and
+# serves some models on a latency-optimized path. Both are per-request Converse
+# fields (``serviceTier`` / ``performanceConfig``); with no way to set them,
+# every turn runs at the account default — so a Flex-tier account can't get
+# Flex pricing and a latency-optimized model can't be reached at all.
+#
+# Valid values come from the botocore service model for
+# ``bedrock-runtime.Converse`` (identical on ``ConverseStream``). An
+# unrecognized value is a hard ValidationException on the wire, which would
+# fail *every* turn, so config values are validated here instead of being
+# forwarded blindly.
+_BEDROCK_SERVICE_TIERS = frozenset({"priority", "default", "flex", "reserved"})
+_BEDROCK_LATENCY_MODES = frozenset({"standard", "optimized"})
+
+
+def resolve_bedrock_tier_config(
+    config: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
+    """Resolve ``(serviceTier, performanceConfig)`` from the bedrock config block.
+
+    Reads ``bedrock.service_tier`` and ``bedrock.latency`` from config.yaml and
+    returns them already shaped as the structures Converse expects —
+    ``{"type": <tier>}`` and ``{"latency": <mode>}`` — or ``None`` for either
+    when unset. Unknown values are dropped with a warning rather than
+    forwarded, because Bedrock rejects them with a ValidationException.
+
+    Callers that already hold a loaded config dict should pass it to avoid a
+    disk read; when *config* is None the config is loaded read-only.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            config = {}
+    bedrock_cfg = (config or {}).get("bedrock") or {}
+
+    service_tier: Optional[Dict[str, str]] = None
+    raw_tier = str(bedrock_cfg.get("service_tier") or "").strip().lower()
+    if raw_tier in _BEDROCK_SERVICE_TIERS:
+        service_tier = {"type": raw_tier}
+    elif raw_tier:
+        logger.warning(
+            "bedrock: ignoring unknown service_tier %r — expected one of %s",
+            raw_tier, ", ".join(sorted(_BEDROCK_SERVICE_TIERS)),
+        )
+
+    performance_config: Optional[Dict[str, str]] = None
+    raw_latency = str(bedrock_cfg.get("latency") or "").strip().lower()
+    if raw_latency in _BEDROCK_LATENCY_MODES:
+        performance_config = {"latency": raw_latency}
+    elif raw_latency:
+        logger.warning(
+            "bedrock: ignoring unknown latency %r — expected one of %s",
+            raw_latency, ", ".join(sorted(_BEDROCK_LATENCY_MODES)),
+        )
+
+    return service_tier, performance_config
+
+
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
     """Live-discover Bedrock model IDs for the active region.
 
@@ -1490,6 +1553,8 @@ def build_converse_kwargs(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    service_tier: Optional[Dict[str, str]] = None,
+    performance_config: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
 
@@ -1500,6 +1565,11 @@ def build_converse_kwargs(
     field is optional per the AWS API reference. The default stays 4096 so
     existing callers are unaffected; callers that want the model's full output
     budget (e.g. uncapped auxiliary vision calls) pass ``None`` explicitly.
+
+    ``service_tier`` and ``performance_config`` are the already-shaped Converse
+    structures (``{"type": ...}`` / ``{"latency": ...}``) produced by
+    ``resolve_bedrock_tier_config()``; both are omitted when None so requests
+    keep falling back to the account default.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
     cache_enabled = _model_supports_prompt_cache(model)
@@ -1563,6 +1633,12 @@ def build_converse_kwargs(
 
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
+
+    if service_tier:
+        kwargs["serviceTier"] = service_tier
+
+    if performance_config:
+        kwargs["performanceConfig"] = performance_config
 
     if not kwargs["inferenceConfig"]:
         # inferenceConfig is optional on the wire; don't send an empty object.

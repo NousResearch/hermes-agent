@@ -86,6 +86,31 @@ bedrock:
     trace: "disabled"                     # "enabled", "disabled", or "enabled_full"
 ```
 
+### Service tier and latency
+
+Bedrock prices and schedules every request according to its [service tier](https://docs.aws.amazon.com/bedrock/latest/userguide/service-tiers.html), and serves some models on a [latency-optimized](https://docs.aws.amazon.com/bedrock/latest/userguide/latency-optimized-inference.html) path. Both are off by default — Hermes omits the fields, so requests use your account default:
+
+```yaml
+bedrock:
+  region: us-east-2
+  service_tier: flex        # "priority", "default", "flex", or "reserved"
+  latency: optimized        # "standard" or "optimized"
+```
+
+| `service_tier` | Meaning |
+|---|---|
+| *(empty)* | Don't send the field — account default |
+| `priority` | Highest throughput and lowest latency, premium price |
+| `default` | Standard on-demand |
+| `flex` | Cheaper, best-effort scheduling |
+| `reserved` | Draw from Provisioned/reserved capacity |
+
+:::caution Coverage is per model and region
+Both fields are gated on the individual model, not just the account. Requesting a tier a model doesn't serve fails the whole request with `ValidationException: The provided service tier is not supported for this model` — Bedrock does not silently fall back, so a tier that works on one model will break every turn on another. `reserved` additionally needs a matching capacity reservation (`ValidationException: Reservation not found.` otherwise). Check the AWS docs for current model and region coverage before enabling either. An unrecognized value is dropped with a warning at startup rather than sent.
+:::
+
+Both settings apply to the main agent loop on the Converse path. Auxiliary calls (compression, title generation) are left at the account default deliberately, so a `flex` main loop doesn't slow down side tasks.
+
 ### Model Discovery
 
 Hermes auto-discovers available models via the Bedrock control plane. You can customize discovery:

@@ -1137,6 +1137,22 @@ DEFAULT_CONFIG = {
             "stream_processing_mode": "async",  # "sync" or "async"
             "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
         },
+        # Converse serviceTier — how Bedrock prices and schedules each request.
+        # Empty = don't send the field, i.e. use the account default.
+        #   "priority" — highest throughput/lowest latency, premium price
+        #   "default"  — standard on-demand
+        #   "flex"     — cheaper, best-effort scheduling (batch-ish latency)
+        #   "reserved" — draw from Provisioned/reserved capacity
+        # Tiers are gated by account entitlement: asking for one you aren't
+        # entitled to fails the request, it does not silently downgrade.
+        # See: https://docs.aws.amazon.com/bedrock/latest/userguide/service-tiers.html
+        "service_tier": "",
+        # Converse performanceConfig.latency — opt into the latency-optimized
+        # inference path on models that offer it. Empty = don't send the field.
+        #   "standard"  — normal path
+        #   "optimized" — latency-optimized (subset of models/regions only)
+        # See: https://docs.aws.amazon.com/bedrock/latest/userguide/latency-optimized-inference.html
+        "latency": "",
     },
 
     # Auxiliary model config — provider:model for each side task.

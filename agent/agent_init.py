@@ -1283,11 +1283,30 @@ def init_agent(
                     agent._bedrock_guardrail_config["trace"] = _gr["trace"]
         except Exception:
             pass
+        # Service tier + latency mode — read from config.yaml at init time.
+        # Resolved in its own block so a malformed guardrail entry above
+        # doesn't silently drop the tier the user is paying for.
+        agent._bedrock_service_tier = None
+        agent._bedrock_performance_config = None
+        try:
+            from agent.bedrock_adapter import resolve_bedrock_tier_config
+            (
+                agent._bedrock_service_tier,
+                agent._bedrock_performance_config,
+            ) = resolve_bedrock_tier_config()
+        except Exception:
+            pass
         agent.client = None
         agent._client_kwargs = {}
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+            _tier_bits = []
+            if agent._bedrock_service_tier:
+                _tier_bits.append(agent._bedrock_service_tier["type"])
+            if agent._bedrock_performance_config:
+                _tier_bits.append(f"latency={agent._bedrock_performance_config['latency']}")
+            _tier_label = f" + {', '.join(_tier_bits)}" if _tier_bits else ""
+            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label}{_tier_label})")
     else:
         client_kwargs = {}
         if api_key and base_url:

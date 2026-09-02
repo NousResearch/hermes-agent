@@ -201,7 +201,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   haptic('tap')
   saveSelectedRosterBot(bot)
   setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
-  const dismissedGroup = bot.remoteSource ? null : dismissGroupChatForLocalBotOpen()
+  const dismissedGroup = dismissGroupChatForBotOpen()
 
   if (!dismissedGroup) {
     $groupChatWorkspace.set(null)
@@ -319,7 +319,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
 /** Bot-open handoff: capture the selected group and retire its registered
  * main tab (or clear the in-panel selection) before async source prep /
  * canonical open. */
-function dismissGroupChatForLocalBotOpen(): null | { group: string; roomId: string } {
+function dismissGroupChatForBotOpen(): null | { group: string; roomId: string } {
   const group = $groupChatWorkspace.get()
 
   if (!group) {

@@ -68,7 +68,7 @@ describe('ChatSwapOverlay', () => {
     expect(container.querySelector('.glyph-spinner')?.getAttribute('data-paused')).toBe('true')
   })
 
-  it('keeps the Bot Mode cover opaque through one settled transcript paint before fading', () => {
+  it('keeps the Bot Mode cover opaque until a blocked transcript commit settles, including the fade', () => {
     const { container, rerender } = render(<ChatSwapOverlay botMode profile="persephone" />)
     const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
 
@@ -77,11 +77,17 @@ describe('ChatSwapOverlay', () => {
 
     rerender(<ChatSwapOverlay botMode profile={null} />)
 
-    // Keep one fully painted cover between transcript commit/scroll restoration
-    // and the fade. Starting the fade in this same render exposes giant restored
-    // histories before their first stable frame.
+    // Keep the cover up long enough for a large transcript commit to begin. If
+    // that commit blocks the main thread, the timer and fade cannot run until
+    // the transcript has finished laying out.
     expect(overlay?.className).toContain('opacity-100')
     expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
+
+    act(() => vi.advanceTimersByTime(499))
+    expect(overlay?.className).toContain('opacity-100')
+
+    act(() => vi.advanceTimersByTime(1))
+    expect(overlay?.className).toContain('opacity-100')
 
     act(() => vi.advanceTimersByTime(16))
     expect(overlay?.className).toContain('opacity-100')
@@ -89,5 +95,7 @@ describe('ChatSwapOverlay', () => {
     act(() => vi.advanceTimersByTime(16))
     expect(overlay?.className).toContain('opacity-0')
     expect(overlay?.className).toContain('transition-opacity')
+    expect(overlay?.className).toContain('bg-(--ui-chat-surface-background)')
+    expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
   })
 })

@@ -4,6 +4,8 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+const BOT_MODE_SETTLE_DELAY_MS = 500
+
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
@@ -25,22 +27,31 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
     }
 
     // The message store can settle before React commits and scroll-restores a
-    // giant transcript. Preserve one fully painted cover, then begin the fade;
-    // otherwise the browser exposes the transcript's intermediate layout.
+    // giant transcript. Wait long enough for that render to start, then keep
+    // one fully painted cover after the main thread becomes available again.
+    // A long transcript blocks this timer, which is intentional: the cover
+    // remains opaque until the expensive commit has actually finished.
     let secondFrame: number | undefined
+    let firstFrame: number | undefined
 
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => setCovering(false))
-    })
+    const settleTimer = window.setTimeout(() => {
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => setCovering(false))
+      })
+    }, botMode ? BOT_MODE_SETTLE_DELAY_MS : 0)
 
     return () => {
-      window.cancelAnimationFrame(firstFrame)
+      window.clearTimeout(settleTimer)
+
+      if (firstFrame !== undefined) {
+        window.cancelAnimationFrame(firstFrame)
+      }
 
       if (secondFrame !== undefined) {
         window.cancelAnimationFrame(secondFrame)
       }
     }
-  }, [covering, profile])
+  }, [botMode, covering, profile])
 
   const coverVisible = Boolean(profile) || (botMode && covering)
 
@@ -49,10 +60,10 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
       aria-hidden
       className={cn(
         'pointer-events-none absolute inset-0 z-50 flex items-center justify-center',
-        botMode && coverVisible ? 'bg-(--ui-chat-surface-background)' : '',
+        botMode ? 'bg-(--ui-chat-surface-background)' : '',
         coverVisible ? 'opacity-100' : 'opacity-0 transition-opacity duration-150 ease-out'
       )}
-      data-glass-opaque={botMode && coverVisible ? '' : undefined}
+      data-glass-opaque={botMode ? '' : undefined}
       data-slot="chat-swap-overlay"
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">

@@ -136,6 +136,8 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is) and a warning is logged. Bare `$VAR` is not expanded.
 
+Under a [multiplexed multi-profile gateway](/user-guide/multi-profile-gateways), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved unless B defines the variable itself. Single-profile runs are unchanged.
+
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).

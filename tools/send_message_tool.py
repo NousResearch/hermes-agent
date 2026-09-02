@@ -1119,6 +1119,7 @@ async def _send_to_platform(
     force_document=False,
     args=None,
     operational=False,
+    notification_metadata=None,
 ):
     """Route a message to the appropriate platform sender.
 
@@ -1213,6 +1214,7 @@ async def _send_to_platform(
                 None if operational else thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                notification_metadata=notification_metadata,
             )
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         return await _send_telegram(
@@ -1576,7 +1578,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, include_sender_proof=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, include_sender_proof=False, notification_metadata=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1634,13 +1636,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if include_sender_proof:
             me = await bot.get_me()
             username = getattr(me, "username", None)
-            if not username:
-                return {"error": "Telegram notification sender identity could not be verified"}
+            if not username or str(username).lstrip("@").lower() != "solo_hermes_bot":
+                return {"error": "Telegram notification sender is not @solo_hermes_bot"}
+            notification_metadata = notification_metadata or {}
             sender_proof = {
                 "sender_username": f"@{username}",
                 "target_chat_id": str(chat_id),
-                "job_id": os.getenv("HERMES_CRON_JOB_ID") or None,
-                "profile": os.getenv("HERMES_PROFILE") or None,
+                "job_id": notification_metadata.get("job_id") or os.getenv("HERMES_CRON_JOB_ID") or None,
+                "profile": notification_metadata.get("profile") or os.getenv("HERMES_PROFILE") or None,
                 "thread_id": None,
             }
         from plugins.platforms.telegram.telegram_ids import (
@@ -1923,6 +1926,7 @@ async def _registry_standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    notification_metadata=None,
 ):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
@@ -1937,6 +1941,8 @@ async def _registry_standalone_send(
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
     kwargs = {"thread_id": thread_id}
+    if notification_metadata is not None:
+        kwargs["notification_metadata"] = notification_metadata
     if media_files is not None:
         kwargs["media_files"] = media_files
     if force_document:

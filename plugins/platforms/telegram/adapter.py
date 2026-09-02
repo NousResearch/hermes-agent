@@ -5494,6 +5494,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=None,
             disable_link_previews=self._disable_link_previews,
             include_sender_proof=True,
+            notification_metadata=metadata,
         )
         return SendResult(
             success=bool(result.get("success")),
@@ -11231,6 +11232,7 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    notification_metadata=None,
 ):
     """Out-of-process Telegram delivery. Delegates to the standalone
     ``_send_telegram`` REST sender in tools/send_message_tool.py (which already
@@ -11271,6 +11273,7 @@ async def _standalone_send(
         disable_link_previews=disable_link_previews,
         force_document=force_document,
         include_sender_proof=True,
+        notification_metadata=notification_metadata,
     )
 
 

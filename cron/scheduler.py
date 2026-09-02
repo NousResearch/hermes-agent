@@ -3497,7 +3497,12 @@ def _deliver_result(
                 )
             except Exception:
                 dedicated_telegram_notification = False
-        if dedicated_telegram_notification:
+            if not dedicated_telegram_notification and str(chat_id) == "8148316720":
+                msg = "SOLO_HERMES_BOT_TOKEN is required for operational Telegram delivery"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+        if dedicated_telegram_notification and str(chat_id) == "8148316720":
             # The dedicated operations bot owns a flat main-DM notification
             # lane. Never inherit an origin/session topic or mirror these
             # one-way cron receipts into a conversational session.
@@ -4076,6 +4081,10 @@ def _deliver_result(
                 thread_id=thread_id,
                 media_files=media_files,
                 operational=True,
+                notification_metadata={
+                    "job_id": job.get("id"),
+                    "profile": job.get("profile") or os.getenv("HERMES_PROFILE") or "default",
+                },
             )
             try:
                 result = asyncio.run(coro)
@@ -4124,6 +4133,10 @@ def _deliver_result(
                                 thread_id=thread_id,
                                 media_files=media_files,
                                 operational=True,
+                                notification_metadata={
+                                    "job_id": job.get("id"),
+                                    "profile": job.get("profile") or os.getenv("HERMES_PROFILE") or "default",
+                                },
                             ),
                         )
                         result = future.result(timeout=30)

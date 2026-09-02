@@ -1,5 +1,6 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -105,6 +106,68 @@ class TestEmit:
 
         await reg.emit("command:reset", {})
         assert "command:reset" in results
+
+    @pytest.mark.asyncio
+    async def test_gateway_startup_does_not_await_async_handler(self):
+        reg = HookRegistry()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def stalled_handler(_event_type, _context):
+            started.set()
+            await release.wait()
+
+        reg._handlers["gateway:startup"] = [stalled_handler]
+
+        await asyncio.wait_for(reg.emit("gateway:startup", {}), timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        release.set()
+        await asyncio.gather(*reg._background_tasks)
+
+    @pytest.mark.asyncio
+    async def test_gateway_startup_reports_background_handler_errors(self, capsys):
+        reg = HookRegistry()
+
+        async def failing_handler(_event_type, _context):
+            raise RuntimeError("startup failed")
+
+        reg._handlers["gateway:startup"] = [failing_handler]
+
+        await reg.emit("gateway:startup", {})
+        await asyncio.sleep(0)
+
+        assert (
+            "Error in handler for 'gateway:startup': startup failed"
+            in capsys.readouterr().out
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_startup_async_handlers_remain_ordered_and_awaited(self):
+        reg = HookRegistry()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def first_handler(_event_type, _context):
+            calls.append("first:start")
+            started.set()
+            await release.wait()
+            calls.append("first:end")
+
+        async def second_handler(_event_type, _context):
+            calls.append("second")
+
+        reg._handlers["agent:end"] = [first_handler, second_handler]
+
+        emit_task = asyncio.create_task(reg.emit("agent:end", {}))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert calls == ["first:start"]
+
+        release.set()
+        await emit_task
+
+        assert calls == ["first:start", "first:end", "second"]
 
 
 class TestEmitCollect:

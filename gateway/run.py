@@ -16992,8 +16992,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.config import load_gateway_config
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
 
-        with _profile_runtime_scope(profile_home):
+        # Hydrate external secret sources (1Password/vault/...) off-loop ONCE,
+        # then enter the scope without re-hydrating: the sync hydration is
+        # network-bound and would otherwise stall every other profile's
+        # heartbeat while this one boots (same class as the reconnect path).
+        await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
+
+        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_runtime_config()
             from hermes_cli.plugins import discover_plugins
 
@@ -17059,7 +17066,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 continue
             try:
-                with _profile_runtime_scope(profile_home):
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     adapter = self._create_adapter(platform, platform_config)
             except Exception as e:
                 logger.error(
@@ -17143,7 +17150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._configure_profile_adapter(adapter, profile_name, platform)
 
             try:
-                with _profile_runtime_scope(profile_home):
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(
                         adapter, platform
                     )

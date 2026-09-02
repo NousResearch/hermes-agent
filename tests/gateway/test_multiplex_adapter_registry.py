@@ -260,7 +260,11 @@ def _install_secondary_reconnect_context(
 
 class TestSecondaryProfileFatalRecovery:
     @pytest.mark.asyncio
-    async def test_reconnect_hydrates_secrets_off_the_event_loop(self, monkeypatch):
+    @pytest.mark.parametrize("entry", ["startup", "reconnect"])
+    async def test_secondary_hydrates_secrets_off_the_event_loop(self, monkeypatch, entry):
+        """#99519 class: both secondary entry points (initial start + reconnect)
+        hydrate external secret sources in a worker thread, exactly once, and
+        enter the runtime scope with hydration disabled."""
         runner = _secondary_recovery_runner()
         replacement = _SecondaryRecoveryAdapter()
         hydration_flags = []
@@ -287,23 +291,30 @@ class TestSecondaryProfileFatalRecovery:
                     ticks_during_hydration += 1
                 await asyncio.sleep(0)
 
-        async def connect(adapter, platform, *, is_reconnect=False):
+        async def connect(adapter, platform, **_kwargs):
             assert adapter is replacement
             assert platform is Platform.DISCORD
-            assert is_reconnect is True
             return True
 
         monkeypatch.setattr(
             "hermes_cli.env_loader.hydrate_profile_secret_sources", slow_hydrate
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        if entry == "startup":
+            coro = runner._start_one_profile_adapters(
+                "reviewer", Path("/profiles/reviewer"), {}
+            )
+        else:
+            coro = runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
         ticker_task = asyncio.create_task(ticker())
-        reconnect_task = asyncio.create_task(
-            runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
-        )
+        work = asyncio.create_task(coro)
         try:
             assert await asyncio.to_thread(hydration_started.wait, 1.0)
-            await reconnect_task
+            await work
         finally:
             stop_ticker.set()
             await ticker_task
@@ -311,7 +322,7 @@ class TestSecondaryProfileFatalRecovery:
         assert len(hydration_thread_ids) == 1
         assert hydration_thread_ids[0] != loop_thread_id
         assert ticks_during_hydration > 0
-        assert hydration_flags == [False]
+        assert hydration_flags and set(hydration_flags) == {False}
         assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
 
     @pytest.mark.asyncio
@@ -447,13 +458,15 @@ class TestSecondaryStartupFailureRecovery:
         # gateway is already running) to the regular reconnect task, which
         # publishes the replacement and clears its own slot.
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )
@@ -500,13 +513,15 @@ class TestSecondaryStartupFailureRecovery:
         bridge = list(runner._background_tasks)
         assert len(bridge) == 1
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )

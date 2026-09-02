@@ -3677,10 +3677,6 @@ export const en: Translations = {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
       },
-      'model-switch': {
-        title: 'Switch models mid-thread',
-        text: 'The model name is a button. Change it whenever the work changes shape.'
-      },
       'local-setup': {
         title: 'This machine can run models locally',
         text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',

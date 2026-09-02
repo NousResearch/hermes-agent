@@ -3146,10 +3146,6 @@ export const zhHant = defineLocale({
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
       },
-      'model-switch': {
-        title: '對話中隨時換模型',
-        text: '模型名稱就是按鈕。工作性質變了就換一個。'
-      },
       'local-setup': {
         title: '這台電腦可以本地執行模型',
         text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',

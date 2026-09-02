@@ -142,9 +142,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         ProviderField(
             key="actor_peer_id",
             label="Agent ID",
-            default="hermes",
-            description="Identifies this Hermes agent inside OpenViking.",
-            required=True,
+            default="",
+            description=(
+                "Optional peer ID for separate assistant context. "
+                "Leave blank to use user memory."
+            ),
             visible_when=(_MANUAL,),
         ),
     ),

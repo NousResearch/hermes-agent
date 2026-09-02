@@ -403,8 +403,9 @@ def test_desktop_agent_id_is_available_for_manual_setup(setup_type, visible):
 
     field = next(field for field in CONFIG_SCHEMA.fields if field.key == "actor_peer_id")
 
-    assert field.required
-    assert field.default == "hermes"
+    assert not field.required
+    assert field.default == ""
+    assert "Leave blank to use user memory" in field.description
     assert field.visible_when
     assert all(condition.key == "setup_type" for condition in field.visible_when)
     assert all(setup_type in condition.values for condition in field.visible_when) is visible
@@ -578,7 +579,9 @@ def test_desktop_root_profile_uses_current_ovcli_schema(monkeypatch):
         overwrite=False,
     )
 
-    profile = json.loads(openviking_module.Path(result["profile_path"]).read_text(encoding="utf-8"))
+    profile = json.loads(
+        openviking_module.Path(result["profile_path"]).read_text(encoding="utf-8")
+    )
     assert validate.call_args.args[0]["agent"] == "support-agent"
     assert profile == {
         "url": "https://openviking.example",
@@ -588,6 +591,33 @@ def test_desktop_root_profile_uses_current_ovcli_schema(monkeypatch):
         "user": "alice",
         "actor_peer_id": "support-agent",
     }
+
+
+def test_desktop_profile_uses_user_memory_when_agent_id_is_blank(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from hermes_constants import get_hermes_home
+
+    validate = MagicMock(return_value=(True, "", "user"))
+    monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", validate)
+
+    result = openviking_module._save_desktop_openviking_setup(
+        values={
+            "setup_type": "custom",
+            "profile_name": "user_memory",
+            "url": "https://openviking.example",
+            "credential": "user",
+            "api_key": "user-key",
+            "actor_peer_id": "",
+        },
+        hermes_home=get_hermes_home(),
+        overwrite=False,
+    )
+
+    profile = json.loads(
+        openviking_module.Path(result["profile_path"]).read_text(encoding="utf-8")
+    )
+    assert validate.call_args.args[0]["agent"] == ""
+    assert "actor_peer_id" not in profile
 
 
 @pytest.mark.parametrize(

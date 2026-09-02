@@ -2087,6 +2087,131 @@ def test_shutdown_policy_knob_runs_on_watcher_exit(shims, conn, kanban_home):
     assert shims.wait_for(lambda: not kb._pid_alive(pid), timeout=8.0)
 
 
+def test_shutdown_waits_for_cleanup_before_releasing_lock(
+    shims, conn, kanban_home, monkeypatch,
+):
+    """H (new g): with the knob on, the dispatcher lock is not released
+    while the scoped-worker cleanup is still running inside its budget —
+    the watcher waits for the cleanup thread, then releases."""
+    import asyncio
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_hwait", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    # Shrink the budget knobs so the test is fast, but keep the scaled
+    # math: base 0.3s + 1 unit x (0.3s bound + 2s drain margin).
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.3)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.3,
+    )
+
+    cleanup_started = threading.Event()
+    gate = threading.Event()
+    released = threading.Event()
+    released_before_gate = []
+
+    real_stop = kb.stop_all_scoped_workers
+
+    def gated_stop(c):
+        cleanup_started.set()
+        gate.wait(timeout=10.0)
+        return real_stop(c)
+
+    monkeypatch.setattr(kb, "stop_all_scoped_workers", gated_stop)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+        def _release_kanban_dispatcher_lock(self) -> None:
+            released_before_gate.append(gate.is_set())
+            released.set()
+
+    # The watcher on its own thread so this thread can observe the
+    # lock NOT being released while cleanup is mid-flight.
+    watcher_thread = threading.Thread(
+        target=lambda: asyncio.run(Harness()._kanban_dispatcher_watcher()),
+        daemon=True,
+    )
+    watcher_thread.start()
+
+    # The watcher's own startup (lock + setup) takes a few seconds
+    # before the graceful-exit path runs — the budget only starts once
+    # the cleanup does.
+    assert cleanup_started.wait(timeout=15.0)
+    time.sleep(0.15)  # inside the budget, cleanup still running
+    assert not released.is_set()
+    gate.set()
+    assert released.wait(timeout=5.0)
+    assert released_before_gate == [True]  # released only AFTER cleanup
+    watcher_thread.join(timeout=5.0)
+
+
+def test_shutdown_budget_expiry_logs_leftovers_and_releases(
+    shims, conn, kanban_home, monkeypatch, caplog,
+):
+    """H (new g), the bound: when cleanup exceeds its budget the lock IS
+    released (shutdown must not hang) — but only after logging exactly
+    which units were left stopping."""
+    import asyncio
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_hslow", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.1)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.1,
+    )
+
+    gate = threading.Event()
+    released = threading.Event()
+
+    def wedged_stop(c):
+        gate.wait(timeout=10.0)  # "worse than any budget"
+        return []
+
+    monkeypatch.setattr(kb, "stop_all_scoped_workers", wedged_stop)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+        def _release_kanban_dispatcher_lock(self) -> None:
+            released.set()
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(Harness()._kanban_dispatcher_watcher())
+        gate.set()  # let the daemon thread finish for teardown
+
+    assert released.wait(timeout=1.0) or released.is_set()
+    warnings = [r for r in caplog.records if "still stopping" in r.message]
+    assert warnings, "expected the leftover-units warning"
+    assert unit in warnings[0].getMessage()
+
+
 # ---------------------------------------------------------------------------
 # Migration from the pre-isolation schema
 # ---------------------------------------------------------------------------

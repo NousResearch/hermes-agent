@@ -27,6 +27,11 @@ from agent.i18n import t
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
 
+# Base budget for the scoped-worker shutdown policy's board scans before
+# each unit's own verified-stop deadline is added (see
+# _stop_scoped_workers_on_shutdown). Module-level so tests can shrink it.
+_SHUTDOWN_STOP_BASE_SECONDS = 15.0
+
 
 _LOCAL_PATH_RE = re.compile(
     r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|"
@@ -1701,9 +1706,14 @@ class GatewayKanbanWatchersMixin:
             scoped worker this host still claims — verified teardown of
             the whole cgroup, not a pid kill — before the gateway exits.
 
-            Runs on a daemon thread with a bounded join so a wedged
-            ``systemctl`` cannot hang gateway shutdown; anything the budget
-            doesn't cover is left for the next gateway's adoption sweep.
+            Runs on a daemon thread with a join bounded by the units' OWN
+            deadlines (each verified stop is capped per unit in
+            tools.process_registry), so a wedged ``systemctl`` cannot hang
+            gateway shutdown AND the dispatcher lock is not released while
+            cleanup is still inside its budget (review finding g). When the
+            budget does expire, exactly what was left is logged before the
+            lock goes; the next gateway's adoption sweep re-adopts or
+            reclaims it.
             """
             try:
                 cfg = _load_config()
@@ -1714,7 +1724,42 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban shutdown: cannot load config; leaving scoped workers for re-adoption")
                 return
 
+            def _collect_expected_units() -> list:
+                """Cheap pre-scan: which units this host will try to stop."""
+                units: list = []
+                try:
+                    boards = _kb.list_boards(include_archived=False)
+                except Exception:
+                    boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                host_prefix = f"{_kb._claimer_id().split(':', 1)[0]}:"
+                for b in boards:
+                    slug = b.get("slug") or _kb.DEFAULT_BOARD
+                    conn = None
+                    try:
+                        conn = _kb.connect(board=slug)
+                        for row in conn.execute(
+                            "SELECT claim_lock, worker_scope FROM tasks "
+                            "WHERE status = 'running' "
+                            "  AND worker_scope IS NOT NULL"
+                        ).fetchall():
+                            if (row["claim_lock"] or "").startswith(host_prefix):
+                                units.append(row["worker_scope"])
+                    except Exception:
+                        pass
+                    finally:
+                        if conn is not None:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                return units
+
+            state: dict = {}
+            collected = threading.Event()
+
             def _run() -> None:
+                state["expected"] = _collect_expected_units()
+                collected.set()
                 try:
                     boards = _kb.list_boards(include_archived=False)
                 except Exception:
@@ -1744,12 +1789,36 @@ class GatewayKanbanWatchersMixin:
                 target=_run, name="kanban-scope-shutdown", daemon=True,
             )
             worker.start()
-            worker.join(timeout=15.0)
-            if worker.is_alive():
+            # Wait for the pre-scan so the budget scales with the real
+            # work instead of a flat 15 s: base covers the board scans,
+            # each expected unit adds its own verified-stop deadline.
+            collected.wait(timeout=_SHUTDOWN_STOP_BASE_SECONDS)
+            try:
+                from tools.process_registry import SCOPE_STOP_VERIFY_BOUND_SECONDS
+            except Exception:  # pragma: no cover — import is process-local
+                SCOPE_STOP_VERIFY_BOUND_SECONDS = 31.0
+            expected = state.get("expected") or []
+            budget = _SHUTDOWN_STOP_BASE_SECONDS + len(expected) * (
+                SCOPE_STOP_VERIFY_BOUND_SECONDS + 2.0
+            )
+            worker.join(timeout=budget)
+            # Tick-queued verified stops must not outlive the lock either:
+            # drain the background service (same per-unit bound) before
+            # the caller releases the dispatcher lock.
+            leftover = _kb.join_scope_stop_service(
+                timeout=SCOPE_STOP_VERIFY_BOUND_SECONDS + 2.0
+            )
+            if worker.is_alive() or leftover:
+                still_running = sorted(
+                    set(expected) | {str(u) for u in leftover}
+                )
                 logger.warning(
-                    "kanban shutdown: scoped-worker stop exceeded 15s budget; "
-                    "abandoning — the next gateway's adoption sweep will "
-                    "re-adopt or reclaim whatever remains",
+                    "kanban shutdown: scoped-worker stop did not finish "
+                    "within its budget (%.0fs) — releasing the dispatcher "
+                    "lock with %d unit(s) still stopping (%s); the next "
+                    "gateway's adoption sweep will re-adopt or reclaim "
+                    "whatever remains",
+                    budget, len(still_running), ", ".join(still_running) or "<unknown>",
                 )
 
         def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:

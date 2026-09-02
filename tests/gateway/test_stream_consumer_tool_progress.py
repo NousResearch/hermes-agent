@@ -506,6 +506,61 @@ class TestToolTimerTick:
         finally:
             loop.close()
 
+    def test_tick_shows_only_tool_name_not_arguments(self):
+        """Timer tick must render just the tool name — no command text,
+        URLs, queries, or filenames cross the transport (Issue B)."""
+        consumer = _make_consumer(native_streaming=True)
+        loop = asyncio.new_event_loop()
+        consumer._tool_timer_loop = loop
+        try:
+            # A progress line rich with sensitive arguments.
+            consumer.on_tool_progress(
+                "💻 terminal: 'python audit.py --client Acme'",
+                tool_call_id="call-1",
+            )
+            consumer._tool_timer_tick_count = 0
+            consumer._tool_timer_tick()
+
+            assert len(consumer._tool_progress_lines) == 1
+            line = consumer._tool_progress_lines[0]
+            # Tool name present, arguments absent.
+            assert "terminal" in line
+            assert "audit.py" not in line
+            assert "--client" not in line
+            assert "Acme" not in line
+            # Generic wrench-prefixed status with elapsed time.
+            assert "🔧 terminal" in line
+            assert "s)" in line
+        finally:
+            if consumer._tool_timer_handle:
+                consumer._tool_timer_handle.cancel()
+            loop.close()
+
+    def test_thinking_tick_omits_model_name_and_api_count(self):
+        """The thinking tick must not leak model identity or API-call count
+        even when on_llm_thinking is handed a detailed label (Issue B)."""
+        consumer = _make_consumer(native_streaming=True)
+        loop = asyncio.new_event_loop()
+        consumer._tool_timer_loop = MagicMock()
+        consumer._tool_timer_loop.call_soon_threadsafe = MagicMock()
+        consumer._native_stream_opened = True
+        try:
+            consumer.on_llm_thinking("claude-4.6-opus (API call #3)")
+            consumer._tool_timer_loop = loop  # real loop for the tick re-arm
+            consumer._tool_timer_tick_count = 0
+            consumer._tool_timer_tick()
+
+            all_text = " ".join(consumer._tool_progress_lines)
+            assert "Thinking" in all_text
+            assert "claude" not in all_text
+            assert "opus" not in all_text
+            assert "API call" not in all_text
+            assert "#3" not in all_text
+        finally:
+            if consumer._tool_timer_handle:
+                consumer._tool_timer_handle.cancel()
+            loop.close()
+
 
 class TestToolTimerStop:
     """Tests for timer stop conditions."""

@@ -100,15 +100,19 @@ class ToolTimerMixin:
             # progress line without the ticking animation.
             if not getattr(self, "supports_tool_timer", False):
                 return
-            # Start/join the timer for this tool, preserving the original
-            # progress line as the display label for animated ticks.
+            # Start/join the timer for this tool.  The timer label is the bare
+            # tool name only — NOT the full progress line, which carries
+            # command text, URLs, queries, and filenames.  The timer ticks
+            # ride the WeCom transport, so only a generic status may cross it
+            # (privacy: #96942).  The full line still goes to ``_queue`` above
+            # for the in-bubble overlay on the local/native surface.
             tool_name = _parse_tool_name(line)
             key = tool_call_id if tool_call_id is not None else tool_name
             # Don't clear other running tools — they may be parallel.
             # on_tool_completed() handles moving finished tools to
             # _tool_completed_lines when tool.completed fires.
             with self._timer_lock:
-                self._tool_timer_labels[key] = line
+                self._tool_timer_labels[key] = tool_name
             self._start_tool_timer(key)
 
     def on_tool_completed(self, tool_name: str, duration: float, tool_call_id: str | None = None) -> None:
@@ -142,8 +146,10 @@ class ToolTimerMixin:
         Thread-safe: called from the agent worker thread.  Only activates
         when the native stream is already open (the bubble is visible).
 
-        ``label`` is an optional display string (e.g. "claude-4.6-opus (API call #3)")
-        shown alongside the thinking timer for richer context.
+        ``label`` (e.g. "claude-4.6-opus (API call #3)") is accepted for
+        call-site compatibility but is intentionally NOT displayed: the model
+        identity and API-call count must not cross the WeCom transport
+        (privacy: #96942).  The tick shows a generic "💭 Thinking (Ns)".
         """
         if not self._use_native_streaming:
             return
@@ -170,9 +176,8 @@ class ToolTimerMixin:
                 self._tool_completed_lines = self._tool_completed_lines[-5:]
             if "_thinking" not in self._tool_start_times:
                 self._tool_start_times["_thinking"] = time.monotonic()
-            # Store the label for display in _tool_timer_tick
-            if label:
-                self._tool_timer_labels["_thinking"] = label
+            # Deliberately do NOT store *label* — it may carry model identity
+            # / API-call count that must not be rendered over the transport.
         # Arm the timer if not already running
         with self._timer_lock:
             need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
@@ -259,16 +264,17 @@ class ToolTimerMixin:
                 elapsed = int(now - start)
                 spinner = _SPINNER_CHARS[self._tool_timer_tick_count % len(_SPINNER_CHARS)]
                 if tool_name == "_thinking":
-                    thinking_label = self._tool_timer_labels.get("_thinking")
-                    if thinking_label:
-                        lines.append(f"{spinner} 💭 {thinking_label} ({elapsed}s)")
-                    else:
-                        lines.append(f"{spinner} 💭 Thinking ({elapsed}s)")
+                    # Generic status only — the model identity / API-call
+                    # count that may be passed to on_llm_thinking must never
+                    # cross the transport (privacy: #96942).
+                    lines.append(f"{spinner} 💭 Thinking ({elapsed}s)")
                 else:
-                    # Use the original progress line (full summary) as label,
-                    # stripping any trailing "..." and appending elapsed time.
-                    label = self._tool_timer_labels.get(tool_name, f"{tool_name}...")
-                    lines.append(f"{spinner} {label} ({elapsed}s)")
+                    # The stored label is the bare, sanitized tool name (see
+                    # on_tool_progress / on_tool_started).  Render a generic
+                    # "🔧 <tool> (Ns)" line — no arguments, URLs, queries, or
+                    # filenames — since this rides the WeCom transport.
+                    label = self._tool_timer_labels.get(tool_name, tool_name)
+                    lines.append(f"{spinner} 🔧 {label} ({elapsed}s)")
 
             self._tool_progress_lines = lines
         self._tool_progress_active = True

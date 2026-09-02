@@ -339,8 +339,19 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         # Tool timer: opt-in (default off). Maintainer standard: features
         # disabled unless explicitly enabled.
         # Set tool_timer_enabled: true in extra to enable.
+        #
+        # Strict allowlist parsing (fail-closed): only the canonical truthy
+        # tokens enable the timer.  A blocklist ("not in false/0/no/off") was
+        # fail-open — typos and unknown strings ("flase", "disabled",
+        # "garbage") all resolved to True, silently enabling a feature that
+        # sends progress metadata over the WeCom transport.
         _tool_timer_raw = extra.get("tool_timer_enabled", False)
-        self.SUPPORTS_TOOL_TIMER = bool(_tool_timer_raw) if not isinstance(_tool_timer_raw, str) else _tool_timer_raw.lower() not in ("false", "0", "no", "off")
+        if isinstance(_tool_timer_raw, str):
+            self.SUPPORTS_TOOL_TIMER = _tool_timer_raw.strip().lower() in (
+                "true", "1", "yes", "on",
+            )
+        else:
+            self.SUPPORTS_TOOL_TIMER = bool(_tool_timer_raw)
 
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}

@@ -2490,7 +2490,11 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             kwargs: Dict[str, Any] = {"channel": chat_id, "ts": stream["ts"]}
             if final_text is not None:
-                sent = stream.get("sent", "")
+                # Agent VBP patch 05: delta against the left-stripped prefix
+                # (see _try_finalize_stream) so a leading-newline first frame
+                # does not re-append the whole answer on seal.
+                sent = stream.get("sent", "").lstrip()
+                final_text = final_text.lstrip()
                 if final_text.startswith(sent) and len(final_text) > len(sent):
                     kwargs["markdown_text"] = final_text[len(sent) :]
             if blocks:
@@ -2510,9 +2514,17 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         sent = stream.get("sent", "")
         text = self._strip_stream_cursor(content)
-        # Only claim sends that extend what was streamed; an empty ``sent``
-        # prefix would match everything.
-        if not sent or not text.startswith(sent):
+        # Only treat this send as the stream's finalization when it extends
+        # (or equals) what was streamed. Unrelated sends (e.g. interim
+        # commentary) pass through. An empty ``sent`` prefix would match
+        # everything, so require substance before claiming the send.
+        # Agent VBP patch 05: the first streamed frame can carry leading
+        # newlines ("\n\n**11") while the turn-final text arrives stripped;
+        # compare on left-stripped text or the final is mis-read as
+        # unrelated, posted as a duplicate, and the stream is never sealed.
+        sent_norm = sent.lstrip()
+        text = text.lstrip()
+        if not sent_norm or not text.startswith(sent_norm):
             return None
         self._active_streams.pop(chat_id, None)
         ts = stream["ts"]

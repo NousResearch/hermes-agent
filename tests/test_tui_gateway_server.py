@@ -8903,7 +8903,7 @@ def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
 
 
 def test_setup_status_reports_provider_config(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
 
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
@@ -8925,7 +8925,7 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8947,7 +8947,7 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8964,7 +8964,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8982,7 +8982,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
 
 def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     """Onboarding must be able to validate the provider the user just connected."""
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
 
     def fake_resolve(requested=None, **kwargs):
         if requested == "nous":
@@ -9011,6 +9011,67 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
+
+
+def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
+    """#94071: the Desktop preflights a freshly created bot on its target
+    backend. ``profile`` binds THAT profile's home + .env — launch-process
+    credentials must not make an unconfigured bot look ready, and the bot's
+    own .env must be what the strict check sees."""
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home
+
+    bot_home = tmp_path / "profiles" / "bot"
+    bot_home.mkdir(parents=True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile-secret-0000")
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "bot")
+    monkeypatch.setattr(server, "_profile_home", lambda profile: bot_home if profile == "bot" else None)
+    seen = {}
+
+    def fake_resolve(requested=None, **kwargs):
+        seen["home"] = Path(str(get_hermes_home())).resolve()
+        seen["secret"] = secret_scope.get_secret("OPENROUTER_API_KEY")
+        return {"provider": "openrouter", "api_key": seen["secret"] or "", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        status = server.handle_request(
+            {"id": "1", "method": "setup.status", "params": {"profile": "bot"}}
+        )
+        assert status["result"] == {"provider_configured": False, "profile": "bot"}
+
+        (bot_home / ".env").write_text("OPENROUTER_API_KEY=sk-or-bot-profile-secret-00001\n")
+        status = server.handle_request(
+            {"id": "2", "method": "setup.status", "params": {"profile": "bot"}}
+        )
+        runtime = server.handle_request(
+            {"id": "3", "method": "setup.runtime_check", "params": {"profile": "bot"}}
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert status["result"] == {"provider_configured": True, "profile": "bot"}
+    assert runtime["result"]["ok"] is True
+    assert runtime["result"]["profile"] == "bot"
+    assert seen == {"home": bot_home.resolve(), "secret": "sk-or-bot-profile-secret-00001"}
+    assert Path(str(get_hermes_home())).resolve() != bot_home.resolve()
+
+
+def test_setup_readiness_unknown_profile_never_answers_for_launch_profile(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **kw: {"provider": "openrouter", "api_key": "sk-or-launch-0000000000", "source": "env"},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+
+    for method in ("setup.status", "setup.runtime_check"):
+        resp = server.handle_request({"id": "1", "method": method, "params": {"profile": "ghost"}})
+        assert resp["result"]["ok"] is False
+        assert resp["result"]["profile"] == "ghost"
+        assert "does not exist" in resp["result"]["error"]
 
 
 def test_complete_slash_drops_removed_provider_alias():

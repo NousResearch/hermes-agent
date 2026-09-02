@@ -1053,8 +1053,14 @@ def _relative_time(ts) -> str:
     return relative_time(ts)
 
 
-def _has_any_provider_configured() -> bool:
-    """Check if at least one inference provider is usable."""
+def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
+    """Check if at least one inference provider is usable.
+
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
+    secret scope and wants an answer for that profile only — launch-process
+    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
+    make it appear ready. Unscoped callers keep the legacy behavior.
+    """
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
@@ -1097,7 +1103,13 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
-    if any(os.getenv(v) for v in provider_env_vars):
+    if strict_profile_scope:
+        from agent.secret_scope import current_secret_scope
+
+        read_provider_env = (current_secret_scope() or {}).get
+    else:
+        read_provider_env = os.getenv
+    if any(read_provider_env(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys
@@ -1129,7 +1141,10 @@ def _has_any_provider_configured() -> bool:
 
             auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
             active = auth.get("active_provider")
-            if active:
+            active_config = PROVIDER_REGISTRY.get(str(active or "").strip().lower())
+            if active and not (
+                strict_profile_scope and active_config and active_config.auth_type == "api_key"
+            ):
                 status = get_auth_status(active)
                 if status.get("logged_in"):
                     return True
@@ -1148,20 +1163,21 @@ def _has_any_provider_configured() -> bool:
             return True
 
     # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
-    try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
-    except Exception:
-        pass
+    if not strict_profile_scope:
+        try:
+            for provider_id, pconfig in PROVIDER_REGISTRY.items():
+                if pconfig.auth_type != "api_key":
+                    continue
+                status = get_auth_status(provider_id)
+                if status.get("logged_in"):
+                    return True
+        except Exception:
+            pass
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
     # Only count these if Hermes has been explicitly configured — Claude Code
     # being installed doesn't mean the user wants Hermes to use their tokens.
-    if _has_hermes_config:
+    if _has_hermes_config and not strict_profile_scope:
         try:
             from agent.anthropic_adapter import (
                 read_claude_code_credentials,

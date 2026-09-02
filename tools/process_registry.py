@@ -1272,12 +1272,30 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # PTY reads can split a multibyte UTF-8 character across chunks just like pipe reads — hold partial
         # sequences until the rest arrives. (Ported from openclaw/openclaw#112325.)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Programs in a PTY can block waiting for replies to device-status / window-size /
+        # cursor-position / DEC private-mode queries. Answer the bounded set and strip the
+        # queries from captured output. POSIX only: Windows ConPTY is a real console host that
+        # answers itself (and pywinpty yields str chunks, not bytes).
+        responder = None
+        if not _IS_WINDOWS:
+            from tools.pty_query_responder import PtyQueryResponder
+            responder = PtyQueryResponder(rows=30, cols=120)
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str
+                        if responder is not None and isinstance(chunk, bytes):
+                            chunk, replies = responder.process(chunk)
+                            if replies:
+                                try:
+                                    pty.write(replies)
+                                except Exception:
+                                    logger.debug(
+                                        "PTY query response write failed",
+                                        exc_info=True,
+                                    )
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
                             self._ingest_output(session, text)
@@ -1285,6 +1303,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+        if responder is not None:
+            # A query prefix split across the final reads is plain output after all.
+            tail = decoder.decode(responder.flush())
+            if tail:
+                self._ingest_output(session, tail)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)

@@ -457,6 +457,90 @@ class TestDeliverResultWrapping:
         standalone_send.assert_not_awaited()
 
 
+    def test_live_native_adapter_with_no_config_block_is_enabled(self):
+        """A live native adapter with no per-profile platforms block delivers.
+
+        Under multiplex, HERMES_HOME is remapped to profiles/<slug>/ and the
+        profile config often has no platforms section while the gateway passes
+        the live native adapter. resolve_delivery_transport already treats a
+        missing config block as enabled; the configured/enabled gate in
+        _deliver_result used to reject it anyway, silently failing every
+        deliver=origin job to a native platform (#89302)."""
+        from concurrent.futures import Future
+
+        from gateway.config import GatewayConfig, Platform
+
+        native = MagicMock()
+        native.send = AsyncMock(return_value=MagicMock(success=True, message_id="m1"))
+
+        config = GatewayConfig(platforms={})  # no platforms block at all
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as exc:  # noqa: BLE001
+                future.set_exception(exc)
+            return future
+
+        job = {
+            "id": "native-cron",
+            "deliver": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "42"},
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
+        ):
+            result = _deliver_result(
+                job,
+                "native delivery",
+                adapters={Platform.TELEGRAM: native},
+                loop=loop,
+            )
+
+        assert result is None, f"delivery rejected: {result}"
+        native.send.assert_awaited_once()
+
+    def test_explicitly_disabled_native_config_still_rejects(self):
+        """An explicit enabled=False block must keep rejecting delivery — the
+        no-config synthesis only covers the config-absent shape."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        native = MagicMock()
+        native.send = AsyncMock(return_value=MagicMock(success=True))
+
+        config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=False)}
+        )
+        job = {
+            "id": "disabled-cron",
+            "deliver": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "42"},
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        ):
+            result = _deliver_result(
+                job,
+                "should not deliver",
+                adapters={Platform.TELEGRAM: native},
+                loop=None,
+            )
+
+        assert result is not None
+        assert "not configured/enabled" in result
+        native.send.assert_not_awaited()
+
+
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than

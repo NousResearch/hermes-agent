@@ -9003,6 +9003,13 @@ class AIAgent:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        else:
+            # observe_call may have raised the identical-call streak halt
+            # (hard_stop_enabled, tool-agnostic) — surface it the same way.
+            streak_halt = self._tool_guardrails.halt_decision
+            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+                function_result = append_toolguard_guidance(function_result, streak_halt)
+                self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
             function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result

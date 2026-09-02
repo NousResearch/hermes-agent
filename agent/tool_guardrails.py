@@ -632,6 +632,31 @@ class ToolCallGuardrailController:
                 "Do not repeat it — change arguments, use a different tool, or "
                 "proceed with what you have.]"
             )
+            # Hard-stop widening (#89069 / #100849 bundle): the per-turn
+            # no-progress BLOCK above only covers tools in idempotent_tools, so
+            # a model replaying the same successful `terminal`/`skill_view`
+            # call with a byte-identical result ran until the iteration budget.
+            # The consecutive-identical streak is tool-agnostic; when hard
+            # stops are enabled, halt at the same idempotent_no_progress
+            # threshold. Pollers stay exempt (an unchanged poll is progress).
+            if (
+                self.config.hard_stop_enabled
+                and count >= self.config.no_progress_block_after
+                and self._halt_decision is None
+            ):
+                self._halt_decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="identical_call_streak_halt",
+                    message=(
+                        f"Stopped {tool_name}: the same call with identical arguments "
+                        f"returned the same result {count} times in a row. Stop "
+                        "repeating it unchanged; use the result already provided or "
+                        "change strategy."
+                    ),
+                    tool_name=tool_name,
+                    count=count,
+                    signature=signature,
+                )
 
         stub = None
         if (

@@ -201,6 +201,49 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_identical_call_streak_halts_any_tool_when_hard_stop_enabled():
+    # #89069 / #100849 bundle: a model replaying the same SUCCESSFUL
+    # terminal/skill_view call with a byte-identical result is not covered by
+    # the idempotent_tools no-progress block. The consecutive-identical
+    # streak (observe_call) is tool-agnostic; under hard_stop it must halt.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"command": "hermes config get memory.provider"}
+    for i in range(1, 5):
+        controller.after_call("terminal", args, "local\n", failed=False)
+        controller.observe_call("terminal", args, "local\n", failed=False)
+        assert controller.halt_decision is None, f"halted early at {i}"
+
+    controller.after_call("terminal", args, "local\n", failed=False)
+    controller.observe_call("terminal", args, "local\n", failed=False)
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_halt"
+    assert halt.tool_name == "terminal" and halt.count == 5
+
+
+def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_pollers():
+    soft = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=False, no_progress_block_after=2)
+    )
+    for _ in range(6):
+        soft.observe_call("terminal", {"command": "ls"}, "a\nb\n", failed=False)
+    assert soft.halt_decision is None  # notice-only in interactive sessions
+
+    hard = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2)
+    )
+    for _ in range(6):
+        hard.observe_call("process_manage", {"action": "poll", "session_id": "p1"}, "running", failed=False)
+    assert hard.halt_decision is None  # an unchanged poll is legitimate progress
+
+    # A changed result resets the streak.
+    for i in range(6):
+        hard.observe_call("terminal", {"command": "date"}, f"t{i}", failed=False)
+    assert hard.halt_decision is None
+
+
 
 
 

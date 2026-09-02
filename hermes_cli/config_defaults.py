@@ -821,6 +821,10 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        # Unattended gateway/cron platforms get hard stops by default (nobody
+        # is present to /stop a model that ignores loop warnings); interactive
+        # cli/tui/desktop/acp stay warning-only unless hard_stop_enabled.
+        "non_interactive_hard_stop_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,

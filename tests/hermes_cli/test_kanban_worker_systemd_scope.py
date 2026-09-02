@@ -2190,6 +2190,44 @@ def test_reap_orphaned_scope_sweep(shims, conn):
     assert row["status"] == "running"
 
 
+def test_reap_sweep_escalates_a_wedged_deactivating_orphan(shims, conn):
+    """D: a deactivating orphan is not terminal — a stop job draining a
+    stubborn process sits in deactivating forever.  The sweep must
+    re-request the verified stop (whose SIGKILL escalation drains the
+    wedge) instead of quietly collecting around it."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_wedged", 1)
+    shims.write_unit(unit, [pid])
+    shims.arm_deactivating(unit)
+    shims.arm_killproof(unit)  # the stop job never completes server-side
+
+    # Wedged: stop re-requested, SIGKILL escalation fired, unit neither
+    # confirmed nor collected.
+    assert kb.reap_orphaned_worker_scopes(conn) == []
+    assert any(
+        a["action"] == "stop" and a["unit"] == unit for a in shims.stops()
+    )
+    assert any(
+        a["action"] == "kill" and a["unit"] == unit for a in shims.stops()
+    )
+    assert not any(
+        a["action"] == "reset-failed" and a["unit"] == unit
+        for a in shims.stops()
+    )
+    assert kb._pid_alive(pid)  # killproof: the shim refused, unconfirmed
+
+    # Unwedged: once the stop can complete the next sweep drains,
+    # confirms, and collects the orphan like any other.
+    shims.clear_deactivating(unit)
+    shims.clear_killproof(unit)
+    assert kb.reap_orphaned_worker_scopes(conn) == [unit]
+    assert shims.wait_for(lambda: not kb._pid_alive(pid))
+    assert any(
+        a["action"] == "reset-failed" and a["unit"] == unit
+        for a in shims.stops()
+    )
+
+
 def test_stop_all_scoped_workers_is_host_local(shims, conn):
     """The shutdown policy stops every scoped worker THIS host claims and
     leaves other hosts' workers to their own gateways."""

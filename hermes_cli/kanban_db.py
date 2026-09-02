@@ -10080,13 +10080,18 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     reaped: list[str] = []
     active = _kanban_list_scope_units("hermes-kanban-*")
     for unit, state in active.items():
-        if not _kanban_scope_is_live(state):
+        if not _kanban_scope_is_live(state) and state != "deactivating":
             # Terminal-but-still-loaded unit (a failed scope stays
             # inspectable without --collect by design): now that nothing
             # runs in it, collect it.  Once per unit — collection makes
             # it vanish from this listing.
             _collect_kanban_scope(unit)
             continue
+        # "deactivating" is NOT terminal: a stop job is draining the
+        # cgroup, and one wedged on a stubborn process would sit here
+        # forever if the sweep only collected.  It falls through to a
+        # (re)requested verified stop, whose SIGKILL escalation is what
+        # eventually clears a wedged drain.
         if unit in claimed:
             continue
         if not request_worker_scope_stop(unit):

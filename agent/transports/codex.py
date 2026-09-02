@@ -224,9 +224,20 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         supported = ACTUAL_RELAY_EFFORTS
     else:
         declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
-        if declared is not None and not declared:
-            reasoning_enabled = False
-        supported = declared or codex_supported_efforts(model)
+        if declared is not None:
+            if not declared:
+                reasoning_enabled = False
+            supported = declared or codex_supported_efforts(model)
+        else:
+            # OpenAI's native Responses surfaces reject the entire reasoning field for
+            # non-reasoning models; compatible third-party endpoints keep the legacy fallback.
+            from agent.model_metadata import openai_responses_supports_reasoning_effort
+
+            native_openai = (params.get("provider") or "").strip().lower() in (
+                "openai-api", "openai-codex")
+            if native_openai and not openai_responses_supports_reasoning_effort(model):
+                reasoning_enabled = False
+            supported = codex_supported_efforts(model)
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 

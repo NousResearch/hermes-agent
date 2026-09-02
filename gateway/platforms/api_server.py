@@ -333,6 +333,42 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens}
 
 
+_DEFAULT_MODEL_ALIAS = "default"
+
+
+def _providers_agree(left: str, right: str) -> bool:
+    """Return whether two provider slugs normalize to the same provider."""
+    a, b = (left or "").strip().lower(), (right or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        from hermes_cli.models import normalize_provider
+        return bool(normalize_provider(a)) and normalize_provider(a) == normalize_provider(b)
+    except Exception:
+        return False
+
+
+def _split_prefixed_model_identifier(model: str) -> tuple[str, str]:
+    """Split ``@provider:model`` or ``provider::model`` into routing hint and wire model."""
+    text = (model or "").strip()
+    if not text:
+        return "", text
+    provider, bare = "", text
+    if text.startswith("@"):
+        provider, sep, bare = text[1:].partition(":")
+        if not sep:
+            return "", text
+    elif "::" in text:
+        provider, sep, bare = text.partition("::")
+        if not sep:
+            return "", text
+    if provider and re.match(r"^[a-zA-Z0-9_.-]{2,64}$", provider) and bare.strip():
+        return provider, bare.strip()
+    return "", text
+
+
 def _request_agent_overrides(
     body: Any, *, virtual_model: Optional[str] = None, allow_bare_model: bool = True
 ) -> Dict[str, Any]:
@@ -341,16 +377,26 @@ def _request_agent_overrides(
     The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
     ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
     OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
-    endpoints always allow it). An explicit ``provider`` is always honored.
+    endpoints always allow it). An explicit ``provider`` is always honored. Provider-prefixed
+    picker ids are reduced to the real wire model; a conflicting explicit provider is rejected
+    through ``request_error``.
     """
     if not isinstance(body, dict):
         return {}
     overrides: Dict[str, Any] = {}
     provider = _clean_request_string(body.get("provider"))
+    model = _clean_request_string(body.get("model"))
+    prefix_provider, prefixed_model = _split_prefixed_model_identifier(model)
+    if prefix_provider:
+        if provider and not _providers_agree(provider, prefix_provider):
+            overrides["request_error"] = (
+                f"model '{model}' is prefixed with provider '{prefix_provider}', which does not "
+                f"match the request's 'provider': '{provider}'. Drop the prefix or the 'provider' field.")
+            return overrides
+        model, provider = prefixed_model, provider or prefix_provider
     if provider:
         overrides["requested_provider"] = provider
-    model = _clean_request_string(body.get("model"))
-    if model and model != virtual_model and (provider or allow_bare_model):
+    if model and model not in (virtual_model, _DEFAULT_MODEL_ALIAS) and (provider or allow_bare_model):
         overrides["requested_model"] = model
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
@@ -3023,7 +3069,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
-            selection_error = self._request_route_conflict_error(
+            selection_error = agent_overrides.get("request_error") or self._request_route_conflict_error(
                 session_id=session_id, gateway_session_key=gateway_session_key,
                 requested_model=agent_overrides.get("requested_model"),
                 requested_provider=agent_overrides.get("requested_provider"), route=route)

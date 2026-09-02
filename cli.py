@@ -5259,10 +5259,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
-        # bell_on_clarify: play terminal bell (\a) when agent asks a clarify question — same mechanism as bell_on_complete
-        self.bell_on_clarify = CLI_CONFIG["display"].get("bell_on_clarify", False)
-        # bell_on_approval: play terminal bell (\a) when a dangerous-command approval prompt opens — same mechanism as bell_on_complete
-        self.bell_on_approval = CLI_CONFIG["display"].get("bell_on_approval", False)
+        # bell_on_prompt: play terminal bell (\a) whenever a blocking prompt
+        # modal opens (clarify, approval, sudo password, secret capture)
+        self.bell_on_prompt = CLI_CONFIG["display"].get("bell_on_prompt", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -16168,6 +16167,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             outcome = outcome[:119] + "…"
         _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
 
+    def _ring_bell(self, prompt: bool = False) -> None:
+        """Write a terminal bell (\\a) if the matching display.bell_* flag is on.
+
+        ``prompt=True`` is the blocking-modal variant (clarify / approval /
+        sudo / secret capture) gated by ``display.bell_on_prompt``; the default
+        is the end-of-turn bell gated by ``display.bell_on_complete``. Works
+        over SSH — the BEL propagates to the user's terminal.
+        """
+        flag = "bell_on_prompt" if prompt else "bell_on_complete"
+        if not getattr(self, flag, False):
+            return
+        try:
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
     def _clarify_callback(self, question, choices, multi_select=False, questions=None):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -16215,14 +16231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_freetext = is_open_ended
         self._clarify_multi_base = None
 
-        # Bell on clarify (same mechanism as bell_on_complete — \\a over SSH)
-        if getattr(self, "bell_on_clarify", False):
-            try:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
-            except Exception:
-                pass
-
+        self._ring_bell(prompt=True)
         # Trigger an immediate prompt_toolkit repaint from this (non-main)
         # thread. Modal prompts must paint at once and must not be gated by the
         # _invalidate throttle / resize guard — see _paint_now / _invalidate (#41098).
@@ -16414,12 +16423,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        if getattr(self, "bell_on_clarify", False):
-            try:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
-            except Exception:
-                pass
+        self._ring_bell(prompt=True)
         self._paint_now()
 
         _last_countdown_refresh = _time.monotonic()
@@ -16470,6 +16474,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "response_queue": response_queue,
         }
         self._sudo_deadline = _time.monotonic() + timeout
+        self._ring_bell(prompt=True)
 
         # Modal prompt — paint immediately, bypassing the throttle/resize guard
         # so the prompt can't be dropped and time out unseen (#41098).
@@ -16539,14 +16544,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             }
             self._approval_deadline = _time.monotonic() + timeout
 
-            # Bell on approval (same mechanism as bell_on_complete — \a over SSH)
-            if getattr(self, "bell_on_approval", False):
-                try:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-                except Exception:
-                    pass
-
+            self._ring_bell(prompt=True)
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
             # window collision or in-flight resize), leaving the panel unseen so
@@ -17690,9 +17688,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
-            if self.bell_on_complete:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
+            self._ring_bell()
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):

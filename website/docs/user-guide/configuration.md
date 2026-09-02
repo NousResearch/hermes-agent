@@ -1909,8 +1909,7 @@ display:
   cli_multiline_shortcuts: true  # CLI: Ctrl+J, \ + Enter, and supported Shift+Enter insert newlines (false = legacy c-j submit fallback)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
-  bell_on_clarify: false  # Play terminal bell when the agent asks a clarification question (same BEL mechanism, works over SSH)
-  bell_on_approval: false # Play terminal bell when a dangerous-command approval prompt opens (same BEL mechanism, works over SSH)
+  bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar

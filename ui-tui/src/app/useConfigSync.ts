@@ -254,11 +254,10 @@ export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnClarify?: (v: boolean) => void,
-  setBellOnApproval?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnClarify, setBellOnApproval)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
 
   return cfg
 }
@@ -267,21 +266,14 @@ export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnClarify?: (v: boolean) => void,
-  setBellOnApproval?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
 
   setBell(!!d.bell_on_complete)
 
-  if (setBellOnClarify) {
-    setBellOnClarify(!!d.bell_on_clarify)
-  }
-
-  if (setBellOnApproval) {
-    setBellOnApproval(!!d.bell_on_approval)
-  }
+  setBellOnPrompt?.(!!d.bell_on_prompt)
 
   applyConfiguredTuiTheme(d.tui_theme)
 
@@ -326,8 +318,7 @@ export const applyDisplay = (
 export function useConfigSync({
   gw,
   setBellOnComplete,
-  setBellOnClarify,
-  setBellOnApproval,
+  setBellOnPrompt,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
@@ -353,8 +344,8 @@ export function useConfigSync({
       // mcp_rev) look like an MCP change and fire a needless reload.mcp.
       mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnClarify, setBellOnApproval)
-  }, [gw, setBellOnComplete, setBellOnClarify, setBellOnApproval, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -401,19 +392,18 @@ export function useConfigSync({
           )
         }
 
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnClarify, setBellOnApproval)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setBellOnClarify, setBellOnApproval, setVoiceRecordKey, sid])
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
-  setBellOnClarify?: (v: boolean) => void
-  setBellOnApproval?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

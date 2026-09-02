@@ -341,3 +341,33 @@ class TestClarifyBatchNavigation:
         thread.join(timeout=2)
         assert result["value"] == {"answers": {"q0": "red", "q1": "small"}}
 
+
+
+class TestClarifyBellOnPrompt:
+    """display.bell_on_prompt rings BEL when a clarify modal opens; off is silent."""
+
+    @staticmethod
+    def _run_clarify(bell_on_prompt):
+        import io
+
+        cli = _make_cli_stub()
+        cli.bell_on_prompt = bell_on_prompt
+        out = io.StringIO()
+        with patch("cli.sys.stdout", out), patch(
+            "tools.clarify_gateway.resolve_clarify_timeout", return_value=60
+        ):
+            thread = threading.Thread(
+                target=cli._clarify_callback, args=("Color?", ["red", "blue"]), daemon=True
+            )
+            thread.start()
+            deadline = time.time() + 2
+            while cli._clarify_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._clarify_state is not None
+            cli._clarify_state["response_queue"].put("red")
+            thread.join(timeout=2)
+        return out.getvalue()
+
+    def test_bell_on_prompt_rings_and_off_is_silent(self):
+        assert "\a" in self._run_clarify(True)
+        assert "\a" not in self._run_clarify(False)

@@ -1768,17 +1768,12 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
-  # Play terminal bell when the agent asks a clarification question.
-  # Same mechanism as bell_on_complete (\\a) — works over SSH.
-  #   true:  Ring on every clarify prompt
+  # Play terminal bell when a blocking prompt opens and waits on you:
+  # clarify questions, dangerous-command approvals, sudo password, secret
+  # capture. Same mechanism as bell_on_complete (\a) — works over SSH.
+  #   true:  Ring whenever the agent is waiting for your input
   #   false: Silent (default)
-  bell_on_clarify: false
-
-  # Play terminal bell when a dangerous-command approval prompt opens.
-  # Same mechanism as bell_on_complete (\\a) — works over SSH.
-  #   true:  Ring on every approval prompt
-  #   false: Silent (default)
-  bell_on_approval: false
+  bell_on_prompt: false
 
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.

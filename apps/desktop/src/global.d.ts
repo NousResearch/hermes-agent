@@ -10,6 +10,12 @@ import type {
 } from './store/pet-overlay'
 import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
 
+import type {
+  PluginWorkstationFoldersAction,
+  PluginWorkstationFoldersPayload,
+  PluginWorkstationFoldersResult
+} from './contrib/plugin'
+
 export {}
 
 declare global {
@@ -371,6 +377,11 @@ declare global {
       writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
       // Move a file/folder to the OS trash (recoverable).
       trashPath?: (path: string) => Promise<boolean>
+      // Generic native Desktop/Documents/Downloads filesystem capability for plugins.
+      workstationFolders?: (
+        action: PluginWorkstationFoldersAction,
+        payload?: PluginWorkstationFoldersPayload
+      ) => Promise<PluginWorkstationFoldersResult>
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>

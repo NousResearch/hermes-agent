@@ -1565,11 +1565,19 @@ export type {
   HermesPlugin,
   PluginContext,
   PluginContribution,
+  PluginFileDialogOptions,
   PluginNativeNotificationInput,
   PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
-  PluginStorage
+  PluginStorage,
+  PluginWorkstationEntry,
+  PluginWorkstationFoldersAction,
+  PluginWorkstationFoldersPayload,
+  PluginWorkstationFoldersResult,
+  PluginWorkstationMetadata,
+  PluginWorkstationRoot,
+  PluginWorkstationSource
 } from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for

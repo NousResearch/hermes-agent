@@ -129,3 +129,35 @@ def test_stream_prefers_reasoning_content_over_thinking(mock_close, mock_create)
     assert response is not None
     assert reasoning_deltas == ["standard"]
     assert response.choices[0].message.reasoning_content == "standard"
+
+
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_stream_thinking_nested_in_model_extra(mock_close, mock_create):
+    # Some relays deliver ``thinking`` only as an undeclared pydantic field
+    # (model_extra) on streaming deltas; the accumulator must see it there.
+    stream = _FakeStream(
+        [
+            _chunk(thinking="nested "),
+            _chunk(thinking="thought"),
+            _chunk(content="42", finish_reason="stop"),
+        ]
+    )
+    for chunk, value in zip(stream._chunks, ["nested ", "thought"]):
+        delta = chunk.choices[0].delta
+        delta.thinking = None
+        delta.model_extra = {"thinking": value}
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = stream
+    mock_create.return_value = client
+
+    agent = _make_agent()
+    reasoning_deltas = []
+    setattr(agent, "reasoning_callback", reasoning_deltas.append)
+
+    response = agent._interruptible_streaming_api_call({})
+
+    assert response is not None
+    assert reasoning_deltas == ["nested ", "thought"]
+    assert response.choices[0].message.reasoning_content == "nested thought"

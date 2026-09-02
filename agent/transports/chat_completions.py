@@ -524,14 +524,17 @@ class ChatCompletionsTransport(ProviderTransport):
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
-        # Compatible relays may use ``thinking`` when neither standard field is present:
-        # truthiness (``not``) is deliberate so an empty-string standard field counts as
-        # absent. Downstream reads the standard fields distinctly, so only ``reasoning``
-        # receives the fallback.
+        # Compatible relays may use ``thinking`` when neither standard field is present.
+        # Truthiness (``not``) is deliberate: an empty-string standard field counts as
+        # absent, so a relay that renames its reasoning field to ``thinking`` still falls
+        # back. Downstream reads the standard fields distinctly, so only ``reasoning``
+        # receives the fallback (pinned by the normalize_response fallback tests).
         reasoning_content = _attr_or_model_extra(msg, "reasoning_content")
         reasoning = _attr_or_model_extra(msg, "reasoning")
         if not reasoning and not reasoning_content:
-            reasoning = _attr_or_model_extra(msg, "thinking")
+            thinking = _attr_or_model_extra(msg, "thinking")
+            if thinking:
+                reasoning = thinking
         provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content

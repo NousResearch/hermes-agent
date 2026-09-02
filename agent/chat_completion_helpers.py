@@ -2840,8 +2840,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
             # Accumulate reasoning content. Compatible relays may use ``thinking``
             # instead of the standard field names; pydantic parks undeclared fields
-            # in ``model_extra``.
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # in ``model_extra``. Truthiness (``not``) is deliberate: an empty-string
+            # standard field counts as absent.
+            reasoning_text = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "thinking", None)
+            )
             if not reasoning_text and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("thinking")
             if reasoning_text:

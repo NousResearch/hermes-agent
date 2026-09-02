@@ -12,8 +12,11 @@ import contextlib
 import json
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import gateway.shutdown_watchdog as shutdown_watchdog_module
@@ -103,10 +106,28 @@ async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):
     return payload
 
 
+@pytest.fixture()
+def short_home():
+    """Short HERMES_HOME for tests that bind a real AF_UNIX socket.
+
+    pytest's tmp_path nests deep enough on CI runners / macOS that
+    ``state/gateway.loop-tick.<pid>.sock`` exceeds the sockaddr_un limit and
+    bind() raises ``OSError: AF_UNIX path too long`` — which the producer
+    swallows into ``loop_tick_socket=False``, falsely failing the POSIX arm
+    test. Same pattern as tests/hermes_cli/test_update_wedged_gateway.py.
+    """
+    path = Path(tempfile.mkdtemp(prefix="hsw-"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_loop_tick_witness_skipped_intentionally_on_windows(
-    tmp_path, caplog, monkeypatch
+    short_home, caplog, monkeypatch
 ):
+    tmp_path = short_home
     # Pretend the platform is Windows as seen from the module under test.
     # A plain monkeypatch of the global os.name would flip pathlib.Path
     # dispatch (Path.__new__ reads os.name at runtime) and crash pytest's
@@ -147,6 +168,6 @@ async def test_loop_tick_witness_skipped_intentionally_on_windows(
 
 
 @pytest.mark.asyncio
-async def test_loop_tick_witness_arms_on_posix(tmp_path):
-    payload = await _run_heartbeat_until_payload(tmp_path)
+async def test_loop_tick_witness_arms_on_posix(short_home):
+    payload = await _run_heartbeat_until_payload(short_home)
     assert payload["loop_tick_socket"] is True

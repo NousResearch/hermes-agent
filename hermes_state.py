@@ -9741,6 +9741,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def update_session_tool_names(
+        self, session_id: str, tool_names: Optional[List[str]]
+    ) -> None:
+        """Persist the session's resolved ``tools[]`` name order (JSON array).
+
+        Read back by ``tools.mcp_tool.restore_agent_tool_prefix`` when a fresh
+        ``AIAgent`` is rebuilt for an existing session (gateway agent-cache
+        eviction) so a flipped ``check_fn`` verdict can't fork the cached tool
+        prefix. ``None`` clears the pin.
+        """
+        payload = json.dumps(list(tool_names)) if tool_names is not None else None
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET tool_names = ? WHERE id = ?",
+                (payload, session_id),
+            )
+        self._execute_write(_do)
+
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None
     ) -> None:

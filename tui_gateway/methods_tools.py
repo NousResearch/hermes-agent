@@ -133,7 +133,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
             return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability
 
         def _refresh_session_agent() -> None:
             """Rebuild THIS session's cached tool snapshot from the live
@@ -184,6 +184,7 @@ def _(rid, params: dict) -> dict:
             loaded = _compute_mcp_rev()
             for _ in range(_MCP_RELOAD_MAX_PASSES):
                 shutdown_mcp_servers()
+                reprobe_tool_availability()
                 discover_mcp_tools()
                 after = _compute_mcp_rev()
                 if after == loaded:

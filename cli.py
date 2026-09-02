@@ -14764,7 +14764,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import (
+                shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability, _servers, _lock,
+            )
 
             # Capture old server names
             with _lock:
@@ -14776,6 +14778,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Shutdown existing connections
             shutdown_mcp_servers()
 
+            # Explicit reload also re-probes tool availability (check_fn).
+            reprobe_tool_availability()
             # Reconnect (reads config.yaml fresh)
             new_tools = discover_mcp_tools()
 

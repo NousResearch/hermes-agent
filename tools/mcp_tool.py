@@ -8509,7 +8509,83 @@ def refresh_agent_mcp_tools(
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+        added = new_names - current
+    # Every published snapshot re-pins the session's tool order so a later
+    # rebuild-for-existing-session (gateway agent-cache eviction) restores
+    # exactly these names — see ``restore_agent_tool_prefix``.
+    persist_agent_tool_names(agent)
+    return added
+
+
+def reprobe_tool_availability() -> None:
+    """Explicit ``/reload-mcp`` hatch out of the tools[] freeze.
+
+    Availability-gated tools (``check_fn``: Docker, HASS_TOKEN, OAuth…) are
+    frozen for the life of a session; a credential or daemon that appears
+    mid-session is only picked up when the user consciously asks. Drop the
+    ``check_fn`` verdict cache AND the ``get_tool_definitions`` memo (keyed on
+    registry generation, so it would otherwise replay the stale verdicts).
+    """
+    from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+
+def persist_agent_tool_names(agent) -> None:
+    """Best-effort: write ``agent.tools`` names to the session row (freeze pin)."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not db or not session_id:
+        return
+    try:
+        db.update_session_tool_names(
+            session_id,
+            [t["function"]["name"] for t in (getattr(agent, "tools", None) or [])],
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("tool_names persist skipped", exc_info=True)
+
+
+def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
+    """Fold a freshly built agent's ``tools`` onto the session's saved order.
+
+    Closes the second door on the tools[] freeze: the gateway rebuilds a NEW
+    ``AIAgent`` for an existing session after agent-cache eviction, and
+    ``agent_init`` re-derives ``agent.tools`` from live ``check_fn`` probes
+    with no predecessor to preserve. The saved name list stands in for that
+    predecessor: a saved tool that is still registered but failed its probe
+    this time is carried forward from the registry's schema, a deregistered
+    one is dropped, and genuinely new tools append at the tail — the same
+    ``_merge_preserving_prefix`` rule the between-turns refresh uses.
+    Returns True when the snapshot was changed.
+    """
+    if not saved_names:
+        return False
+    from tools.registry import registry
+
+    fresh_defs = list(getattr(agent, "tools", None) or [])
+    fresh = {t["function"]["name"]: t for t in fresh_defs}
+    saved_defs = []
+    for name in saved_names:
+        entry_def = fresh.get(name)
+        if entry_def is None:
+            entry = registry.get_entry(name)
+            if entry is None:
+                continue
+            entry_def = {"type": "function", "function": {**entry.schema, "name": entry.name}}
+        saved_defs.append(entry_def)
+    registered_names = {entry.name for entry in registry.get_all_entries()}
+    merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    with _agent_tools_lock:
+        if merged == fresh_defs:
+            return False
+        agent.tools = merged
+        agent.valid_tool_names = merged_names
+    if [t["function"]["name"] for t in merged] != list(saved_names):
+        persist_agent_tool_names(agent)
+    return True
 
 
 def _merge_preserving_prefix(

@@ -26230,7 +26230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await self._execute_mcp_reload(event)
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
-            from tools.mcp_tool import _server_scope_keys
+            from tools.mcp_tool import _server_scope_keys, reprobe_tool_availability
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -26250,6 +26250,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._run_in_executor_with_context(
                 lambda: shutdown_mcp_servers(scope=reload_scope)
             )
+            # Explicit reload also re-probes tool availability (check_fn).
+            reprobe_tool_availability()
 
             # Reconnect by discovering tools (reads config.yaml fresh)
             new_tools = await self._run_in_executor_with_context(discover_mcp_tools)

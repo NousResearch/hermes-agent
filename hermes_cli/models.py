@@ -102,6 +102,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",                    ""),
     # Google
     ("google/gemini-3.1-pro-preview",          ""),
+    ("google/gemini-3.8-flash",                ""),
     ("google/gemini-3.7-flash",                ""),
     # xAI
     ("x-ai/grok-4.6",                          ""),
@@ -285,6 +286,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-mini",
         # Google
         "google/gemini-3.1-pro-preview",
+        "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
         # xAI
         "x-ai/grok-4.6",

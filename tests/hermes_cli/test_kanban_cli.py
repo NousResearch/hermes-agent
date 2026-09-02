@@ -170,6 +170,33 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# heartbeat CLI smoke tests
+# ---------------------------------------------------------------------------
+
+
+def test_run_slash_heartbeat_records_structured_disposition(kanban_home):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="heartbeat cli", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
+
+    out = kc.run_slash(f"heartbeat {tid} --note parked --disposition blocked")
+
+    assert f"Heartbeat recorded for {tid}" in out
+    with kb.connect_closing() as conn:
+        row = conn.execute(
+            "SELECT last_disposition FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "heartbeat"]
+
+    assert row is not None
+    assert events and events[-1].payload is not None
+    assert row["last_disposition"] == "blocked"
+    assert events[-1].payload["disposition"] == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------
 

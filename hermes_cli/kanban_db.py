@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli import plugins as _kanban_plugins
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_HEARTBEAT_DISPOSITIONS = {"progressing", "blocked"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -221,6 +223,11 @@ def _kanban_observer_consumed(event: str) -> bool:
     these are observers, so dropping is always safe).
     """
     try:
+        if _kanban_plugins.has_hook(event):
+            return True
+    except Exception:
+        pass
+    try:
         from hermes_cli.lifecycle import has_hook
 
         return has_hook(event)
@@ -314,7 +321,6 @@ def _fire_dispatch_tick_hook(
     if not _kanban_observer_consumed("on_kanban_dispatch_tick"):
         return
     try:
-        from hermes_cli.lifecycle import invoke_hook
         from hermes_cli.profiles import get_active_profile_name
 
         try:
@@ -336,6 +342,8 @@ def _fire_dispatch_tick_hook(
             result.reconciled_orphans,
             result.crashed,
             result.stale,
+            result.blocked_dispositions,
+            result.stranded_reviews,
             result.timed_out,
             result.auto_blocked,
             result.rate_limited,
@@ -346,14 +354,20 @@ def _fire_dispatch_tick_hook(
             result.skipped_nonspawnable,
         )):
             outcome = "idle"
-        invoke_hook(
-            "on_kanban_dispatch_tick",
+        payload = dict(
             board=board,
             profile_name=profile_name,
             dry_run=bool(dry_run),
             outcome=outcome,
             result=result,
         )
+        try:
+            from hermes_cli.observability import observe_lifecycle
+
+            observe_lifecycle("on_kanban_dispatch_tick", **payload)
+        except Exception:
+            pass
+        _kanban_plugins.invoke_hook("on_kanban_dispatch_tick", **payload)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban dispatch tick hook failed: %s", exc)
 
@@ -1141,6 +1155,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured liveness state from kanban_heartbeat. None means legacy
+    # heartbeat/no report; "progressing" means still making progress;
+    # "blocked" means the worker is alive but parked on a blocker.
+    last_disposition: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1252,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            last_disposition=(
+                row["last_disposition"]
+                if "last_disposition" in keys and row["last_disposition"]
+                else None
             ),
         )
 
@@ -1363,6 +1386,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Structured liveness state from kanban_heartbeat: NULL legacy/no report,
+    -- "progressing" for active work, "blocked" for alive-but-waiting.
+    last_disposition     TEXT,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -2608,6 +2634,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
+        )
+    if "last_disposition" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "last_disposition", "last_disposition TEXT"
         )
     if "current_run_id" not in cols:
         _add_column_if_missing(
@@ -8069,6 +8099,12 @@ class DispatchResult:
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
+    blocked_dispositions: list[str] = field(default_factory=list)
+    """Task ids auto-blocked because the worker kept reporting a structured
+    ``blocked`` heartbeat past ``dispatch_blocked_disposition_timeout_seconds``."""
+    stranded_reviews: list[str] = field(default_factory=list)
+    """Review task ids recovered to ``blocked`` because no reviewer can ever
+    spawn (unassigned, missing profile, or review dispatch disabled)."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
@@ -8385,6 +8421,7 @@ def heartbeat_worker(
     task_id: str,
     *,
     note: Optional[str] = None,
+    disposition: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
@@ -8397,19 +8434,27 @@ def heartbeat_worker(
     Returns True on success, False if the task is not in a state that
     should be heartbeating (not running, or claim expired).
     """
+    if disposition is not None:
+        disposition = str(disposition).strip().lower()
+        if disposition not in VALID_HEARTBEAT_DISPOSITIONS:
+            raise ValueError(
+                f"heartbeat disposition must be one of {sorted(VALID_HEARTBEAT_DISPOSITIONS)}"
+            )
     now = int(time.time())
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, "
+                "last_disposition = COALESCE(?, last_disposition) "
                 "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+                (now, disposition, task_id),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, "
+                "last_disposition = COALESCE(?, last_disposition) "
                 "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+                (now, disposition, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -8423,9 +8468,14 @@ def heartbeat_worker(
                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
                 (now, run_id),
             )
+        payload = {}
+        if note:
+            payload["note"] = note
+        if disposition:
+            payload["disposition"] = disposition
         _append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            payload or None,
             run_id=run_id,
         )
     return True
@@ -8686,6 +8736,170 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
+def detect_blocked_dispositions(
+    conn: sqlite3.Connection,
+    *,
+    blocked_timeout_seconds: int = 0,
+    signal_fn=None,
+) -> list[str]:
+    """Block running tasks whose worker keeps reporting ``blocked``.
+
+    A heartbeat with ``disposition="blocked"`` means the worker is alive but
+    not making progress. If it stays that way past the configured window, free
+    the worker slot and surface the card to a human instead of waiting for the
+    much longer stale-heartbeat reclaim. ``0`` disables the sweep.
+    """
+    if blocked_timeout_seconds <= 0:
+        return []
+
+    now = int(time.time())
+    recovered: list[str] = []
+    rows = conn.execute(
+        "SELECT id, worker_pid, claim_lock, last_heartbeat_at "
+        "FROM tasks "
+        "WHERE status = 'running' AND last_disposition = 'blocked' "
+        "  AND last_heartbeat_at IS NOT NULL"
+    ).fetchall()
+
+    for row in rows:
+        last_hb = int(row["last_heartbeat_at"] or 0)
+        age = now - last_hb
+        if age < blocked_timeout_seconds:
+            continue
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+        )
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, row["id"], row["claim_lock"], now, termination,
+                reason="blocked_disposition_worker_alive",
+            )
+            continue
+        reason = (
+            f"worker reported blocked for {age}s "
+            f"(threshold {blocked_timeout_seconds}s)"
+        )
+        if not block_task(conn, row["id"], reason=reason, kind="needs_input"):
+            continue
+        with write_txn(conn):
+            _append_event(
+                conn, row["id"], "blocked_disposition_recovered",
+                {
+                    "reason": "blocked_disposition_timeout",
+                    "age_seconds": int(age),
+                    "timeout_seconds": int(blocked_timeout_seconds),
+                    **termination,
+                },
+            )
+        recovered.append(row["id"])
+    return recovered
+
+
+def _review_task_age_seconds(conn: sqlite3.Connection, task_id: str, now: int) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(e.created_at), t.started_at, t.created_at) AS review_at "
+        "FROM tasks t "
+        "LEFT JOIN task_events e ON e.task_id = t.id AND e.kind = 'review_requested' "
+        "WHERE t.id = ?",
+        (task_id,),
+    ).fetchone()
+    review_at = row["review_at"] if row else None
+    if review_at is None:
+        return 0
+    return max(0, now - int(review_at))
+
+
+def _stranded_review_reason(assignee: Optional[str]) -> Optional[str]:
+    if not review_dispatch_enabled():
+        return "review_dispatch_disabled"
+    if not assignee:
+        return "unassigned"
+    try:
+        from hermes_cli.profiles import profile_exists
+        if profile_exists(assignee):
+            return None
+    except Exception:
+        # If profile resolution is unavailable, do not auto-block a named
+        # reviewer — better to let the dispatcher try than false-positive.
+        return None
+    return "missing_profile"
+
+
+def detect_stranded_review(
+    conn: sqlite3.Connection,
+    *,
+    stranded_timeout_seconds: int = 0,
+) -> list[str]:
+    """Recover review cards that no reviewer can ever claim.
+
+    Only unclaimed ``status='review'`` cards are considered. Fresh review cards
+    are left alone so the next dispatcher tick can spawn a reviewer normally.
+    ``0`` disables the sweep.
+    """
+    if stranded_timeout_seconds <= 0:
+        return []
+
+    now = int(time.time())
+    recovered: list[str] = []
+    rows = conn.execute(
+        "SELECT id, assignee, claim_lock FROM tasks WHERE status = 'review'"
+    ).fetchall()
+    for row in rows:
+        if row["claim_lock"]:
+            continue
+        age = _review_task_age_seconds(conn, row["id"], now)
+        if age < stranded_timeout_seconds:
+            continue
+        reason = _stranded_review_reason(row["assignee"])
+        if reason is None:
+            continue
+        message = (
+            f"review stranded for {age}s: {reason}"
+            + (f" ({row['assignee']})" if row["assignee"] else "")
+        )
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, block_kind = ?, "
+                "block_recurrences = CASE WHEN block_kind = ? THEN block_recurrences + 1 ELSE 1 END, "
+                "last_failure_error = ? "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                ("needs_input", "needs_input", message, row["id"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _current_run_id(conn, row["id"])
+            _append_event(
+                conn, row["id"], "blocked",
+                {
+                    "reason": message,
+                    "kind": "needs_input",
+                    "source_status": "review",
+                },
+                run_id=run_id,
+            )
+            _append_event(
+                conn, row["id"], "stranded_recovered",
+                {
+                    "reason": reason,
+                    "age_seconds": int(age),
+                    "timeout_seconds": int(stranded_timeout_seconds),
+                    "assignee": row["assignee"],
+                },
+                run_id=run_id,
+            )
+        _task = get_task(conn, row["id"])
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            row["id"],
+            board=get_current_board(),
+            assignee=_task.assignee if _task else None,
+            reason=message,
+        )
+        recovered.append(row["id"])
+    return recovered
 
 
 def reconcile_orphaned_running(
@@ -9826,6 +10040,8 @@ def dispatch_once(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    blocked_disposition_timeout_seconds: int = 0,
+    stranded_review_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
@@ -9861,6 +10077,8 @@ def dispatch_once(
             max_in_progress=max_in_progress,
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
+            blocked_disposition_timeout_seconds=blocked_disposition_timeout_seconds,
+            stranded_review_timeout_seconds=stranded_review_timeout_seconds,
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
@@ -9881,6 +10099,8 @@ def dispatch_once(
                 max_in_progress=max_in_progress,
                 failure_limit=failure_limit,
                 stale_timeout_seconds=stale_timeout_seconds,
+                blocked_disposition_timeout_seconds=blocked_disposition_timeout_seconds,
+                stranded_review_timeout_seconds=stranded_review_timeout_seconds,
                 board=board,
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
@@ -9908,6 +10128,8 @@ def _dispatch_once_locked(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    blocked_disposition_timeout_seconds: int = 0,
+    stranded_review_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
@@ -9959,6 +10181,12 @@ def _dispatch_once_locked(
         # bookkeeping is broken (no valid claim, dead/gone worker) that the
         # TTL/crash/stale paths can never see. See reconcile_orphaned_running.
         result.reconciled_orphans = reconcile_orphaned_running(conn)
+    result.blocked_dispositions = detect_blocked_dispositions(
+        conn, blocked_timeout_seconds=blocked_disposition_timeout_seconds,
+    )
+    result.stranded_reviews = detect_stranded_review(
+        conn, stranded_timeout_seconds=stranded_review_timeout_seconds,
+    )
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )

@@ -1430,6 +1430,25 @@ class GatewayKanbanWatchersMixin:
             )
             stale_timeout_seconds = 0
 
+        def _read_int_cfg(name: str, default: int) -> int:
+            raw = kanban_cfg.get(name, default)
+            try:
+                value = int(raw or 0)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.%s=%r; using %d",
+                    name, raw, default,
+                )
+                return default
+            return max(0, value)
+
+        blocked_disposition_timeout_seconds = _read_int_cfg(
+            "dispatch_blocked_disposition_timeout_seconds", 900
+        )
+        stranded_review_timeout_seconds = _read_int_cfg(
+            "dispatch_stranded_review_timeout_seconds", 900
+        )
+
         # kanban.reconcile_orphans (config.yaml, default true): each tick,
         # requeue 'running' cards whose claim bookkeeping is broken (no
         # valid claim, dead/gone worker) — the zombie-card reconciliation
@@ -1570,6 +1589,8 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    blocked_disposition_timeout_seconds=blocked_disposition_timeout_seconds,
+                    stranded_review_timeout_seconds=stranded_review_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
                     reconcile_orphans=reconcile_orphans,
@@ -1800,18 +1821,34 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(_tick_once)
                     any_spawned = False
                     for slug, res in (results or []):
-                        if res is not None and getattr(res, "spawned", None):
+                        if res is None:
+                            continue
+                        action_count = sum((
+                            len(getattr(res, "spawned", []) or []),
+                            int(getattr(res, "reclaimed", 0) or 0),
+                            len(getattr(res, "crashed", []) or []),
+                            len(getattr(res, "timed_out", []) or []),
+                            len(getattr(res, "stale", []) or []),
+                            len(getattr(res, "blocked_dispositions", []) or []),
+                            len(getattr(res, "stranded_reviews", []) or []),
+                            int(getattr(res, "promoted", 0) or 0),
+                            len(getattr(res, "auto_blocked", []) or []),
+                        ))
+                        if getattr(res, "spawned", None):
                             any_spawned = True
-                            # Quiet by default — only log when something actually
-                            # happened, so an idle gateway stays silent.
+                        if action_count:
                             logger.info(
                                 "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                "crashed=%d timed_out=%d stale=%d blocked_dispositions=%d "
+                                "stranded_reviews=%d promoted=%d auto_blocked=%d",
                                 slug,
                                 len(res.spawned),
                                 res.reclaimed,
                                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                len(res.stale) if hasattr(res.stale, "__len__") else 0,
+                                len(res.blocked_dispositions) if hasattr(res.blocked_dispositions, "__len__") else 0,
+                                len(res.stranded_reviews) if hasattr(res.stranded_reviews, "__len__") else 0,
                                 res.promoted,
                                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                             )

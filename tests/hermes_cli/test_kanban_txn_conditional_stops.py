@@ -143,3 +143,56 @@ def test_invalidate_phase0_under_outer_rollback_queues_no_stop(
     assert row["status"] == "running"
     assert row["worker_scope"] == "old-run.scope"
     assert row["claim_lock"] is not None
+
+
+def test_reset_scope_stop_service_stops_a_lingering_thread():
+    """reset_scope_stop_service_for_tests must stop a running service
+    thread, not just clear its state: the daemon parks on the module
+    wake event, so leaving it alive lets it drain a queue that a LATER
+    test file flushes (found by the pass 8b AE single-process gate
+    run — the txn tests passed alone and failed in-process)."""
+    import threading
+    import time as _time
+
+    thread = threading.Thread(
+        target=kb._scope_stop_service_loop, name="lingering-for-reset",
+        daemon=True,
+    )
+    # Register it the way _ensure_scope_stop_thread does (the autouse
+    # fixture no-ops that spawner, so the test drives it directly).
+    kb._scope_stop_thread = thread
+    thread.start()
+    _time.sleep(0.05)
+    assert thread.is_alive(), "service loop should park on the wake event"
+
+    kb.reset_scope_stop_service_for_tests()
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive(), "reset must stop a lingering service thread"
+    assert kb._scope_stop_thread is None
+
+
+def test_lingering_service_thread_does_not_drain_a_later_queue(conn):
+    """The isolation failure the reset fix closes, end to end: a service
+    thread spawned by an earlier file (parked on the wake event) must
+    not consume a queue that a later file flushes after commit."""
+    import threading
+    import time as _time
+
+    thread = threading.Thread(
+        target=kb._scope_stop_service_loop, name="lingering-drain",
+        daemon=True,
+    )
+    kb._scope_stop_thread = thread
+    thread.start()
+    _time.sleep(0.05)
+    # What every test file's reset-using fixture does between files.
+    kb.reset_scope_stop_service_for_tests()
+
+    with kb.write_txn(conn):
+        assert kb.request_worker_scope_stop("late.scope", conn=conn) is False
+        assert _queued() == set()
+    # The flushed intent stays on the queue: nothing drains it out from
+    # under the assertion.
+    assert _queued() == {"late.scope"}
+    kb.reset_scope_stop_service_for_tests()

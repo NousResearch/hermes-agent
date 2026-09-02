@@ -9383,6 +9383,12 @@ _scope_stop_attempts: dict[str, int] = {}
 _scope_stop_warned: set[str] = set()
 _scope_stop_wake = threading.Event()
 _scope_stop_thread: Optional[threading.Thread] = None
+# Set only by reset_scope_stop_service_for_tests: the service loop
+# exits at its next wake instead of draining, so a reset kills the
+# thread rather than leaving a daemon that later tests' flushes would
+# race (a lingering thread drained queues out from under assertions in
+# whichever test file ran next).
+_scope_stop_service_stopping = threading.Event()
 
 # Pass 8 (AD): the scope audit's per-unit synchronous bus work (orphan
 # liveness probe, terminal-unit collect) runs under the dispatch lock;
@@ -9398,9 +9404,11 @@ _scope_audit_first_seen: dict[str, float] = {}
 
 
 def _scope_stop_service_loop() -> None:
-    while True:
+    while not _scope_stop_service_stopping.is_set():
         _scope_stop_wake.wait()
         _scope_stop_wake.clear()
+        if _scope_stop_service_stopping.is_set():
+            return
         _drain_scope_stop_requests()
 
 
@@ -9485,6 +9493,7 @@ def _ensure_scope_stop_thread() -> None:
     global _scope_stop_thread
     if _scope_stop_thread is not None and _scope_stop_thread.is_alive():
         return
+    _scope_stop_service_stopping.clear()
     _scope_stop_thread = threading.Thread(
         target=_scope_stop_service_loop,
         name=SCOPE_STOP_SERVICE_THREAD_NAME,
@@ -9632,9 +9641,16 @@ def join_scope_stop_service(timeout: float) -> list[str]:
 
 
 def reset_scope_stop_service_for_tests() -> None:
-    """Drop all service state. Production unit names are unique per
-    attempt so state never needs resetting there; tests reuse ids."""
-    global _scope_stop_inflight
+    """Drop all service state AND stop a running service thread.
+
+    Production unit names are unique per attempt so state never needs
+    resetting there; tests reuse ids. The thread stop matters as much
+    as the state clear: a daemon left alive by an earlier test file
+    waits on the same wake event, so any later file that flushes a
+    queue without its own thread races that daemon's drain — the
+    assertions see an empty queue the moment it fills (pass 8b, found
+    in the AE single-process run)."""
+    global _scope_stop_inflight, _scope_stop_thread
     with _scope_stop_lock:
         _scope_stop_pending.clear()
         _scope_stop_confirmed.clear()
@@ -9642,6 +9658,14 @@ def reset_scope_stop_service_for_tests() -> None:
         _scope_stop_warned.clear()
         _scope_stop_inflight = None
     _scope_audit_first_seen.clear()
+    thread = _scope_stop_thread
+    _scope_stop_thread = None
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        _scope_stop_service_stopping.set()
+        _scope_stop_wake.set()
+        thread.join(timeout=2.0)
+        _scope_stop_service_stopping.clear()
+    _scope_stop_wake.clear()
 
 
 def _mark_run_scope_stopping(

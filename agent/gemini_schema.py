@@ -47,6 +47,19 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return {}
 
+    # ``oneOf`` / ``allOf`` are not in Gemini's Schema subset, so the allow-list
+    # below would drop them and leave the node with nothing at all. ``anyOf``
+    # IS supported and every branch is already present, so translate rather
+    # than discard. ``oneOf`` is stricter than ``anyOf`` (exactly-one vs
+    # at-least-one), but a widened constraint is far better than a node Gemini
+    # rejects outright.
+    if "anyOf" not in schema:
+        for alias in ("oneOf", "allOf"):
+            branches = schema.get(alias)
+            if isinstance(branches, list) and branches:
+                schema = {**schema, "anyOf": branches}
+                break
+
     cleaned: Dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
@@ -127,6 +140,20 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
             cleaned.pop("required", None)
         elif len(valid_required) != len(required_val):
             cleaned["required"] = valid_required
+
+    # Never emit a Schema node with no type and no anyOf. A property whose whole
+    # definition is an unsupported keyword (``$ref`` to a ``$defs`` entry, a
+    # ``const``-only node) loses every key to the allow-list above and collapses
+    # to ``{}``. Gemini's FunctionDeclaration validator rejects a typeless
+    # Schema, and one bad property fails the ENTIRE GenerateContentRequest with
+    # HTTP 400 before a single token is produced -- the same all-or-nothing
+    # failure the ``required``-pruning below exists to avoid.
+    #
+    # Degrade to a permissive object instead, so the tool stays callable with a
+    # loosely-typed parameter rather than taking the whole request down.
+    if not cleaned or ("type" not in cleaned and "anyOf" not in cleaned):
+        cleaned.setdefault("type", "object")
+        cleaned.setdefault("properties", {})
 
     return cleaned
 

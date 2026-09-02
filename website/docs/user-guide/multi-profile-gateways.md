@@ -278,6 +278,12 @@ gateway:
       platform: telegram
       chat_id: "-1001234567890"
       profile: tg-profile
+
+    # A WhatsApp DM — write the phone number; JID and LID forms also match
+    - name: owner-whatsapp
+      platform: whatsapp
+      chat_id: "15551234567"
+      profile: owner
 ```
 
 Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
@@ -286,6 +292,18 @@ matches threads/forum posts whose parent is that channel. Messages that match
 no route stay on the default/active profile. The routed profile gets the full
 per-profile isolation described above (config, skills, memory, credentials,
 session namespace). Routing works on every platform adapter, not just Discord.
+
+On WhatsApp and WhatsApp Cloud, a `chat_id` route matches across user-identity
+forms: a bare phone number (`15551234567`), a JID
+(`15551234567@s.whatsapp.net`), and a LID (`…@lid`) all refer to the same
+person once the bridge has paired them (the same canonicalization session keys
+and adapter allowlists already use). You can put the phone number in
+`profile_routes` and inbound DMs still match whether WhatsApp delivers a JID or
+a LID. Without a LID mapping yet, the number form still matches a JID (the
+suffix is stripped) but cannot resolve an unknown LID — that inbound falls
+through to the default profile until the mapping appears. Group chats
+(`…@g.us`) are not sender identities and still match exactly. Telegram numeric
+ids are unchanged.
 
 `profile_routes` requires `gateway.multiplex_profiles: true`; with
 multiplexing off the routes are ignored. If an explicit route matches but its

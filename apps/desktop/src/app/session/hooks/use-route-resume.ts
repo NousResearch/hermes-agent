@@ -132,13 +132,7 @@ export function useRouteResume({
         Boolean(cachedRuntime) &&
         cachedRuntime === activeSessionIdRef.current
 
-      // A leftover 4001 recovery (`requestSessionResume`) must not rebind a
-      // chat the user just deleted: startFreshSessionDraft nulls selection one
-      // render before the pathname flips /:sid -> /new. Honoring that queued
-      // resume re-selects the doomed id, the RPC 404s, and Desktop toasts
-      // "Resume failed / Session not found".
       const explicitlyRequested =
-        !freshDraftReady &&
         sessionResumeRequest?.sessionId === routedSessionId &&
         sessionResumeRequest.sequence > handledResumeRequestRef.current
 

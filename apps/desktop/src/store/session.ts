@@ -14,6 +14,7 @@ import { persistBoolean, persistString, readJson, storedBoolean, storedString, w
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -1280,6 +1281,16 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   const id = sessionId.trim()
 
   if (!id) {
+    return
+  }
+
+  // A chat on its way out must never be re-selected. The push path
+  // (markRuntimeGone) and the RPC seam both queue a resume off a 4001, and an
+  // idle reap can land one in the same tick as a delete — that queued request
+  // then resumes a tombstoned id, 404s, and toasts "Resume failed / Session
+  // not found" for a chat the user deliberately removed. Filtering at the
+  // producer means no consumer has to re-derive "is this id doomed".
+  if (isSessionRemovalPending(id)) {
     return
   }
 

@@ -1059,8 +1059,23 @@ def _detect_container() -> bool:
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True
-    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo.
-    return _proc_file_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo — but ONLY on
+    # the root ("/") mount line. A host that merely *runs* containers exposes every container's
+    # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
+    # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
+    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+
+
+def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                fields = line.split()  # mountinfo field 5 (index 4) is the mount point
+                if len(fields) >= 5 and fields[4] == "/":
+                    return any(marker in line for marker in markers)
+    except OSError:
+        pass
+    return False
 
 
 def get_config_path() -> Path:

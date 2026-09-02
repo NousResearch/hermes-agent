@@ -8623,8 +8623,10 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
       process-group kill), the required no-op on macOS/containers.
     * ``systemd-scope`` — scope only when the real
       ``systemd-run --user --scope`` probe passes; on failure warn once
-      and spawn unisolated (a board that cannot spawn is worse than an
-      unisolated worker).
+      and REFUSE the spawn (finding H): the spawn path raises so the
+      dispatcher records spawn_failed — an operator who pinned strict
+      chose "no worker" over "unisolated worker". Only auto may fall
+      back to the unisolated spawn.
     * ``auto`` (default) — scope when the probe passes, silently fall
       back otherwise.
 
@@ -8645,7 +8647,8 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
             _log.warning(
                 "kanban: worker_isolation=systemd-scope requested but "
                 "systemd-run --user --scope is unavailable on this host — "
-                "spawning workers unisolated"
+                "worker spawns will be refused (spawn_failed); set "
+                "worker_isolation: auto to allow unisolated fallback"
             )
     return available
 
@@ -12670,11 +12673,27 @@ def _default_spawn(
     # still applies inside the scope (the systemd-run wrapper execs the
     # command; the scope, not the session, is what isolates the cgroup).
     # Unavailable systemd / isolation 'none' leaves ``cmd`` byte-identical
-    # to today.
+    # to today. STRICT mode (worker_isolation: systemd-scope) never
+    # degrades: an unusable probe or a vanished systemd-run fails the
+    # spawn loudly as spawn_failed instead (Gate B review, finding H) —
+    # an operator who pinned strict chose "no worker" over "unisolated
+    # worker", and only 'auto' may fall back to the plain spawn.
     launch_cmd = cmd
     scope_unit = ""
     spawn_err_path = None
-    if _kanban_worker_scope_enabled():
+    strict_scope = _resolve_worker_isolation() == "systemd-scope"
+    scope_enabled = _kanban_worker_scope_enabled()
+    if strict_scope and not scope_enabled:
+        _default_spawn._last_spawn_error = (
+            f"worker_isolation=systemd-scope is configured but "
+            f"systemd-run --user --scope is unavailable on this host — "
+            f"refusing to spawn task {task.id} without isolation "
+            f"(set worker_isolation: auto to allow the unisolated "
+            f"fallback)"
+        )
+        log_f.close()
+        raise RuntimeError(_default_spawn._last_spawn_error)
+    if scope_enabled:
         from tools.process_registry import _build_systemd_scope_argv
 
         scope_unit = _kanban_worker_scope_unit(task.id, task.current_run_id)
@@ -12709,8 +12728,20 @@ def _default_spawn(
             spawn_err_path = log_dir / f"{task.id}.spawn.err"
         else:
             # systemd-run vanished between the availability probe and the
-            # build — the helper returned the argv unwrapped. Stay honest:
-            # no scope was created, so record none.
+            # build — the helper returned the argv unwrapped. In strict
+            # mode that is the same refusal as a failed probe (finding H):
+            # the operator pinned systemd-scope, so "no worker" beats an
+            # unisolated worker. Only auto continues, honestly recording
+            # that no scope was created.
+            if strict_scope:
+                _default_spawn._last_spawn_error = (
+                    f"worker_isolation=systemd-scope is configured but "
+                    f"systemd-run disappeared between the availability "
+                    f"probe and the launch of task {task.id} — refusing "
+                    f"to spawn without isolation"
+                )
+                log_f.close()
+                raise RuntimeError(_default_spawn._last_spawn_error)
             launch_cmd = cmd
             scope_unit = ""
     if scope_unit:

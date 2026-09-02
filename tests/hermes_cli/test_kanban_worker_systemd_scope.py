@@ -843,15 +843,60 @@ def test_spawn_scope_unit_is_per_call_not_global(monkeypatch, tmp_path):
     assert not hasattr(kb._default_spawn, "_last_scope_unit")
 
 
-def test_forced_scope_without_systemd_still_spawns(monkeypatch, tmp_path):
-    """'systemd-scope' + failed probe = loud warning, plain spawn. A board
-    that cannot spawn at all would be worse than an unisolated worker."""
-    cmd, pid = _capture_worker_argv(
-        monkeypatch, tmp_path, "  worker_isolation: systemd-scope\n",
-        systemd_available=False,
-    )
-    _assert_plain_argv_shape(cmd)
-    assert pid.scope_unit == ""
+def test_forced_scope_without_systemd_refuses_spawn(monkeypatch, tmp_path):
+    """H: 'systemd-scope' + unusable probe = REFUSED spawn, never a silent
+    unisolated fallback. The operator pinned strict — "no worker" beats an
+    unisolated worker; only 'auto' may fall back. The refusal raises with
+    the operator-facing reason BEFORE any process is launched."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: systemd-scope\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_systemd_available(monkeypatch, False)
+    captured: dict = {}
+    _fake_popen_capture(monkeypatch, captured)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="worker_isolation=systemd-scope"):
+        kb._default_spawn(_make_task(), str(workspace))
+
+    # Nothing was ever launched — neither isolated nor unisolated.
+    assert captured == {}
+
+
+def test_forced_scope_vanished_binary_refuses_spawn(monkeypatch, tmp_path):
+    """H, second gap: the probe passed but systemd-run disappeared from
+    PATH before the argv build, so the builder returned the argv
+    unwrapped. Strict mode refuses here too — an unwrapped argv must not
+    become a silent unisolated spawn one code path away from the probe
+    refusal."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: systemd-scope\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_systemd_available(monkeypatch, True)
+    real_which = shutil.which
+
+    def gone_which(name, *args, **kwargs):
+        if name == "systemd-run":
+            return None
+        return real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", gone_which)
+    captured: dict = {}
+    _fake_popen_capture(monkeypatch, captured)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="disappeared between"):
+        kb._default_spawn(_make_task(), str(workspace))
+
+    assert captured == {}
 
 
 # ---------------------------------------------------------------------------
@@ -2010,6 +2055,50 @@ def test_spawn_failure_systemd_scope_mode_fails_loudly(shims, conn, kanban_home)
     run = kb.latest_run(conn, tid)
     assert run is not None and run.outcome == "spawn_failed"
     assert "user bus connection refused" in (run.error or "")
+
+
+def test_strict_probe_unavailable_surfaces_spawn_failed(
+    shims, conn, kanban_home, monkeypatch,
+):
+    """H: the strict-mode probe refusal must reach the TASK, not just the
+    dispatcher log. With the probe itself unusable (macOS / user bus gone)
+    the spawn refuses BEFORE launching anything; dispatch_once records
+    spawn_failed with the operator-facing reason on the row and the run,
+    and nothing is ever spawned."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: systemd-scope\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    monkeypatch.setattr(
+        "tools.process_registry._systemd_run_user_scope_available",
+        lambda: False,
+    )
+    tid = kb.create_task(conn, title="no bus", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+
+    assert result.spawned == []
+    assert result.auto_blocked == []
+    row = conn.execute(
+        "SELECT status, consecutive_failures, last_failure_error, "
+        "       worker_pid, worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["consecutive_failures"] == 1
+    assert "worker_isolation=systemd-scope is configured but" in (
+        row["last_failure_error"] or ""
+    )
+    assert "refusing to spawn task" in (row["last_failure_error"] or "")
+    assert row["worker_pid"] is None
+    assert row["worker_scope"] is None
+    run = kb.latest_run(conn, tid)
+    assert run is not None and run.outcome == "spawn_failed"
+    assert "refusing to spawn task" in (run.error or "")
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND "
+        "kind='spawn_failed' ORDER BY id DESC LIMIT 1", (tid,),
+    ).fetchone()
+    assert event is not None
+    assert "refusing to spawn task" in (event["payload"] or "")
 
 
 def test_fast_worker_exit_is_not_a_launch_failure(

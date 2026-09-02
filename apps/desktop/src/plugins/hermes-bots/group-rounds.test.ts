@@ -236,6 +236,49 @@ describe('round lifecycle', () => {
   })
 })
 
+describe('concurrent rounds', () => {
+  it('runs every responder of a round at once, so a round takes as long as its slowest member', async () => {
+    // Each turn holds until ALL three members have submitted: under the old
+    // serial loop the first member's turn could never finish (nobody else
+    // submits until it does) and this would deadlock at the drain bound.
+    let submitted = 0
+    const release: Array<() => void> = []
+
+    const room = await loadRoom({
+      turn: ({ profile, prompt }) =>
+        new Promise<string>(resolve => {
+          submitted += 1
+          // Round 1 (the user's question is in the delta): speak. Later
+          // rounds (only sibling replies in the delta): pass.
+          release.push(() => resolve(prompt.includes('status?') ? `${profile} here` : '(pass)'))
+
+          if (submitted % 3 === 0) {
+            for (const fn of release.splice(0)) {
+              fn()
+            }
+          }
+        })
+    })
+
+    room.rounds.sendToGroupChat('Fast', MEMBERS, 'everyone, status?')
+    await settle(room, 'Fast')
+
+    const replies = log(room, 'Fast').filter(entry => entry.from.kind === 'member')
+
+    expect(replies.map(entry => entry.from.name).sort()).toEqual(['builder', 'ops', 'research'])
+    // Round 2 delivers every sibling's round-1 reply to each member exactly
+    // once — concurrent commits never eat or duplicate each other's deltas —
+    // and never echoes a member's own reply back to it.
+    expect(room.gateway.calls).toHaveLength(6)
+
+    for (const call of room.gateway.calls.slice(3)) {
+      for (const name of MEMBERS.map(member => member.name)) {
+        expect(call.prompt.split(`${name} here`)).toHaveLength(name === call.profile ? 1 : 2)
+      }
+    }
+  })
+})
+
 describe('per-member delta', () => {
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
@@ -726,7 +769,7 @@ describe('stopGroupThread (#91868/#94569)', () => {
         members: STOP_MEMBERS,
         running: true,
         sessions: { alpha: 'live-alpha-sid' },
-        turn,
+        turns: turn ? { [turn]: turn } : {},
         watermarks: {}
       }
     } as unknown as Record<string, GroupChat>)
@@ -742,7 +785,7 @@ describe('stopGroupThread (#91868/#94569)', () => {
 
     expect(state.epoch).toBe(4)
     expect(state.running).toBe(false)
-    expect(state.turn).toBeNull()
+    expect(state.turns).toEqual({})
 
     for (const member of STOP_MEMBERS) {
       expect(state.holds?.[member.name]).toBeTruthy()
@@ -758,7 +801,7 @@ describe('stopGroupThread (#91868/#94569)', () => {
 
     const interrupts = room.gateway.rpcFor('session.interrupt')
 
-    // Exactly one — the serial loop has one member in flight.
+    // Exactly one — only alpha is mid-turn in the seeded room.
     expect(interrupts).toHaveLength(1)
     expect(interrupts[0].params.session_id).toBe('live-alpha-sid')
   })

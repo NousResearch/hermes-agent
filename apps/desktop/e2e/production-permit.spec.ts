@@ -104,7 +104,9 @@ test('Electron main signs an exact permit and Rust accepts the isolated lifecycl
       '--socket',
       socketPath,
       '--production-verifier-file',
-      enrollmentPath
+      enrollmentPath,
+      '--production-write-root',
+      ARES_ROOT
     ],
     { cwd: RUST_ROOT, stdio: 'pipe' }
   )

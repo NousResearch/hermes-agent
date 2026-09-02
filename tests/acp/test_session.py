@@ -111,6 +111,91 @@ class TestCreateSession:
         assert state.agent.session_cwd == "/tmp/project"
 
 
+    def test_make_agent_applies_configured_fast_mode(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            model = "gpt-5.4"
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "agent": {"service_tier": "fast"},
+                "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": requested},
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_args: None)
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.fast_mode is True
+        assert captured["service_tier"] == "priority"
+        assert captured["request_overrides"] == {"service_tier": "priority"}
+
+
+    @pytest.mark.parametrize("configured_value", ["fast", "priority", "on"])
+    def test_configured_fast_mode_matches_cli_aliases(self, configured_value):
+        assert acp_session.configured_fast_mode(
+            {"agent": {"service_tier": configured_value}}
+        )
+
+
+    def test_fast_mode_persists_and_forks(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+
+        def factory():
+            return SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                service_tier=None,
+                request_overrides=None,
+            )
+
+        manager = SessionManager(agent_factory=factory, db=db)
+        state = manager.create_session(cwd="/tmp/project")
+        state.fast_mode = True
+        acp_session.apply_fast_mode_to_agent(state.agent, state.model, True)
+        manager.save_session(state.session_id)
+
+        forked = manager.fork_session(state.session_id, cwd="/tmp/fork")
+        assert forked is not None
+        assert forked.fast_mode is True
+        assert forked.agent.request_overrides == {"service_tier": "priority"}
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+        restored = manager.get_session(state.session_id)
+
+        assert restored is not None
+        assert restored.fast_mode is True
+        assert restored.agent.request_overrides == {"service_tier": "priority"}
+
+
+    def test_fast_mode_uses_provider_specific_overrides(self):
+        agent = SimpleNamespace(
+            service_tier=None,
+            request_overrides={"custom": "kept"},
+        )
+
+        acp_session.apply_fast_mode_to_agent(agent, "claude-opus-4-6", True)
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"custom": "kept", "speed": "fast"}
+        assert acp_session._agent_fast_mode_enabled(agent) is True
+
+        acp_session.apply_fast_mode_to_agent(agent, "claude-opus-4-6", False)
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"custom": "kept"}
+
+
 
 
 # ---------------------------------------------------------------------------

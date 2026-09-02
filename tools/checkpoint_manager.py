@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -2202,6 +2203,20 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
+def _rmtree_onerror(func, path, exc_info) -> None:
+    """Retry removal after clearing Windows read-only Git object bits."""
+    error = exc_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    # Deleting a child also requires its parent directory to be writable.
+    for candidate in (os.path.dirname(path), path):
+        try:
+            os.chmod(candidate, stat.S_IRWXU)
+        except OSError:
+            pass
+    func(path)
+
+
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
 
@@ -2213,7 +2228,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        shutil.rmtree(base, onerror=_rmtree_onerror)
         out["bytes_freed"] = size
         out["deleted"] = True
     except OSError as exc:
@@ -2235,7 +2250,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
             continue
         try:
             size = _dir_size_bytes(child)
-            shutil.rmtree(child)
+            shutil.rmtree(child, onerror=_rmtree_onerror)
             out["bytes_freed"] += size
             out["deleted"] += 1
         except OSError as exc:

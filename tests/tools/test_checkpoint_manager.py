@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import time
 import pytest
@@ -650,7 +651,9 @@ class TestGitEnvIsolation:
         env = _git_env(
             store, str(work), index_file=store / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        assert Path(env["GIT_INDEX_FILE"]).resolve() == (
+            store / "indexes" / "abc"
+        ).resolve()
 
         # ~ in the work tree is expanded.
         tilde_work = fake_home / "work"
@@ -1137,6 +1140,36 @@ class TestClearFunctions:
         assert not legacy.exists()
         # Store preserved
         assert (base / "store" / "HEAD").exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows read-only semantics")
+    def test_clear_all_removes_read_only_windows_file(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        read_only = base / "store" / "objects" / "aa" / "object"
+        read_only.parent.mkdir(parents=True)
+        read_only.write_bytes(b"checkpoint")
+        read_only.chmod(stat.S_IREAD)
+
+        result = clear_all(checkpoint_base=base)
+
+        assert result["deleted"] is True
+        assert not base.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows read-only semantics")
+    def test_clear_legacy_removes_read_only_windows_file(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        legacy = base / "legacy-20200101-000000"
+        read_only = legacy / "object"
+        read_only.parent.mkdir(parents=True)
+        read_only.write_bytes(b"checkpoint")
+        read_only.chmod(stat.S_IREAD)
+        store = base / "store"
+        store.mkdir()
+
+        result = clear_legacy(checkpoint_base=base)
+
+        assert result["deleted"] == 1
+        assert not legacy.exists()
+        assert store.exists()
 
 
 # =========================================================================

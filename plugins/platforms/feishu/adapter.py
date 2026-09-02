@@ -4768,9 +4768,17 @@ class FeishuAdapter(BasePlatformAdapter):
         # same way #83906 did for the other gateway persist paths. The lock
         # keeps flushes in mutation order (the snapshot inside the worker is
         # taken under _dedup_lock, but the write itself is not).
-        async with self._dedup_persist_lock:
+        async with self._dedup_persist_lock_or_create():
             await asyncio.to_thread(self._persist_seen_message_ids)
         return False
+
+    def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
+        # Tests build bare adapters via object.__new__ and install dedup state
+        # by hand; create the lock lazily so those fixtures keep working.
+        lock = getattr(self, "_dedup_persist_lock", None)
+        if lock is None:
+            lock = self._dedup_persist_lock = asyncio.Lock()
+        return lock
 
     # =========================================================================
     # Outbound payload construction and send pipeline

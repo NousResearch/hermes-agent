@@ -181,6 +181,47 @@ class TestStartRun:
                         break
                     await asyncio.sleep(0.05)
 
+    @pytest.mark.asyncio
+    async def test_idempotent_retry_bypasses_concurrency_limit(self, adapter):
+        adapter._max_concurrent_runs = 1
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "same-active-run"},
+                )
+                first_data = await first.json()
+                assert first.status == 202
+                assert agent_ready.wait(timeout=3.0)
+
+                retry = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "same-active-run"},
+                )
+                retry_data = await retry.json()
+                assert retry.status == 202
+                assert retry_data["run_id"] == first_data["run_id"]
+
+                new_run = await cli.post(
+                    "/v1/runs",
+                    json={"input": "different"},
+                    headers={"Idempotency-Key": "different-active-run"},
+                )
+                assert new_run.status == 429
+                assert mock_create.call_count == 1
+
+                mock_agent.interrupt("finish test")
+                for _ in range(40):
+                    if not adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
     def test_terminal_idempotency_outlives_caller_recovery_window(
         self, adapter, monkeypatch
     ):

@@ -6192,12 +6192,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 headers=response_headers,
             )
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         try:
             body = await request.json()
         except Exception:
@@ -6227,6 +6221,12 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if existing_run_id is not None:
                 return _started_response(existing_run_id)
+
+        # Exact retries reuse their existing run even while that run occupies
+        # the last concurrency slot. New work still observes the shared cap.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
 
         raw_input = body.get("input")
         if not raw_input:

@@ -8,13 +8,13 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-16T17:55:29.9636589Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
 elevenlabs = false
 setuptools = false
-huggingface-hub = false
+python-olm = false
 vercel = false
 pillow = false
 unpaddedbase64 = false
@@ -35,9 +35,9 @@ defusedxml = false
 ruff = false
 exa-py = false
 mcp = false
-python-olm = false
 firecrawl-anydoc = false
 nemo-relay = false
+huggingface-hub = false
 
 [manifest]
 overrides = [

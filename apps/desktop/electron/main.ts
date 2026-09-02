@@ -12346,6 +12346,15 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
   const poolKey = opts.poolKey || profile
 
+  // Extra `--profile default` backends race the named-profile serve + gateway
+  // on xAI's single-use refresh token (symlinked auth.json). Skip spawning
+  // default while a named profile is pinned as Desktop's primary.
+  const activeProfile = readActiveDesktopProfile()
+  if (String(profile).trim() === 'default' && activeProfile && activeProfile !== 'default') {
+    rememberLog(`Skipping extra default backend (active profile is "${activeProfile}")`)
+    return await startHermes()
+  }
+
   await reapOrphanedBackendsOnce()
   profileDeletionGate.assertCanStart(profile)
 

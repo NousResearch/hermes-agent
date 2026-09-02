@@ -5361,11 +5361,13 @@ def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str
 
 def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
     tokens = state.get("tokens") if isinstance(state, dict) else None
-    return (
-        isinstance(tokens, dict)
-        and bool(str(tokens.get("access_token", "") or "").strip())
-        and bool(str(tokens.get("refresh_token", "") or "").strip())
-    )
+    if not isinstance(tokens, dict):
+        return False
+    access = str(tokens.get("access_token", "") or "").strip()
+    refresh = str(tokens.get("refresh_token", "") or "").strip()
+    if access and refresh:
+        return True
+    return bool(access)
 
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
@@ -5401,13 +5403,6 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             "xAI OAuth state is missing access_token. Re-authenticate with `hermes model`.",
             provider="xai-oauth",
             code="xai_auth_missing_access_token",
-            relogin_required=True,
-        )
-    if not refresh_token:
-        raise AuthError(
-            "xAI OAuth state is missing refresh_token. Re-authenticate with `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_refresh_token",
             relogin_required=True,
         )
     return {
@@ -5905,27 +5900,18 @@ def _adopt_or_quarantine_xai_oauth_refresh_failure(
             )
             return peer_tokens
 
-        q_state = _load_provider_state(store, "xai-oauth") or {}
-        q_tokens = dict(q_state.get("tokens") or {})
-        store_refresh = str(q_tokens.get("refresh_token") or "").strip()
-        if store_refresh and store_refresh != spent_refresh:
-            return None
-        q_tokens.pop("access_token", None)
-        q_tokens.pop("refresh_token", None)
-        q_state["tokens"] = q_tokens
-        q_state["last_auth_error"] = {
-            "provider": "xai-oauth",
-            "code": exc.code or "xai_refresh_failed",
-            "message": str(exc),
-            "reason": "runtime_refresh_failure",
-            "relogin_required": True,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
-        _store_provider_state(store, "xai-oauth", q_state, set_active=False)
-        _save_auth_store(store)
+        # Never pop the shared grant. Desktop + gateway + extra `--profile default`
+        # backends race xAI's single-use refresh; quarantine was deleting a still
+        # usable access JWT and taking CLI down with "No xAI OAuth credentials stored".
+        if peer_access:
+            logger.warning(
+                "xAI OAuth refresh failed (%s); keeping stored tokens (access present)",
+                getattr(exc, "code", None),
+            )
+            return peer_tokens
     except Exception as save_exc:
         logger.debug(
-            "xAI OAuth: failed to persist quarantined state: %s", save_exc,
+            "xAI OAuth: failed to inspect store after refresh failure: %s", save_exc,
         )
     return None
 

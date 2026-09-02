@@ -408,6 +408,24 @@ def test_list_triage_ids_excludes_auto_decomposer_created(kanban_home):
     assert decision not in ids         # auto-decomposer-parked decision excluded
 
 
+def test_list_triage_ids_excludes_loop_breaker_triage(kanban_home):
+    """Charter §6 (2026-09-03): a card that block_task routed to triage because
+    it re-blocked for the same kind (the loop breaker) is parked for a HUMAN.
+    The auto-decomposer must not pick it up and re-run it without Richie.
+    """
+    with kb.connect() as conn:
+        looped = kb.create_task(conn, title="keeps failing", assignee="bob")
+        conn.execute(
+            "UPDATE tasks SET status='triage', block_kind='transient', block_recurrences=? WHERE id=?",
+            (kb.BLOCK_RECURRENCE_LIMIT, looped),
+        )
+        conn.commit()
+        fresh = kb.create_task(conn, title="user dropped", triage=True, assignee="someone")
+    ids = decomp.list_triage_ids()
+    assert fresh in ids
+    assert looped not in ids
+
+
 # --- AC1 (t_405f7f1f): decision-verb regex tightened => no over-match ---
 
 def test_decision_regex_matches_only_decision_shaped_titles():

@@ -446,6 +446,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--hold", action="store_true",
+                          help="Create the card HELD (blocked / operator_hold): nothing "
+                               "runs until a human `hermes kanban unblock`s it. Charter §5: "
+                               "every job parent and every deploy card is created this way.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -1726,7 +1730,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
-            initial_status=getattr(args, "initial_status", "running"),
+            initial_status=("blocked" if getattr(args, "hold", False)
+                            else getattr(args, "initial_status", "running")),
+            block_kind=("operator_hold" if getattr(args, "hold", False) else None),
             _assignee_parked=_parked,
         )
         task = kb.get_task(conn, task_id)

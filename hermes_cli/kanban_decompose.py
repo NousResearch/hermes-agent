@@ -622,4 +622,12 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
         # is supplied. Filter it like the auto-decomposer author so such triage
         # can still be re-decomposed instead of being silently stranded.
         and (row.created_by or "") != "decomposer"
+        # 2026-09-03 (charter §6): a card that block_task routed to triage as a
+        # LOOP BREAKER (same-kind re-block, block_recurrences >= limit) is parked
+        # for a HUMAN decision. Auto-decomposing it would hand the escalation
+        # ceiling to the decomposer model and re-run the card without Richie.
+        and not (
+            (row.block_kind or "") != ""
+            and int(row.block_recurrences or 0) >= kb.BLOCK_RECURRENCE_LIMIT
+        )
     ]

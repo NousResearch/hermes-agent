@@ -122,7 +122,11 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "cost_cap"}
+# ``operator_hold`` (2026-09-03, charter §5/§8): Richie's own deliberate pause —
+# a parent awaiting release, or a deploy card awaiting approval. Nothing
+# automatic clears it: not the unblocker, not the escalator, not the
+# auto-decomposer. Only `hermes kanban unblock` by a human.
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "cost_cap", "operator_hold"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -3408,6 +3412,7 @@ def create_task(
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
+    block_kind: Optional[str] = None,
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -3466,6 +3471,11 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if block_kind is not None:
+        if initial_status != "blocked":
+            raise ValueError("block_kind requires initial_status='blocked'")
+        if block_kind not in VALID_BLOCK_KINDS:
+            raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)}")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -3819,6 +3829,18 @@ def create_task(
                 # still hears about a child that BLOCKs, not just the final
                 # fan-in) is handled by the single-owner helper below —
                 # _inherit_notify_subs copies every routing/delivery column.
+                if task_status == "blocked" and block_kind:
+                    # Typed hold at creation: the kind is what escalation-watch,
+                    # fleet-preflight and stalled-card-watch key on, and the
+                    # `blocked` event is what dates the hold.
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = ? WHERE id = ?", (block_kind, task_id)
+                    )
+                    _append_event(
+                        conn, task_id, "blocked",
+                        {"reason": f"created with block_kind={block_kind}", "kind": block_kind,
+                         "recurrences": 0, "source_status": "created"},
+                    )
                 _append_event(
                     conn,
                     task_id,
@@ -4753,6 +4775,14 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     DB manipulation) — preserves the pre-#28712 auto-recover semantics
     for that path.
     """
+    # operator_hold (2026-09-03) is sticky by definition — even when it was set
+    # by hand in SQL with no event row (as the 09-02 park scripts did), it must
+    # never auto-promote. Only a human unblock, which clears the status, ends it.
+    kind_row = conn.execute(
+        "SELECT block_kind FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if kind_row and kind_row["block_kind"] == "operator_hold":
+        return True
     row = conn.execute(
         "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
@@ -5647,9 +5677,11 @@ def _maybe_create_deploy_followup(
     incident (2026-08-30/31, 9 more live duplicates while approved-unmerged).
 
     Close the gap: create exactly one follow-up card that merges the branch to
-    ``main`` and restarts the gateway. The card is idempotency-keyed on the
-    approved task id, so re-completion of the same card cannot spawn a second
-    deploy card.
+    the parked branch and restarts the gateway. The card is idempotency-keyed on
+    the approved task id, so re-completion of the same card cannot spawn a second
+    deploy card. Since 2026-09-03 (charter §8) it is created HELD
+    (``blocked`` / ``operator_hold``): approval precedes deploy, and only Richie
+    releases it.
 
     Returns the new card id, or ``None`` when no follow-up is warranted.
     """
@@ -5695,42 +5727,44 @@ def _maybe_create_deploy_followup(
 
     title = f"Deploy: merge {branch} + restart gateway"
     idempotency_key = f"deploy-followup:{task_id}"
+    tag = f"deploy/{task_id}"
     body = (
         f"Deploy the approved platform branch `{branch}` to the live gateway.\n\n"
+        f"**This card is HELD (`operator_hold`). Charter §8: approval precedes deploy on "
+        f"every repo; Rodge's approval is a review verdict, not a deploy trigger. Richie "
+        f"releases it with `hermes kanban unblock {{this card}}`. Do not unblock it yourself.**\n\n"
         f"The parent card `{task_id}` passed independent review, but approved is not "
         f"deployed: the branch sits on `{branch}` while the live gateway is still "
-        f"running old code. Deploy it now.\n\n"
-        f"Repo: `{repo}`\n\n"
+        f"running old code.\n\n"
+        f"Repo: `{repo}`  ·  target branch: `{deploy_branch}`  ·  tag on success: `{tag}`\n\n"
         "Steps:\n"
-        f"1. `cd {repo}`\n"
-        f"2. Ensure the branch is present: `git switch {deploy_branch}`, then `git fetch origin` "
-        f"and `git branch --list {branch}`. If the post-completion cleanup pruned the "
-        "local worktree branch, recreate it from the parent card's commit rather than "
-        "abandoning the deploy.\n"
+        f"1. `cd {repo}` and confirm the tree is clean (`git status --porcelain` empty) and "
+        f"HEAD is on `{deploy_branch}`. A dirty tree or wrong branch = stop and comment; "
+        "never merge onto a dirty tree (charter §11).\n"
+        f"2. Ensure the branch is present: `git fetch origin`, `git branch --list {branch}`. If the "
+        "post-completion cleanup pruned the local worktree branch, recreate it from the parent "
+        "card's commit rather than abandoning the deploy.\n"
         f"3. Capture which fleet-watchdog files this deploy touches: "
-        f"`git diff --name-only {deploy_branch}...{branch} -- scripts/fleet-watchdogs/ > /tmp/wd-changed-{task_id}`. "
-        "An empty file means no watchdog change in this merge.\n"
-        f"4. Merge: `git merge --no-edit {branch}` (fast-forward preferred: "
-        f"`git merge --ff-only {branch}`). On conflict, resolve and commit — never "
-        "force-merge or force-push.\n"
-        "5. Install changed fleet watchdog scripts into the live cron dir "
-        "(copy-on-merge only — no symlinks, the scheduler rejects them): "
-        f"`python3 scripts/fleet-watchdogs/install_fleet_watchdogs.py --dest ~/.hermes/scripts $(cat /tmp/wd-changed-{task_id})`. "
-        "The installer copies only files under `scripts/fleet-watchdogs/`, takes a "
-        "`.bak-predeploy-<ts>` of each replaced file, is idempotent, and never touches "
-        "anything outside the changed list. It prints exactly which files were "
-        "installed. If the capture file was empty this step does nothing.\n"
-        "6. Run the repo's focused tests for the changed area — e.g. "
+        f"`git diff --name-only {deploy_branch}...{branch} -- scripts/fleet-watchdogs/ > /tmp/wd-changed-{task_id}`.\n"
+        f"4. Merge as an ORDINARY MERGE COMMIT — `git merge --no-ff --no-edit {branch}` — never "
+        "squash on this repo: the fleet-integrity and pre-flight ancestry checks depend on the "
+        "sentinel commits staying ancestors of HEAD. On conflict: `git merge --abort`, comment, "
+        "stop. Never force-merge or force-push.\n"
+        f"5. Tag the merge: `git tag -a {tag} -m \"deploy {task_id}\"`. Rollback later is "
+        f"`~/.hermes/scripts/fleet-rollback.sh <change-id>` or a revert PR — never a force-push.\n"
+        "6. Install changed fleet watchdog scripts into the live cron dir (copy-on-merge only — "
+        f"no symlinks): `python3 scripts/fleet-watchdogs/install_fleet_watchdogs.py --dest ~/.hermes/scripts $(cat /tmp/wd-changed-{task_id})`. "
+        "Empty capture file = nothing to do.\n"
+        "7. Run the repo's focused tests for the changed area — e.g. "
         "`venv/bin/python -m pytest tests/hermes_cli/test_kanban_review_lifecycle_complete.py -q` "
-        "plus any test the parent card named in its handoff. If watchdog files changed, "
-        "also run `python3 scripts/fleet-watchdogs/test_install_fleet_watchdogs.py`.\n"
-        "7. Restart the live (root) gateway via the existing axel cron copy: "
-        "`bash ~/.hermes/profiles/axel/scripts/restart-root-gateway.sh`, then verify the "
-        "gateway shows a fresh start_time (launchctl labels: `ai.hermes.gateway` = root).\n"
-        f"8. Confirm `git log {deploy_branch}` includes the merge AND `ps`/`launchctl` shows the "
-        "gateway start_time changed since before this card ran. In the completion "
-        "summary, list exactly which watchdog files (if any) were installed into "
-        "~/.hermes/scripts.\n\n"
+        "plus any test the parent card named. If watchdog files changed, also run "
+        "`python3 scripts/fleet-watchdogs/test_install_fleet_watchdogs.py`.\n"
+        "8. Restart the live (root) gateway: `bash ~/.hermes/profiles/axel/scripts/restart-root-gateway.sh`, "
+        "then verify a fresh start_time.\n"
+        f"9. Prove it: `git merge-base --is-ancestor {branch} HEAD` exits 0, `git tag --list {tag}` "
+        "prints the tag, `python3 ~/.hermes/scripts/fleet-preflight.py` is GREEN, and the gateway "
+        "start_time changed. Put all four in the completion summary, plus which watchdog files "
+        "(if any) were installed.\n\n"
         "Comment or reopen this card if the merge, focused tests, or restart fails."
     )
     child_id = create_task(
@@ -5741,6 +5775,9 @@ def _maybe_create_deploy_followup(
         created_by=task.assignee,
         parents=[task_id],
         idempotency_key=idempotency_key,
+        # Charter §8 (2026-09-03): minted HELD; only Richie releases it.
+        initial_status="blocked",
+        block_kind="operator_hold",
     )
     _log.debug(
         "Created deploy follow-up %s for approved platform card %s (branch %s)",
@@ -8334,6 +8371,35 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _provision_worktree_toolchain(repo_root, target)
+
+
+# Toolchain directories that are git-ignored in every project this fleet runs
+# and therefore ABSENT from a fresh worktree. Charter §7 (2026-09-03): every
+# worktree is provisioned with the project's test runner before the worker
+# starts, so a missing `pytest` is an environment fault charged to Smith, never
+# to the card (a stdlib-only worktree venv false-bounced a good card twice on
+# 09-01). Symlinks only: zero network, zero tokens, and the worker sees exactly
+# the interpreter and node_modules the repo root already has.
+WORKTREE_TOOLCHAIN_DIRS = ("venv", ".venv", "node_modules")
+
+
+def _provision_worktree_toolchain(repo_root: Path, target: Path) -> list[str]:
+    """Symlink the repo root's toolchain dirs into a fresh worktree. Best effort."""
+    linked: list[str] = []
+    for name in WORKTREE_TOOLCHAIN_DIRS:
+        src = repo_root / name
+        dst = target / name
+        try:
+            if not src.is_dir() or dst.exists() or dst.is_symlink():
+                continue
+            dst.symlink_to(src, target_is_directory=True)
+            linked.append(name)
+        except Exception as exc:  # noqa: BLE001 — never fail a worktree for a convenience link
+            _log.debug("worktree toolchain link %s -> %s failed: %s", dst, src, exc)
+    if linked:
+        _log.info("worktree %s: linked toolchain %s from %s", target, ",".join(linked), repo_root)
+    return linked
 
 
 def _resolve_worktree_workspace(

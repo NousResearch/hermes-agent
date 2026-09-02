@@ -75,9 +75,17 @@ def test_approved_platform_card_creates_one_deploy_followup(conn):
     child_id = children[0]
     child = kb.get_task(conn, child_id)
     assert child is not None
-    assert child.status == "ready"  # parent is done, so deploy card is dispatch-ready
+    # Charter §8 (2026-09-03): approval precedes deploy. The card is minted HELD
+    # and only a human `kanban unblock` releases it — never dispatch-ready.
+    assert child.status == "blocked"
+    assert child.block_kind == "operator_hold"
     assert child.assignee == "default"
     assert child.title == "Deploy: merge wt/t_deploytest + restart gateway"
+    assert "operator_hold" in (child.body or "")
+    assert "--no-ff" in (child.body or "") and "deploy/" in (child.body or "")
+    kinds = [r[0] for r in conn.execute(
+        "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (child_id,)).fetchall()]
+    assert "blocked" in kinds  # dates the hold for escalation-watch / pre-flight
     assert "restart-root-gateway.sh" in (child.body or "")
     assert "git merge" in (child.body or "")
     assert task_id in (child.body or "")
@@ -169,3 +177,38 @@ def test_non_approval_completion_creates_nothing(conn):
         expected_run_id=review.current_run_id,
     )
     assert _children_of(conn, task_id) == []
+
+def test_create_task_hold_sets_block_kind_and_validates(conn):
+    """`block_kind` at creation (the --hold / hold=true path)."""
+    held = kb.create_task(conn, title="Job parent", assignee="jobsy",
+                          initial_status="blocked", block_kind="operator_hold")
+    t = kb.get_task(conn, held)
+    assert t.status == "blocked" and t.block_kind == "operator_hold"
+    with pytest.raises(ValueError):
+        kb.create_task(conn, title="bad", block_kind="operator_hold")  # needs initial_status=blocked
+    with pytest.raises(ValueError):
+        kb.create_task(conn, title="bad", initial_status="blocked", block_kind="not_a_kind")
+    # a held card is not promoted by parent-readiness recomputation — even one
+    # parked by hand in SQL with no `blocked` event row (the 09-02 park scripts)
+    kb.recompute_ready(conn)
+    assert kb.get_task(conn, held).status == "blocked"
+    by_hand = kb.create_task(conn, title="parked by SQL", assignee="jobsy")
+    conn.execute("UPDATE tasks SET status='blocked', block_kind='operator_hold' WHERE id=?", (by_hand,))
+    conn.commit()
+    kb.recompute_ready(conn)
+    assert kb.get_task(conn, by_hand).status == "blocked"
+    # and a human unblock releases it to the work pool
+    assert kb.unblock_task(conn, held)
+    assert kb.get_task(conn, held).status in ("ready", "todo")
+
+
+def test_worktree_toolchain_provisioning_symlinks_only_what_exists(tmp_path: Path):
+    repo = tmp_path / "repo"; (repo / "venv" / "bin").mkdir(parents=True)
+    (repo / "node_modules").mkdir()
+    wt = tmp_path / "repo" / ".worktrees" / "t_x"; wt.mkdir(parents=True)
+    linked = kb._provision_worktree_toolchain(repo, wt)
+    assert sorted(linked) == ["node_modules", "venv"]
+    assert (wt / "venv").is_symlink() and (wt / "venv" / "bin").is_dir()
+    assert not (wt / ".venv").exists()
+    # idempotent, and never clobbers an existing dir
+    assert kb._provision_worktree_toolchain(repo, wt) == []

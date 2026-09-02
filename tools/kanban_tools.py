@@ -2414,6 +2414,13 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    hold, bool_error = _parse_bool_arg(args, "hold")
+    if bool_error:
+        return tool_error(bool_error)
+    if hold:
+        # Charter §5 (2026-09-03): a held card is blocked/operator_hold from
+        # birth; only a human `kanban unblock` releases it.
+        initial_status = "blocked"
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -2489,6 +2496,7 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
+                block_kind=("operator_hold" if hold else None),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
                 _assignee_parked=_parked,
@@ -3285,6 +3293,14 @@ KANBAN_CREATE_SCHEMA = {
                     "omitted, inherits kanban.default_max_cost from config "
                     "(0.60 default) exactly like the CLI; an absent config "
                     "key leaves the card uncapped."
+                ),
+            },
+            "hold": {
+                "type": "boolean",
+                "description": (
+                    "Create the card HELD (blocked / operator_hold). Nothing runs "
+                    "until Richie unblocks it. Charter §5: every job parent and "
+                    "every deploy card is created held. Defaults to false."
                 ),
             },
             "initial_status": {

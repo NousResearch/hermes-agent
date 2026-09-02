@@ -1094,9 +1094,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Normalize markdown for DingTalk
         normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
 
+        title = next(
+            (line.strip() for line in normalized.splitlines() if line.strip()),
+            "Hermes",
+        )[:80]
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
+            "markdown": {"title": title, "text": normalized},
         }
 
         try:

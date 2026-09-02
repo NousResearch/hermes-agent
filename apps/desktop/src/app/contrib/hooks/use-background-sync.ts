@@ -649,6 +649,19 @@ export function useBackgroundSync({
     }
   }, [activeConnectionId, activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
+  // Reconnect backstop (#94779): turns that finished while the socket was
+  // down never replay their sessions.changed tick, so the open transcript
+  // stayed stale until the user reopened it. Pull one signature-gated tail on
+  // every (re)connect — a no-change read costs nothing. Keyed on the
+  // connection, not the session, so a plain session switch adds no read;
+  // messaging transcripts already refresh on open in their own effect below.
+  useEffect(() => {
+    if (gatewayState === 'open' && !activeIsMessaging && activeSessionId && activeStoredSessionId) {
+      requestActiveTranscriptRefresh(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- connect-scoped: session deps would fire on every switch
+  }, [activeConnectionId, activeGatewayProfile, gatewayState])
+
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session
   // registry immediately, then re-pull on every sessions.changed broadcast; a

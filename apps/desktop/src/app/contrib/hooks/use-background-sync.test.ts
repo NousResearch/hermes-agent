@@ -94,11 +94,13 @@ function useSyncHarness({
   activeIsMessaging = false,
   activeSessionId,
   activeStoredSessionId,
+  gatewayState = 'open',
   refreshActiveTranscript
 }: {
   activeIsMessaging?: boolean
   activeSessionId: string | null
   activeStoredSessionId: string | null
+  gatewayState?: string
   refreshActiveTranscript: () => Promise<void>
 }) {
   const updateSessionState: Parameters<typeof useBackgroundSync>[0]['updateSessionState'] = vi.fn(
@@ -116,7 +118,7 @@ function useSyncHarness({
     activeSessionId,
     activeStoredSessionId,
     freshDraftReady: false,
-    gatewayState: 'open',
+    gatewayState,
     refreshActiveTranscript,
     refreshCronJobs: vi.fn(),
     refreshCurrentModel: vi.fn(),
@@ -128,17 +130,23 @@ function useSyncHarness({
   })
 }
 
-function renderSync(
-  refreshActiveTranscript: () => Promise<void>,
-  options: { activeIsMessaging?: boolean; activeSessionId?: null | string; activeStoredSessionId?: null | string } = {}
-) {
-  return renderHook(() =>
-    useSyncHarness({
-      activeSessionId: ACTIVE_RUNTIME_ID,
-      activeStoredSessionId: ACTIVE_STORED_ID,
-      refreshActiveTranscript,
-      ...options
-    })
+type SyncOptions = {
+  activeIsMessaging?: boolean
+  activeSessionId?: null | string
+  activeStoredSessionId?: null | string
+  gatewayState?: string
+}
+
+function renderSync(refreshActiveTranscript: () => Promise<void>, options: SyncOptions = {}) {
+  return renderHook(
+    (props: SyncOptions) =>
+      useSyncHarness({
+        activeSessionId: ACTIVE_RUNTIME_ID,
+        activeStoredSessionId: ACTIVE_STORED_ID,
+        refreshActiveTranscript,
+        ...props
+      }),
+    { initialProps: options }
   )
 }
 
@@ -465,14 +473,15 @@ describe('active transcript refresh', () => {
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
-    expect(refresh).not.toHaveBeenCalled()
+    // Exactly the one connect-time pull (#94779) — no timer after it.
+    expect(refresh).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       vi.advanceTimersByTime(60_000)
       await Promise.resolve()
     })
 
-    expect(refresh).not.toHaveBeenCalled()
+    expect(refresh).toHaveBeenCalledTimes(1)
   })
 
   it('retains the existing periodic backstop for messaging sessions', async () => {
@@ -495,11 +504,12 @@ describe('active transcript refresh', () => {
 
   it('only defers an external tick while busy, then refreshes once after idle', async () => {
     $changeEventsAvailable.set(true)
-    setBusy(true)
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about busy transitions
 
+    act(() => setBusy(true))
     act(() => setBusy(false))
     expect(refresh).not.toHaveBeenCalled()
     act(() => setBusy(true))
@@ -514,12 +524,31 @@ describe('active transcript refresh', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
   })
 
+  it('pulls the open transcript once per (re)connect, not on session switches (#94779)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    const { rerender } = renderSync(refresh, { gatewayState: 'connecting' })
+    expect(refresh).not.toHaveBeenCalled()
+
+    rerender({ gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'closed' })
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces a burst of global session-change ticks', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about tick coalescing
 
     act(() => {
       for (let index = 0; index < 20; index += 1) {

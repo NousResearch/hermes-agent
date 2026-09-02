@@ -3366,13 +3366,14 @@ def format_process_notification(evt: dict) -> "str | None":
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
-    "name": "process",
+    "name": "process_manage",
     # Dieted (#95681): the action enum names the verbs; the description
     # keeps only non-obvious semantics. write-vs-submit is the tool's one
     # real trap (a lone \n on a Windows PTY is not a line terminator) —
     # that teaching gains emphasis rather than losing it.
     "description": (
-        "Manage background processes started with terminal(background=true). "
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
@@ -3487,7 +3488,7 @@ def _handle_process(args, **kw):
 
 
 registry.register(
-    name="process",
+    name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,

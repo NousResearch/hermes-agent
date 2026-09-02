@@ -7970,7 +7970,7 @@ def _todo_state_from_history(history) -> dict | None:
             if not isinstance(msg, dict):
                 continue
             for call in msg.get("tool_calls") or []:
-                if (call.get("function") or {}).get("name") == "todo":
+                if (call.get("function") or {}).get("name") in ("todo_list", "todo"):
                     cid = call.get("id")
                     if cid:
                         todo_call_ids.add(cid)
@@ -8055,7 +8055,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         if result_text:
             payload["result_text"] = result_text
     todo_state = None
-    if name == "todo":
+    if name in ("todo_list", "todo"):  # legacy alias: pre-rename replays
         todo_state = _normalize_todo_state(payload.get("result"))
         if todo_state is not None:
             payload.update(todo_state)
@@ -8081,7 +8081,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         _tool_progress_enabled(sid)
         or payload.get("inline_diff")
         or _tool_lifecycle_required_for_ui(name)
-        or name == "todo"
+        or name in ("todo_list", "todo")
     ):
         _emit("tool.complete", sid, payload)
     # Task state is application data, not optional tool-progress chrome. A

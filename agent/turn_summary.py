@@ -69,7 +69,7 @@ _VERB_GROUPS: dict[str, tuple[str, str, str]] = {
     "skill_view": ("read", "skill", "skills"),
     "skill_manage": ("updated", "skill", "skills"),
     "skills_list": ("listed skills", "time", "times"),
-    "todo": ("updated", "task list", "task lists"),
+    "todo_list": ("updated", "task list", "task lists"),
     "delegate_task": ("delegated", "task", "tasks"),
     "memory": ("updated", "memory", "memories"),
 }

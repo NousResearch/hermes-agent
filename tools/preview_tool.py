@@ -50,7 +50,7 @@ def _handle_preview(args, **kw):
 PREVIEW_SCHEMA = {
     "name": "desktop_preview",
     "description": (
-        "The preview pane beside the chat in the Hermes desktop app. open: show "
+        "Open, close, or read the preview pane beside the chat. open: show "
         "a web URL (bare domains fine), a localhost dev server, or a file path "
         "(HTML renders live) — opens for the current window only. close: dismiss "
         "the whole pane, or one tab via url. read: what the pane currently shows "

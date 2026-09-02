@@ -44,7 +44,7 @@ MUTATING_TOOL_NAMES = frozenset(
         "execute_code",
         "write_file",
         "patch",
-        "todo",
+        "todo_list",
         "memory",
         "skill_manage",
         "browser_click",
@@ -53,9 +53,9 @@ MUTATING_TOOL_NAMES = frozenset(
         "browser_scroll",
         "browser_navigate",
         "send_message",
-        "cronjob",
+        "cronjob_manage",
         "delegate_task",
-        "process",
+        "process_manage",
     }
 )
 
@@ -67,7 +67,7 @@ MUTATING_TOOL_NAMES = frozenset(
 # unannotated.
 STALL_GUARD_REPEATABLE_TOOLS = frozenset(
     {
-        "process",
+        "process_manage",
     }
 )
 

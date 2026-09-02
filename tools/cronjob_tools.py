@@ -1953,7 +1953,7 @@ def cronjob(
 
 
 CRONJOB_SCHEMA = {
-    "name": "cronjob",
+    "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
@@ -2103,7 +2103,7 @@ def _cronjob_handler(args, **kw):
 
 
 registry.register(
-    name="cronjob",
+    name="cronjob_manage",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
     handler=_cronjob_handler,

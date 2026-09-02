@@ -279,7 +279,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_press", "browser_get_images",
         "browser_vision", "browser_console"
     ],
-    "cronjob_tools": ["cronjob"],
+    "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
@@ -602,7 +602,7 @@ def _compute_tool_definitions(
     # Same session-level seam as the browser_exec gate above.
     if "delegate_task" in available_tool_names:
         blocked_present = [
-            t for t in ("clarify", "memory", "cronjob") if t in available_tool_names
+            t for t in ("clarify", "memory", "cronjob_manage") if t in available_tool_names
         ]
         if len(blocked_present) < 3:
             full_offvariant = "delegate_task, clarify, memory, or cronjob"
@@ -788,7 +788,18 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
+
+# Legacy tool-name aliases (2026-08 renames): accepted at every dispatch seam
+# (handle_function_call + both executors) so old sessions and saved prompts
+# keep working; schemas only advertise the new names.
+_LEGACY_TOOL_ALIASES = {
+    "todo": "todo_list",
+    "cronjob": "cronjob_manage",
+    "process": "process_manage",
+    "tour": "gui_tour",
+    "tip": "show_tip",
+}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
@@ -1283,6 +1294,13 @@ def handle_function_call(
     if not isinstance(function_args, dict):
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
+
+    # ── Legacy tool-name aliases (2026-08 renames) ────────────────────
+    # Old sessions resuming mid-conversation (and users' muscle memory in
+    # saved skills/cron prompts) still emit the pre-rename names. Alias at
+    # the dispatch seam so every replay keeps working; new schemas only
+    # advertise the new names, so fresh sessions never see the old ones.
+    function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them

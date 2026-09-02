@@ -1146,7 +1146,7 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past Hermes sessions (FTS5 over the local session DB), or read/"
+        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
         "scroll inside one. Four shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "

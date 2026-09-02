@@ -1,4 +1,5 @@
-"""Kanban worker systemd-scope isolation — spawn, re-adoption, reaping.
+"""Kanban worker systemd-scope isolation — spawn, registration, re-adoption,
+reaping.
 
 Regression tests for the production incident (networkos-agent, 2026-09-01):
 workers spawned as plain children of the gateway shared its cgroup, so
@@ -7,17 +8,36 @@ each gateway restart orphaned every in-flight run — the new gateway saw
 claim_locks owned by the dead gateway pid and marked the runs crashed
 ("pid <n> not alive"), discarding ~18 runs / ~30h of build time.
 
-Covered contracts:
-  * ``_default_spawn`` wraps the worker argv in ``systemd-run --user
-    --scope`` (own unit, description, MemoryMax/MemorySwapMax) when the
-    probe passes and isolation allows it;
-  * isolation ``none`` / unavailable systemd produce today's argv exactly;
-  * the dispatcher tick re-adopts a running worker whose pid is verified
-    alive (PID-reuse guard) with a fresh heartbeat after a gateway
-    restart, and still marks dead-pid / stale-heartbeat / pid-reused rows
-    crashed;
-  * every dispatcher-side stop path reaps the worker's whole scope via
-    ``systemctl --user stop``.
+The reworked contracts (Gate B findings):
+
+* ``_default_spawn`` wraps the worker argv in ``systemd-run --user
+  --scope`` under a RUN-SUFFIXED unit name (a respawn can never collide
+  with a lingering scope), with BOTH MemoryMax and MemorySwapMax derived
+  from the same bound — or both omitted when no bound is computable;
+* the pid recorded at spawn is the systemd-run LAUNCHER's; the WORKER
+  self-registers its own pid + start-time fingerprint from its
+  heartbeat bridge / the ``kanban_heartbeat`` tool, and liveness is
+  scope-cgroup truth first, never bare PID liveness;
+* re-adoption after a gateway restart follows the registered worker
+  (killing the launcher — exactly what a gateway death does — must not
+  crash the run);
+* every terminal path stops the whole scope VERIFIED (stop → state
+  check → SIGKILL escalation), and a stop that cannot be confirmed
+  DEFERS instead of releasing the claim;
+* a refused systemd-run launch classifies as spawn_failed: auto mode
+  falls back to a plain spawn for that run, systemd-scope mode fails
+  loudly with the stderr;
+* dispatcher sweeps: never-registered runs past the launch grace become
+  spawn failures, orphaned scopes are reaped, and the
+  ``worker_isolation_stop_on_shutdown`` policy can stop everything on
+  graceful shutdown.
+
+The systemd binaries are faked with PATH shims (``systemd-run`` forks so
+the launcher pid genuinely differs from the worker pid; ``systemctl``
+models show/stop/kill/list-units over a temp state dir, with knobs for
+refused launches, hung stops, and leaked descendants) instead of mocks,
+so the failure modes the Gate B review flagged (launcher-vs-worker pid,
+stop timeouts, descendant leakage) are exercised end-to-end.
 """
 
 from __future__ import annotations
@@ -25,13 +45,374 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+
+
+# ---------------------------------------------------------------------------
+# PATH shims: fake systemd-run / systemctl over a temp state dir
+# ---------------------------------------------------------------------------
+
+# Shared state layout (root passed via HERMES_KANBAN_TEST_SHIM_STATE):
+#   units/<unit>.json    {"pids": [...], "argv": [...]} — the unit's cgroup
+#   sticky/<unit>        extra pid(s) counted in the unit's liveness
+#                        (a "leaked descendant" that ignores SIGTERM)
+#   killproof/<unit>     stop/kill refuse to complete for this unit
+#                        (a hung stop job: unit stays active)
+#   fail_next            integer countdown: systemd-run refuses N launches
+#   stops.jsonl          every stop/kill invocation, for assertions
+_SYSTEMD_RUN_SHIM = f'''#!{sys.executable}
+"""Fake systemd-run --user --scope: fork so launcher != worker.
+
+Deliberately dependency-light (no pathlib): this shim must fail or fork
+within milliseconds — the spawn path's launch-probe window is what turns
+a refused launch into spawn_failed, so a slow-booting shim would race it
+and look healthy.
+"""
+import json, os, sys
+
+STATE = os.environ["HERMES_KANBAN_TEST_SHIM_STATE"]
+UNITS = os.path.join(STATE, "units")
+os.makedirs(UNITS, exist_ok=True)
+
+argv = sys.argv[1:]
+sep = argv.index("--")
+flags, cmd = argv[:sep], argv[sep + 1:]
+unit = flags[flags.index("--unit") + 1]
+unit_path = os.path.join(UNITS, unit + ".json")
+
+fail = os.path.join(STATE, "fail_next")
+if os.path.exists(fail):
+    with open(fail) as f:
+        n = int(f.read().strip() or "1")
+    if n > 0:
+        with open(fail, "w") as f:
+            f.write(str(n - 1))
+        sys.stderr.write(
+            "Failed to start transient scope unit " + unit + ": "
+            "systemd-run-test: user bus connection refused\\n"
+        )
+        sys.exit(1)
+
+pid = os.fork()
+if pid == 0:
+    # Child = the worker process. Registers itself in the unit's cgroup
+    # (pid survives exec), then becomes the wrapped command.
+    try:
+        try:
+            with open(unit_path) as f:
+                data = json.load(f)
+        except Exception:
+            data = {{"pids": []}}
+        data["pids"] = sorted(set(data.get("pids", [])) | {{os.getpid()}})
+        data["argv"] = cmd
+        tmp = unit_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, unit_path)
+    finally:
+        os.execvp(cmd[0], cmd)
+
+# Parent = the systemd-run client (the LAUNCHER): stays in the caller's
+# process tree, waits for the scoped command, dies with its parent.
+_, status = os.waitpid(pid, 0)
+try:
+    with open(unit_path) as f:
+        data = json.load(f)
+    data["pids"] = [p for p in data.get("pids", []) if p != pid]
+    tmp = unit_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, unit_path)
+except Exception:
+    pass
+sys.exit(os.waitstatus_to_exitcode(status))
+'''
+
+_SYSTEMCTL_SHIM = f'''#!{sys.executable}
+"""Fake systemctl --user: show/stop/kill/list-units over the state dir.
+
+Dependency-light on purpose (see the systemd-run shim note): every scope
+state probe shells out to this, so interpreter boot dominates its cost.
+"""
+import fnmatch, json, os, signal, sys, time
+
+STATE = os.environ["HERMES_KANBAN_TEST_SHIM_STATE"]
+UNITS = os.path.join(STATE, "units")
+
+
+def log_action(action, unit):
+    with open(os.path.join(STATE, "stops.jsonl"), "a") as f:
+        f.write(json.dumps({{"action": action, "unit": unit}}) + "\\n")
+
+
+def unit_file(unit):
+    return os.path.join(UNITS, unit + ".json")
+
+
+def load(unit):
+    try:
+        with open(unit_file(unit)) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save(unit, data):
+    p = unit_file(unit)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, p)
+
+
+def sticky_pids(unit):
+    try:
+        with open(os.path.join(STATE, "sticky", unit)) as f:
+            return [int(x) for x in f.read().split()]
+    except Exception:
+        return []
+
+
+def killproof(unit):
+    return os.path.exists(os.path.join(STATE, "killproof", unit))
+
+
+def unit_pids(unit):
+    data = load(unit)
+    return (list(data.get("pids", [])) if data else []) + sticky_pids(unit)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def state_of(unit):
+    # A scope is active iff its cgroup holds a live process (or the stop
+    # job is wedged — killproof).
+    if killproof(unit):
+        return "active"
+    if any(alive(p) for p in unit_pids(unit)):
+        return "active"
+    return "inactive"
+
+
+argv = sys.argv[1:]
+if argv and argv[0] == "--user":
+    argv = argv[1:]
+op = argv[0]
+
+if op == "show":
+    print("ActiveState=" + state_of(argv[1]))
+    sys.exit(0)
+
+if op == "stop":
+    unit = argv[1]
+    log_action("stop", unit)
+    data = load(unit)
+    if killproof(unit):
+        # Stop job accepted but never completes server-side: unit stays
+        # active, systemctl still exits 0 (the "stop timeout" trap).
+        sys.exit(0)
+    if data is None:
+        sys.stderr.write("Unit " + unit + " not loaded.\\n")
+        sys.exit(1)
+    for p in unit_pids(unit):
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 0.8
+    while time.monotonic() < deadline:
+        if not any(alive(p) for p in unit_pids(unit)):
+            break
+        time.sleep(0.05)
+    if not any(alive(p) for p in data.get("pids", [])):
+        data["pids"] = []
+        save(unit, data)
+        # Sticky pids that died still count until kill clears them.
+    sys.exit(0)
+
+if op == "kill":
+    unit = argv[-1]
+    log_action("kill", unit)
+    data = load(unit)
+    if killproof(unit):
+        sys.exit(0)
+    if data is None:
+        sys.exit(1)
+    for p in unit_pids(unit):
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
+    time.sleep(0.05)
+    data["pids"] = [p for p in data.get("pids", []) if alive(p)]
+    save(unit, data)
+    sys.exit(0)
+
+if op == "list-units":
+    pattern = argv[-1]
+    try:
+        names = sorted(os.listdir(UNITS))
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".scope.json"):
+            continue
+        unit = name[: -len(".json")]
+        if not fnmatch.fnmatch(unit, pattern):
+            continue
+        st = state_of(unit)
+        print(unit, "loaded", st, st, "Hermes kanban worker test scope")
+    sys.exit(0)
+
+sys.stderr.write("systemctl-test: unsupported " + repr(argv) + "\\n")
+sys.exit(1)
+'''
+
+
+class Shims:
+    """Handle on the fake systemd user session."""
+
+    def __init__(self, root: Path, bin_dir: Path):
+        self.root = root
+        self.bin = bin_dir
+        self._extra_pids: list[int] = []
+
+    # -- state -------------------------------------------------------------
+    def unit_json(self, unit: str) -> dict | None:
+        try:
+            return json.loads(
+                (self.root / "units" / f"{unit}.json").read_text()
+            )
+        except OSError:
+            return None
+
+    def write_unit(self, unit: str, pids: list[int]) -> None:
+        d = self.root / "units"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{unit}.json").write_text(json.dumps({"pids": pids}))
+
+    def stops(self) -> list[dict]:
+        try:
+            return [
+                json.loads(line)
+                for line in (self.root / "stops.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+        except OSError:
+            return []
+
+    # -- knobs ---------------------------------------------------------------
+    def arm_fail_next(self, n: int = 1) -> None:
+        (self.root / "fail_next").write_text(str(n))
+
+    def arm_killproof(self, unit: str) -> None:
+        d = self.root / "killproof"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / unit).write_text("1")
+
+    def clear_killproof(self, unit: str) -> None:
+        (self.root / "killproof" / unit).unlink(missing_ok=True)
+
+    def arm_sticky(self, unit: str, pid: int) -> None:
+        d = self.root / "sticky"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / unit).write_text(str(pid))
+
+    # -- processes -----------------------------------------------------------
+    def sleeper(self) -> int:
+        """A disposable child standing in for a worker / descendant."""
+        p = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._extra_pids.append(p.pid)
+        return p.pid
+
+    def stubborn_sleeper(self) -> int:
+        """A child that ignores SIGTERM — a leaked dev server."""
+        p = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal, time; signal.signal(signal.SIGTERM,"
+             " signal.SIG_IGN); time.sleep(120)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._extra_pids.append(p.pid)
+        return p.pid
+
+    def track(self, pid: int) -> None:
+        self._extra_pids.append(pid)
+
+    def teardown(self) -> None:
+        # Kill scoped workers VIA THE SHIM (a separate process): a worker
+        # whose launcher died is reparented outside this test's subtree,
+        # and the conftest live-system guard rightly blocks direct
+        # os.kill on out-of-subtree pids. The shim is our fake systemd —
+        # teardown through it is exactly how production reclaims scopes.
+        for unit_json in (self.root / "units").glob("*.json"):
+            try:
+                subprocess.run(
+                    [str(self.bin / "systemctl"), "--user", "kill",
+                     "--signal=SIGKILL", unit_json.name[: -len(".json")]],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+        for pid in self._extra_pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def wait_for(self, predicate, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+
+@pytest.fixture
+def shims(tmp_path, monkeypatch):
+    root = tmp_path / "systemd-state"
+    (root / "units").mkdir(parents=True)
+    bin_dir = tmp_path / "shim-bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemd-run").write_text(_SYSTEMD_RUN_SHIM)
+    (bin_dir / "systemctl").write_text(_SYSTEMCTL_SHIM)
+    for f in bin_dir.iterdir():
+        os.chmod(f, 0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("HERMES_KANBAN_TEST_SHIM_STATE", str(root))
+    monkeypatch.setattr(
+        "tools.process_registry._systemd_run_user_scope_available",
+        lambda: True,
+    )
+    # A real subprocess worker: python sleeps, the trailing worker argv
+    # (which follows the -c program) is inert sys.argv baggage.
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv",
+        lambda: [sys.executable, "-c", "import time; time.sleep(120)"],
+    )
+    # Keep the launch-probe window short — the shims fail/succeed fast.
+    monkeypatch.setattr(kb, "WORKER_SPAWN_PROBE_SECONDS", 1.0)
+    handle = Shims(root, bin_dir)
+    yield handle
+    handle.teardown()
 
 
 @pytest.fixture
@@ -54,7 +435,7 @@ def conn(kanban_home):
         yield c
 
 
-def _make_task(task_id="t_scope1", title="build the widget"):
+def _make_task(task_id="t_scope1", title="build the widget", run_id=7):
     return kb.Task(
         id=task_id,
         title=title,
@@ -71,7 +452,7 @@ def _make_task(task_id="t_scope1", title="build the widget"):
         claim_lock="lock",
         claim_expires=None,
         tenant=None,
-        current_run_id=7,
+        current_run_id=run_id,
     )
 
 
@@ -95,14 +476,17 @@ def _patch_systemd_run_binary(monkeypatch):
     monkeypatch.setattr(shutil, "which", fake_which)
 
 
-def _fake_popen_capture(monkeypatch, captured, pid=4242):
+def _fake_popen_capture(monkeypatch, captured, pid=4242, rc=None):
     class FakeProc:
-        pass
+        def __init__(self):
+            self.pid = pid
+            self.returncode = rc
 
-    FakeProc.pid = pid
+        def poll(self):
+            return self.returncode
 
     def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = list(cmd)
+        captured.setdefault("cmds", []).append(list(cmd))
         captured["kwargs"] = dict(kwargs)
         return FakeProc()
 
@@ -134,13 +518,13 @@ def _capture_worker_argv(
     _patch_systemd_available(monkeypatch, systemd_available)
     if systemd_available:
         _patch_systemd_run_binary(monkeypatch)
-    captured = {}
+    captured: dict = {}
     _fake_popen_capture(monkeypatch, captured)
 
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     kb._default_spawn(_make_task(), str(workspace))
-    return captured["cmd"]
+    return captured["cmds"][0]
 
 
 def _assert_plain_argv_shape(cmd: list[str]):
@@ -154,15 +538,46 @@ def _assert_plain_argv_shape(cmd: list[str]):
         assert token not in cmd, f"systemd token {token!r} leaked into plain argv"
 
 
+def _scoped_task_row(conn, *, scope: str, pid: int | None = None,
+                     started_delta: int = 0, claimer: str | None = None,
+                     registered: bool = False):
+    """Insert a running task row pinned to a scope (test-scratch state)."""
+    tid = kb.create_task(conn, title="scoped row", assignee="w")
+    claimer = claimer or kb._claimer_id()
+    kb.claim_task(conn, tid, claimer=claimer)
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, "
+        "last_heartbeat_at=?, started_at=? WHERE id=?",
+        (
+            pid, scope,
+            kb._worker_pid_start_time(pid) if pid else None,
+            now if registered else None,
+            now, now + started_delta, tid,
+        ),
+    )
+    # The grace sweep measures from the ACTIVE RUN's started_at (it
+    # outranks tasks.started_at) — age that too.
+    conn.execute(
+        "UPDATE task_runs SET started_at=? "
+        "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+        (now + started_delta, tid),
+    )
+    conn.commit()
+    return tid
+
+
 # ---------------------------------------------------------------------------
 # Spawn wrapping
 # ---------------------------------------------------------------------------
 
 def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
-    """Probe passes + isolation auto → systemd-run prefix with the unit
-    name, description, per-worker memory properties, and the legacy argv
-    intact after ``--``. The unwrapped baseline is captured from the same
-    code path with the probe disabled, so the comparison is exact."""
+    """Probe passes + isolation auto → systemd-run prefix with the
+    run-suffixed unit name, description, per-worker memory properties, and
+    the legacy argv intact after ``--``. The unwrapped baseline is captured
+    from the same code path with the probe disabled, so the comparison is
+    exact."""
     config = "  worker_isolation: auto\n  worker_memory_max_mb: 512\n"
     plain = _capture_worker_argv(
         monkeypatch, tmp_path, config, systemd_available=False
@@ -178,7 +593,9 @@ def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
     # Flags before the command separator, in the builder's canonical order.
     head = wrapped[: wrapped.index("--")]
     assert head[1:5] == ["--user", "--scope", "--quiet", "--unit"]
-    assert "hermes-kanban-t_scope1.scope" in head
+    unit = kb._kanban_worker_scope_unit("t_scope1", 7)
+    assert unit == "hermes-kanban-t_scope1-r7.scope"
+    assert unit in head
     assert "--collect" in head
     assert head[head.index("--description") + 1] == (
         "Hermes kanban worker t_scope1: build the widget"
@@ -190,7 +607,43 @@ def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
     # Legacy argv preserved verbatim after the separator.
     assert wrapped[wrapped.index("--") + 1:] == plain
     # The spawn published the unit for the dispatcher's bookkeeping.
-    assert kb._default_spawn._last_scope_unit == "hermes-kanban-t_scope1.scope"
+    assert kb._default_spawn._last_scope_unit == unit
+
+
+def test_default_spawn_memory_default_derives_both_bounds(monkeypatch, tmp_path):
+    """No explicit worker_memory_max_mb → BOTH MemoryMax and MemorySwapMax
+    come from the shared process-registry helper, at the same value."""
+    wrapped = _capture_worker_argv(
+        monkeypatch, tmp_path, "  worker_isolation: auto\n",
+        systemd_available=True,
+    )
+    head = wrapped[: wrapped.index("--")]
+    expected = kb._kanban_worker_memory_bytes()
+    assert expected, "helper must return a positive bound on a normal host"
+    props = [p for p in head if p.startswith("MemoryMax=")]
+    assert props == [f"MemoryMax={expected}"], props
+    swap = [p for p in head if p.startswith("MemorySwapMax=")]
+    assert swap == [f"MemorySwapMax={expected}"], swap
+
+
+def test_default_spawn_omits_memory_when_helper_falsy(monkeypatch, tmp_path):
+    """A helper that cannot compute a bound (returns 0/None) → BOTH memory
+    properties omitted. MemoryMax=0 means 'no limit' in systemd — the exact
+    opposite of the intended bound — so emitting it is worse than nothing."""
+    monkeypatch.setattr(
+        "tools.process_registry._worker_memory_max_bytes", lambda: 0
+    )
+    kb._memory_bound_omitted_warned = False
+    try:
+        wrapped = _capture_worker_argv(
+            monkeypatch, tmp_path, "  worker_isolation: auto\n",
+            systemd_available=True,
+        )
+    finally:
+        kb._memory_bound_omitted_warned = False
+    head = wrapped[: wrapped.index("--")]
+    assert not [p for p in head if p.startswith("MemoryMax=")]
+    assert not [p for p in head if p.startswith("MemorySwapMax=")]
 
 
 def test_default_spawn_none_keeps_legacy_argv_exactly(monkeypatch, tmp_path):
@@ -234,28 +687,30 @@ def test_forced_scope_without_systemd_still_spawns(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher bookkeeping
+# Dispatcher bookkeeping + launcher-vs-worker pid (real shims)
 # ---------------------------------------------------------------------------
 
 def test_set_worker_pid_records_scope_and_start_fingerprint(conn):
     """The pid, its start-time fingerprint (PID-reuse guard), and the scope
     unit land on both the task row and the active run; the ``spawned``
-    event carries the scope for operators."""
+    event carries the scope for operators. A scoped row is NOT registered
+    (the pid is the launcher's); a plain spawn is registered immediately —
+    its pid IS the worker."""
     tid = kb.create_task(conn, title="record", assignee="w")
     kb.claim_task(conn, tid, claimer=kb._claimer_id())
 
     live = os.getpid()
-    kb._set_worker_pid(
-        conn, tid, live, scope_unit="hermes-kanban-%s.scope" % tid,
-    )
+    unit = kb._kanban_worker_scope_unit(tid, None)
+    kb._set_worker_pid(conn, tid, live, scope_unit=unit)
 
     row = conn.execute(
-        "SELECT worker_pid, worker_pid_started_at, worker_scope "
-        "FROM tasks WHERE id = ?", (tid,)
+        "SELECT worker_pid, worker_pid_started_at, worker_scope, "
+        "       worker_registered_at FROM tasks WHERE id = ?", (tid,)
     ).fetchone()
     assert row["worker_pid"] == live
     assert row["worker_pid_started_at"] == kb._worker_pid_start_time(live)
-    assert row["worker_scope"] == "hermes-kanban-%s.scope" % tid
+    assert row["worker_scope"] == unit
+    assert row["worker_registered_at"] is None  # launcher pid, not worker
 
     run = conn.execute(
         "SELECT worker_pid, worker_scope FROM task_runs "
@@ -263,45 +718,126 @@ def test_set_worker_pid_records_scope_and_start_fingerprint(conn):
         (tid,),
     ).fetchone()
     assert run["worker_pid"] == live
-    assert run["worker_scope"] == "hermes-kanban-%s.scope" % tid
+    assert run["worker_scope"] == unit
 
     event = conn.execute(
         "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'spawned'",
         (tid,),
     ).fetchone()
-    assert event and json.loads(event["payload"])["scope"] == (
-        "hermes-kanban-%s.scope" % tid
-    )
+    assert event and json.loads(event["payload"])["scope"] == unit
+
+    # Plain spawn: no scope → registered at spawn time.
+    tid2 = kb.create_task(conn, title="plain", assignee="w")
+    kb.claim_task(conn, tid2, claimer=kb._claimer_id())
+    kb._set_worker_pid(conn, tid2, live, scope_unit="")
+    row2 = conn.execute(
+        "SELECT worker_registered_at FROM tasks WHERE id = ?", (tid2,)
+    ).fetchone()
+    assert row2["worker_registered_at"] is not None
 
 
-def test_dispatch_once_persists_scope_unit_for_scoped_spawn(
-    monkeypatch, conn, kanban_home
-):
-    """End-to-end: the real ``_default_spawn`` (systemd available) → the
-    dispatcher tick records the scope unit on the claimed task."""
-    # The assignee must name a real Hermes profile or the dispatcher skips
-    # the task as non-spawnable (control-plane lane).
+def _spawnable_profile(kanban_home):
     profile = Path(kanban_home) / "profiles" / "elias"
     profile.mkdir(parents=True, exist_ok=True)
     profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
 
-    _patch_systemd_available(monkeypatch, True)
-    _patch_systemd_run_binary(monkeypatch)
-    captured = {}
-    _fake_popen_capture(monkeypatch, captured, pid=5566)
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
 
+def test_dispatch_records_launcher_pid_and_worker_self_registers(
+    shims, conn, kanban_home
+):
+    """End-to-end with the shims: the dispatcher records the LAUNCHER pid
+    and the run-suffixed scope; the unit's cgroup holds a DIFFERENT (worker)
+    pid; ``register_worker_pid`` (what the heartbeat bridge calls from
+    inside the worker) overwrites the launcher pid with the worker's and
+    flips ``worker_registered_at`` with a ``worker_registered`` event."""
+    _spawnable_profile(kanban_home)
     tid = kb.create_task(conn, title="scoped", assignee="elias")
     result = kb.dispatch_once(conn, dry_run=False)
 
     assert [s[0] for s in result.spawned] == [tid]
     row = conn.execute(
-        "SELECT worker_pid, worker_scope FROM tasks WHERE id = ?", (tid,)
+        "SELECT worker_pid, worker_pid_started_at, worker_scope, "
+        "       worker_registered_at, current_run_id FROM tasks WHERE id = ?",
+        (tid,),
     ).fetchone()
-    assert row["worker_pid"] == 5566
-    assert row["worker_scope"] == kb._kanban_worker_scope_unit(tid)
-    # The spawn itself really went through the scope wrapper.
-    assert captured["cmd"][0] == "/usr/bin/systemd-run"
+    launcher_pid = row["worker_pid"]
+    unit = row["worker_scope"]
+    assert unit == kb._kanban_worker_scope_unit(tid, row["current_run_id"])
+    assert "-r" in unit  # run-suffixed: unique per attempt
+    assert row["worker_registered_at"] is None  # starting, not registered
+
+    # The launcher survived its probe window (no spawn failure recorded).
+    assert result.late_spawn_failed == []
+
+    # The unit's cgroup holds the worker pid — a different process.
+    data = shims.unit_json(unit)
+    assert data is not None
+    worker_pids = [p for p in data["pids"] if p != launcher_pid]
+    assert len(worker_pids) == 1
+    worker_pid = worker_pids[0]
+    assert worker_pid != launcher_pid
+    assert kb._pid_alive(worker_pid)
+
+    # Worker-side self-registration (the heartbeat bridge's call).
+    assert kb.register_worker_pid(
+        conn, tid, expected_run_id=row["current_run_id"], pid=worker_pid,
+    )
+    after = conn.execute(
+        "SELECT worker_pid, worker_registered_at FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert after["worker_pid"] == worker_pid
+    assert after["worker_registered_at"] is not None
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'worker_registered'", (tid,),
+    ).fetchone()
+    assert event and json.loads(event["payload"])["pid"] == worker_pid
+
+
+def test_heartbeat_bridge_registers_worker_pid(shims, conn, kanban_home, monkeypatch):
+    """The auto-heartbeat bridge (run from INSIDE the worker process on
+    first activity) registers the calling process's own pid."""
+    from tools import kanban_tools as kt
+
+    tid = kb.create_task(conn, title="bridge", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()["current_run_id"]
+
+    db_path = kb.kanban_db_path(board="default")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kt._auto_heartbeat_last_attempt = 0.0
+    assert kt.heartbeat_current_worker_from_env() is True
+
+    row = conn.execute(
+        "SELECT worker_pid, worker_pid_started_at, worker_registered_at, "
+        "       last_heartbeat_at FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["worker_pid"] == os.getpid()  # THIS process = the worker
+    assert row["worker_registered_at"] is not None
+    assert row["worker_pid_started_at"] == kb._worker_pid_start_time(os.getpid())
+    assert row["last_heartbeat_at"] is not None
+
+    # The explicit tool path registers too (fresh task, direct call).
+    tid2 = kb.create_task(conn, title="tool", assignee="w")
+    kb.claim_task(conn, tid2, claimer=kb._claimer_id())
+    run2 = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid2,)
+    ).fetchone()["current_run_id"]
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid2)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run2))
+    out = kt._handle_heartbeat({"task_id": tid2})
+    assert '"ok"' in out or '"status"' in out
+    row2 = conn.execute(
+        "SELECT worker_pid, worker_registered_at FROM tasks WHERE id = ?",
+        (tid2,),
+    ).fetchone()
+    assert row2["worker_pid"] == os.getpid()
+    assert row2["worker_registered_at"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -446,39 +982,159 @@ def test_recycled_pid_is_not_mistaken_for_the_worker(conn):
     assert payload.get("pid_reused") is True
 
 
+def test_killing_the_launcher_does_not_kill_the_run(shims, conn, kanban_home):
+    """THE launcher-vs-worker contract, end-to-end: a gateway death kills
+    the systemd-run launcher (a child of the gateway) while the scoped
+    worker survives — re-adoption must follow the registered worker via
+    scope truth, and crash detection must NOT fire on the dead launcher."""
+    _spawnable_profile(kanban_home)
+    tid = kb.create_task(conn, title="restart survivor", assignee="elias")
+    kb.dispatch_once(conn, dry_run=False)
+
+    row = conn.execute(
+        "SELECT worker_pid, worker_scope, current_run_id FROM tasks "
+        "WHERE id = ?", (tid,)
+    ).fetchone()
+    launcher_pid = row["worker_pid"]
+    unit = row["worker_scope"]
+    worker_pid = shims.unit_json(unit)["pids"][0]
+    assert worker_pid != launcher_pid
+
+    # The worker self-registers (first activity after spawn).
+    assert kb.register_worker_pid(
+        conn, tid, expected_run_id=row["current_run_id"], pid=worker_pid,
+    )
+    # Simulate the gateway dying: only the LAUNCHER dies.
+    os.kill(launcher_pid, signal.SIGKILL)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and kb._pid_alive(launcher_pid):
+        time.sleep(0.05)
+    assert not kb._pid_alive(launcher_pid)
+    assert kb._pid_alive(worker_pid)  # the scoped worker survives
+
+    # The claim now names a dead gateway; heartbeat is fresh.
+    host = kb._claimer_id().split(":", 1)[0]
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET claim_lock=?, claim_expires=?, "
+        "last_heartbeat_at=? WHERE id=?",
+        (f"{host}:4194304", now - 60, now, tid),
+    )
+    conn.commit()
+
+    assert kb.detect_crashed_workers(conn) == []  # scope truth: alive
+    adopted = kb.adopt_surviving_running_workers(conn)
+    assert adopted == [tid]
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'adopted'",
+        (tid,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    assert payload.get("verified_by") == "scope_active"
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["worker_pid"] == worker_pid
+
+
 # ---------------------------------------------------------------------------
-# Scope reaping on stop paths
+# Launch-grace sweep: silent spawn failures
 # ---------------------------------------------------------------------------
 
-def _patch_scope_stopper(monkeypatch, calls):
-    def fake_stop(unit):
-        calls.append(unit)
-        return True
+def test_unregistered_within_grace_is_left_alone(shims, conn):
+    """A scoped run inside its launch grace window is 'starting', not dead —
+    the sweep must not fail it."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_grace", 1)
+    shims.write_unit(unit, [pid])
+    tid = _scoped_task_row(conn, scope=unit, pid=pid, started_delta=0)
+    assert kb.fail_unregistered_workers(conn) == []
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] == "running"
 
-    monkeypatch.setattr("tools.process_registry._stop_systemd_unit", fake_stop)
+
+def test_unregistered_past_grace_fails_as_spawn_failed(shims, conn):
+    """A scoped run that never registered past the grace window is a silent
+    launch failure: spawn_failed run, failure counted, scope stopped."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_deadspawn", 1)
+    shims.write_unit(unit, [pid])
+    # The launcher pid is recorded (as every scoped spawn does) but the
+    # worker never registered; the run started long before the grace
+    # window closed.
+    tid = _scoped_task_row(
+        conn, scope=unit, pid=os.getpid(),
+        started_delta=-kb.WORKER_REGISTRATION_GRACE_SECONDS - 300,
+    )
+    failed = kb.fail_unregistered_workers(conn)
+    assert failed == [tid]
+    row = conn.execute(
+        "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["consecutive_failures"] >= 1
+    run = kb.latest_run(conn, tid)
+    assert run is not None and run.outcome == "spawn_failed"
 
 
-def test_release_stale_claims_stops_worker_scope(monkeypatch, conn):
+def test_unscoped_rows_are_normalized_not_failed(shims, conn):
+    """Unscoped running rows (plain spawns — and every legacy row from
+    before the isolation feature, which are unscoped by definition) get
+    ``worker_registered_at`` backfilled: their recorded pid IS the worker.
+    Nothing is failed."""
+    tid = kb.create_task(conn, title="plain legacy", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=NULL, "
+        "started_at=? WHERE id=?",
+        (os.getpid(), kb._worker_pid_start_time(os.getpid()),
+         now - 99999, tid),
+    )
+    conn.commit()
+
+    assert kb.fail_unregistered_workers(conn) == []
+    row = conn.execute(
+        "SELECT status, worker_registered_at FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["worker_registered_at"] is not None
+
+    # Idempotent: a second sweep finds nothing to do and fails nothing.
+    assert kb.fail_unregistered_workers(conn) == []
+
+
+# ---------------------------------------------------------------------------
+# Verified stops + deferral when the stop cannot be confirmed
+# ---------------------------------------------------------------------------
+
+def test_release_stale_claims_stops_worker_scope(shims, conn):
     """TTL-expired reclaim of a scoped worker stops the whole unit before
     the pid kill backstop, and clears the scope bookkeeping."""
-    calls: list[str] = []
-    _patch_scope_stopper(monkeypatch, calls)
     host = kb._claimer_id().split(":", 1)[0]
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_stale", 1)
+    shims.write_unit(unit, [pid])
     tid = kb.create_task(conn, title="stale", assignee="w")
     kb.claim_task(conn, tid, claimer=f"{host}:4194304")
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    unit = "hermes-kanban-%s.scope" % tid
     conn.execute(
-        "UPDATE tasks SET worker_pid=?, worker_scope=?, "
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=?, "
         "claim_expires=?, last_heartbeat_at=? WHERE id=?",
-        (dead.pid, unit, int(time.time()) - 60, int(time.time()) - 7200, tid),
+        (pid, unit, int(time.time()) - 60, int(time.time()) - 7200, tid),
     )
     conn.commit()
 
     reclaimed = kb.release_stale_claims(conn)
     assert reclaimed == 1
-    assert calls == [unit]
+    assert any(s["unit"] == unit and s["action"] == "stop" for s in shims.stops())
     row = conn.execute(
         "SELECT status, worker_scope FROM tasks WHERE id = ?", (tid,)
     ).fetchone()
@@ -486,21 +1142,71 @@ def test_release_stale_claims_stops_worker_scope(monkeypatch, conn):
     assert row["worker_scope"] is None
 
 
-def test_enforce_max_runtime_stops_worker_scope(monkeypatch, conn):
-    """Timeout of a scoped run stops the scope (SIGTERM→SIGKILL across the
-    whole cgroup) — the dev servers a worker spawned die with it."""
-    calls: list[str] = []
-    _patch_scope_stopper(monkeypatch, calls)
-    host = kb._claimer_id().split(":", 1)[0]
-    tid = kb.create_task(conn, title="timeout", assignee="w")
-    kb.claim_task(conn, tid, claimer=f"{host}:4194304")
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    unit = "hermes-kanban-%s.scope" % tid
+def test_stop_timeout_does_not_release_claim_then_completes(shims, conn):
+    """A wedged stop (killproof scope) must NOT release the claim — that
+    would spawn a duplicate beside a live worker. The reclaim defers and
+    completes on the next tick once the stop can be confirmed."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_wedged", 1)
+    shims.write_unit(unit, [pid])
+    shims.arm_killproof(unit)
+    tid = kb.create_task(conn, title="wedged stop", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
     conn.execute(
-        "UPDATE tasks SET worker_pid=?, worker_scope=?, max_runtime_seconds=1, "
-        "started_at=? WHERE id=?",
-        (dead.pid, unit, int(time.time()) - 100, tid),
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=?, "
+        "worker_registered_at=?, claim_expires=?, last_heartbeat_at=? "
+        "WHERE id=?",
+        (pid, unit, now, now - 60, now - 7200, tid),
+    )
+    conn.commit()
+
+    # Tick 1: stop refuses (still stopping) — claim held, task still running.
+    assert kb.release_stale_claims(conn) == 0
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["worker_scope"] == unit
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'reclaim_deferred'", (tid,),
+    ).fetchone()
+    assert event is not None  # the hold is auditable
+
+    # Tick 2 (after the defer grace expires): the stop completes — the
+    # reclaim goes through. The defer extended claim_expires, so age it.
+    shims.clear_killproof(unit)
+    conn.execute(
+        "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+        (int(time.time()) - 60, tid),
+    )
+    conn.commit()
+    assert kb.release_stale_claims(conn) == 1
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["worker_scope"] is None
+
+
+def test_enforce_max_runtime_defers_then_completes(shims, conn):
+    """Same deferral contract on the max-runtime path: unverified stop →
+    skip this tick; once verifiable → timeout recorded, scope stopped."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_maxrt", 1)
+    shims.write_unit(unit, [pid])
+    shims.arm_killproof(unit)
+    tid = kb.create_task(conn, title="timeout", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=?, "
+        "worker_registered_at=?, max_runtime_seconds=1, started_at=? "
+        "WHERE id=?",
+        (pid, unit, now, now - 100, tid),
     )
     conn.execute(
         "UPDATE task_runs SET started_at = started_at - 9999 "
@@ -508,37 +1214,433 @@ def test_enforce_max_runtime_stops_worker_scope(monkeypatch, conn):
     )
     conn.commit()
 
-    def fake_kill(pid, sig):
+    def fake_kill(pid_, sig):
         raise ProcessLookupError()
 
-    timed_out = kb.enforce_max_runtime(conn, signal_fn=fake_kill)
-    assert timed_out == [tid]
-    assert calls == [unit]
+    assert kb.enforce_max_runtime(conn, signal_fn=fake_kill) == []
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["worker_scope"] == unit
+
+    shims.clear_killproof(unit)
+    assert kb.enforce_max_runtime(conn, signal_fn=fake_kill) == [tid]
     row = conn.execute(
         "SELECT status, worker_scope FROM tasks WHERE id = ?", (tid,)
     ).fetchone()
     assert row["worker_scope"] is None
 
 
-def test_reclaim_task_stops_worker_scope(monkeypatch, conn):
+def test_reclaim_task_stops_worker_scope(shims, conn):
     """Operator reclaim of a scoped worker stops its scope too."""
-    calls: list[str] = []
-    _patch_scope_stopper(monkeypatch, calls)
-    host = kb._claimer_id().split(":", 1)[0]
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_manual", 1)
+    shims.write_unit(unit, [pid])
     tid = kb.create_task(conn, title="manual", assignee="w")
-    kb.claim_task(conn, tid, claimer=f"{host}:4194304")
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    unit = "hermes-kanban-%s.scope" % tid
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
     conn.execute(
-        "UPDATE tasks SET worker_pid=?, worker_scope=? WHERE id=?",
-        (dead.pid, unit, tid),
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=? "
+        "WHERE id=?",
+        (pid, unit, tid),
     )
     conn.commit()
 
     assert kb.reclaim_task(conn, tid, reason="operator abort") is True
-    assert calls == [unit]
+    assert any(s["unit"] == unit for s in shims.stops())
     row = conn.execute(
         "SELECT status, worker_scope FROM tasks WHERE id = ?", (tid,)
     ).fetchone()
     assert row["worker_scope"] is None
+
+
+def test_archive_and_schedule_stop_scope(shims, conn):
+    """archive_task / schedule_task stop a scoped worker's scope and clear
+    the bookkeeping — the finding-5 surfaces."""
+    pid = shims.sleeper()
+    unit_a = kb._kanban_worker_scope_unit("t_arch", 1)
+    shims.write_unit(unit_a, [pid])
+    tid_a = kb.create_task(conn, title="to archive", assignee="w")
+    kb.claim_task(conn, tid_a, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=? "
+        "WHERE id=?",
+        (pid, unit_a, tid_a),
+    )
+    conn.commit()
+
+    assert kb.archive_task(conn, tid_a) is True
+    assert any(s["unit"] == unit_a for s in shims.stops())
+    row = conn.execute(
+        "SELECT worker_scope FROM tasks WHERE id = ?", (tid_a,)
+    ).fetchone()
+    assert row["worker_scope"] is None
+
+    pid_s = shims.sleeper()
+    unit_s = kb._kanban_worker_scope_unit("t_sched", 1)
+    shims.write_unit(unit_s, [pid_s])
+    tid_s = kb.create_task(conn, title="to schedule", assignee="w")
+    kb.claim_task(conn, tid_s, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=? "
+        "WHERE id=?",
+        (pid_s, unit_s, tid_s),
+    )
+    conn.commit()
+
+    assert kb.schedule_task(conn, tid_s, reason="later") is True
+    assert any(s["unit"] == unit_s for s in shims.stops())
+    row = conn.execute(
+        "SELECT worker_scope FROM tasks WHERE id = ?", (tid_s,)
+    ).fetchone()
+    assert row["worker_scope"] is None
+
+
+def test_invalidate_descendants_stops_scope(shims, conn):
+    """Ancestor reopen invalidation stops a running scoped descendant."""
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_inval", 1)
+    shims.write_unit(unit, [pid])
+    parent = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent)
+    child = kb.create_task(
+        conn, title="running child", assignee="builder", parents=[parent],
+    )
+    kb.claim_task(conn, child, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, worker_scope=? "
+        "WHERE id=?",
+        (pid, unit, child),
+    )
+    conn.commit()
+
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', completed_at = NULL "
+            "WHERE id = ?", (parent,),
+        )
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent, author="operator",
+    )
+    assert any(t[3] == unit for t in result["terminations"])
+    # The audit sweep guarantees the verified stop even though the
+    # domain-layer drain is best-effort.
+    kb.reap_orphaned_worker_scopes(conn)
+    assert any(s["unit"] == unit for s in shims.stops())
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id = ?", (child,)
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert row["worker_scope"] is None
+
+
+def test_completion_stops_scope_and_reaps_leaked_descendant(shims, conn, kanban_home):
+    """Normal completion must not leak the worker's descendants: the
+    worker-side stop is detached (it cannot wait on its own teardown), the
+    audit sweep does the verified kill — and a stubborn descendant that
+    ignores SIGTERM dies to the SIGKILL escalation."""
+    leaked = shims.stubborn_sleeper()
+    _spawnable_profile(kanban_home)
+    tid = kb.create_task(conn, title="done soon", assignee="elias")
+    kb.dispatch_once(conn, dry_run=False)
+
+    row = conn.execute(
+        "SELECT worker_pid, worker_scope, current_run_id FROM tasks "
+        "WHERE id = ?", (tid,)
+    ).fetchone()
+    unit = row["worker_scope"]
+    worker_pid = shims.unit_json(unit)["pids"][0]
+    assert kb.register_worker_pid(
+        conn, tid, expected_run_id=row["current_run_id"], pid=worker_pid,
+    )
+    # A descendant the worker "spawned" that outlives it in the cgroup.
+    shims.arm_sticky(unit, leaked)
+
+    assert kb.complete_task(conn, tid, result="done") is True
+
+    # The detached stop fired (worker-side terminal path).
+    assert shims.wait_for(
+        lambda: any(s["unit"] == unit for s in shims.stops())
+    ), "complete_task never attempted to stop the scope"
+    # The task row no longer claims the unit, so the audit sweep reaps it —
+    # and the VERIFIED stop escalates: the SIGTERM-immune descendant dies to
+    # the SIGKILL pass instead of outliving the task.
+    kb.reap_orphaned_worker_scopes(conn)
+    assert shims.wait_for(lambda: not kb._pid_alive(leaked), timeout=8.0), (
+        "leaked descendant survived the SIGKILL escalation"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Retry uniqueness + spawn-failure classification (real shims)
+# ---------------------------------------------------------------------------
+
+def test_retry_spawn_uses_a_new_unique_unit(shims, conn, kanban_home):
+    """A respawned attempt gets a DIFFERENT unit name (run-suffixed), so a
+    lingering half-dead scope from the previous attempt can never collide —
+    and the audit sweep stops the orphaned old unit."""
+    _spawnable_profile(kanban_home)
+    tid = kb.create_task(conn, title="retry", assignee="elias")
+    assert kb.dispatch_once(conn, dry_run=False).spawned
+    row = conn.execute(
+        "SELECT worker_scope, current_run_id FROM tasks WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    unit_a = row["worker_scope"]
+    assert unit_a.endswith(f"-r{row['current_run_id']}.scope")
+
+    # Operator reclaims (verified stop) → task returns to its source lane.
+    assert kb.reclaim_task(conn, tid, reason="retry") is True
+
+    # Second attempt: new run id → new unit name.
+    assert kb.dispatch_once(conn, dry_run=False).spawned
+    row = conn.execute(
+        "SELECT worker_scope, current_run_id, status FROM tasks "
+        "WHERE id = ?", (tid,)
+    ).fetchone()
+    unit_b = row["worker_scope"]
+    assert unit_b != unit_a
+    assert unit_b.endswith(f"-r{row['current_run_id']}.scope")
+    assert kb._task_id_from_kanban_scope_unit(unit_b) == tid
+
+
+def test_spawn_failure_auto_falls_back_to_plain_spawn(shims, conn, kanban_home):
+    """A refused systemd-run launch in 'auto' mode falls back to a plain
+    spawn for THIS run (with a warning), records the real pid (which IS the
+    worker for a plain spawn, so it counts as registered), and keeps the
+    board moving."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: auto\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    shims.arm_fail_next(1)
+    tid = kb.create_task(conn, title="degraded", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+    assert [s[0] for s in result.spawned] == [tid]
+    row = conn.execute(
+        "SELECT worker_pid, worker_scope, worker_registered_at "
+        "FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["worker_scope"] is None
+    assert row["worker_pid"] is not None
+    shims.track(row["worker_pid"])
+    assert row["worker_registered_at"] is not None  # plain pid == worker
+    assert result.late_spawn_failed == []
+
+
+def test_spawn_failure_systemd_scope_mode_fails_loudly(shims, conn, kanban_home):
+    """'systemd-scope' never degrades: a refused launch raises into the
+    dispatcher's failure recording — spawn_failed run with the systemd-run
+    stderr, failure counted, nothing spawned."""
+    _write_kanban_config(Path(kanban_home), "  worker_isolation: systemd-scope\n")
+    kb._INITIALIZED_PATHS.clear()
+    _spawnable_profile(kanban_home)
+    shims.arm_fail_next(1)
+    tid = kb.create_task(conn, title="strict", assignee="elias")
+
+    result = kb.dispatch_once(conn, dry_run=False)
+    assert result.spawned == []
+    assert result.auto_blocked == []
+    row = conn.execute(
+        "SELECT status, consecutive_failures, last_failure_error, "
+        "       worker_pid, worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] != "running"
+    assert row["consecutive_failures"] == 1
+    assert "systemd-run launch failed" in (row["last_failure_error"] or "")
+    assert row["worker_pid"] is None
+    assert row["worker_scope"] is None
+    run = kb.latest_run(conn, tid)
+    assert run is not None and run.outcome == "spawn_failed"
+    assert "user bus connection refused" in (run.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Audit sweep + shutdown policy
+# ---------------------------------------------------------------------------
+
+def test_reap_orphaned_scope_sweep(shims, conn):
+    """Active scopes with no running task claiming them are stopped; the
+    scope a running task still owns is left alone."""
+    orphan_pid = shims.sleeper()
+    orphan_unit = kb._kanban_worker_scope_unit("t_orphan", 4)
+    shims.write_unit(orphan_unit, [orphan_pid])
+    # And a scope whose task moved on to a DIFFERENT unit name.
+    stale_pid = shims.sleeper()
+    stale_unit = kb._kanban_worker_scope_unit("t_moved", 1)
+    shims.write_unit(stale_unit, [stale_pid])
+    current_unit = kb._kanban_worker_scope_unit("t_moved", 2)
+    live_pid = shims.sleeper()
+    shims.write_unit(current_unit, [live_pid])
+    tid = _scoped_task_row(conn, scope=current_unit, pid=live_pid)
+
+    reaped = kb.reap_orphaned_worker_scopes(conn)
+    assert set(reaped) == {orphan_unit, stale_unit}
+    assert shims.wait_for(lambda: not kb._pid_alive(orphan_pid))
+    assert shims.wait_for(lambda: not kb._pid_alive(stale_pid))
+    assert kb._pid_alive(live_pid)  # the running task's worker survives
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    assert row["status"] == "running"
+
+
+def test_stop_all_scoped_workers_is_host_local(shims, conn):
+    """The shutdown policy stops every scoped worker THIS host claims and
+    leaves other hosts' workers to their own gateways."""
+    mine_pid = shims.sleeper()
+    mine_unit = kb._kanban_worker_scope_unit("t_mine", 1)
+    shims.write_unit(mine_unit, [mine_pid])
+    _scoped_task_row(conn, scope=mine_unit, pid=mine_pid)
+
+    theirs_pid = shims.sleeper()
+    theirs_unit = kb._kanban_worker_scope_unit("t_theirs", 1)
+    shims.write_unit(theirs_unit, [theirs_pid])
+    _scoped_task_row(
+        conn, scope=theirs_unit, pid=theirs_pid, claimer="otherhost:99",
+    )
+
+    stopped = kb.stop_all_scoped_workers(conn)
+    assert stopped == [mine_unit]
+    assert shims.wait_for(lambda: not kb._pid_alive(mine_pid))
+    assert kb._pid_alive(theirs_pid)
+
+
+def test_shutdown_policy_knob_runs_on_watcher_exit(shims, conn, kanban_home):
+    """The gateway dispatcher watcher honours
+    ``kanban.worker_isolation_stop_on_shutdown`` on graceful exit: knob true
+    → workers stopped; default (unset) → they keep running for re-adoption."""
+    import asyncio
+
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    pid = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_policy", 1)
+    shims.write_unit(unit, [pid])
+    _scoped_task_row(conn, scope=unit, pid=pid)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+    asyncio.run(Harness()._kanban_dispatcher_watcher())
+    assert shims.wait_for(lambda: not kb._pid_alive(pid), timeout=8.0)
+
+
+# ---------------------------------------------------------------------------
+# Migration from the pre-isolation schema
+# ---------------------------------------------------------------------------
+
+# The tasks table as of v2026.8.31 — BEFORE worker_pid_started_at,
+# worker_scope, or worker_registered_at existed. Column-for-column copy of
+# the shipped CREATE (comments trimmed), so the migration test opens a
+# genuinely old-shaped file.
+_PRE_CHANGE_TASKS_SQL = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id                   TEXT PRIMARY KEY,
+    title                TEXT NOT NULL,
+    body                 TEXT,
+    assignee             TEXT,
+    status               TEXT NOT NULL,
+    priority             INTEGER DEFAULT 0,
+    created_by           TEXT,
+    created_at           INTEGER NOT NULL,
+    started_at           INTEGER,
+    completed_at         INTEGER,
+    workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
+    workspace_path       TEXT,
+    branch_name          TEXT,
+    project_id           TEXT,
+    claim_lock           TEXT,
+    claim_expires        INTEGER,
+    tenant               TEXT,
+    result               TEXT,
+    idempotency_key      TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    worker_pid           INTEGER,
+    last_failure_error   TEXT,
+    max_runtime_seconds  INTEGER,
+    last_heartbeat_at    INTEGER,
+    current_run_id       INTEGER,
+    workflow_template_id TEXT,
+    current_step_key     TEXT,
+    skills               TEXT,
+    model_override       TEXT,
+    provider_override    TEXT,
+    reasoning_effort     TEXT,
+    max_retries          INTEGER,
+    goal_mode            INTEGER NOT NULL DEFAULT 0,
+    goal_max_turns       INTEGER,
+    session_id           TEXT,
+    block_kind           TEXT,
+    block_recurrences    INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+def test_migration_adds_worker_columns_without_data_loss(tmp_path, monkeypatch):
+    """A DB created with the pre-change schema opens cleanly: the three
+    worker-lifecycle columns appear via the additive migration, and every
+    legacy row survives intact."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    db_path = kb.kanban_db_path(board="default")
+    import sqlite3
+
+    raw = sqlite3.connect(db_path)
+    raw.executescript(_PRE_CHANGE_TASKS_SQL)
+    now = int(time.time())
+    raw.execute(
+        "INSERT INTO tasks (id, title, assignee, status, created_by, "
+        "created_at, started_at, worker_pid, claim_lock, claim_expires, "
+        "current_run_id, consecutive_failures) "
+        "VALUES ('t_legacy1', 'legacy run', 'elias', 'running', 'op', "
+        "?, ?, 4242, 'oldhost:1', ?, 3, 2)",
+        (now - 5000, now - 4000, now - 60),
+    )
+    raw.execute(
+        "INSERT INTO tasks (id, title, assignee, status, created_by, "
+        "created_at, completed_at) "
+        "VALUES ('t_legacy2', 'legacy done', 'maya', 'done', 'op', ?, ?)",
+        (now - 9000, now - 8000),
+    )
+    raw.commit()
+    raw.close()
+
+    conn = kb.connect(db_path)
+    try:
+        cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(tasks)")
+        }
+        assert {"worker_pid_started_at", "worker_scope",
+                "worker_registered_at"} <= cols
+        legacy = conn.execute(
+            "SELECT title, assignee, status, worker_pid, claim_lock, "
+            "       consecutive_failures, worker_pid_started_at, "
+            "       worker_scope, worker_registered_at "
+            "FROM tasks WHERE id = 't_legacy1'"
+        ).fetchone()
+        assert legacy["title"] == "legacy run"
+        assert legacy["status"] == "running"
+        assert legacy["worker_pid"] == 4242
+        assert legacy["claim_lock"] == "oldhost:1"
+        assert legacy["consecutive_failures"] == 2
+        assert legacy["worker_pid_started_at"] is None
+        assert legacy["worker_scope"] is None
+        assert legacy["worker_registered_at"] is None
+        done = conn.execute(
+            "SELECT status, completed_at FROM tasks WHERE id = 't_legacy2'"
+        ).fetchone()
+        assert done["status"] == "done"
+        assert done["completed_at"] == now - 8000
+    finally:
+        conn.close()

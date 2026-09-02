@@ -333,26 +333,45 @@ model:
 kanban:
   review_dispatch: true
   # Worker isolation: run each kanban worker in its own transient systemd
-  # user scope (hermes-kanban-<task_id>.scope) instead of inside the
-  # gateway's cgroup/process group. Workers then cannot OOM-throttle or be
-  # killed with the gateway, their memory is bounded per worker
-  # (MemoryMax + MemorySwapMax), and a gateway restart re-adopts the
-  # still-running worker instead of marking its run crashed.
+  # user scope (hermes-kanban-<task>-r<run_id>.scope — the run suffix keeps
+  # a respawn from colliding with a lingering scope from the previous
+  # attempt) instead of inside the gateway's cgroup/process group. Workers
+  # then cannot OOM-throttle or be killed with the gateway, their memory is
+  # bounded per worker (MemoryMax + MemorySwapMax), and a gateway restart
+  # re-adopts the still-running worker instead of marking its run crashed.
+  # The worker SELF-REGISTERS its pid + start-time fingerprint on first
+  # activity (the pid recorded at spawn is the systemd-run launcher's,
+  # which dies with the gateway), so liveness is never judged by the
+  # launcher and never fooled by PID reuse; until registration the run is
+  # "starting" and a run that never registers within its grace window is
+  # recorded as a spawn failure, not a crash.
   #   auto          scope when systemd-run --user --scope works on this
   #                 host (Linux with a user systemd session), otherwise
   #                 fall back to the classic unisolated spawn (macOS,
-  #                 containers). Default.
-  #   systemd-scope same, but log a warning when the scope cannot be
-  #                 created instead of silently falling back.
+  #                 containers). Default. A refused systemd-run launch
+  #                 also falls back to an unisolated spawn for that run,
+  #                 with a warning.
+  #   systemd-scope same, but a refused launch FAILS the spawn loudly
+  #                 (recorded as spawn_failed with the systemd-run stderr)
+  #                 instead of silently falling back.
   #   none          never isolate — workers spawn and are killed exactly
   #                 as before this feature existed. Rollback setting.
   worker_isolation: auto
-  # Per-worker cgroup memory ceiling in MiB when isolation is active
-  # (MemoryMax; MemorySwapMax is set to the same value). Default: the
+  # Per-worker cgroup memory ceiling in MiB when isolation is active.
+  # BOTH MemoryMax and MemorySwapMax are set to this value. Default: the
   # tighter of the gateway's own cgroup limit and half the host RAM,
   # floored at 64 and capped at 4096. Explicit values are clamped to
-  # those same bounds.
+  # those same bounds; when no bound can be computed BOTH properties are
+  # omitted (never MemoryMax=0, which means "no limit").
   # worker_memory_max_mb: 2048
+  # What happens to still-running scoped workers on a graceful gateway
+  # shutdown. Default false: workers keep running through the restart and
+  # the next gateway re-adopts them (claims rewritten, runs continue).
+  # Set true to stop every scoped worker this host still claims
+  # (verified whole-scope teardown, SIGTERM→SIGKILL) as the gateway
+  # exits. Crashes never stop workers either way — re-adoption covers
+  # them.
+  # worker_isolation_stop_on_shutdown: false
 
 # =============================================================================
 # Terminal Tool Configuration

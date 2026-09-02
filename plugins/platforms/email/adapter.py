@@ -7,8 +7,12 @@ Uses IMAP to receive and SMTP to send messages.
 Environment variables:
     EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
     EMAIL_IMAP_PORT     — IMAP server port (default: 993)
+    EMAIL_IMAP_SECURITY — IMAP transport: tls, starttls, or plain (default: tls)
+    EMAIL_IMAP_TLS_VERIFY — Verify the IMAP TLS certificate (default: true)
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
+    EMAIL_SMTP_SECURITY — SMTP transport: tls, starttls, or plain (port-based default)
+    EMAIL_SMTP_TLS_VERIFY — Verify the SMTP TLS certificate (default: true)
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
@@ -554,8 +558,26 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+        self._imap_security = (
+            _get_secret("EMAIL_IMAP_SECURITY", "")
+            or extra.get("imap_security", "")
+            or "tls"
+        ).strip().lower()
+        self._imap_tls_verify = _esecret_bool(
+            "EMAIL_IMAP_TLS_VERIFY",
+            is_truthy_value(extra.get("imap_tls_verify"), default=True),
+        )
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        self._smtp_security = (
+            _get_secret("EMAIL_SMTP_SECURITY", "")
+            or extra.get("smtp_security", "")
+            or ("tls" if self._smtp_port == 465 else "starttls")
+        ).strip().lower()
+        self._smtp_tls_verify = _esecret_bool(
+            "EMAIL_SMTP_TLS_VERIFY",
+            is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+        )
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -627,6 +649,40 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    @staticmethod
+    def _tls_context(verify: bool) -> ssl.SSLContext:
+        """Return a verified context unless loopback/custom TLS opts out."""
+        return ssl.create_default_context() if verify else ssl._create_unverified_context()
+
+    def _connect_imap(self) -> imaplib.IMAP4:
+        """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
+        security = self._imap_security.replace("_", "-")
+        valid_modes = {
+            "tls", "ssl", "implicit", "implicit-tls",
+            "starttls", "start-tls",
+            "none", "plain", "plaintext",
+        }
+        if security not in valid_modes:
+            raise ValueError(
+                "Unsupported EMAIL_IMAP_SECURITY value: " + self._imap_security
+            )
+        if security in {"tls", "ssl", "implicit", "implicit-tls"}:
+            return imaplib.IMAP4_SSL(
+                self._imap_host,
+                self._imap_port,
+                timeout=30,
+                ssl_context=self._tls_context(self._imap_tls_verify),
+            )
+
+        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
+        if security in {"starttls", "start-tls"}:
+            try:
+                imap.starttls(ssl_context=self._tls_context(self._imap_tls_verify))
+            except Exception:
+                _close_imap(imap)
+                raise
+        return imap
+
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
@@ -642,22 +698,33 @@ class EmailAdapter(BasePlatformAdapter):
         Returns a connected SMTP object with TLS established — callers
         can proceed directly to ``login()``.
         """
-        ctx = ssl.create_default_context()
+        ctx = self._tls_context(self._smtp_tls_verify)
         host = self._smtp_host
         port = self._smtp_port
+        security = self._smtp_security.replace("_", "-")
+        valid_modes = {
+            "tls", "ssl", "implicit", "implicit-tls",
+            "starttls", "start-tls",
+            "none", "plain", "plaintext",
+        }
+        if security not in valid_modes:
+            raise ValueError(
+                "Unsupported EMAIL_SMTP_SECURITY value: " + self._smtp_security
+            )
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
             smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
             smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
-            if port == 465:
+            if security in {"tls", "ssl", "implicit", "implicit-tls"}:
                 return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
             smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
-            try:
-                smtp.starttls(context=ctx)
-            except Exception:
-                smtp.close()
-                raise
+            if security in {"starttls", "start-tls"}:
+                try:
+                    smtp.starttls(context=ctx)
+                except Exception:
+                    smtp.close()
+                    raise
             return smtp
 
         try:
@@ -711,7 +778,7 @@ class EmailAdapter(BasePlatformAdapter):
             # (#79889).
             imap = None
             try:
-                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap = self._connect_imap()
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
@@ -855,7 +922,7 @@ class EmailAdapter(BasePlatformAdapter):
         results = []
         imap: Optional[imaplib.IMAP4] = None
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
@@ -1450,9 +1517,25 @@ async def _standalone_send(
         smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):
         smtp_port = 587
+    smtp_security = (
+        _get_secret("EMAIL_SMTP_SECURITY", "")
+        or str(extra.get("smtp_security") or "")
+        or ("tls" if smtp_port == 465 else "starttls")
+    ).strip().lower().replace("_", "-")
+    smtp_tls_verify = _esecret_bool(
+        "EMAIL_SMTP_TLS_VERIFY",
+        is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+    )
+    valid_modes = {
+        "tls", "ssl", "implicit", "implicit-tls",
+        "starttls", "start-tls",
+        "none", "plain", "plaintext",
+    }
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+    if smtp_security not in valid_modes:
+        return {"error": "Unsupported EMAIL_SMTP_SECURITY value: " + smtp_security}
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -1461,8 +1544,21 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        ctx = (
+            _ssl.create_default_context()
+            if smtp_tls_verify
+            else _ssl._create_unverified_context()
+        )
+        if smtp_security in {"tls", "ssl", "implicit", "implicit-tls"}:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            if smtp_security in {"starttls", "start-tls"}:
+                try:
+                    server.starttls(context=ctx)
+                except Exception:
+                    server.close()
+                    raise
         server.login(address, password)
         server.send_message(msg)
         server.quit()

@@ -361,9 +361,13 @@ kanban:
   #                 is verified cleaned up; if even that fails the spawn
   #                 is recorded as spawn_failed instead of risking a
   #                 second, unisolated worker beside it.
-  #   systemd-scope same, but a refused launch FAILS the spawn loudly
-  #                 (recorded as spawn_failed with the systemd-run stderr)
-  #                 instead of silently falling back.
+  #   systemd-scope same, but strict: NEVER degrades. An unusable
+  #                 systemd (probe failure, or systemd-run vanishing
+  #                 between probe and launch) FAILS the spawn loudly
+  #                 (recorded as spawn_failed with the reason) instead of
+  #                 silently falling back — an operator who pinned strict
+  #                 chose "no worker" over "unisolated worker". Only
+  #                 auto may fall back.
   #   none          never isolate — workers spawn and are killed exactly
   #                 as before this feature existed. Rollback setting.
   worker_isolation: auto
@@ -380,9 +384,11 @@ kanban:
   # Set true to stop every scoped worker this host still claims
   # (verified whole-scope teardown, SIGTERM→SIGKILL) as the gateway
   # exits, holding the dispatcher lock until the cleanup finishes or its
-  # budget (each unit's own verified-stop deadline) expires; whatever is
-  # left is logged for the next gateway's re-adoption sweep. Crashes
-  # never stop workers either way — re-adoption covers them.
+  # budget expires — ONE ceiling (a base for the board scans plus each
+  # expected unit's own verified-stop deadline) covering the pre-scan,
+  # the stops, and the queued-stop drain; whatever is left (pending or
+  # in-flight units) is logged for the next gateway's re-adoption sweep.
+  # Crashes never stop workers either way — re-adoption covers them.
   # worker_isolation_stop_on_shutdown: false
 
 # =============================================================================

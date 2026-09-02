@@ -436,6 +436,55 @@ class TestSecondaryStartupFailureRecovery:
         assert runner._profile_failed_platforms == {}
 
     @pytest.mark.asyncio
+    async def test_token_lock_initial_failure_parks_fatal_not_retried(
+        self, monkeypatch
+    ):
+        """Salvage of #83183 claim 2: a secondary whose token is held by a live
+        foreign gateway (``{scope}_lock``, emitted retryable by
+        ``_acquire_platform_lock``) is an ownership conflict — park it fatal
+        like ``duplicate_credential`` instead of retry-storming the token."""
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        failed.fatal_error_code = "discord-bot-token_lock"
+        failed.fatal_error_message = "Discord bot token already in use (PID 4242)."
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+        statuses = []
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda key, **kw: statuses.append((key, kw)),
+        )
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert failed.disconnected is True
+        assert runner._background_tasks == set()
+        assert runner._profile_failed_platforms == {}
+        assert statuses == [
+            (
+                "reviewer:discord",
+                {
+                    "platform_state": "fatal",
+                    "error_code": "discord-bot-token_lock",
+                    "error_message": failed.fatal_error_message,
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
     async def test_handoff_failure_is_logged_not_raised(self, monkeypatch, caplog):
         """If the scheduler raises at bridge handoff, the parked task must not
         die as an unretrieved-task exception — the failure surfaces in the log."""

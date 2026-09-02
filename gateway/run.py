@@ -3064,6 +3064,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    is_global_startup_conflict,
     parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
@@ -14100,20 +14101,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Python logs "Unclosed client session" at process exit.
                 await self._safe_adapter_disconnect(adapter, platform)
                 if adapter.has_fatal_error:
+                    # A live foreign holder of this bot token / identity is
+                    # a single-writer ownership conflict, not a transient
+                    # blip — even though ``_acquire_platform_lock`` emits it
+                    # retryable so a MID-RUN reconnect can recover (#54167).
+                    # At startup route it as non-retryable: with nothing
+                    # connected the gateway exits 78 instead of sitting alive
+                    # and deaf in the retry queue forever (#83183).
+                    _retryable = adapter.fatal_error_retryable and not (
+                        is_global_startup_conflict(adapter.fatal_error_code)
+                    )
                     self._update_platform_runtime_status(
                         platform.value,
-                        platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+                        platform_state="retrying" if _retryable else "fatal",
                         error_code=adapter.fatal_error_code,
                         error_message=adapter.fatal_error_message,
                     )
                     target = (
                         startup_retryable_errors
-                        if adapter.fatal_error_retryable
+                        if _retryable
                         else startup_nonretryable_errors
                     )
                     target.append(f"{platform.value}: {adapter.fatal_error_message}")
                     # Queue for reconnection if the error is retryable
-                    if adapter.fatal_error_retryable:
+                    if _retryable:
                         self._failed_platforms[platform] = {
                             "config": platform_config,
                             "attempts": 1,
@@ -17057,6 +17068,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduler would.
         """
         if not getattr(adapter, "fatal_error_retryable", True):
+            return
+        if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
+            # Same startup contract as the primary path: a live foreign holder
+            # of this profile's token/identity is an ownership conflict, not
+            # a transient blip. Park it fatal (like ``duplicate_credential``)
+            # instead of retry-storming the token every backoff (#83183).
+            logger.error(
+                "[MULTIPLEX] Profile '%s': %s credential is held by another "
+                "gateway (%s) — parked, not retried. %s",
+                profile_name,
+                platform.value,
+                adapter.fatal_error_code,
+                adapter.fatal_error_message or "",
+            )
+            self._update_platform_runtime_status(
+                f"{profile_name}:{platform.value}",
+                platform_state="fatal",
+                error_code=adapter.fatal_error_code,
+                error_message=adapter.fatal_error_message,
+            )
             return
 
         async def _await_running_then_schedule() -> None:

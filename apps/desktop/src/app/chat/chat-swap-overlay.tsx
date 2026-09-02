@@ -48,9 +48,9 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
     <div
       aria-hidden
       className={cn(
-        'pointer-events-none absolute inset-0 z-50 flex items-center justify-center transition-opacity duration-150 ease-out',
+        'pointer-events-none absolute inset-0 z-50 flex items-center justify-center',
         botMode && coverVisible ? 'bg-(--ui-chat-surface-background)' : '',
-        coverVisible ? 'opacity-100' : 'opacity-0'
+        coverVisible ? 'opacity-100' : 'opacity-0 transition-opacity duration-150 ease-out'
       )}
       data-glass-opaque={botMode && coverVisible ? '' : undefined}
       data-slot="chat-swap-overlay"

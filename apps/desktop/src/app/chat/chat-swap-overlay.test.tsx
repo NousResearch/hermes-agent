@@ -72,6 +72,9 @@ describe('ChatSwapOverlay', () => {
     const { container, rerender } = render(<ChatSwapOverlay botMode profile="persephone" />)
     const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
 
+    expect(overlay?.className).toContain('opacity-100')
+    expect(overlay?.className).not.toContain('transition-opacity')
+
     rerender(<ChatSwapOverlay botMode profile={null} />)
 
     // Keep one fully painted cover between transcript commit/scroll restoration
@@ -85,5 +88,6 @@ describe('ChatSwapOverlay', () => {
 
     act(() => vi.advanceTimersByTime(16))
     expect(overlay?.className).toContain('opacity-0')
+    expect(overlay?.className).toContain('transition-opacity')
   })
 })

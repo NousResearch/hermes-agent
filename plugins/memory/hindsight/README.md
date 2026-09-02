@@ -78,6 +78,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
+| `recall_async` | `false` | Start current-message recall at turn start without waiting. Inject it when ready before request construction; otherwise carry the late result to the next turn. `recall_sync` takes precedence when both are enabled. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**

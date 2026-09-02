@@ -189,6 +189,20 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def start_prefetch(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        turn_number: int = 0,
+    ) -> None:
+        """Optionally start current-turn recall without waiting.
+
+        Called near turn start. Providers may begin asynchronous work here;
+        :meth:`prefetch` later collects only results that are already ready.
+        The default is a no-op, preserving existing provider behavior.
+        """
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.
 

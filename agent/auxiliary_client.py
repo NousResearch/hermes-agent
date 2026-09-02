@@ -535,6 +535,37 @@ def _anthropic_event_has_content(event: Any) -> bool:
     return False
 
 
+def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
+    """Per-event callback for the Anthropic auxiliary wire.
+
+    Records provider-response timing for every frame, ticks the forward-progress
+    hook only for substantive payloads (keepalive pings must not keep a stalled
+    summary alive), and — #99692 — stops the stream at the waiting host's
+    absolute deadline (``aux_stream_deadline``) or on an explicit hard cancel,
+    the same two stop conditions the chat.completions and Codex wires honour.
+    The ``TimeoutError`` is phrased with "timed out" so ``_is_timeout_error``
+    classifies it like any other request timeout.
+    """
+    host_deadline = _current_aux_stream_deadline()
+    started = time.monotonic()
+
+    def _on_event(event: Any) -> None:
+        if _anthropic_event_has_content(event):
+            _notify_aux_provider_response()
+        else:
+            _notify_aux_timing_response()
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
+        if host_deadline is not None and time.monotonic() >= host_deadline:
+            raise TimeoutError(
+                "Anthropic auxiliary stream timed out at the host compression "
+                f"deadline after {time.monotonic() - started:.0f}s "
+                "(the caller already stopped waiting)"
+            )
+
+    return _on_event
+
+
 _CODEX_PROGRESS_DELTA_TYPES = frozenset(
     {
         "response.output_text.delta",
@@ -1937,6 +1968,15 @@ class _CodexCompletionsAdapter:
         if total_timeout is not None:
             no_progress_timeout = min(no_progress_timeout, float(total_timeout))
         hard_deadline = _start_monotonic + _aux_stream_total_ceiling(total_timeout)
+        # #99692: the waiting host's absolute deadline (compress_context
+        # publishes its commit-fence ceiling via aux_stream_deadline) clamps
+        # the hard ceiling so the re-armable watchdog Timer wakes and severs
+        # the socket at the instant the host stops waiting — a live Codex
+        # stream cannot otherwise be stopped by a per-event cancel check
+        # while it is blocked between events.
+        _host_deadline = _current_aux_stream_deadline()
+        if isinstance(_host_deadline, (int, float)) and _host_deadline < hard_deadline:
+            hard_deadline = float(_host_deadline)
         deadline_lock = threading.Lock()
         progress_deadline = [_start_monotonic + no_progress_timeout]
         saw_content = threading.Event()
@@ -2552,13 +2592,7 @@ class _AnthropicCompletionsAdapter:
             # stalled summary open. No-op when no hook is installed (None
             # keeps the fast get_final_message path).
             on_stream_event=(
-                (
-                    lambda event: (
-                        _notify_aux_provider_response()
-                        if _anthropic_event_has_content(event)
-                        else _notify_aux_timing_response()
-                    )
-                )
+                _anthropic_aux_stream_event_hook()
                 if _aux_progress_active()
                 else None
             ),

@@ -1282,12 +1282,21 @@ def create_anthropic_message(
                     for _event in stream:
                         try:
                             on_stream_event(_event)
+                        except TimeoutError:
+                            # The callback is the caller's deadline seam
+                            # (#99692: the host waiting on this summary has
+                            # already given up). Abandon the stream — the
+                            # ``with`` closes it — instead of streaming an
+                            # answer nobody will read.
+                            raise
                         except Exception:
                             logger.debug(
                                 "%son_stream_event callback failed",
                                 log_prefix, exc_info=True,
                             )
                 return stream.get_final_message()
+        except TimeoutError:
+            raise
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
                 raise

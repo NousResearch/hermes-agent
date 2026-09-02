@@ -1205,6 +1205,13 @@ gateway:
   # if an agent has not unwound. Keep it below the service-manager stop budget.
   # signal_interrupt_grace_timeout: 1
 
+  # Let platform adapters honor HTTP_PROXY / HTTPS_PROXY / NO_PROXY (and
+  # SSL_CERT_FILE) from the process environment, plus macOS system-proxy
+  # auto-detection. Set to false when the gateway inherits a proxy it must not
+  # use (e.g. a Windows Scheduled Task picking up a local Clash/V2Ray proxy that
+  # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
+  # trust_env: true
+
 # =============================================================================
 # Toolsets
 # =============================================================================

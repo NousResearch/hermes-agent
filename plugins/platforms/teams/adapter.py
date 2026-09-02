@@ -103,6 +103,7 @@ TextBlock = None  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -641,7 +642,7 @@ async def _standalone_send(
         # Per-request timeouts so a slow STS endpoint cannot starve the
         # subsequent activity POST of its budget.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
-        async with _aiohttp.ClientSession(trust_env=True) as session:
+        async with _aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
             async with session.post(
                 token_url,
                 data={

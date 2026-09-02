@@ -43,6 +43,7 @@ from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -1825,7 +1826,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "Slack's ephemeral reply limit.]_"
             )
         try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):
                     payload = {
                         "response_type": "ephemeral",

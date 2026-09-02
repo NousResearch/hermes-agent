@@ -62,6 +62,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -496,7 +497,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
         # local patch, so QQ can regress to direct-connect timeouts after update.
-        self._session = aiohttp.ClientSession(trust_env=True)
+        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
         ws_proxy = (
             os.getenv("WSS_PROXY")
             or os.getenv("wss_proxy")

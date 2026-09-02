@@ -489,7 +489,8 @@ def resolve_proxy_url(
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
     Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
-    of ``target_hosts``.
+    of ``target_hosts``. Steps 1-2 are skipped when ``gateway.trust_env`` is
+    false in config.yaml (see :func:`gateway_trust_env`).
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
@@ -497,6 +498,10 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+    if not gateway_trust_env():
+        # gateway.trust_env: false — ignore inherited generic proxy env and
+        # system proxy; only the explicit per-platform var above is honored.
+        return None
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
@@ -538,6 +543,28 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
             )
             return {}
     return {"proxy": proxy_url}
+
+
+def gateway_trust_env() -> bool:
+    """Return the ``trust_env`` value every gateway ``aiohttp.ClientSession`` uses.
+
+    Reads ``gateway.trust_env`` from config.yaml (default ``True``: honor
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY`` / ``SSL_CERT_FILE`` from the
+    process environment). Set it to ``false`` when the gateway inherits a
+    proxy env it should not use — e.g. a Windows Scheduled Task picking up a
+    Clash/V2Ray ``HTTP_PROXY`` the interactive shell never sees (#48820).
+    One knob for all platform adapters; fail-open to the default if config
+    is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly as _load_config
+        gw = (_load_config() or {}).get("gateway") or {}
+    except Exception:
+        return True
+    value = gw.get("trust_env", True) if isinstance(gw, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value) if value is not None else True
 
 
 def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:

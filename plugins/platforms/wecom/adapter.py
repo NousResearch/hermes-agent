@@ -63,6 +63,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -723,7 +724,7 @@ class WeComAdapter(BasePlatformAdapter):
         except ImportError:
             _ssl_ctx = _ssl.create_default_context()
         _connector = aiohttp.TCPConnector(ssl=_ssl_ctx)
-        self._session = aiohttp.ClientSession(trust_env=True, connector=_connector)
+        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_connector)
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,

@@ -128,6 +128,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -763,7 +764,7 @@ def _create_matrix_session(proxy_url: str | None):
     import aiohttp
 
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
@@ -778,7 +779,7 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     return aiohttp.ClientSession(proxy=proxy_url)
 

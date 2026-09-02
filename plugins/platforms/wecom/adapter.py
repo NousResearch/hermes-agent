@@ -189,23 +189,6 @@ STREAM_SAFE_DURATION_SECONDS = 330.0  # 5.5 min — Layer 2 clock fallback
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0  # 2 min — Layer 1 heartbeat cadence
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False  # Layer 1 off unless config opts in
 
-# ── Block-streaming parameters (aligned with the official wecom-openclaw-plugin) ──
-# The official plugin (wecom-openclaw-plugin/src/webhook/helpers.ts) coalesces
-# incoming LLM tokens into sentence-aligned blocks before sending each frame,
-# rather than echoing every char-delta.  This produces ~1 frame per natural
-# sentence boundary instead of one per 60-char delta, which means:
-#   - frame cadence drops from "every 200ms" to "every 0.5-2s typical",
-#   - the 5s ack timeout almost never fires (frames are spaced wider apart),
-#   - and the user sees content land in complete thought-units rather than
-#     mid-sentence cursors moving every tick.
-#
-# Values copied verbatim from the official plugin so we match its behaviour
-# in WeCom's rate-limit budget (≈30 frames/min/chat).
-
-# Sentence terminators recognised by the block chunker.  Includes the most
-# common Chinese full-stop / exclamation / question forms; matches the
-# official plugin's "sentence" break preference for the WeCom channel.
-
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
 VOICE_MAX_BYTES = 2 * 1024 * 1024

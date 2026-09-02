@@ -176,7 +176,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
   return out
 }
 
-const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
+export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   const match = AGENT_MESSAGE_RE.exec(text)
   const sender = (match?.[1] || match?.[3] || 'agent').trim()
   const handle = (match?.[2] || match?.[3] || sender).trim()
@@ -197,35 +197,38 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
     }
   }, [handle])
 
+  const handleDiffers = handle.toLowerCase() !== sender.toLowerCase()
+  const attribution = handleDiffers ? `${sender} (@${handle})` : sender
+
   // Grok-bots shape: an inter-agent delivery is a timeline EVENT, not a
-  // conversation bubble — a subtle centered notice ("Message from 🤖 X"),
-  // with the delivered text one click away instead of shouting in the
-  // transcript. The recipient's reply below it stays a normal assistant
-  // message, so the exchange still reads in order.
+  // conversation bubble — an attributed card with the sender's own avatar,
+  // not a generic glyph, and the delivered body always visible (a busy
+  // multi-agent conversation is unreadable if every turn needs a click to
+  // reveal what was actually said). The recipient's reply below it stays a
+  // normal assistant message, so the exchange still reads in order.
   return (
     <div
-      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+      aria-label={`Message from ${attribution}`}
+      className="flex max-w-[min(86%,44rem)] flex-col gap-1 self-center rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2"
+      data-handle={handle}
+      data-sender={sender}
       data-slot="aui_agent-message-note"
     >
-      <span className="flex items-center justify-center gap-1.5">
+      <div className="flex items-center gap-2 text-[0.6875rem] leading-4 text-muted-foreground/70">
         {avatar ? (
-          <img alt="" aria-hidden className="size-4 shrink-0 rounded-full object-cover" src={avatar} />
+          <img alt="" aria-hidden className="size-6 shrink-0 rounded-md object-cover" src={avatar} />
         ) : (
-          <span aria-hidden className="text-[0.8125rem] leading-none">
+          <span aria-hidden className="grid size-6 shrink-0 place-items-center text-sm leading-none">
             🤖
           </span>
         )}
-        <span className="wrap-anywhere">Message from {sender}</span>
-      </span>
+        <span className="wrap-anywhere font-medium text-foreground/80">{sender}</span>
+        {handleDiffers && <span className="wrap-anywhere text-muted-foreground/55">@{handle}</span>}
+      </div>
       {body && (
-        <details className="self-center">
-          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
-            show message
-          </summary>
-          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-            <UserMessageText text={body} />
-          </div>
-        </details>
+        <div className="pl-8 text-left text-[0.8125rem] leading-5 text-foreground/90" data-slot="aui_agent-message-body">
+          <UserMessageText text={body} />
+        </div>
       )}
     </div>
   )

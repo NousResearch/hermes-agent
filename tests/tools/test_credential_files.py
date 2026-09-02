@@ -112,6 +112,34 @@ class TestSkillsDirectoryMount:
         # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
+    def test_sanitized_copy_skips_bookkeeping_dirs(self, tmp_path):
+        """The symlink-safe copy is what gets mounted, so it must apply the
+        same EXCLUDED_SKILL_DIRS rule as the per-file sync path."""
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill" / "references").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "blob.bin").write_bytes(b"\0" * 64)
+        # Force the sanitizing copy path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_skills_directory_mount()
+
+        safe_path = Path(mounts[0]["host_path"])
+        assert safe_path != skills_dir
+        assert (safe_path / "cat" / "myskill" / "SKILL.md").exists()
+        assert (safe_path / "cat" / "myskill" / "references" / "api.md").exists()
+        assert not (safe_path / "evil_link").exists()
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            assert not (safe_path / excluded).exists(), excluded
+
     def test_no_symlinks_returns_original_dir(self, tmp_path):
         """When no symlinks exist, the original dir is returned (no copy)."""
         hermes_home = tmp_path / ".hermes"

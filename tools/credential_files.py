@@ -326,16 +326,19 @@ def _safe_skills_path(skills_dir: Path) -> str:
     safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
     _safe_skills_tempdir = safe_dir
 
-    for item in skills_dir.rglob("*"):
-        if item.is_symlink():
-            continue
-        rel = item.relative_to(skills_dir)
-        target = safe_dir / rel
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif item.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(item), str(target))
+    # Same exclusion rule as the per-file sync path (_iter_syncable_files):
+    # the sanitized copy is what gets mounted, so it must not carry the
+    # bookkeeping trees either. Prune before descending so a multi-GB
+    # .curator_backups is never even walked.
+    for dirpath, dirnames, filenames in os.walk(skills_dir):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
+        base = Path(dirpath)
+        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            item = base / name
+            if item.is_symlink() or not item.is_file():
+                continue
+            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
 
     def _cleanup():
         if safe_dir.is_dir():

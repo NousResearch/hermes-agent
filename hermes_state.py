@@ -2267,6 +2267,8 @@ def classify_persistence_error(exc_or_str) -> str:
         return "replaced"
     if isinstance(exc_or_str, StateDbCorruptError):
         return "corrupt"
+    if isinstance(exc_or_str, DeletedWalGenerationError):
+        return "replaced"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
@@ -2275,6 +2277,8 @@ def classify_persistence_error(exc_or_str) -> str:
     if "being compressed" in text or "compression lease" in text:
         return "compression"
     if "was replaced underneath" in text:
+        return "replaced"
+    if "deleted state.db-wal" in text or "deleted state.db-shm" in text:
         return "replaced"
     # Structural corruption BEFORE the lock and disk buckets: "database disk
     # image is malformed" contains "disk" (and some wrapped corruption
@@ -4351,6 +4355,17 @@ class StateDbReplacedError(RuntimeError):
     """
 
 
+class DeletedWalGenerationError(RuntimeError):
+    """A live process holds a deleted state.db-wal / -shm generation.
+
+    Opening or writing through this handle would mint a second WAL inode
+    (or keep committing on the orphan) — the split-brain that produces
+    intermittent SQLITE_CORRUPT / SQLITE_IOERR. Stop the writers; do not
+    unlink the WAL yourself. ``database.journal_mode: delete`` is operator
+    containment, not a default change.
+    """
+
+
 # SQLite header: 4-byte big-endian application_id at offset 68. Distinct from
 # inode: ``cp`` onto the same path keeps st_ino and truncates+rewrites.
 _STATE_DB_APPLICATION_ID_OFFSET = 68
@@ -4360,6 +4375,14 @@ _STATE_DB_REPLACED_MSG = (
     "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
     "gateway pending_messages spool) and restore or reopen after operator "
     "intervention."
+)
+_DELETED_WAL_GENERATION_MSG = (
+    "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
+    "inode while the path names a different (or missing) generation. "
+    "Refusing to open or write so a second WAL cannot be minted. "
+    "Stop the gateway, dashboard, and cron writers that hold the deleted "
+    "sidecar, then reopen. Do not delete the WAL yourself. "
+    "database.journal_mode: delete is operator containment, not a new default."
 )
 
 
@@ -4522,6 +4545,91 @@ def _stat_db_file_identity(path: Path) -> "Optional[tuple]":
     if not st.st_dev or not st.st_ino:
         return None
     return (st.st_dev, st.st_ino)
+
+
+def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
+    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
+    identities: Dict[str, tuple] = {}
+    base = os.fspath(db_path)
+    for suffix in ("-wal", "-shm"):
+        ident = _stat_db_file_identity(Path(base + suffix))
+        if ident is not None:
+            identities[suffix] = ident
+    return identities
+
+
+def _canonical_sqlite_path(path: str) -> str:
+    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
+    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
+
+
+def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
+    base = os.path.abspath(os.fspath(db_path))
+    return {
+        _canonical_sqlite_path(base + "-wal"),
+        _canonical_sqlite_path(base + "-shm"),
+    }
+
+
+def iter_deleted_sqlite_sidecar_holders(
+    db_path, include_self: bool = True
+) -> List[Tuple[int, str]]:
+    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.
+
+    Linux-only (``/proc/<pid>/fd`` readlink). Windows and other hosts
+    return ``[]`` — Windows cannot unlink a sidecar another process still
+    holds, and macOS does not use the `` (deleted)`` suffix.
+
+    ``include_self=True`` is required on the SessionDB open/write refuse
+    path: the in-process writer that still holds the orphan inode is the
+    one that must not mint a replacement WAL (and must stop committing).
+    ``_foreign_state_db_holders`` keeps skipping this PID for FTS
+    maintenance so a process does not block its own optional repair.
+    """
+    if _IS_WINDOWS or not sys.platform.startswith("linux"):
+        return []
+
+    holders: List[Tuple[int, str]] = []
+    own_pid = os.getpid()
+    watched = _watched_sqlite_sidecar_paths(db_path)
+    try:
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == own_pid and not include_self:
+                continue
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if " (deleted)" not in target:
+                    continue
+                if _canonical_sqlite_path(target) in watched:
+                    holders.append((pid, target))
+    except Exception as exc:
+        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
+        return holders
+    return holders
+
+
+def refuse_deleted_wal_generation(db_path) -> None:
+    """Raise if any process holds a deleted WAL/SHM generation for *db_path*.
+
+    Called *before* ``sqlite3.connect`` so a second opener cannot mint a
+    replacement WAL inode while a live writer still holds the orphan.
+    """
+    holders = iter_deleted_sqlite_sidecar_holders(db_path, include_self=True)
+    if not holders:
+        return
+    logger.error(_DELETED_WAL_GENERATION_MSG)
+    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
 
 # ── Process-wide shared SessionDB registry (#90837) ──
@@ -5289,6 +5397,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # restored file (see StateDbCorruptError).
         self._db_corrupt = False
         self._db_corrupt_reason = ""
+        self._db_sidecar_identity: Dict[str, tuple] = {}
+        self._db_wal_generation_lost = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -5400,6 +5510,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # readonly database" from deep inside _init_schema.
             if not read_only:
                 preflight_db_writability(self.db_path, db_label="state.db")
+                # Refuse before the first sqlite3.connect so we cannot mint a
+                # replacement WAL while a live writer still holds a deleted
+                # sidecar inode.
+                refuse_deleted_wal_generation(self.db_path)
 
             # #68474 / #97568: Serialize startup across zero-byte check, quarantine,
             # connect, and schema commit so concurrent openers don't race on an
@@ -5440,6 +5554,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
+                refuse_deleted_wal_generation(self.db_path)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
@@ -5839,6 +5954,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"structural corruption; refusing to reopen for a {context} "
                 "after close(). "
             )
+        if self._db_wal_generation_lost or self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -6346,6 +6463,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _record_db_file_identity(self) -> None:
         """Snapshot inode plus the on-disk generation header when present."""
         self._db_file_identity = _stat_db_file_identity(self.db_path)
+        self._db_sidecar_identity = _stat_sqlite_sidecar_identity(self.db_path)
         disk_id = _read_sqlite_application_id(self.db_path)
         if disk_id:
             self._db_file_application_id = disk_id
@@ -6380,11 +6498,57 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         logger.error(_STATE_DB_REPLACED_MSG)
         raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
 
+    def _wal_generation_was_lost(self) -> bool:
+        """True when the WAL/SHM generation this instance opened is gone.
+
+        Two independent cheap signals, either sufficient:
+
+        - a sidecar inode recorded at open is missing or has been replaced
+          by a new file at the same path (stat only — no /proc walk);
+        - this process still holds a ``state.db-wal (deleted)`` /
+          ``-shm (deleted)`` fd (``/proc/self/fd`` only).
+
+        A full ``/proc/*/fd`` walk is reserved for
+        :func:`refuse_deleted_wal_generation` on open, where we must see
+        *foreign* deleted holders before ``sqlite3.connect`` mints a new WAL.
+        """
+        recorded = self._db_sidecar_identity or {}
+        base = os.fspath(self.db_path)
+        for suffix, recorded_ident in recorded.items():
+            current = _stat_db_file_identity(Path(base + suffix))
+            if current is None or current != recorded_ident:
+                return True
+        if _IS_WINDOWS or not sys.platform.startswith("linux"):
+            return False
+        watched = _watched_sqlite_sidecar_paths(self.db_path)
+        fd_dir = f"/proc/{os.getpid()}/fd"
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def _halt_deleted_wal_generation(self) -> None:
+        """Stop writes; do not mint or keep committing on a split WAL."""
+        self._db_wal_generation_lost = True
+        logger.error(_DELETED_WAL_GENERATION_MSG)
+        raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
     def _raise_if_db_replaced(self) -> None:
         if self._db_replaced:
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+        if self._db_wal_generation_lost:
+            raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
         if self._db_file_was_replaced():
             self._halt_db_replaced()
+        if self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
 
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
@@ -6533,15 +6697,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if psutil is None:
             return [(-1, "open-file scan unavailable")]
 
-        def _canonical(path: str) -> str:
-            clean = path.removesuffix(" (deleted)")
-            return os.path.normcase(os.path.abspath(clean))
-
         db_path = os.path.abspath(os.fspath(self.db_path))
         watched = {
-            _canonical(db_path),
-            _canonical(db_path + "-wal"),
-            _canonical(db_path + "-shm"),
+            _canonical_sqlite_path(db_path),
+            _canonical_sqlite_path(db_path + "-wal"),
+            _canonical_sqlite_path(db_path + "-shm"),
         }
         holders: List[Tuple[int, str]] = []
 
@@ -6580,7 +6740,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             target = os.readlink(f"{fd_dir}/{fd}")
                         except OSError:
                             continue
-                        if _canonical(target) in watched:
+                        if _canonical_sqlite_path(target) in watched:
                             holders.append((pid, target))
             except Exception as exc:
                 logger.warning(
@@ -6605,7 +6765,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # Linux-specific (systemd units running as root).
                 for opened in info.get("open_files") or ():
                     path = getattr(opened, "path", "")
-                    if path and _canonical(path) in watched:
+                    if path and _canonical_sqlite_path(path) in watched:
                         holders.append((pid, path))
         except Exception as exc:
             logger.warning(
@@ -6690,6 +6850,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._raise_if_db_corrupt()
         if self._db_replaced or self._db_file_was_replaced():
             self._halt_db_replaced()
+        if self._db_wal_generation_lost or self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
 
         try:
             with self._lock:
@@ -16497,6 +16659,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception as exc:
                 logger.debug("WAL checkpoint (TRUNCATE) after VACUUM failed: %s", exc)
+            # TRUNCATE may replace the WAL inode; adopt the post-VACUUM
+            # sidecars so the write-path generation guard does not halt a
+            # healthy exclusive maintenance connection.
+            self._record_db_file_identity()
         return optimized
 
     def maybe_auto_prune_and_vacuum(

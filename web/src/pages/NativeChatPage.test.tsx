@@ -156,6 +156,31 @@ describe("NativeChatPage", () => {
     expect(assistantMessage?.getAttribute("aria-label")).toBe("Hermes message");
   });
 
+  it("filters transcript rows from the message search toolbar and can clear the query", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      textareaSetter?.call(textarea, "searchable prompt");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+      gateway.instance?.emit("message.start");
+      gateway.instance?.emit("message.delta", { text: "needle answer" });
+      gateway.instance?.emit("message.complete");
+    });
+
+    const search = host.querySelector<HTMLInputElement>("input[aria-label='Search message content']")!;
+    const searchSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(async () => {
+      searchSetter?.call(search, "needle");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.querySelectorAll("[data-slot='transcript-row']")).toHaveLength(1);
+    expect(host.querySelector("[data-slot='transcript-search']")?.textContent).toContain("1 match");
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Clear message search']")?.click());
+    expect(host.querySelectorAll("[data-slot='transcript-row']").length).toBeGreaterThan(1);
+  });
+
   it("supports edit-as-draft and rerunning the latest prompt", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;

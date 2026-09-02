@@ -15,26 +15,27 @@ type Block =
 export type MarkdownMessageProps = {
   content: string;
   className?: string;
+  sessionId?: string;
   streaming?: boolean;
 };
 
 /** Safe, intentionally small Markdown renderer for assistant messages.
  * HTML is never interpreted; only a conservative set of elements is emitted.
  */
-export function MarkdownMessage({ content, className = "", streaming = false }: MarkdownMessageProps) {
+export function MarkdownMessage({ content, className = "", sessionId, streaming = false }: MarkdownMessageProps) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   return (
     <div className={`space-y-3 text-sm leading-relaxed text-foreground ${className}`.trim()}>
-      {blocks.map((block, index) => <BlockView key={index} block={block} streaming={streaming} />)}
+      {blocks.map((block, index) => <BlockView key={index} block={block} sessionId={sessionId} streaming={streaming} />)}
     </div>
   );
 }
 
-function BlockView({ block, streaming }: { block: Block; streaming: boolean }) {
+function BlockView({ block, sessionId, streaming }: { block: Block; sessionId?: string; streaming: boolean }) {
   if (block.type === "code") {
     const artifact = detectArtifact(block.language, block.code);
     return artifact
-      ? <ArtifactCard code={block.code} detection={artifact} streaming={streaming} />
+      ? <ArtifactCard code={block.code} detection={artifact} sessionId={sessionId} streaming={streaming} />
       : <CodeBlock code={block.code} language={block.language} />;
   }
   if (block.type === "heading") {

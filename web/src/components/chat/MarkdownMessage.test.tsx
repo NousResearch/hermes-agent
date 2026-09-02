@@ -8,16 +8,17 @@ import { MarkdownMessage } from "./MarkdownMessage";
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderMessage(content: string) {
+async function renderMessage(content: string, sessionId?: string) {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  await act(async () => root.render(<MarkdownMessage content={content} />));
+  await act(async () => root.render(<MarkdownMessage content={content} sessionId={sessionId} />));
 }
 
 afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
+  localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -70,6 +71,20 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("button[aria-label='Preview artifact']")).toBeTruthy();
     expect(container.querySelector("button[aria-label='Download artifact']")).toBeTruthy();
     expect(container.querySelector("pre")).toBeNull();
+  });
+
+  it("pins an artifact per session and restores the pinned state", async () => {
+    const html = `<!doctype html><html><body><main>${"persist ".repeat(30)}</main></body></html>`;
+    await renderMessage(`\`\`\`html\n${html}\n\`\`\``, "session-artifact");
+    const pin = container.querySelector<HTMLButtonElement>("button[aria-label='Pin artifact']");
+    expect(pin).toBeTruthy();
+    await act(async () => pin?.click());
+    expect(container.querySelector("[data-artifact-pinned='true']")).toBeTruthy();
+
+    await act(async () => root.unmount());
+    container.remove();
+    await renderMessage(`\`\`\`html\n${html}\n\`\`\``, "session-artifact");
+    expect(container.querySelector("button[aria-label='Unpin artifact']")).toBeTruthy();
   });
 
   it("copies code and reports copied state", async () => {

@@ -26,6 +26,7 @@ import {
   type TimelineEventInput,
 } from "@/lib/native-chat-timeline";
 import { getVirtualRange } from "@/lib/native-chat-virtualization";
+import { filterTranscriptMessages } from "@/lib/native-chat-search";
 import { appendVoiceTranscript, canRecordVoice, chooseRecordingMimeType } from "@/lib/voice";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
@@ -190,12 +191,14 @@ interface NativeChatPageProps {
 
 const TranscriptBubble = memo(function TranscriptBubble({
   message,
+  sessionId,
   onUseAsPrompt,
   onSpeak,
   onEdit,
   onRegenerate,
 }: {
   message: TranscriptMessage;
+  sessionId?: string;
   onUseAsPrompt: (message: string) => void;
   onSpeak: (message: string) => Promise<void>;
   onEdit: (message: string) => void;
@@ -214,7 +217,7 @@ const TranscriptBubble = memo(function TranscriptBubble({
       )}
     >
       {message.role === "assistant"
-        ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} streaming={message.streaming} />
+        ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} sessionId={sessionId} streaming={message.streaming} />
         : message.text}
       {message.text && (
         <MessageActions
@@ -270,10 +273,12 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const durableSessionIdRef = useRef<string | null>(resumeParam);
   const [freshGeneration, setFreshGeneration] = useState(0);
   const [draft, setDraft] = useState("");
+  const [transcriptQuery, setTranscriptQuery] = useState("");
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [timelineState, dispatchTimeline] = useReducer(reduceNativeChatTimeline, initialNativeChatTimeline);
   const liveTimelineMessages = useMemo(() => projectTimelineEntries(timelineState.entries), [timelineState.entries]);
   const displayTranscript = useMemo(() => mergeSnapshotTranscript(transcript, liveTimelineMessages), [liveTimelineMessages, transcript]);
+  const filteredTranscript = useMemo(() => filterTranscriptMessages(displayTranscript, transcriptQuery), [displayTranscript, transcriptQuery]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resyncState, setResyncState] = useState<ResyncState>("idle");
@@ -670,6 +675,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       assistantIdRef.current = null;
       setSessionId(null);
       setTranscript([]);
+      setTranscriptQuery("");
       dispatchTimeline({ type: "reset" });
       virtualRowHeightsRef.current.clear();
       setVirtualMeasureRevision((revision) => revision + 1);
@@ -1014,15 +1020,15 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const measuredHeights = useMemo(
     () => {
       void virtualMeasureRevision;
-      return displayTranscript.map((message) => virtualRowHeightsRef.current.get(message.id) ?? 0);
+      return filteredTranscript.map((message) => virtualRowHeightsRef.current.get(message.id) ?? 0);
     },
-    [displayTranscript, virtualMeasureRevision],
+    [filteredTranscript, virtualMeasureRevision],
   );
   const virtualRange = useMemo(
-    () => getVirtualRange(displayTranscript.length, virtualViewport.scrollTop, virtualViewport.viewportHeight, measuredHeights, 144, 6),
-    [displayTranscript.length, measuredHeights, virtualViewport],
+    () => getVirtualRange(filteredTranscript.length, virtualViewport.scrollTop, virtualViewport.viewportHeight, measuredHeights, 144, 6),
+    [filteredTranscript.length, measuredHeights, virtualViewport],
   );
-  const visibleTranscript = displayTranscript.slice(virtualRange.start, virtualRange.end);
+  const visibleTranscript = filteredTranscript.slice(virtualRange.start, virtualRange.end);
   const lastAssistantId = [...displayTranscript].reverse().find((message) => message.role === "assistant")?.id;
   const connectionTone = connectionState === "open"
     ? "success"
@@ -1050,7 +1056,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       const id = row.dataset.messageId;
       if (id) measureTranscriptRow(id, row);
     }
-  }, [approval, clarify, displayTranscript, error, measureTranscriptRow, status, tools, virtualRange.end, virtualRange.start]);
+  }, [approval, clarify, error, filteredTranscript, measureTranscriptRow, status, tools, virtualRange.end, virtualRange.start]);
 
   return (
     <section
@@ -1241,6 +1247,28 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           className="relative flex min-h-0 min-w-0 flex-col lg:pl-4"
         >
           <div
+            data-slot="transcript-search"
+            className="flex shrink-0 items-center gap-2 border-b border-current/10 py-2"
+          >
+            <label className="sr-only" htmlFor="native-chat-message-search">Search message content</label>
+            <input
+              id="native-chat-message-search"
+              aria-label="Search message content"
+              className="min-w-0 flex-1 rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40"
+              placeholder="Search conversation"
+              value={transcriptQuery}
+              onChange={(event) => setTranscriptQuery(event.target.value)}
+            />
+            <span className="shrink-0 text-xs text-muted-foreground" aria-live="polite">
+              {transcriptQuery.trim() ? `${filteredTranscript.length} match${filteredTranscript.length === 1 ? "" : "es"}` : "Search"}
+            </span>
+            {transcriptQuery.trim() && (
+              <Button ghost size="icon" type="button" aria-label="Clear message search" onClick={() => setTranscriptQuery("")}>
+                <X aria-hidden />
+              </Button>
+            )}
+          </div>
+          <div
             ref={transcriptRef}
             onScroll={handleTranscriptScroll}
             data-testid="native-chat-transcript"
@@ -1252,6 +1280,11 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           >
             {approval && <div className="pb-3"><ApprovalCard request={approval} onRespond={respondApproval} /></div>}
             {clarify && <div className="pb-3"><ClarificationCard request={clarify} onRespond={respondClarify} /></div>}
+            {displayTranscript.length > 0 && filteredTranscript.length === 0 && transcriptQuery.trim() && (
+              <div data-slot="transcript-search-empty" className="pb-3 py-8 text-sm text-muted-foreground" role="status">
+                No messages match “{transcriptQuery.trim()}”.
+              </div>
+            )}
             {displayTranscript.length === 0 && !approval && !clarify && (
               <div data-slot="chat-empty-state" className="max-w-2xl space-y-3 pb-3 py-8 text-sm text-text-secondary">
                 <p>{chat.startConversation}</p>
@@ -1304,6 +1337,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                     )}
                     <TranscriptBubble
                       message={message}
+                      sessionId={sessionId ?? undefined}
                       onUseAsPrompt={applyMessageAsPrompt}
                       onEdit={applyMessageAsPrompt}
                       onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}

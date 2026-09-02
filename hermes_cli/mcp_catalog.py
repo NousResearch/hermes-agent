@@ -592,8 +592,18 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-        if t.env:
-            cfg["env"] = dict(t.env)
+        env_out: dict = dict(t.env)
+        # auth.env credentials are prompted and persisted to the profile's
+        # .env at install time, but a stdio child only receives what the
+        # generated mcp_servers.<name>.env references — without these
+        # interpolations the server starts credential-less and the
+        # authenticated probe/tool calls fail (#89316). transport.env wins
+        # on key collisions so a manifest can pin a literal default.
+        if entry.auth.type == "api_key":
+            for spec in entry.auth.env:
+                env_out.setdefault(spec.name, f"${{{spec.name}}}")
+        if env_out:
+            cfg["env"] = env_out
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

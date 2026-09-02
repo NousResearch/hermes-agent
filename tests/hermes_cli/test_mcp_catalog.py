@@ -201,6 +201,68 @@ class TestManifestParsing:
         assert cfg["url"] == "https://mcp.example.com/sse"
         assert cfg["headers"] == {"Authorization": "Bearer ${MCP_DEMO_API_KEY}"}
 
+    def test_stdio_api_key_auth_env_wired_into_child_env(self, catalog_dir):
+        """stdio + api_key: auth.env credentials must reach the child (#89316).
+
+        The installer prompts for auth.env vars and persists them to the
+        profile .env, but a stdio child only receives what the generated
+        mcp_servers.<name>.env references — without the interpolations the
+        server starts credential-less and authenticated calls fail."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_KEY", "prompt": "API key", "secret": True},
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False},
+                ],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["env"]["DEMO_KEY"] == "${DEMO_KEY}"
+        assert cfg["env"]["DEMO_URL"] == "${DEMO_URL}"
+
+    def test_stdio_transport_env_wins_over_auth_env(self, catalog_dir):
+        """A transport.env literal for the same name is preserved — the
+        manifest can pin a non-secret default the child should use."""
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "demo-server",
+                "env": {"DEMO_URL": "https://literal.example.com"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_KEY", "prompt": "API key", "secret": True},
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["env"]["DEMO_URL"] == "https://literal.example.com"
+        assert cfg["env"]["DEMO_KEY"] == "${DEMO_KEY}"
+
+    def test_stdio_oauth_auth_env_not_wired(self, catalog_dir):
+        """OAuth auth.env entries serve the OAuth flow, not the stdio child —
+        only api_key credentials are interpolated into the child env."""
+        body = _basic_manifest(
+            auth={
+                "type": "oauth",
+                "env": [{"name": "DEMO_CLIENT_ID", "prompt": "client id"}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert "env" not in cfg
+
     def test_http_api_key_requires_matching_env_declaration(self, catalog_dir):
         """http+api_key manifests must declare the env key the header references.
 

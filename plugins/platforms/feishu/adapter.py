@@ -436,6 +436,9 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # DM allow-all (FEISHU_ALLOW_ALL_USERS / GATEWAY_ALLOW_ALL_USERS), resolved
+    # per-profile so multiplexed secondary adapters honor their own .env.
+    allow_all_dm: bool = False
 
 
 @dataclass
@@ -1591,7 +1594,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        # Scope-aware read: under multiplex a secondary profile's .env must
+        # govern its own adapter (same pattern as app_secret below) — #86905.
+        allow_bots = _get_scoped_secret("FEISHU_ALLOW_BOTS", "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1599,8 +1604,13 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        allow_all_dm = any(
+            _get_scoped_secret(var, "").strip().lower() in {"true", "1", "yes"}
+            for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+        )
+
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
+            app_id=str(extra.get("app_id") or _get_scoped_secret("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or _get_scoped_secret("FEISHU_APP_SECRET", "")).strip(),
             domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
             connection_mode=str(
@@ -1610,15 +1620,15 @@ class FeishuAdapter(BasePlatformAdapter):
             verification_token=str(
                 extra.get("verification_token") or _get_scoped_secret("FEISHU_VERIFICATION_TOKEN", "")
             ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            group_policy=_get_scoped_secret("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
+                for item in _get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(",")
                 if item.strip()
             ),
-            bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
-            bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
-            bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
+            bot_open_id=_get_scoped_secret("FEISHU_BOT_OPEN_ID", "").strip(),
+            bot_user_id=_get_scoped_secret("FEISHU_BOT_USER_ID", "").strip(),
+            bot_name=_get_scoped_secret("FEISHU_BOT_NAME", "").strip(),
             dedup_cache_size=max(
                 32,
                 env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE),
@@ -1658,8 +1668,9 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=default_group_policy,
             group_rules=group_rules,
             allow_bots=allow_bots,
+            allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(
-                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+                extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))
             ),
         )
 
@@ -1692,6 +1703,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
+        self._allow_all_dm = settings.allow_all_dm
         self._require_mention = settings.require_mention
 
     def _build_event_handler(self) -> Any:
@@ -4390,9 +4402,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "bot_not_mentioned"
 
         if not is_group:
-            if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-                return None
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            # Snapshotted per-profile in _load_settings: _admit runs on the
+            # lark_oapi WS thread with no secret scope, and a bare os.getenv
+            # here would read the default profile's value (#86905).
+            if self._allow_all_dm:
                 return None
             # Empty FEISHU_ALLOWED_USERS is the pairing-mode default from setup:
             # forward DMs to gateway intake so the pairing handshake can run.

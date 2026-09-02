@@ -80,19 +80,25 @@ def test_should_fire_finalize_off_when_disabled(worker_env):
 
 
 def test_should_fire_finalize_once(worker_env):
+    # 2026-09-03: the FIRST narrated exit gets the soft nudge (full toolset);
+    # the forced terminal-only turn fires on the second.
     assert should_fire_finalize_turn(
         attempts=0, terminal_tools_available=True
-    ) is True
-    # Fired latch: subsequent attempts must NOT re-fire the finalize turn.
+    ) is False
     assert should_fire_finalize_turn(
         attempts=1, terminal_tools_available=True
+    ) is True
+    mark_finalize_fired()
+    # Fired latch: subsequent attempts must NOT re-fire the finalize turn.
+    assert should_fire_finalize_turn(
+        attempts=2, terminal_tools_available=True
     ) is False
 
 
 def test_finalize_requires_terminal_tools(worker_env):
     # No terminal schemas in the toolset → cannot force a finalize turn.
     assert should_fire_finalize_turn(
-        attempts=0, terminal_tools_available=False
+        attempts=1, terminal_tools_available=False
     ) is False
 
 
@@ -143,7 +149,7 @@ def test_fired_latch_is_sticky_after_mark(worker_env):
     # Even if the finalize turn still produced no terminal call, the next
     # text-exit must not run a SECOND finalize turn (capped at one per run).
     assert should_fire_finalize_turn(
-        attempts=0, terminal_tools_available=True
+        attempts=1, terminal_tools_available=True
     ) is False
 
 

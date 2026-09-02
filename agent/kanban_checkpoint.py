@@ -185,7 +185,14 @@ def should_fire_finalize_turn(*, attempts: int, terminal_tools_available: bool) 
         return False
     if _finalize_fired:
         return False
-    return attempts < 1 and terminal_tools_available
+    # 2026-09-03: fire on the SECOND narrated text-exit, not the first. The
+    # first gets the soft nudge (full toolset — "finish the deliverable, then
+    # call a terminal tool"). Models that think out loud between tool calls
+    # (deepseek-v4-flash, observed on t_9b77b7ac three minutes into a build)
+    # were being forced into kanban_block with nothing written, because the
+    # forced turn offers ONLY the terminal tools. One soft nudge costs a turn
+    # on a genuine exit; the old order cost the whole card.
+    return attempts >= 1 and terminal_tools_available
 
 
 def build_finalize_instruction(task_id: str) -> str:

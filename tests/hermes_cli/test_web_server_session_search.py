@@ -39,8 +39,10 @@ class _FakeSessionDB:
         sources=None,
         exclude_sources=None,
     ):
-        assert query == "20260603"
+        assert query in ("20260603", "Arby's Faribault, MN")
         assert include_archived is True
+        if query != "20260603":
+            return []
         rows = [
             {
                 "id": "20260603_090200_exact",
@@ -58,6 +60,52 @@ class _FakeSessionDB:
             )
         ][:limit]
 
+    def search_sessions_by_title(
+        self,
+        query,
+        limit=20,
+        include_archived=True,
+        source=None,
+        sources=None,
+        exclude_sources=None,
+    ):
+        # In the id/content test this runs with "20260603" and must contribute
+        # nothing (no titled sessions); in the title test it runs with the title.
+        if query == "20260603":
+            return []
+        assert query == "Arby's Faribault, MN"
+        rows = [
+            {
+                "id": "titled_session",
+                "preview": "run buyer discovery",
+                "title": "Arby's Faribault, MN",
+                "source": "desktop",
+                "model": "gpt",
+                "started_at": 150,
+            }
+        ]
+        return [
+            row
+            for row in rows
+            if self._source_allowed(
+                row, source=source, sources=sources, exclude_sources=exclude_sources
+            )
+        ][:limit]
+
+    def get_session_rich_row(self, session_id):
+        # Lets add_lineage_result hydrate the title back into the payload.
+        if session_id == "titled_session":
+            return {
+                "id": "titled_session",
+                "source": "desktop",
+                "model": "gpt",
+                "title": "Arby's Faribault, MN",
+                "started_at": 150,
+                "last_active": 150,
+                "preview": "run buyer discovery",
+            }
+        return None
+
     def search_messages(
         self,
         query,
@@ -66,7 +114,8 @@ class _FakeSessionDB:
         limit=20,
         fields=None,
     ):
-        assert query == "20260603*"
+        # Accept the title query's prefix tokens too (Arby's* AND Faribault,* MN*).
+        assert query == "20260603*" or query.startswith("Arby")
         type(self).requested_fields = fields
         rows = [
             {
@@ -141,3 +190,24 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
         ]
     }
     assert _FakeSessionDB.opened_read_only is True
+
+
+def test_desktop_session_search_surfaces_titled_session_by_title(monkeypatch):
+    """A user-named session is findable by typing its title. The FTS index
+    only covers message content and the id matcher only covers session ids, so
+    this is the path that makes a title-string search return the session — and
+    the result must carry the stored title through for the desktop row."""
+    _FakeSessionDB.opened_read_only = None
+    _FakeSessionDB.requested_fields = None
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
+
+    response = asyncio.run(web_server.search_sessions(q="Arby's Faribault, MN", limit=5))
+
+    assert _FakeSessionDB.opened_read_only is True
+    results = response["results"]
+    assert results[0]["id"] == "titled_session"
+    assert results[0]["title"] == "Arby's Faribault, MN"
+    # Content hits remain available after the title-priority result.
+    assert any(r.get("id") == "content_session" for r in results)
+    # The snippet falls back to the preview when the row carries a title.
+    assert results[0]["snippet"] == "run buyer discovery"

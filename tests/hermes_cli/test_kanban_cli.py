@@ -24,6 +24,58 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _dispatch_args(*, json_output: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        dry_run=True,
+        max=None,
+        failure_limit=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+        json=json_output,
+    )
+
+
+def test_dispatch_json_reports_skipped_locked(kanban_home, capsys):
+    db_path = kb.kanban_db_path(board="default")
+
+    with kb._dispatch_tick_lock(db_path) as held:
+        assert held is True
+        assert kc._cmd_dispatch(_dispatch_args(json_output=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["skipped_locked"] is True
+    assert payload["respawn_guarded"] == []
+    assert payload["rate_limited"] == []
+    assert payload["reconciled_orphans"] == []
+
+
+def test_dispatch_json_reports_respawn_guard_reason(
+    kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="already opened", assignee="worker"
+        )
+        kb.add_comment(
+            conn,
+            task_id,
+            author="worker",
+            body="Opened https://github.com/example/repo/pull/123 for review.",
+        )
+
+    assert kc._cmd_dispatch(_dispatch_args(json_output=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["spawned"] == []
+    assert payload["skipped_locked"] is False
+    assert payload["respawn_guarded"] == [
+        {"task_id": task_id, "reason": "active_pr"}
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------

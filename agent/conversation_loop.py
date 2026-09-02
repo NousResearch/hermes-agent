@@ -2160,6 +2160,12 @@ def run_conversation(
     failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
+    # One-shot "continue without thinking" override is turn-scoped: a
+    # thinking-only truncation arms it right before the continuation restart,
+    # and build_api_kwargs consumes it on that call. If the turn is
+    # interrupted/errors between arm and consume, it must not fire on the
+    # next turn's first request.
+    agent._ephemeral_reasoning_off = False
     # Total outer-loop exceptions this turn (#92450) — see _MAX_OUTER_LOOP_ERRORS.
     _outer_error_count = 0
     truncated_tool_call_retries = 0
@@ -4163,7 +4169,7 @@ def run_conversation(
                             "The model used all its output tokens on reasoning "
                             "and had none left for the actual response.\n\n"
                             "To fix this:\n"
-                            "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
+                            "→ Lower reasoning effort: `/reasoning low` or `/reasoning minimal`\n"
                             "→ Or switch to a larger/non-reasoning model with `/model`"
                         )
                         agent._cleanup_task_resources(effective_task_id)
@@ -4406,8 +4412,8 @@ def run_conversation(
                                     "continuation attempt — its reasoning "
                                     "consumed the entire budget each time.\n\n"
                                     "To fix this:\n"
-                                    "→ Lower reasoning effort: `/thinkon low` "
-                                    "or `/thinkoff`\n"
+                                    "→ Lower reasoning effort: `/reasoning low` "
+                                    "or `/reasoning none`\n"
                                     "→ Or raise max_tokens for this model"
                                 )
                             # Unanswered continue nudges made every later turn re-truncate.

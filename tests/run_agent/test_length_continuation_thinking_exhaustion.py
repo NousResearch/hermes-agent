@@ -226,3 +226,41 @@ class TestThinkingOnlyTruncation:
         assert "visible part one." in (result["final_response"] or "")
         assert "and the ending." in (result["final_response"] or "")
         assert _no_empty_assistant_rows(result["messages"]) == []
+
+class TestReasoningOffReachesTheWire:
+    def test_continuation_request_carries_reasoning_off_on_the_wire(self, loop_agent):
+        """The flag is only useful if the continuation REQUEST goes out with
+        thinking disabled — assert the OpenRouter extra_body, not the flag."""
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent._supports_reasoning_extra_body = lambda: True
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_length_response(),
+            _full_response("Here is the full answer."),
+        ]
+        result = _run(loop_agent, "write me a long report")
+        assert result["completed"] is True
+
+        calls = loop_agent.client.chat.completions.create.call_args_list
+        assert len(calls) == 2
+        first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
+        second = (calls[1].kwargs.get("extra_body") or {}).get("reasoning")
+        assert first == {"enabled": True, "effort": "high"}, first
+        assert second is not None and second.get("enabled") is False, (
+            f"continuation must be sent with thinking off, got {second!r}"
+        )
+
+    def test_stale_flag_does_not_leak_into_next_turn(self, loop_agent):
+        """A flag armed by a previous turn that never reached build_api_kwargs
+        (interrupt/error between arm and consume) must not silently strip
+        thinking from the next turn's first request."""
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent._supports_reasoning_extra_body = lambda: True
+        loop_agent._ephemeral_reasoning_off = True  # stale from a prior turn
+        loop_agent.client.chat.completions.create.side_effect = [
+            _full_response("fresh turn answer."),
+        ]
+        result = _run(loop_agent, "hello")
+        assert result["completed"] is True
+        calls = loop_agent.client.chat.completions.create.call_args_list
+        first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
+        assert first == {"enabled": True, "effort": "high"}, first

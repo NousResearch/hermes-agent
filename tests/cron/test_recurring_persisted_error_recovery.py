@@ -161,3 +161,33 @@ class TestPersistedStaleErrorRecovery:
             "a within-cadence error is a normal retry — must not be "
             "force-re-armed onto an immediate fire"
         )
+
+    def test_live_fire_claim_from_other_process_not_rearmed(self, cron_env, monkeypatch):
+        """A stale-error job whose ``fire_claim`` is being heartbeated by a run
+        in ANOTHER process is running, not wedged. Re-arming it would make this
+        ticker claim-fight the live run (2026-09-02 multi-Desktop-tab incident:
+        171 re-arms, ~175 junk executions, live run killed)."""
+        S, E, J, env = _setup(cron_env, monkeypatch)
+        job_id = env["job_id"]
+
+        _persist_stale_error(J, job_id, error_age_minutes=110)
+        now = datetime.now(timezone.utc)
+        J.update_job(
+            job_id,
+            {"fire_claim": {"at": now.isoformat(), "by": "other-host:deadbeef"}},
+        )
+
+        job = J.get_job(job_id)
+        assert not J._job_is_stale_error_recurring(job, job["schedule"], now)
+
+        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+            S.tick(verbose=False, sync=True)
+        assert E.latest_execution(job_id) is None, (
+            "a job with a live fire_claim held by another process must not be "
+            "re-armed by stale-error recovery"
+        )
+
+        # Once the foreign claim has expired (owner died), recovery resumes.
+        expired = (now - timedelta(seconds=J._STALE_ERROR_FIRE_CLAIM_TTL_SECONDS + 1)).isoformat()
+        J.update_job(job_id, {"fire_claim": {"at": expired, "by": "other-host:deadbeef"}})
+        assert J._job_is_stale_error_recurring(J.get_job(job_id), job["schedule"], now)

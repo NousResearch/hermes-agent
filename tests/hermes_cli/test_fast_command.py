@@ -221,12 +221,12 @@ class TestFlexTier(unittest.TestCase):
         """Anthropic has no flex equivalent — speed=fast is a priority-only knob."""
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        assert resolve_fast_mode_overrides("claude-opus-4-6", tier="flex") is None
+        assert resolve_fast_mode_overrides("claude-opus-4-8", tier="flex") is None
 
     def test_anthropic_priority_still_returns_speed(self):
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        assert resolve_fast_mode_overrides("claude-opus-4-6", tier="priority") == {
+        assert resolve_fast_mode_overrides("claude-opus-4-8", tier="priority") == {
             "speed": "fast"
         }
 
@@ -235,7 +235,7 @@ class TestFlexTier(unittest.TestCase):
         from hermes_cli.models import resolve_fast_mode_overrides
 
         assert resolve_fast_mode_overrides("gpt-5.4") == {"service_tier": "priority"}
-        assert resolve_fast_mode_overrides("claude-opus-4-6") == {"speed": "fast"}
+        assert resolve_fast_mode_overrides("claude-opus-4-8") == {"speed": "fast"}
 
 
 class TestFastModeRouting(unittest.TestCase):

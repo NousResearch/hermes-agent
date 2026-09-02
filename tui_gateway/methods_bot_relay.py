@@ -109,6 +109,38 @@ def _(rid, params: dict) -> dict:
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
+        # #100523: when THIS gateway already hosts the target's Bot Chat live
+        # (the Desktop has it open), the subprocess transport is fenced out by
+        # the single-owner lease ("already has a live owner") and the payload
+        # is dropped. Land the DM in the live session as a normal user turn
+        # via prompt.submit instead — same choke point the composer uses, so
+        # role alternation, persistence and streaming all behave as a typed
+        # message would. (Nested per method_ctx rebinding.)
+        def _live_bot_chat_sid(profile_name: str) -> str:
+            from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+            live_home = _profile_home(profile_name)
+            want_home = str(live_home) if live_home is not None else None
+            for live_sid, record in list(_sessions.items()):
+                if not isinstance(record, dict):
+                    continue
+                if (record.get("profile_home") or None) != want_home:
+                    continue
+                key = _session_lookup_key(record, fallback=live_sid)
+                if _session_live_title(record, key) == BOT_CHAT_TITLE:
+                    return live_sid
+            return ""
+
+        live_sid = _live_bot_chat_sid(resolved)
+        if live_sid:
+            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message})
+            if "error" in submitted:
+                return submitted
+            return _ok(
+                rid,
+                {"reply": f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."},
+            )
+
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:

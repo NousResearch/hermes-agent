@@ -155,7 +155,7 @@ def _encoded_json_scalar_size(value: Any) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         # Since 2**4 > 10, a B-bit integer has more than (B - 1) / 4
         # decimal digits. Keep the equality boundary for the exact encoder.
-        if abs(value).bit_length() > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
+        if value.bit_length() > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
             raise ValueError("observation payload is too large")
     encoded = json.dumps(
         value,

@@ -142,6 +142,20 @@ class TestTrailingStatementSeparator:
         # `{ ...; } | cmd` is valid; the pipe is its own terminator.
         assert rewrite("a && b & | cat") == "a && { b & } | cat"
 
+    def test_redirect_prefix_on_trailing_command_gets_separator(self):
+        # `&>` after the group is a redirect for the NEXT command, not a
+        # terminator: `{ b & } &>/dev/null c` is a syntax error.
+        assert rewrite("a && b & &>/dev/null c") == "a && { b & } ; &>/dev/null c"
+
+    def test_case_arm_terminator_untouched(self):
+        # `;;` already terminates the arm; adding `;` would leave an empty
+        # command between `;` and `;;`, which bash rejects.
+        assert rewrite("case $x in p) b && c & ;; esac") == "case $x in p) b && { c & } ;; esac"
+
+    def test_separator_is_idempotent(self):
+        once = rewrite("echo hi && sleep 5 & echo done")
+        assert rewrite(once) == once
+
     def test_second_background_then_trailing(self):
         assert rewrite("echo a && sleep 5 & echo b & echo c") == (
             "echo a && { sleep 5 & } ; echo b & echo c"
@@ -168,6 +182,9 @@ class TestRewriteIsValidBash:
             "A && B &; C",
             "A && B &\nC",
             "cd /tmp && python3 -m http.server 0 &>/dev/null & curl localhost",
+            "a && b & &>/dev/null c",
+            "case $x in p) b && c & ;; esac",
+            "A && B & echo x\nC && D & echo y && E & echo z",
         ],
     )
     def test_rewrite_parses(self, command):

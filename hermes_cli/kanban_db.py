@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -10635,7 +10635,11 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     return reaped
 
 
-def stop_all_scoped_workers(conn: sqlite3.Connection) -> list[str]:
+def stop_all_scoped_workers(
+    conn: sqlite3.Connection,
+    *,
+    should_abort: "Optional[Callable[[], bool]]" = None,
+) -> list[str]:
     """Stop every scoped worker claimed by this host.
 
     The ``kanban.worker_isolation_stop_on_shutdown`` shutdown policy:
@@ -10644,6 +10648,12 @@ def stop_all_scoped_workers(conn: sqlite3.Connection) -> list[str]:
     (the default). Scoped workers are in their own user systemd scopes
     so they survive a gateway crash by design; this is the explicit
     "bring them down with us" switch.
+
+    ``should_abort`` is checked between units: when it returns True
+    (shutdown budget expired, caller cancelled) the loop stands down
+    immediately — the remaining units stay for the next gateway's
+    re-adoption sweep instead of being stopped after the caller has
+    already moved on (Gate B pass 4, finding Q).
 
     Returns the list of scope units confirmed stopped. Units that could
     not be confirmed remain for the next gateway's re-adoption sweep.
@@ -10655,6 +10665,13 @@ def stop_all_scoped_workers(conn: sqlite3.Connection) -> list[str]:
         "WHERE status = 'running' AND worker_scope IS NOT NULL"
     ).fetchall()
     for row in rows:
+        if should_abort is not None and should_abort():
+            _log.info(
+                "kanban shutdown: scoped-worker stop stood down before "
+                "%s — budget expired or cancelled",
+                row["worker_scope"],
+            )
+            break
         if not (row["claim_lock"] or "").startswith(host_prefix):
             continue  # another host owns this worker
         if not _stop_kanban_worker_scope(row["worker_scope"]):

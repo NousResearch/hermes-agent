@@ -1726,7 +1726,10 @@ class GatewayKanbanWatchersMixin:
                 return
 
             def _collect_expected_units() -> list:
-                """Cheap pre-scan: which units this host will try to stop."""
+                """Cheap pre-scan: which units this host will try to stop.
+
+                Checks the abort flag between boards so a cancelled
+                shutdown stops scanning too (finding Q)."""
                 units: list = []
                 try:
                     boards = _kb.list_boards(include_archived=False)
@@ -1734,6 +1737,8 @@ class GatewayKanbanWatchersMixin:
                     boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
                 host_prefix = f"{_kb._claimer_id().split(':', 1)[0]}:"
                 for b in boards:
+                    if _should_abort_cleanup():
+                        break
                     slug = b.get("slug") or _kb.DEFAULT_BOARD
                     conn = None
                     try:
@@ -1757,6 +1762,19 @@ class GatewayKanbanWatchersMixin:
 
             state: dict = {}
             collected = threading.Event()
+            # Finding Q: the cleanup thread must not keep scanning or
+            # stopping scopes after the caller's budget expires and the
+            # dispatcher lock is released — the next gateway may be
+            # re-adopting those very units. The caller sets this event
+            # the moment its deadline passes; every board scan and every
+            # unit stop checks it between units and stands down.
+            cleanup_cancelled = threading.Event()
+
+            def _should_abort_cleanup() -> bool:
+                if cleanup_cancelled.is_set():
+                    return True
+                deadline = state.get("deadline")
+                return deadline is not None and time.monotonic() >= deadline
 
             def _run() -> None:
                 state["expected"] = _collect_expected_units()
@@ -1766,11 +1784,15 @@ class GatewayKanbanWatchersMixin:
                 except Exception:
                     boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
                 for b in boards:
+                    if _should_abort_cleanup():
+                        break
                     slug = b.get("slug") or _kb.DEFAULT_BOARD
                     conn = None
                     try:
                         conn = _kb.connect(board=slug)
-                        stopped = _kb.stop_all_scoped_workers(conn)
+                        stopped = _kb.stop_all_scoped_workers(
+                            conn, should_abort=_should_abort_cleanup,
+                        )
                     except Exception:
                         logger.exception("kanban shutdown [%s]: scoped-worker stop failed", slug)
                         continue
@@ -1781,6 +1803,7 @@ class GatewayKanbanWatchersMixin:
                             except Exception:
                                 pass
                     if stopped:
+                        state.setdefault("stopped", []).extend(stopped)
                         logger.info(
                             "kanban shutdown [%s]: stopped %d scoped worker(s): %s",
                             slug, len(stopped), ", ".join(stopped),
@@ -1811,7 +1834,12 @@ class GatewayKanbanWatchersMixin:
                 SCOPE_STOP_VERIFY_BOUND_SECONDS + 2.0
             )
             deadline = shutdown_started + budget
+            state["deadline"] = deadline  # the cleanup thread honors it too
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            # The budget is gone: stand the cleanup thread down NOW — it
+            # must not keep scanning boards or stopping scopes while the
+            # next gateway re-adopts them (finding Q).
+            cleanup_cancelled.set()
             # Tick-queued verified stops must not outlive the lock either:
             # drain the background service within the SAME deadline
             # before the caller releases the dispatcher lock.
@@ -1819,8 +1847,10 @@ class GatewayKanbanWatchersMixin:
                 timeout=max(0.0, deadline - time.monotonic())
             )
             if worker.is_alive() or leftover:
+                stopped_units = set(state.get("stopped") or [])
                 still_running = sorted(
-                    set(expected) | {str(u) for u in leftover}
+                    (set(expected) - stopped_units)
+                    | {str(u) for u in leftover}
                 )
                 logger.warning(
                     "kanban shutdown: scoped-worker stop did not finish "

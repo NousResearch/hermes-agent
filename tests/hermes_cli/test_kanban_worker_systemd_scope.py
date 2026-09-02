@@ -2745,7 +2745,7 @@ def test_shutdown_waits_for_cleanup_before_releasing_lock(
 
     real_stop = kb.stop_all_scoped_workers
 
-    def gated_stop(c):
+    def gated_stop(c, should_abort=None):
         cleanup_started.set()
         gate.wait(timeout=10.0)
         return real_stop(c)
@@ -2813,7 +2813,7 @@ def test_shutdown_budget_expiry_logs_leftovers_and_releases(
     gate = threading.Event()
     released = threading.Event()
 
-    def wedged_stop(c):
+    def wedged_stop(c, should_abort=None):
         gate.wait(timeout=10.0)  # "worse than any budget"
         return []
 
@@ -2911,7 +2911,7 @@ def test_shutdown_single_budget_bounds_both_joins(
     gate = threading.Event()
     timings: dict[str, float] = {}
 
-    def wedged_stop(c):
+    def wedged_stop(c, should_abort=None):
         timings["stop_entered"] = time.time()
         gate.wait(timeout=10.0)  # worse than any budget
         return []
@@ -3157,3 +3157,107 @@ def test_migration_completes_a_partial_pre_existing_schema(
         assert task["worker_scope"] is None
     finally:
         conn.close()
+
+
+def test_stop_all_scoped_workers_honors_abort_between_units(
+    shims, conn, monkeypatch,
+):
+    """Q, unit half: the per-unit abort check stands the stop loop down
+    BETWEEN units — a cancelled shutdown never proceeds to the next
+    worker, and the units it did not reach are simply not reported
+    stopped."""
+    u1 = kb._kanban_worker_scope_unit("t_abort1", 1)
+    u2 = kb._kanban_worker_scope_unit("t_abort2", 2)
+    p1, p2 = shims.sleeper(), shims.sleeper()
+    shims.write_unit(u1, [p1])
+    shims.write_unit(u2, [p2])
+    _scoped_task_row(conn, scope=u1, pid=p1)
+    _scoped_task_row(conn, scope=u2, pid=p2)
+    stopped_calls: list[str] = []
+    monkeypatch.setattr(
+        kb, "_stop_kanban_worker_scope",
+        lambda unit: (stopped_calls.append(unit), True)[1],
+    )
+
+    def abort_after_first() -> bool:
+        return len(stopped_calls) >= 1
+
+    stopped = kb.stop_all_scoped_workers(conn, should_abort=abort_after_first)
+
+    assert stopped == [u1]
+    assert stopped_calls == [u1]  # u2 was never attempted
+
+
+def test_shutdown_cancels_cleanup_thread_and_reports_unstopped(
+    shims, conn, kanban_home, monkeypatch, caplog,
+):
+    """Q, wiring half: when the shutdown budget expires, the cleanup
+    daemon thread is CANCELLED (stop event + same deadline) instead of
+    scanning and stopping scopes after the dispatcher lock is released,
+    and the caller's warning names what was left un-stopped."""
+    import asyncio
+    import logging
+    import threading
+
+    import gateway.kanban_watchers as kw
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    _write_kanban_config(
+        Path(kanban_home), "  worker_isolation_stop_on_shutdown: true\n"
+    )
+    kb._INITIALIZED_PATHS.clear()
+    u1 = kb._kanban_worker_scope_unit("t_slowstop1", 1)
+    u2 = kb._kanban_worker_scope_unit("t_slowstop2", 2)
+    p1, p2 = shims.sleeper(), shims.sleeper()
+    shims.write_unit(u1, [p1])
+    shims.write_unit(u2, [p2])
+    _scoped_task_row(conn, scope=u1, pid=p1)
+    _scoped_task_row(conn, scope=u2, pid=p2)
+
+    monkeypatch.setattr(kw, "_SHUTDOWN_STOP_BASE_SECONDS", 0.1)
+    monkeypatch.setattr(
+        "tools.process_registry.SCOPE_STOP_VERIFY_BOUND_SECONDS", 0.1,
+    )
+
+    attempts: list[str] = []
+    gate = threading.Event()
+
+    def slow_verified_stop(unit):
+        attempts.append(unit)
+        if unit == u1:
+            gate.wait(timeout=15.0)  # slow fake stop: outlives the budget
+        return True
+
+    monkeypatch.setattr(kb, "_stop_kanban_worker_scope", slow_verified_stop)
+
+    class Harness(GatewayKanbanWatchersMixin):
+        def __init__(self):
+            self._running = False
+            self._kanban_dispatcher_lock_handle = None
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        # budget = 0.1 base + 2 units x (0.1 bound + 2.0 margin) = 4.3 s.
+        # u1's stop blocks past it: the caller times out, cancels the
+        # cleanup thread, and reports BOTH units (u1 unconfirmed, u2 not
+        # reached) while u1's stop is still blocked.
+        asyncio.run(Harness()._kanban_dispatcher_watcher())
+        gate.set()  # let u1's stop return so the thread hits the check
+
+    warnings = [r for r in caplog.records if "still stopping" in r.message]
+    assert warnings, "expected the leftover-units warning"
+    assert u1 in warnings[0].message and u2 in warnings[0].message
+
+    # Bounded wait for the daemon thread to observe the cancellation and
+    # stand down BEFORE u2.
+    deadline = time.monotonic() + 5.0
+    stood_down = []
+    while time.monotonic() < deadline:
+        stood_down = [
+            r for r in caplog.records if "stood down before" in r.message
+        ]
+        if stood_down:
+            break
+        time.sleep(0.05)
+    assert stood_down, "cleanup thread never logged its stand-down"
+    assert u2 in stood_down[0].message
+    assert attempts == [u1]  # u2 was never signalled after cancellation

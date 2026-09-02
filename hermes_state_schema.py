@@ -682,24 +682,12 @@ class SessionSchemaMixin:
         if not getattr(self, "_fts_stale", False):
             return False
         if getattr(self, "_db_corrupt", False):
-            # Quarantined: structural corruption was already observed on
-            # this handle, so the only safe policy is to stop touching the
-            # file (mirrors hermes_state.py's _try_wal_checkpoint). A full
-            # FTS rebuild is real DDL/DML against the same damaged image —
-            # exactly what quarantine exists to prevent — and this method
-            # is called unconditionally every housekeeping tick for the
-            # life of a long-running gateway process, so a stale-FTS flag
-            # left set on a now-corrupt handle would otherwise retry the
-            # rebuild forever.
-            #
-            # Reset the backoff bookkeeping too (mirrors the success path's
-            # own reset a few lines down): no code path today clears
-            # _db_corrupt on a live handle, so this is inert in practice,
-            # but leaving a doubled _fts_stale_retry_interval sitting behind
-            # a flag nothing currently clears is a footgun for whoever adds
-            # an un-quarantine/recovery path later — the next real retry
-            # should start from the default backoff, not wherever this
-            # handle's interval happened to be when it was quarantined.
+            # Quarantined: never run FTS DDL/DML against a damaged image
+            # (mirrors _try_wal_checkpoint / close). This runs every
+            # housekeeping tick for the life of a gateway process, so a stale
+            # flag on a corrupt handle would otherwise retry the rebuild
+            # forever. Reset the backoff so any future un-quarantine path
+            # starts from the default interval, not a doubled stale one.
             self._fts_stale_retry_after = 0.0
             self._fts_stale_retry_interval = 0.0
             return False

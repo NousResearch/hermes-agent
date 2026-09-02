@@ -648,9 +648,12 @@ class TestDeferredFtsRetryInProcess:
             assert gw._fts_stale is True
             gw._db_corrupt = True
             gw._db_corrupt_reason = "database disk image is malformed"
-            # Simulate a handle that had already been backing off for a
-            # while before it tripped quarantine.
-            gw._fts_stale_retry_after = time.monotonic() + 900.0
+            # A retry that is DUE (backoff already elapsed) on a handle that
+            # had been backing off before it tripped quarantine. Seeding the
+            # deadline in the past matters: a future deadline would make the
+            # unguarded code short-circuit on the backoff check and this test
+            # would pass without the quarantine guard ever being exercised.
+            gw._fts_stale_retry_after = time.monotonic() - 1.0
             gw._fts_stale_retry_interval = 900.0
             assert gw.retry_deferred_fts_recovery() is False
             # Untouched: still marked stale, triggers still absent — no

@@ -345,12 +345,22 @@ kanban:
   # launcher and never fooled by PID reuse; until registration the run is
   # "starting" and a run that never registers within its grace window is
   # recorded as a spawn failure, not a crash.
+  # Every stop of a worker is a VERIFIED whole-scope stop: SIGTERM to
+  # every process in the unit's cgroup, escalation to SIGKILL, then death
+  # confirmed from the unit's cgroup.procs (cgroup truth, not systemctl's
+  # ActiveState — "unknown" or "deactivating" is NOT dead). A stop that
+  # cannot be confirmed never releases the task's claim: the run is
+  # marked "stopping" and the next dispatcher tick re-checks, so a wedged
+  # unit can never end up with a duplicate worker spawned beside it.
   #   auto          scope when systemd-run --user --scope works on this
   #                 host (Linux with a user systemd session), otherwise
   #                 fall back to the classic unisolated spawn (macOS,
   #                 containers). Default. A refused systemd-run launch
   #                 also falls back to an unisolated spawn for that run,
-  #                 with a warning.
+  #                 with a warning — but only after the half-created unit
+  #                 is verified cleaned up; if even that fails the spawn
+  #                 is recorded as spawn_failed instead of risking a
+  #                 second, unisolated worker beside it.
   #   systemd-scope same, but a refused launch FAILS the spawn loudly
   #                 (recorded as spawn_failed with the systemd-run stderr)
   #                 instead of silently falling back.
@@ -369,8 +379,10 @@ kanban:
   # the next gateway re-adopts them (claims rewritten, runs continue).
   # Set true to stop every scoped worker this host still claims
   # (verified whole-scope teardown, SIGTERM→SIGKILL) as the gateway
-  # exits. Crashes never stop workers either way — re-adoption covers
-  # them.
+  # exits, holding the dispatcher lock until the cleanup finishes or its
+  # budget (each unit's own verified-stop deadline) expires; whatever is
+  # left is logged for the next gateway's re-adoption sweep. Crashes
+  # never stop workers either way — re-adoption covers them.
   # worker_isolation_stop_on_shutdown: false
 
 # =============================================================================

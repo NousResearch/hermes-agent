@@ -3193,6 +3193,13 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+# Ceiling for the shutdown quiesce of the gateway-owned thread pool. Drain has
+# already waited for the agents, so what is left here is short blocking work
+# (a transcript append, a routing save); anything slower is a stuck worker we
+# must not wait on, and the caller clamps this to the watchdog leash anyway.
+_EXECUTOR_QUIESCE_TIMEOUT = 2.0
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -16806,6 +16813,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _e:
                 logger.debug("shutdown_cached_clients error: %s", _e)
 
+            # Quiesce the gateway thread pool BEFORE the session databases
+            # are closed.  This used to run *after* the close block below,
+            # which left two holes:
+            #
+            #   (a) `_executor_closing` was still False during the close, so
+            #       any coroutine reaching `_run_in_executor_with_context`
+            #       minted a brand-new pool and ran more blocking DB work
+            #       against handles that had just been closed;
+            #   (b) cancelling `self._background_tasks` above does not stop a
+            #       `run_in_executor` future that already started — the task
+            #       dies, the worker thread keeps writing.
+            #
+            # Either way a write lands after `SessionDB.close()`, which has
+            # already checkpointed the WAL and let SQLite unlink the sidecar.
+            # The late write silently reopens the handle (#94736) and mints a
+            # fresh WAL generation behind that checkpoint, so teardown
+            # checkpoints the same file a second time from a connection the
+            # shutdown log never accounts for — the close-time page-write
+            # damage in #101093 and the split WAL generation in #101064.
+            #
+            # The wait is bounded and clamped to what is left of the shutdown
+            # watchdog leash (minus a second for the close itself), so a stuck
+            # worker can never cost us the post-close cleanup window (#82161).
+            _exec_quiesce_budget = max(
+                0.0,
+                min(
+                    _EXECUTOR_QUIESCE_TIMEOUT,
+                    resolve_shutdown_watchdog_delay(timeout)
+                    - _phase_elapsed()
+                    - 1.0,
+                ),
+            )
+            _exec_live = GatewayRunner._shutdown_executor(
+                self, drain_timeout=_exec_quiesce_budget
+            )
+            if _exec_live:
+                logger.warning(
+                    "Shutdown phase: %d executor worker(s) still running after "
+                    "a %.2fs quiesce — a late write may reopen state.db",
+                    _exec_live,
+                    _exec_quiesce_budget,
+                )
+            else:
+                logger.info(
+                    "Shutdown phase: executor quiesced at +%.2fs",
+                    _phase_elapsed(),
+                )
+
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the
             # old gateway's connection holding the WAL lock until Python
@@ -16853,7 +16908,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
             except Exception as _e:
                 logger.debug("Shared SessionDB close error: %s", _e)
-            GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
                 _phase_elapsed(),
@@ -27415,11 +27469,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._executor = executor
             return executor
 
-    def _shutdown_executor(self) -> None:
-        """Stop the gateway-owned executor without touching the loop default."""
+    def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
+        """Stop the gateway-owned executor without touching the loop default.
+
+        Returns the number of worker threads still running when this returns.
+        With the default ``drain_timeout`` of 0 this is the historical
+        fire-and-forget teardown; shutdown passes a bounded budget so blocking
+        DB work cannot outlive ``SessionDB.close()`` (see ``_stop_impl``).
+
+        ``cancel_futures`` only drops work that has not started yet, and a
+        cancelled ``run_in_executor`` awaitable does not stop the thread behind
+        it, so the running futures have to be waited on explicitly.
+        """
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
-            return
+            return 0
 
         with lock:
             self._executor_closing = True
@@ -27427,12 +27491,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._executor = None
 
         if executor is None:
-            return
+            return 0
 
         try:
             executor.shutdown(wait=False, cancel_futures=True)
         except TypeError:
             executor.shutdown(wait=False)
+
+        # ThreadPoolExecutor.shutdown() has no timeout, so join the worker
+        # threads directly.  `_threads` is absent on the doubles some tests
+        # pass in, which just means no wait.
+        workers = list(getattr(executor, "_threads", None) or ())
+        deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
+        for worker in workers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            worker.join(remaining)
+        return sum(1 for worker in workers if worker.is_alive())
 
     def _decide_image_input_mode(
         self,

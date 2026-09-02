@@ -307,6 +307,30 @@ class TestProviderOverride:
         assert result == [("override/model", "custom")]
 
 
+class TestRefreshCadence:
+    def test_default_ttl_is_twenty_minutes_and_legacy_hours_honoured(self):
+        from hermes_cli import model_catalog
+
+        with patch("hermes_cli.config.load_config", return_value={"model_catalog": {"ttl_minutes": 20}}):
+            assert model_catalog.refresh_interval_seconds() == 20 * 60
+        # A user-set legacy ttl_hours still wins while ttl_minutes sits at its default.
+        with patch("hermes_cli.config.load_config", return_value={"model_catalog": {"ttl_minutes": 20, "ttl_hours": 3}}):
+            assert model_catalog.refresh_interval_seconds() == 3 * 3600
+
+    def test_refresh_catalogs_forces_every_source(self):
+        from hermes_cli import model_catalog
+
+        with patch.object(model_catalog, "_load_catalog_config", return_value={
+            "enabled": True, "url": "http://master", "ttl_hours": 1.0, "providers": {},
+        }), patch.object(model_catalog, "get_catalog", return_value=_valid_manifest()) as gc, \
+             patch("hermes_cli.models.fetch_openrouter_models") as orm, \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as nous:
+            assert model_catalog.refresh_catalogs() is True
+        gc.assert_called_once_with(force_refresh=True)
+        orm.assert_called_once_with(force_refresh=True)
+        nous.assert_called_once_with(force_refresh=True)
+
+
 class TestIntegrationWithModelsModule:
     """Exercise the fallback paths via the real callers in hermes_cli.models."""
 

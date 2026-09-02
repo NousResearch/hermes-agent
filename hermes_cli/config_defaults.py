@@ -3116,10 +3116,12 @@ DEFAULT_CONFIG = {
     "model_catalog": {
         "enabled": True,
         "url": "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json",
-        # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
-        # next /model or `hermes model` invocation; network failures
-        # silently fall back to the stale cache.
-        "ttl_hours": 1,
+        # Disk cache TTL in minutes.  The gateway refreshes the catalogs on
+        # this cadence in the background; the CLI refetches on the next
+        # /model or `hermes model` invocation once the cache is older than
+        # this.  Network failures silently fall back to the stale cache.
+        # (Legacy `ttl_hours` is still honoured when set explicitly.)
+        "ttl_minutes": 20,
         # Optional per-provider override URLs for third parties that want
         # to self-host their own curation list using the same schema.
         # Example:
@@ -4090,7 +4092,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 39,
+    "_config_version": 40,
 }
 
 # Optional environment variables that enhance functionality

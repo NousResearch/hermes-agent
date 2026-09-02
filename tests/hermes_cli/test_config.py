@@ -896,7 +896,9 @@ class TestConfigSupportFloor:
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "model_catalog": {"ttl_hours": 1},
+        # v25 lowered the old 24h default to 1h; v40 drops that 1h default so
+        # the shipped ttl_minutes (20) applies.
+        "model_catalog": {},
         "plugins": {"enabled": []},
         "stt": {"provider": "local"},
     }
@@ -915,7 +917,7 @@ class TestConfigSupportFloor:
         # default (opt-in) so the write invariant strips it from disk.
         "agent": {},
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
-        "model_catalog": {"ttl_hours": 1},
+        "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
     }
 

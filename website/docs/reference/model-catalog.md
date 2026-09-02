@@ -59,6 +59,7 @@ Field notes:
 | When | What happens |
 |---|---|
 | `/model` or `hermes model` | Fetches if disk cache is stale, else uses cache |
+| Gateway running | Background refresh every `ttl_minutes` (default 20), so the picker never lags the published manifest by more than one window |
 | Disk cache fresh (< TTL) | No network hit |
 | Network failure with cache | Silent fallback to cache, one log line |
 | Network failure, no cache | Silent fallback to in-repo snapshot |
@@ -72,11 +73,11 @@ Cache location: `~/.hermes/cache/model_catalog.json`.
 model_catalog:
   enabled: true
   url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
-  ttl_hours: 1
+  ttl_minutes: 20
   providers: {}
 ```
 
-Set `enabled: false` to disable remote fetch entirely and always use the in-repo snapshot.
+Set `enabled: false` to disable remote fetch entirely and always use the in-repo snapshot (this also disables the gateway's background refresh). `ttl_minutes` sets both the cache lifetime and the gateway refresh cadence; the legacy `ttl_hours` key is still honoured if you set it explicitly.
 
 ### Per-provider override URLs
 

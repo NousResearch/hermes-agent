@@ -14551,6 +14551,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
+        # Keep the /model picker's remote catalogs (curated manifest,
+        # OpenRouter live list, Nous Portal recommendations) warm on disk so a
+        # delisted or newly-published model reaches the picker within one TTL
+        # window (model_catalog.ttl_minutes, default 20) without waiting for a
+        # cold /model open to trigger the refresh.
+        self._spawn_supervised(self._model_catalog_refresh_watcher, "model_catalog_refresh_watcher")
+
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).
         self._spawn_supervised(self._session_stall_watcher, "session_stall_watcher")
@@ -15673,6 +15680,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 notified_map.pop(key, None)
 
         return sent
+
+    async def _model_catalog_refresh_watcher(self) -> None:
+        """Refresh the /model picker's remote catalogs every TTL window.
+
+        The picker itself only refreshes on a cold or stale open, so a
+        gateway that nobody opens ``/model`` in keeps serving whatever was
+        cached. This loop calls ``model_catalog.refresh_catalogs()`` (manifest
+        + OpenRouter live filter + Nous Portal recommendations) off-thread on
+        the configured cadence (``model_catalog.ttl_minutes``, default 20) so
+        the on-disk caches every surface reads are never older than one window.
+        """
+        from hermes_cli.model_catalog import refresh_catalogs, refresh_interval_seconds
+
+        await asyncio.sleep(30)  # let startup settle
+        while self._running:
+            try:
+                await asyncio.to_thread(refresh_catalogs)
+            except Exception as exc:
+                logger.debug("Model catalog refresh failed: %s", exc)
+            try:
+                interval = refresh_interval_seconds()
+            except Exception:
+                interval = 1200.0
+            deadline = time.monotonic() + interval
+            while self._running and time.monotonic() < deadline:
+                await asyncio.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
 
     async def _session_stall_watcher(self, interval: float = 30.0):
         """Periodic pending-inbound + stale-activity stall watchdog (#72016).

@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import logging
+import math
 import shutil
 import tempfile
 import threading
@@ -210,12 +211,53 @@ _ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
 _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 
 
-def _oneshot_run_claim_ttl_seconds() -> float:
+def resolve_cron_inactivity_timeout(config: Optional[dict] = None) -> float:
+    """Resolve the shared cron inactivity budget in seconds.
+
+    ``HERMES_CRON_TIMEOUT`` remains the highest-precedence compatibility
+    override. Otherwise use ``cron.inactivity_timeout_seconds`` from config.
+    Zero disables the watchdog; negative and non-finite values are invalid.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if raw:
+        candidate: Any = raw
+    else:
+        if config is None:
+            try:
+                from hermes_cli.config import load_config
+
+                config = load_config() or {}
+            except Exception:
+                config = {}
+        cron_config = config.get("cron", {}) if isinstance(config, dict) else {}
+        candidate = (
+            cron_config.get(
+                "inactivity_timeout_seconds",
+                _DEFAULT_CRON_INACTIVITY_TIMEOUT,
+            )
+            if isinstance(cron_config, dict)
+            else _DEFAULT_CRON_INACTIVITY_TIMEOUT
+        )
+
+    try:
+        timeout = float(candidate)
+    except (TypeError, ValueError):
+        timeout = math.nan
+    if not math.isfinite(timeout) or timeout < 0:
+        logger.warning(
+            "Invalid cron inactivity timeout %r; using default %.0fs",
+            candidate,
+            _DEFAULT_CRON_INACTIVITY_TIMEOUT,
+        )
+        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    return timeout
+
+
+def _oneshot_run_claim_ttl_seconds(config: Optional[dict] = None) -> float:
     """Resolve the one-shot running-claim stale-recovery TTL.
 
-    Derived from ``HERMES_CRON_TIMEOUT`` (the cron inactivity timeout the
-    scheduler enforces on each run) so the safety valve tracks how long a run
-    is actually allowed to go quiet, instead of a magic constant:
+    Derived from the shared cron inactivity timeout so the safety valve tracks
+    how long a run is actually allowed to go quiet, instead of a magic constant:
 
     - unset / invalid → default 600s inactivity limit → TTL = 1800s
     - ``0`` (unlimited runs) → no finite bound to derive from → fall back to
@@ -223,13 +265,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
     - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
       tiny configured timeout can never expire a claim mid-run.
     """
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-    timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
-    if raw:
-        try:
-            timeout = float(raw)
-        except (ValueError, TypeError):
-            timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
+    timeout = resolve_cron_inactivity_timeout(config)
     if timeout <= 0:
         # Unlimited runs — cannot bound; use the fixed fallback floor.
         return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)

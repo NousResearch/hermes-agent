@@ -8733,6 +8733,25 @@ def _kanban_scope_is_live(state: str) -> bool:
     return state in _SCOPE_ACTIVE_STATES
 
 
+def _collect_kanban_scope(unit_name: Optional[str]) -> None:
+    """Unload a verified-empty scope unit (explicit ``--collect``).
+
+    Kanban scopes are spawned without ``--collect`` so a fast nonzero
+    exit stays inspectable (see ``_default_spawn``); every path that
+    CONFIRMS a unit dead collects it here instead, so dead scopes do
+    not accumulate on the user bus.  Best-effort: a unit that already
+    unloaded is a no-op, a failure retries via the next confirmed-dead
+    observation."""
+    if not unit_name:
+        return
+    try:
+        from tools.process_registry import _collect_dead_systemd_unit
+
+        _collect_dead_systemd_unit(unit_name)
+    except Exception as exc:
+        _log.debug("kanban: collect of scope %s failed: %s", unit_name, exc)
+
+
 def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
     """Stop a worker's transient scope — the whole cgroup, not one pid —
     and VERIFY it is actually dead.
@@ -8870,6 +8889,10 @@ def request_worker_scope_stop(
     if state == "dead":
         with _scope_stop_lock:
             _scope_stop_confirmed.add(unit_name)
+        # Confirmed dead = terminal: collect the (possibly still loaded,
+        # failed) unit so it does not linger on the bus.  The verified
+        # stop path collects on its own; this fast path bypasses it.
+        _collect_kanban_scope(unit_name)
         return True
     if state != "active":
         # Probe failed ("unknown"): death can be neither confirmed nor
@@ -9996,6 +10019,11 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     active = _kanban_list_scope_units("hermes-kanban-*")
     for unit, state in active.items():
         if not _kanban_scope_is_live(state):
+            # Terminal-but-still-loaded unit (a failed scope stays
+            # inspectable without --collect by design): now that nothing
+            # runs in it, collect it.  Once per unit — collection makes
+            # it vanish from this listing.
+            _collect_kanban_scope(unit)
             continue
         if unit in claimed:
             continue
@@ -12499,6 +12527,17 @@ def _default_spawn(
             description=f"Hermes kanban worker {task.id}: {task.title}"[:160],
             memory_max_bytes=memory_max,
             memory_swap_max_bytes=memory_max,
+            # No --collect: a fast NONZERO worker exit must leave the
+            # failed unit LOADED (failed transient units are kept for
+            # inspection unless collected), so the launch probe below
+            # can tell "the wrapped command ran and exited" from
+            # "systemd-run refused the launch".  With --collect the unit
+            # could be unloaded before the probe reads it, a ran worker
+            # looked like a refused launch, and the auto fallback
+            # plain-spawned a DUPLICATE beside the exited one.  The unit
+            # is collected explicitly once the run is terminal
+            # (_collect_kanban_scope / the verified-stop path).
+            collect=False,
         )
         if wrapped[0] != cmd[0]:
             launch_cmd = wrapped

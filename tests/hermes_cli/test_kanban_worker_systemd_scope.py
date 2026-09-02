@@ -128,6 +128,7 @@ if pid == 0:
 # Parent = the systemd-run client (the LAUNCHER): stays in the caller's
 # process tree, waits for the scoped command, dies with its parent.
 _, status = os.waitpid(pid, 0)
+rc = os.waitstatus_to_exitcode(status)
 try:
     with open(unit_path) as f:
         data = json.load(f)
@@ -138,7 +139,16 @@ try:
     os.replace(tmp, unit_path)
 except Exception:
     pass
-sys.exit(os.waitstatus_to_exitcode(status))
+# Model transient-unit collection: --collect unloads on ANY completion;
+# without it a successful unit still unloads when inactive — only FAILED
+# ones stay loaded for inspection.  That asymmetry is what lets the
+# spawn probe tell "ran and exited nonzero" from "launch refused".
+if "--collect" in flags or rc == 0:
+    try:
+        os.unlink(unit_path)
+    except OSError:
+        pass
+sys.exit(rc)
 '''
 
 _SYSTEMCTL_SHIM = f'''#!{sys.executable}
@@ -275,6 +285,21 @@ if op == "stop":
         save(unit, data)
         # Sticky pids that died still count until kill clears them.
     refresh_cgroup(unit)
+    sys.exit(0)
+
+if op == "reset-failed":
+    # Unload a dead/failed unit (explicit collection): the unit and its
+    # cgroup vanish; a later show reports not-found.
+    unit = argv[1]
+    log_action("reset-failed", unit)
+    try:
+        os.unlink(unit_file(unit))
+    except OSError:
+        pass
+    try:
+        os.unlink(os.path.join(STATE, "cgroup", unit, "cgroup.procs"))
+    except OSError:
+        pass
     sys.exit(0)
 
 if op == "kill":
@@ -671,7 +696,10 @@ def test_default_spawn_wraps_argv_in_systemd_scope(monkeypatch, tmp_path):
     unit = kb._kanban_worker_scope_unit("t_scope1", 7)
     assert unit == "hermes-kanban-t_scope1-r7.scope"
     assert unit in head
-    assert "--collect" in head
+    # No --collect: a fast nonzero worker exit must leave the failed
+    # unit LOADED so the launch probe can tell "ran" from "refused"
+    # (collection is explicit once the run is terminal).
+    assert "--collect" not in head
     assert head[head.index("--description") + 1] == (
         "Hermes kanban worker t_scope1: build the widget"
     )
@@ -1882,6 +1910,15 @@ def test_fast_worker_nonzero_exit_is_not_a_launch_failure(
         "WHERE task_id=? AND kind='spawned'", (tid,),
     ).fetchone()
     assert spawned_events["n"] == 1
+    # The load-bearing fact for this regression: without --collect the
+    # FAILED unit stays loaded on the bus (inspectable), which is what
+    # lets the probe read "ran and exited" instead of "never created"
+    # (the shim models --collect unloading any completion; under the old
+    # argv the unit was gone when the probe looked).  The probe SAW it —
+    # and once the run is terminal the tick's sweep collects the unit
+    # EXPLICITLY, which is observable in the shim's action log:
+    unit = kb._kanban_worker_scope_unit(tid, 1)
+    assert {"action": "reset-failed", "unit": unit} in shims.stops()
 
 
 def test_spawn_failure_with_uncleanable_unit_refuses_fallback(

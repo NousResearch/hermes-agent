@@ -288,6 +288,7 @@ def _build_systemd_scope_argv(
     description: Optional[str] = None,
     memory_max_bytes: Optional[int] = None,
     memory_swap_max_bytes: Optional[int] = None,
+    collect: bool = True,
 ) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
 
@@ -295,6 +296,14 @@ def _build_systemd_scope_argv(
     worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
     the transient scope self-clean after exit; ``--unit`` gives it a
     recognisable name for ``systemctl --user status`` / journalctl.
+    Callers that must be able to tell "the wrapped command ran" from
+    "systemd-run refused the launch" (the kanban dispatcher's spawn
+    probe) pass ``collect=False``: a completed transient unit normally
+    unloads when it succeeds but a FAILED one is kept for inspection
+    unless ``--collect`` was set, so without the flag a fast nonzero
+    exit stays observable on the bus and cannot be mistaken for a
+    refused launch.  Those callers collect explicitly via
+    :func:`_collect_dead_systemd_unit` once the run is terminal.
 
     Callers whose transient unit is NOT a terminal-worker sibling (e.g.
     the kanban dispatcher's per-task workers, ``hermes-kanban-<task>.scope``)
@@ -326,8 +335,9 @@ def _build_systemd_scope_argv(
         "--quiet",
         "--unit",
         unit,
-        "--collect",
     ]
+    if collect:
+        argv.append("--collect")
     if description:
         argv += ["--description", description]
     argv += [
@@ -406,6 +416,32 @@ def _stop_systemd_unit(unit_name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _SCOPE_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
+
+
+def _collect_dead_systemd_unit(unit_name: str) -> None:
+    """Best-effort unload of a transient unit that is verified empty.
+
+    ``systemctl --user reset-failed`` clears the failed state, which is
+    what keeps a dead transient scope loaded on the bus.  Scopes spawned
+    WITHOUT ``--collect`` (the kanban dispatcher's, so a fast nonzero
+    worker stays inspectable — see ``_build_systemd_scope_argv``) rely on
+    this call to be unloaded once their run is terminal; scopes that
+    already unloaded are a no-op.  Never raises and never returns
+    anything: this is garbage collection, not verification — liveness is
+    answered by ``_scope_unit_liveness`` before this is called."""
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return
+    try:
+        subprocess.run(
+            [binary, "--user", "reset-failed", unit_name],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("systemctl --user reset-failed %s failed: %s", unit_name, exc)
 
 # How long ``_stop_systemd_unit_verified`` waits after its SIGKILL
 # escalation before giving up (liveness re-probes every 0.2 s).  A module
@@ -539,12 +575,15 @@ def _scope_unit_was_created(unit_name: str) -> bool:
 
     ``systemctl show -p LoadState``: ``not-found`` means systemd never
     created the unit (a refused ``systemd-run`` launch); ``loaded``
-    means it exists — and stays loaded until ``--collect`` unloads it,
-    so this stays True after a fast worker exit, which is exactly the
-    signal the spawn probe needs to tell "launch refused" from "worker
-    ran and exited".  A failed query also returns True: when we cannot
-    tell, assume the launch happened (the cost of wrongly assuming a
-    refused launch is a duplicate plain-spawn beside a live scope).
+    means it exists.  Kanban scopes are spawned WITHOUT ``--collect``,
+    so a fast NONZERO worker exit leaves its failed unit loaded (failed
+    transient units are kept for inspection unless collected) and this
+    stays True — exactly the signal the spawn probe needs to tell
+    "launch refused" from "worker ran and exited"; the unit is unloaded
+    explicitly (``_collect_dead_systemd_unit``) once the run is
+    terminal.  A failed query also returns True: when we cannot tell,
+    assume the launch happened (the cost of wrongly assuming a refused
+    launch is a duplicate plain-spawn beside a live scope).
     """
     import shutil
 
@@ -601,6 +640,7 @@ def _stop_systemd_unit_verified(
     # verdict to the liveness checks that follow.
     _stop_systemd_unit(unit_name)
     if _scope_unit_liveness(unit_name) == "dead":
+        _collect_dead_systemd_unit(unit_name)
         return True
     # Not verified dead (slow descendants, a wedged stop job draining
     # the cgroup, or an unreachable bus).  Escalate: SIGKILL every
@@ -618,6 +658,7 @@ def _stop_systemd_unit_verified(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _scope_unit_liveness(unit_name) == "dead":
+            _collect_dead_systemd_unit(unit_name)
             return True
         time.sleep(0.2)
     logger.warning(

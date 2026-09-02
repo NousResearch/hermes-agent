@@ -14,6 +14,7 @@ from agent.memory_manager import MemoryManager, build_memory_context_block
 from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BYTES,
     MAX_MEMORY_OBSERVATION_NODES,
+    MAX_MEMORY_OBSERVATION_OPERATION_NODES,
     MAX_MEMORY_OBSERVATIONS,
     MemoryObservation,
     MemoryPrefetchResult,
@@ -856,3 +857,84 @@ def test_payload_node_budget_does_not_leak_between_calls():
     for _ in range(50):
         frozen, _ = _freeze_memory_observation_payload(payload)
         assert frozen["a"] == (1, 2, 3)
+
+
+def _adversarial_malformed_payload():
+    """Payload whose freeze walks ~MAX_MEMORY_OBSERVATION_NODES before failing.
+
+    63 inner lists of 64 valid ints fill 4095 valid freeze nodes; the final
+    inner list holds an ``object()`` leaf whose freeze raises ``TypeError``.
+    Freezing this in isolation touches 4160+ nodes before it can be rejected —
+    a fresh per-payload budget forces the full traversal for every candidate.
+    """
+    good_inner = [list(range(64)) for _ in range(63)]
+    tail_inner = list(range(63)) + [object()]
+    return good_inner + [tail_inner]
+
+
+def test_malformed_observation_tail_shares_operation_traversal_budget(
+    monkeypatch, caplog
+):
+    """A malformed observation tail cannot force fresh per-payload traversal.
+
+    Regression: ``_normalize_prefetch_result`` bounded accepted count and
+    bytes, but malformed candidates dropped in the except branch did not
+    consume any operation budget. Because ``_freeze_json_value`` reset its
+    4096-node budget per payload, a provider could return many malformed
+    payloads and force ``N × MAX_MEMORY_OBSERVATION_NODES`` traversal work.
+
+    The fix threads a shared operation traversal budget through every
+    candidate so malformed and valid payloads compete for the same node
+    allowance. Once the shared budget is exhausted, every subsequent
+    candidate fails on its first budget decrement and the tail is dropped
+    without deep recursion — while the earlier valid prefix stays admitted.
+    """
+    import agent.memory_provider as memory_provider_module
+
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+
+    calls = [0]
+    original_freeze = memory_provider_module._freeze_json_value
+
+    def counting_freeze(value, *, depth=0, budget=None):
+        calls[0] += 1
+        return original_freeze(value, depth=depth, budget=budget)
+
+    monkeypatch.setattr(
+        memory_provider_module, "_freeze_json_value", counting_freeze
+    )
+
+    valid_prefix = _observation({"index": 0})
+    n_malformed = 200
+    malformed_tail = tuple(
+        _observation(_adversarial_malformed_payload()) for _ in range(n_malformed)
+    )
+    provider = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="usable context",
+            observations=(valid_prefix,) + malformed_tail,
+        ),
+    )
+    manager = MemoryManager()
+    manager.add_provider(provider)
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    # Context and the valid ordered-prefix observation survive; every
+    # malformed candidate is dropped after logging.
+    assert result.context == "usable context"
+    assert [item.payload["index"] for item in result.observations] == [0]
+    assert "malformed prefetch observation" in caplog.text
+
+    # Total freeze traversal across every malformed candidate is bounded by
+    # the shared operation budget plus a small O(N) cost per candidate that
+    # fails on the first budget decrement. Without the fix, this would be
+    # ~n_malformed × MAX_MEMORY_OBSERVATION_NODES freeze calls.
+    unfixed_lower_bound = n_malformed * MAX_MEMORY_OBSERVATION_NODES // 2
+    assert calls[0] < unfixed_lower_bound
+    # Concrete headroom: shared budget + one decrement per tail candidate +
+    # a handful of frames for the valid prefix and container bookkeeping.
+    assert calls[0] <= MAX_MEMORY_OBSERVATION_OPERATION_NODES + n_malformed + 64

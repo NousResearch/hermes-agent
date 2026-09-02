@@ -1426,10 +1426,15 @@ class TestWebhookEnvOverride:
 
         The fix honors the explicit disable, flagged by ``_enabled_explicit``
         in the platform's extra (set when the config.yaml pins enabled).
+        The MSGRAPH_WEBHOOK branch shares the shape and the fix.
         """
         config = GatewayConfig(
             platforms={
                 Platform.WEBHOOK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+                Platform.MSGRAPH_WEBHOOK: PlatformConfig(
                     enabled=False,
                     extra={"_enabled_explicit": True},
                 ),
@@ -1442,6 +1447,8 @@ class TestWebhookEnvOverride:
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",
+                "MSGRAPH_WEBHOOK_ENABLED": "true",
+                "MSGRAPH_WEBHOOK_PORT": "9998",
             },
             clear=True,
         ):
@@ -1449,6 +1456,8 @@ class TestWebhookEnvOverride:
 
         # Explicit disable wins over the env-var presence.
         assert config.platforms[Platform.WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].extra.get("port") == 9998
         # Port/secret are still wired through for the shared listener.
         assert config.platforms[Platform.WEBHOOK].extra.get("port") == 9999
         assert (

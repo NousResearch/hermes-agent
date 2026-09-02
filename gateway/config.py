@@ -2448,7 +2448,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            # Same explicit-disable guard as the webhook branch above (#85637).
+            # READ (don't pop) the marker here: the relay-exclusive pass below
+            # still consults it, and the end-of-function scrub removes it for
+            # every platform.
+            msgraph_cfg = config.platforms[Platform.MSGRAPH_WEBHOOK]
+            if not msgraph_cfg.extra.get("_enabled_explicit", False) or msgraph_cfg.enabled:
+                msgraph_cfg.enabled = True
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(

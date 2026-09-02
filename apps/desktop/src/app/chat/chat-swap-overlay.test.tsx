@@ -3,7 +3,7 @@
 // that GlyphSpinner was rewritten to remove. It now renders GlyphSpinner, so
 // what needs pinning is that no timer comes back, that the label still survives
 // the fade-out, and that the spinner stops animating once the swap is done.
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatSwapOverlay } from './chat-swap-overlay'
@@ -66,5 +66,24 @@ describe('ChatSwapOverlay', () => {
     expect(screen.getByText(/turqoise/)).toBeTruthy()
     // ...and the spinner stops, the way clearing the interval used to stop it.
     expect(container.querySelector('.glyph-spinner')?.getAttribute('data-paused')).toBe('true')
+  })
+
+  it('keeps the Bot Mode cover opaque through one settled transcript paint before fading', () => {
+    const { container, rerender } = render(<ChatSwapOverlay botMode profile="persephone" />)
+    const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
+
+    rerender(<ChatSwapOverlay botMode profile={null} />)
+
+    // Keep one fully painted cover between transcript commit/scroll restoration
+    // and the fade. Starting the fade in this same render exposes giant restored
+    // histories before their first stable frame.
+    expect(overlay?.className).toContain('opacity-100')
+    expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
+
+    act(() => vi.advanceTimersByTime(16))
+    expect(overlay?.className).toContain('opacity-100')
+
+    act(() => vi.advanceTimersByTime(16))
+    expect(overlay?.className).toContain('opacity-0')
   })
 })

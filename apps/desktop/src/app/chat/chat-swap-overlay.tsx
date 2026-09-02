@@ -10,22 +10,49 @@ import { cn } from '@/lib/utils'
 export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolean; profile: string | null }) {
   const { t } = useI18n()
   const [label, setLabel] = useState<null | string>(profile)
+  const [covering, setCovering] = useState(Boolean(profile))
 
   useEffect(() => {
     if (profile) {
       setLabel(profile)
+      setCovering(true)
+
+      return
     }
-  }, [profile])
+
+    if (!covering) {
+      return
+    }
+
+    // The message store can settle before React commits and scroll-restores a
+    // giant transcript. Preserve one fully painted cover, then begin the fade;
+    // otherwise the browser exposes the transcript's intermediate layout.
+    let secondFrame: number | undefined
+
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => setCovering(false))
+    })
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+
+      if (secondFrame !== undefined) {
+        window.cancelAnimationFrame(secondFrame)
+      }
+    }
+  }, [covering, profile])
+
+  const coverVisible = Boolean(profile) || (botMode && covering)
 
   return (
     <div
       aria-hidden
       className={cn(
         'pointer-events-none absolute inset-0 z-50 flex items-center justify-center transition-opacity duration-150 ease-out',
-        botMode && profile ? 'bg-(--ui-chat-surface-background)' : '',
-        profile ? 'opacity-100' : 'opacity-0'
+        botMode && coverVisible ? 'bg-(--ui-chat-surface-background)' : '',
+        coverVisible ? 'opacity-100' : 'opacity-0'
       )}
-      data-glass-opaque={botMode && profile ? '' : undefined}
+      data-glass-opaque={botMode && coverVisible ? '' : undefined}
       data-slot="chat-swap-overlay"
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">

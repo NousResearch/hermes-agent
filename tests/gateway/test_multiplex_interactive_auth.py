@@ -110,6 +110,39 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
         assert tg._is_user_authorized_from_message(msg(4343, False)) is False
 
 
+def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatch):
+    """#72657: a multiplexed Slack adapter's button gate resolves through the
+    wired ``_make_adapter_auth_check`` for its own profile; the DEFAULT
+    profile's process-env allow-all never leaks in — not through the
+    injected path, and not through the env-only fallback either."""
+    from gateway.run import _profile_runtime_scope
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    runner = _runner(mux_home)
+    runner.adapters = {}
+    sec_home = mux_home / "profiles" / "secondary"
+    (sec_home / ".env").write_text("SLACK_ALLOWED_USERS=U_SEC\n")
+    monkeypatch.setenv("SLACK_ALLOW_ALL_USERS", "true")
+
+    def slack(with_check):
+        sl = object.__new__(SlackAdapter)
+        sl.config = PlatformConfig(enabled=True, extra={})
+        sl._authorization_check = None
+        sl._message_handler = runner._make_profile_message_handler("secondary")
+        if with_check:
+            runner._profile_adapters = {"secondary": {Platform.SLACK: sl}}
+            sl.set_authorization_check(
+                runner._make_adapter_auth_check(Platform.SLACK, profile_name="secondary")
+            )
+        return sl
+
+    with _profile_runtime_scope(sec_home):
+        wired = slack(True)
+        assert wired._is_interactive_user_authorized("U_SEC", channel_id="C1") is True
+        assert wired._is_interactive_user_authorized("U_X", channel_id="C1") is False
+        assert slack(False)._is_interactive_user_authorized("U_X", channel_id="C1") is False
+
+
 def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
     """#87240 egress half: inside a secondary profile's runtime scope the
     default bot must not be handed to that profile (fail-closed None); the

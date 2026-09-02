@@ -6353,9 +6353,19 @@ class SlackAdapter(BasePlatformAdapter):
         # or file downloads.  The final gateway runner auth check happens
         # after MessageEvent construction, so adapter-side media fetches need
         # the same auth chain up front.
+        # Prefer the injected profile-bound check (survives the multiplex
+        # closure handler, which has no ``__self__``); fall back to runner
+        # introspection for adapters wired without one.
+        _early_decision = (
+            self._is_sender_authorized(
+                user_id, "dm" if is_dm else "group", channel_id
+            )
+            if user_id and getattr(self, "_authorization_check", None) is not None
+            else None
+        )
         _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         _auth_fn = getattr(_runner, "_is_user_authorized", None)
-        if user_id and callable(_auth_fn):
+        if _early_decision is None and user_id and callable(_auth_fn):
             _source = self.build_source(
                 chat_id=channel_id,
                 chat_name="",
@@ -6363,13 +6373,14 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id=user_id,
                 user_name="",
             )
-            if not _auth_fn(_source):
-                logger.warning(
-                    "[Slack] Early reject of unauthorized user %s in channel %s",
-                    user_id,
-                    channel_id,
-                )
-                return
+            _early_decision = bool(_auth_fn(_source))
+        if _early_decision is False:
+            logger.warning(
+                "[Slack] Early reject of unauthorized user %s in channel %s",
+                user_id,
+                channel_id,
+            )
+            return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -7490,6 +7501,23 @@ class SlackAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at connect
+        # time (``set_authorization_check``) runs the full, profile-bound
+        # ``_is_user_authorized`` chain. Unlike the ``__self__`` introspection
+        # below it also resolves on a multiplexed adapter, whose message
+        # handler is a profile closure with no ``__self__`` (#72657, same
+        # class as Telegram's #86296).
+        # ``getattr``: adapters built via ``object.__new__`` never ran
+        # ``BasePlatformAdapter.__init__``.
+        if getattr(self, "_authorization_check", None) is not None:
+            injected = self._is_sender_authorized(
+                normalized_user_id, chat_type, str(channel_id or "")
+            )
+            if injected is not None:
+                return injected
+
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
@@ -7499,7 +7527,7 @@ class SlackAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.SLACK,
                     chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    chat_type=chat_type,
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None,
@@ -7512,20 +7540,14 @@ class SlackAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # Env-only fallback (no injected check, no bound runner). Gate reads go
+        # through the shared per-profile accessor: under multiplex a scoped
+        # miss returns "" instead of falling through to ``os.environ``, which
+        # holds the DEFAULT profile's allow-all flag / allowlist.
+        from gateway.authz_mixin import _platform_gate_env as _env
+
+        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
-
-        def _env(name: str) -> str:
-            # Multiplex: profile .env is in secret_scope, not process environ.
-            try:
-                from agent.secret_scope import get_secret
-
-                val = get_secret(name)
-                if val is not None and str(val).strip():
-                    return str(val).strip()
-            except Exception:
-                pass
-            return (os.getenv(name) or "").strip()
 
         allowed_ids = set()
         platform_allowlist = _env("SLACK_ALLOWED_USERS")
@@ -7538,8 +7560,6 @@ class SlackAdapter(BasePlatformAdapter):
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
-            return True
         return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:

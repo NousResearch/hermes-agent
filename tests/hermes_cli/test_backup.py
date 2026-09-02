@@ -697,7 +697,7 @@ class TestBackupEdgeCases:
         args = Namespace(output=str(tmp_path / "out.zip"))
 
         from hermes_cli.backup import run_backup
-        run_backup(args)
+        assert run_backup(args) is True
 
         # No zip should be created
         assert not (tmp_path / "out.zip").exists()
@@ -721,7 +721,8 @@ class TestBackupEdgeCases:
         args = Namespace(output=str(out_zip))
 
         from hermes_cli.backup import run_backup
-        run_backup(args)
+        # The archive is kept, but a skipped file makes the run incomplete.
+        assert run_backup(args) is False
 
         # Zip should still be created with the valid files
         assert out_zip.exists()
@@ -2423,3 +2424,110 @@ def _count_rows(db_path: Path) -> tuple[int, int]:
         )
     finally:
         conn.close()
+class TestBackupExitStatus:
+    """A written-but-incomplete archive must not report shell success.
+
+    ``hermes backup`` recorded per-file failures, printed ``Backup incomplete``
+    and still exited 0, so cron/systemd timers could publish archives missing
+    ``state.db`` indefinitely. ``run_backup`` now reports completeness and
+    ``cmd_backup`` maps an incomplete archive to exit status 1; the archive is
+    kept. Lock contention keeps exit status 2.
+    """
+
+    def _home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        return hermes_home
+
+    def test_run_backup_returns_false_and_keeps_archive_when_db_snapshot_fails(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._home(tmp_path, monkeypatch)
+        import hermes_cli.backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", lambda *a, **kw: False)
+        out_zip = tmp_path / "out.zip"
+
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is False
+
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+        assert "config.yaml" in names
+        assert not any(name.endswith(".db") for name in names)
+        out = capsys.readouterr().out
+        assert "Backup incomplete" in out
+        assert "Archive kept" in out
+        assert "SQLite safe copy failed" in out
+        assert "Restore with:" not in out
+
+    def test_run_backup_returns_false_when_regular_file_unreadable(
+        self, tmp_path, monkeypatch
+    ):
+        if os.name != "posix" or os.geteuid() == 0:
+            pytest.skip("needs POSIX permissions and a non-root user")
+        hermes_home = self._home(tmp_path, monkeypatch)
+        secret = hermes_home / "unreadable.txt"
+        secret.write_text("x", encoding="utf-8")
+        secret.chmod(0)
+        out_zip = tmp_path / "out.zip"
+        try:
+            from hermes_cli.backup import run_backup
+
+            assert run_backup(Namespace(output=str(out_zip))) is False
+            assert out_zip.exists()
+        finally:
+            secret.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    def test_run_backup_returns_true_when_complete(self, tmp_path, monkeypatch, capsys):
+        self._home(tmp_path, monkeypatch)
+        from hermes_cli.backup import run_backup
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is True
+        out = capsys.readouterr().out
+        assert "Backup complete" in out
+        assert "Restore with:" in out
+
+    def test_run_backup_exits_2_when_another_backup_is_running(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = self._home(tmp_path, monkeypatch)
+        from hermes_cli.backup import _backup_operation_lock, run_backup
+
+        with _backup_operation_lock(hermes_home):
+            with pytest.raises(SystemExit) as exc:
+                run_backup(Namespace(output=str(tmp_path / "out.zip")))
+        assert exc.value.code == 2
+
+    def test_cmd_backup_exits_1_when_full_backup_incomplete(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        monkeypatch.setattr(backup_mod, "run_backup", lambda args: False)
+        with pytest.raises(SystemExit) as exc:
+            cmd_backup(Namespace(quick=False, output=None))
+        assert exc.value.code == 1
+
+    def test_cmd_backup_returns_normally_when_complete(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        monkeypatch.setattr(backup_mod, "run_backup", lambda args: True)
+        assert cmd_backup(Namespace(quick=False, output=None)) is None
+
+    def test_cmd_backup_quick_path_untouched(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        calls = []
+        monkeypatch.setattr(backup_mod, "run_quick_backup", lambda args: calls.append(args))
+
+        def _not_expected(args):
+            raise AssertionError("full backup must not run for --quick")
+
+        monkeypatch.setattr(backup_mod, "run_backup", _not_expected)
+        cmd_backup(Namespace(quick=True, output=None, label=None))
+        assert len(calls) == 1

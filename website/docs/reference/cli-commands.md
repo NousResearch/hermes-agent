@@ -959,6 +959,8 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 - `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 
+**Exit codes.** `0` when every selected file was archived (or there was nothing to back up); `1` when the archive was written but is incomplete — for example a SQLite database stayed locked past the snapshot deadline or a file could not be read; the summary lists what is missing and the zip is kept — or when the Hermes home / output path is unusable; `2` when another Hermes backup is already running. Scheduled backups (cron, systemd timers) should treat any non-zero status as a failed run.
+
 ### Examples
 
 ```bash

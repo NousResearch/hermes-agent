@@ -603,8 +603,8 @@ def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
     return external_to_add, skipped_external
 
 
-def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+def run_backup(args) -> bool:
+    """Create a full backup; return False if any selected files could not be archived."""
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -613,13 +613,13 @@ def run_backup(args) -> None:
 
     try:
         with _backup_operation_lock(hermes_root):
-            _run_backup_locked(args, hermes_root)
+            return _run_backup_locked(args, hermes_root)
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc
 
 
-def _run_backup_locked(args, hermes_root: Path) -> None:
+def _run_backup_locked(args, hermes_root: Path) -> bool:
     """Write a full backup while the cross-process backup slot is held."""
     out_path = _resolve_backup_output_path(args.output)
     scan_started = time.monotonic()
@@ -631,7 +631,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
         print("No files to back up.")
-        return
+        return True
 
     file_count = len(files_to_add) + len(external_to_add)
     logger.info("backup phase=scan status=complete duration_ms=%.1f files=%d",
@@ -676,9 +676,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
     if errors:
-        _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
+        _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added (exit status 1):",
+                      errors, "  ")
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
+    return not errors
 
 
 # --- Import ---

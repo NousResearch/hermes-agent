@@ -502,6 +502,7 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
+
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
                     // providers never collide with GGUF stems).

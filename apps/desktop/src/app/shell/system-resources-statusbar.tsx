@@ -103,6 +103,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
       : null
 
   const ramUsed = hardware ? hardware.ram_total_bytes - hardware.ram_available_bytes : null
+
   const ramPercent =
     hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
 

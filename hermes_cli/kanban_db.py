@@ -3565,6 +3565,32 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # A card parked directly in ``blocked`` is a human-ops gate
+                # (the R3 gate behind ``--initial-status blocked``). Setting
+                # the status column alone leaves no ``blocked`` event, so
+                # ``_has_sticky_block`` reads False and ``recompute_ready``
+                # promotes the card to ``ready`` on the very next dispatcher
+                # tick -- silently dispatching work a human never approved.
+                # Emit the same row shape ``block_task`` produces so the gate
+                # is sticky from creation. ``block_recurrences`` stays at its
+                # default 0: nothing has been unblocked yet, and preseeding it
+                # would trip the unblock-loop breaker one cycle early.
+                if task_status == "blocked":
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = ? WHERE id = ?",
+                        ("needs_input", task_id),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": None,
+                            "kind": "needs_input",
+                            "recurrences": 0,
+                            "source_status": "created",
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

@@ -29,6 +29,7 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -161,3 +162,50 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test
 # here; dropped during salvage to avoid two assertions of the same contract.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Cards created directly in ``blocked`` (the R3 human-ops gate) are sticky
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_not_auto_promoted(kanban_home: Path) -> None:
+    """``create_task(initial_status="blocked")`` parks a card for human ops.
+
+    It used to set ``status='blocked'`` without emitting a ``blocked`` event,
+    so ``_has_sticky_block`` read False and the very next ``recompute_ready``
+    promoted the card to ``ready`` -- dispatching work no human had approved.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="R3 gate", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(5):
+            assert kb.recompute_ready(conn) == 0, "R3 gate must not auto-promote"
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initial_status_blocked_matches_block_task_row_shape(kanban_home: Path) -> None:
+    """A card created blocked and one blocked via ``block_task`` must be
+    indistinguishable in status, ``block_kind`` and their latest event, so the
+    recurrence counter and every ``block_kind`` consumer behave identically."""
+    with kb.connect() as conn:
+        created = kb.create_task(conn, title="created blocked", initial_status="blocked")
+        blocked = kb.create_task(conn, title="blocked later")
+        kb.claim_task(conn, blocked)
+        assert kb.block_task(
+            conn, blocked, kind="needs_input",
+            expected_run_id=kb.get_task(conn, blocked).current_run_id,
+        )
+
+        def shape(task_id: str) -> tuple:
+            task = kb.get_task(conn, task_id)
+            row = conn.execute(
+                "SELECT kind, payload FROM task_events "
+                "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            return task.status, task.block_kind, row["kind"], payload.get("kind")
+
+        assert shape(created) == shape(blocked) == ("blocked", "needs_input", "blocked", "needs_input")

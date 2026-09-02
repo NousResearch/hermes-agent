@@ -1016,11 +1016,18 @@ def resolve_persist_behavior(
     1. ``--once`` explicitly opts out → ``False`` (next turn only).
     2. ``--session`` explicitly opts out → ``False`` (this session only).
     3. ``--global`` explicitly opts in → ``True``.
-    4. ``--provider`` given without an explicit persist flag → ``False``
+    4. No default configured yet (neither ``model.default`` nor
+       ``model.provider`` set — a fresh install whose first-ever pick this
+       is) → ``True``.  Without a persisted provider, ``resolve_provider``
+       falls through to whatever ``*_API_KEY`` env var is lying around on
+       the next launch (#86414), so the first pick becomes the default
+       instead of evaporating.  Applies to every surface (CLI, gateway,
+       Desktop picker) so no client has to hardcode ``--global``.
+    5. ``--provider`` given without an explicit persist flag → ``False``
        (session only).  Provider switches are typically exploratory — the
        user is trying a different backend for this conversation, not
        reconfiguring the default.  ``--global`` can still force persist.
-    5. Otherwise defer to ``model.persist_switch_by_default`` in
+    6. Otherwise defer to ``model.persist_switch_by_default`` in
        ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
        affects only the current session).  Users who want the old
        persist-by-default behavior can set the key to ``true``; a one-off
@@ -1036,17 +1043,20 @@ def resolve_persist_behavior(
         return False
     if is_global:
         return True
-    if explicit_provider:
-        return False
     try:
         from hermes_cli.config import load_config
 
         model_cfg = load_config().get("model")
-        if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", False))
     except Exception:
-        pass
-    return False
+        return False
+    if isinstance(model_cfg, dict):
+        if not (model_cfg.get("default") or model_cfg.get("provider")):
+            return True
+        if explicit_provider:
+            return False
+        return bool(model_cfg.get("persist_switch_by_default", False))
+    # Flat-string form: a non-empty string IS a configured default.
+    return not model_cfg
 
 
 # ---------------------------------------------------------------------------

@@ -386,7 +386,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 启用 CORS 后：
 - **预检响应**包含 `Access-Control-Max-Age: 600`（10 分钟缓存）
 - **SSE 流式响应**包含 CORS 头，使浏览器 EventSource 客户端能够正常工作
-- **`Idempotency-Key`** 是允许的请求头——客户端可发送它用于去重（响应按 key 缓存 5 分钟）
+- **`Idempotency-Key`** 是允许的请求头——客户端可发送它用于去重（`/v1/runs` 启动请求按 key 保留 10 分钟）
 
 大多数已记录的前端（如 Open WebUI）采用服务器到服务器连接，完全不需要 CORS。
 

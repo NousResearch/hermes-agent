@@ -77,3 +77,62 @@ def test_lock_is_board_scoped(conn):
             assert held_b is True, "a lock on a different board must be independent"
 
 
+def test_unopenable_lock_file_skips_the_tick(conn, monkeypatch):
+    """A lock file we cannot even open must SKIP the tick, not proceed (#87609).
+
+    Regression: the open failure degraded to ``acquired = True``, so the tick
+    ran as though it held the board lock. That is the multi-writer case the
+    lock exists to prevent, and it fires on exactly the environmental faults
+    (antivirus or a sync client holding the file on Windows, a permissions
+    blip) that are most likely to hit two gateways at once.
+    """
+    db_path = kb.kanban_db_path(board="default")
+    real_open = Path.open
+
+    def refuse_lock_file(self, *args, **kwargs):
+        if self.name.endswith(".dispatch.lock"):
+            raise OSError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refuse_lock_file)
+
+    with kb._dispatch_tick_lock(db_path) as held:
+        assert held is False, (
+            "an unopenable lock file cannot prove we are the sole writer, so "
+            "the tick must be skipped rather than assumed safe"
+        )
+
+
+def test_unopenable_lock_file_does_not_dispatch(conn, monkeypatch):
+    """The end-to-end consequence: no spawn happens on such a tick."""
+    kb.create_task(conn, title="t", assignee="w")
+    real_open = Path.open
+    spawn_calls: list = []
+
+    def spy_spawn(task, workspace_path, board=None):
+        spawn_calls.append(getattr(task, "id", task))
+        return 999999
+
+    def refuse_lock_file(self, *args, **kwargs):
+        if self.name.endswith(".dispatch.lock"):
+            raise OSError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refuse_lock_file)
+    result = kb.dispatch_once(conn, spawn_fn=spy_spawn)
+
+    assert result.skipped_locked is True
+    assert result.spawned == []
+    assert spawn_calls == [], "a dispatcher that cannot lock must not spawn"
+
+
+def test_lock_still_works_when_the_file_is_openable(conn):
+    """Guardrail: the normal path is untouched — a free lock is still acquired.
+
+    Without this, making the error path fail closed could pass by breaking
+    acquisition outright.
+    """
+    db_path = kb.kanban_db_path(board="default")
+
+    with kb._dispatch_tick_lock(db_path) as held:
+        assert held is True

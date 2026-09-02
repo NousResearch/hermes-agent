@@ -1749,9 +1749,27 @@ def _dispatch_tick_lock(db_path: Path):
             except (BlockingIOError, OSError):
                 acquired = False
     except OSError:
-        # Could not even open the lock file (permissions, read-only FS).
-        # Degrade to a no-op so a probe failure never blocks dispatch.
-        acquired = True
+        # Could not even open the lock file: antivirus or a sync client
+        # (OneDrive, Dropbox) holding it open on Windows, a permissions blip, a
+        # read-only mount. Skip this tick rather than proceeding as if we held
+        # the lock, because we cannot tell an unlockable file from a file
+        # another dispatcher already owns, and guessing "nobody owns it" is the
+        # multi-writer case this lock exists to prevent (#35240).
+        #
+        # Deliberately NOT the same call the docstring reserves for a platform
+        # with no fcntl/msvcrt, which is meant to degrade to a no-op: a missing
+        # locking primitive is a permanent property of the platform, so failing
+        # closed there would disable dispatch forever, while this is transient
+        # and re-evaluated every tick. Skipping is already the documented
+        # behaviour of a dispatcher that loses the lock, so the cost of being
+        # wrong here is one deferred interval rather than an outage.
+        #
+        # (That no-op is currently unreachable: the import sites below catch
+        # OSError / AttributeError, and a missing module raises ImportError,
+        # which is neither. Out of scope for this fix - it is a crash rather
+        # than a fail-open, in a branch this change does not touch - and is
+        # tracked separately in #89653.)
+        acquired = False
         handle = None
     try:
         yield acquired

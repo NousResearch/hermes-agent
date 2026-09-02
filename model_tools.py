@@ -500,6 +500,21 @@ def _compute_tool_definitions(
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 
+    # Tool-level subtraction (F1 exact-allowlist enforcement): names on
+    # disabled_toolsets that match NO toolset are treated as individual TOOL
+    # names and stripped after composite expansion — so disabling `terminal`
+    # removes it even when an enabled composite (e.g. `coding`) re-lists it,
+    # and disabling `process_manage` strips that single tool. Toolset names
+    # and tool names may be freely mixed on the list.
+    for disabled_name in disabled_toolsets or []:
+        name = str(disabled_name).strip()
+        if not name or validate_toolset(name) or name in _LEGACY_TOOLSET_MAP:
+            continue
+        if name in tools_to_include:
+            tools_to_include.discard(name)
+            if not quiet_mode:
+                print(f"🚫 Disabled tool '{name}' (explicit tool-name denial)")
+
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
     # all check the tool registry for plugin-provided toolsets.  No bypass

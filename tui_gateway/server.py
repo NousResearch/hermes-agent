@@ -6264,22 +6264,45 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         pin_cfg = cfg if cfg is not None else _pin_load()
         tools_cfg = pin_cfg.get("tools") if isinstance(pin_cfg.get("tools"), dict) else {}
         pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
-        if isinstance(pin, list) and pin:
+        # An EXPLICIT empty list is a real pin: "no tools" — it must not fall
+        # through to the coding posture or the "all toolsets" fallback path
+        # (frozen-spec contract: an explicit empty pin disables everything).
+        if isinstance(pin, list):
             resolved_pin = _gpt(pin_cfg, "cli", include_default_mcp_servers=True)
-            if not resolved_pin:
-                # Pin failed closed (unknown names) — honor it; do NOT fall
-                # through to the coding posture or the "all toolsets" path.
-                return []
             # Only fold in client-surface toolsets the pin explicitly allows:
             # a pinned profile gets exactly what it lists, never an implicit
             # project/desktop_ui bundle.
+            pin_names = {str(t).strip() for t in pin}
             surfaces = {
                 s for s in _gui_surface_toolsets(session_platform)
-                if s in {str(t).strip() for t in pin}
+                if s in pin_names
             }
             return sorted({*resolved_pin, *surfaces})
     except Exception:
-        pass
+        # Fail closed (I4): a resolver/config error under a pinned profile
+        # must NOT degrade to the broad default surface. Distinguish "pin
+        # present but unreadable" (return no tools) from "no pin" (fall
+        # through) by re-reading the raw config without the resolver.
+        try:
+            from hermes_cli.config import load_config as _raw_load
+
+            raw_tools = (_raw_load() or {}).get("tools")
+            raw_pin = (
+                raw_tools.get("enabled_toolsets")
+                if isinstance(raw_tools, dict)
+                else None
+            )
+            if isinstance(raw_pin, list):
+                logger.error(
+                    "profile tools.enabled_toolsets pin could not be resolved "
+                    "(resolver error); failing closed with no toolsets",
+                    exc_info=True,
+                )
+                return []
+        except Exception:
+            pass
+        # No pin (or even the raw read failed — e.g. no config file at all):
+        # continue to the unpinned coding-posture/default paths.
 
     # Coding posture (base Hermes): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.

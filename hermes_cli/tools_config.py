@@ -2677,10 +2677,11 @@ def _get_platform_tools(
         enabled_mcp = enabled_mcp_server_names(config)
         enabled_toolsets: Set[str] = set()
         unknown: List[str] = []
-        has_no_mcp = False
         for name in pin_names:
             if name == "no_mcp":
-                has_no_mcp = True
+                # Legacy sentinel: accepted as "no MCP servers" and ignored —
+                # MCP servers are only present if the pin lists them.
+                continue
             elif validate_toolset(name) or name in enabled_mcp:
                 enabled_toolsets.add(name)
             else:
@@ -2695,9 +2696,11 @@ def _get_platform_tools(
                 ", ".join(sorted(unknown)),
             )
             return set()
-        if include_default_mcp_servers and not has_no_mcp:
-            enabled_toolsets.update(enabled_mcp)
-
+        # Exact-allowlist semantics (F1): the pin must name EVERYTHING the
+        # profile gets, including MCP servers. Nothing is auto-added; the
+        # only special entry is the legacy `no_mcp` sentinel, which is
+        # accepted (and ignored) so unpinned configs can be copied to a pin
+        # without failing closed.
         agent_cfg = config.get("agent") or {}
         disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
         if disabled_toolsets:

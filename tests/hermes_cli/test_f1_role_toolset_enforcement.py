@@ -114,21 +114,57 @@ def test_smokey_f7_canary_cron_denial_survives_pin():
     assert "cronjob" not in enabled
 
 
-# ─── MCP layering ─────────────────────────────────────────────────────────────
+# ─── MCP layering (exact allowlist — nothing auto-added) ─────────────────────
 
-def test_pinned_profile_includes_enabled_mcp_servers():
+def test_pinned_profile_does_not_auto_add_mcp_servers():
+    """A pin is an EXACT allowlist: enabled MCP servers are present only if
+    the pin explicitly names them."""
     config = {
         "tools": {"enabled_toolsets": ["web"]},
         "mcp_servers": {"my_server": {"command": "foo", "enabled": True}},
     }
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
+    assert "my_server" not in enabled
+    assert enabled == {"web"}
+
+
+def test_pinned_profile_can_explicitly_name_mcp_server():
+    config = {
+        "tools": {"enabled_toolsets": ["web", "my_server"]},
+        "mcp_servers": {"my_server": {"command": "foo", "enabled": True}},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
     assert "my_server" in enabled
+    assert enabled == {"web", "my_server"}
 
 
-def test_pinned_profile_no_mcp_sentinel():
+def test_pinned_profile_no_mcp_sentinel_is_accepted_and_ignored():
+    """The legacy `no_mcp` sentinel stays valid on a pin (for configs copied
+    from unpinned configs) but changes nothing — MCP is opt-in either way."""
     config = {
         "tools": {"enabled_toolsets": ["web", "no_mcp"]},
         "mcp_servers": {"my_server": {"command": "foo", "enabled": True}},
     }
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
-    assert "my_server" not in enabled
+    assert enabled == {"web"}
+
+
+# ─── tool-level denial through composites (D8 extension) ─────────────────────
+
+def test_disabled_tool_name_strips_through_composite():
+    """`agent.disabled_toolsets` naming a TOOL (not a toolset) strips that tool
+    even when an enabled composite re-lists it — Prince's finding 3."""
+    from model_tools import get_tool_definitions
+
+    defs = get_tool_definitions(
+        enabled_toolsets=["coding"],
+        disabled_toolsets=["terminal", "process_manage"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    names = {t["function"]["name"] for t in defs}
+    assert "terminal" not in names
+    assert "process_manage" not in names
+    # The rest of the coding posture survives.
+    assert "read_file" in names
+    assert "web_search" in names

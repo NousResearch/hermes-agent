@@ -193,6 +193,30 @@ def test_turn_route_injects_flex_without_changing_runtime():
     runner._service_tier = "flex"
     runtime_kwargs = {
         "api_key": "***",
+        "base_url": "https://api.openai.com/v1",
+        "provider": "openai",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-4.1", runtime_kwargs
+    )
+
+    assert route["runtime"]["provider"] == "openai"
+    assert route["request_overrides"] == {"service_tier": "flex"}
+
+
+def test_turn_route_gates_flex_off_aggregator_routes():
+    """First-party tier params never ride aggregator routes: OpenRouter strips
+    ``service_tier`` (charging nothing) or 400s on it, so the route gate
+    (``_fast_mode_route_supported``) drops the override instead of pinning it."""
+    runner = _make_runner()
+    runner._service_tier = "flex"
+    runtime_kwargs = {
+        "api_key": "***",
         "base_url": "https://openrouter.ai/api/v1",
         "provider": "openrouter",
         "api_mode": "chat_completions",
@@ -206,4 +230,4 @@ def test_turn_route_injects_flex_without_changing_runtime():
     )
 
     assert route["runtime"]["provider"] == "openrouter"
-    assert route["request_overrides"] == {"service_tier": "flex"}
+    assert not route["request_overrides"]

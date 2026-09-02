@@ -229,6 +229,14 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
+To give every child a narrower default than the parent (for example to drop large MCP schemas from a small local model), set `delegation.enabled_toolsets`. An empty list keeps inherit-everything. A non-empty list is intersected with the parent, then `inherit_mcp_toolsets` is applied — set that to `false` for a strict subset:
+
+```yaml
+delegation:
+  enabled_toolsets: [file, terminal]
+  inherit_mcp_toolsets: false
+```
+
 Certain tools are blocked for subagents even when the parent has them:
 - `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user

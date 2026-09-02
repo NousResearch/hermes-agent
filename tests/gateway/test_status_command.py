@@ -142,6 +142,27 @@ async def test_status_command_includes_live_agent_model_and_context():
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_effective_reasoning_effort():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._resolve_session_reasoning_config = MagicMock(
+        return_value={"enabled": True, "effort": "high"}
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Reasoning effort:** `high`" in result
+    runner._resolve_session_reasoning_config.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
     """Persisted status must not combine a model and provider from different calls."""
     session_entry = SessionEntry(

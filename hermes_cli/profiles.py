@@ -838,6 +838,22 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+def _served_by_running_multiplexer(profile_name: str) -> bool:
+    """True when the live default gateway multiplexes ``profile_name``.
+
+    A served named profile has no gateway.pid of its own, so
+    ``_check_gateway_running`` alone reports it stopped while the default
+    multiplexer is actually its inbound process. Single shared lookup with the
+    named-profile start guard and cron liveness (#97120).
+    """
+    try:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+
+        return named_profile_served_by_running_multiplexer(profile_name)
+    except Exception:
+        return False
+
+
 # In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
@@ -1084,7 +1100,10 @@ def list_profiles() -> List[ProfileInfo]:
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry)
+                    or _served_by_running_multiplexer(name)
+                ),
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),

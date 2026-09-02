@@ -15142,7 +15142,13 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "provider": provider,
                 "has_env": _safe(lambda entry=entry_path: (entry / ".env").exists(), False),
                 "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
-                "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
+                "gateway_running": _safe(
+                    lambda entry=entry_path, name=entry.name: (
+                        profiles_mod._check_gateway_running(entry)
+                        or profiles_mod._served_by_running_multiplexer(name)
+                    ),
+                    False,
+                ),
                 "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
                 "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
                 "distribution_name": None,

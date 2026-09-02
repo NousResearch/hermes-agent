@@ -51,6 +51,8 @@ import {
 } from '@/store/profile'
 import {
   $projectScope,
+  $removedSessionIds,
+  $sessionMutationsInFlight,
   beginSessionMutation,
   endSessionMutation,
   resolveNewSessionCwd,
@@ -858,6 +860,13 @@ export function useSessionActions({
 
   const resumeSession = useCallback(
     async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
+      // Delete/archive tombstones the durable id before the route flips.
+      // A leftover 4001 rebind must not re-select that id and toast
+      // "Resume failed / Session not found".
+      if ($removedSessionIds.get().has(storedSessionId) || $sessionMutationsInFlight.get().has(storedSessionId)) {
+        return
+      }
+
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId

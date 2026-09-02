@@ -1,6 +1,7 @@
 """Tests for the gateway control socket (#92091 migration step 1)."""
 
 import asyncio
+import errno
 import json
 import socket
 import sys
@@ -11,6 +12,8 @@ import pytest
 from gateway.control_socket import (
     CONTROL_PROTOCOL_VERSION,
     GatewayControlServer,
+    _fallback_socket_path,
+    client_socket_candidates,
     identify_gateway,
     query_gateway_control,
     resolve_client_socket_path,
@@ -76,17 +79,70 @@ def test_long_home_uses_pointer_fallback(tmp_path: Path):
     assert pointer == deep / "gateway.sock.path"
 
 
-def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Path):
+def test_client_resolution_prefers_pointer_then_direct(home: Path, tmp_path: Path):
     assert resolve_client_socket_path(home) is None
-    # pointer file to an existing socket-ish file
-    target = tmp_path / "elsewhere.sock"
-    target.touch()
-    (home / "gateway.sock.path").write_text(str(target))
-    assert resolve_client_socket_path(home) == target
-    # direct file wins over pointer
+    assert client_socket_candidates(home) == []
+    # direct file alone
     direct = home / "gateway.sock"
     direct.touch()
     assert resolve_client_socket_path(home) == direct
+    # A pointer is written only when the server deliberately bound elsewhere,
+    # so when it names a present target it is the authoritative answer; the
+    # direct path stays as the fallback candidate.
+    target = tmp_path / "elsewhere.sock"
+    target.touch()
+    (home / "gateway.sock.path").write_text(str(target))
+    assert client_socket_candidates(home) == [target, direct]
+    assert resolve_client_socket_path(home) == target
+    # a pointer to a missing target is ignored
+    target.unlink()
+    assert client_socket_candidates(home) == [direct]
+
+
+def test_client_resolution_survives_unstatable_direct_path(home: Path, tmp_path: Path, monkeypatch):
+    # Docker Desktop bind mount: a socket inode from an earlier container
+    # session makes Path.exists() RAISE EOPNOTSUPP. Resolution must not crash
+    # and must still find the pointer the fallback server wrote.
+    direct = home / "gateway.sock"
+    direct.touch()
+    target = tmp_path / "elsewhere.sock"
+    target.touch()
+    (home / "gateway.sock.path").write_text(str(target))
+    real_exists = Path.exists
+
+    def unstatable(self, *a, **k):
+        if self == direct:
+            raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", unstatable)
+    assert client_socket_candidates(home) == [target]
+    assert resolve_client_socket_path(home) == target
+
+
+def test_query_falls_through_a_dead_pointer_to_the_live_direct_socket(short_home: Path, tmp_path: Path):
+    # A crashed fallback server leaves pointer + dead temp socket file behind;
+    # the next server binds in-home. Clients must reach it anyway.
+    home = short_home
+    dead = tmp_path / "dead.sock"
+    dead.touch()  # exists, but nothing listens
+    (home / "gateway.sock.path").write_text(str(dead))
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 21}})
+        assert await server.start()
+        try:
+            assert server._bind_path == home / "gateway.sock"
+            # binding in-home cleans the stale pointer up...
+            assert not (home / "gateway.sock.path").exists()
+            # ...and even with a stale pointer re-planted, the client falls through.
+            (home / "gateway.sock.path").write_text(str(dead))
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: identify_gateway(home))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"pid": 21}
 
 
 def test_windows_pipe_name_is_stable_and_home_scoped(tmp_path: Path):
@@ -198,6 +254,122 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
             await server.stop()
 
     assert _run(scenario()) == {"pid": 7}
+
+
+@pytest.fixture()
+def short_home():
+    """A home short enough that the server binds IN-HOME (no pointer fallback).
+
+    pytest's tmp_path can exceed sun_path on macOS/CI, in which case the
+    server already uses the temp-dir fallback and an in-home bind refusal can
+    never be exercised — so build the home directly under /tmp, like
+    test_short_home_binds_in_home does.
+    """
+    import shutil
+    import tempfile
+    try:
+        root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
+    home = root / ".hermes"
+    home.mkdir()
+    if resolve_server_socket_path(home)[1] is not None:
+        shutil.rmtree(root, ignore_errors=True)
+        pytest.skip("even /tmp yields a too-long socket path here")
+    try:
+        yield home
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _refusing_start_unix_server(monkeypatch, *, refuse_under: Path, err: int):
+    """start_unix_server that refuses paths under ``refuse_under`` with ``err``
+    and otherwise delegates — the behaviour of a Docker Desktop bind mount."""
+    real = asyncio.start_unix_server
+    attempts: list[str] = []
+
+    async def fake(client_connected_cb, path=None, **kwargs):
+        attempts.append(str(path))
+        if Path(path).is_relative_to(refuse_under):
+            raise OSError(err, "Operation not supported" if err == errno.EOPNOTSUPP else "refused")
+        return await real(client_connected_cb, path=path, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", fake)
+    return attempts
+
+
+def test_bind_refused_in_home_falls_back_to_tempdir_with_pointer(short_home: Path, monkeypatch):
+    """The documented Docker layout bind-mounts HERMES_HOME (~/.hermes:/opt/data);
+    Docker Desktop answers AF_UNIX bind there with EOPNOTSUPP. The server must
+    fall back to the temp-dir socket + pointer file (the long-path mechanism),
+    so clients still find it and pause-for-update / identify keep working."""
+    home = short_home
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EOPNOTSUPP)
+    fallback = _fallback_socket_path(home)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 11}})
+        assert await server.start()
+        try:
+            assert server._bind_path == fallback
+            assert (home / "gateway.sock.path").read_text(encoding="utf-8").strip() == str(fallback)
+            assert resolve_client_socket_path(home) == fallback
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: identify_gateway(home))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"pid": 11}
+    assert attempts == [str(home / "gateway.sock"), str(fallback)]
+    assert not fallback.exists()
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatch):
+    # A live sibling (EADDRINUSE) must keep failing loudly — no silent fallback
+    # that would let two gateways for one home both look healthy.
+    home = short_home
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EADDRINUSE)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        return await server.start()
+
+    assert _run(scenario()) is False
+    assert attempts == [str(home / "gateway.sock")]
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_stale_socket_is_unlinked_even_when_it_cannot_be_stat_ed(short_home: Path, monkeypatch):
+    # On the same bind mounts a stale socket inode cannot be stat'ed, so an
+    # exists()-gated cleanup never fires and asyncio logs its own ERROR. The
+    # server-side cleanup must not depend on exists(). (The fake is disarmed
+    # once the server is up so the CLIENT's own exists() probe is untouched.)
+    home = short_home
+    bind = home / "gateway.sock"
+    bind.touch()  # crashed predecessor's leftover
+    real_exists = Path.exists
+    armed = {"on": True}
+
+    def unstatable(self, *a, **k):
+        if armed["on"] and self == bind:
+            raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", unstatable)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 12}})
+        assert await server.start()
+        armed["on"] = False
+        try:
+            assert server._bind_path == bind
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: identify_gateway(home))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"pid": 12}
 
 
 def test_long_home_end_to_end_via_pointer(tmp_path: Path):

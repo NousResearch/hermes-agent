@@ -2457,7 +2457,18 @@ def _profile_home(profile: str | None) -> Path | None:
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
         return None
-    return home if (home / "state.db").exists() or home.exists() else None
+    if (home / "state.db").exists() or home.exists():
+        # Remember every sibling home this backend was asked to serve so the
+        # change watcher stats its store too (#99333 class).
+        _served_profile_homes.add(home)
+        return home
+    return None
+
+
+# Profile homes served by this process besides the launch home — the only
+# extra stores the sessions watcher must probe. Empty on single-profile
+# installs, so their watcher stays byte-identical (two stats per tick).
+_served_profile_homes: set[Path] = set()
 
 
 def _profile_scoped(handler):
@@ -5203,15 +5214,17 @@ def _sessions_sig():
     """Newest mtime across state.db and its WAL — the cross-process change
     signal. Messaging-gateway turns and cron runs are written by OTHER
     processes that never touch this gateway's transports; the shared SQLite
-    file is the one thing they all move (#58671)."""
-    home = _watcher_home()
+    file is the one thing they all move (#58671). A backend serving several
+    profiles owns one store per profile, so every served sibling home is
+    probed too — otherwise a routed profile's Bot Chat never refreshes."""
     sig = None
-    for name in ("state.db", "state.db-wal"):
-        try:
-            mtime = (home / name).stat().st_mtime_ns
-        except OSError:
-            continue
-        sig = mtime if sig is None else max(sig, mtime)
+    for root in (_watcher_home(), *_served_profile_homes):
+        for name in ("state.db", "state.db-wal"):
+            try:
+                mtime = (root / name).stat().st_mtime_ns
+            except OSError:
+                continue
+            sig = mtime if sig is None else max(sig, mtime)
     return sig
 
 

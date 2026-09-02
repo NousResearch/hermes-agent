@@ -16702,6 +16702,30 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _tts_lease_async(lease: str, active: bool) -> None:
+    """Acquire/release a TTS engine lease off the RPC thread.
+
+    Speech-output toggles are the signal that TTS is about to be needed (or
+    no longer is). Acquiring warms the configured provider — for local
+    engines that is a model load, possibly a voice download — so it must not
+    block the toggle's RPC reply. Release is cheap but rides the same thread
+    for symmetry. Best-effort: a failure here never affects the toggle.
+    """
+
+    def _run():
+        try:
+            from tools.tts_tool import acquire_tts_lease, release_tts_lease
+
+            if active:
+                acquire_tts_lease(lease)
+            else:
+                release_tts_lease(lease)
+        except Exception as e:
+            logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
+
+    threading.Thread(target=_run, name=f"tts-lease-{lease}", daemon=True).start()
+
+
 def _any_session_running() -> bool:
     """True while any session's agent turn is in flight.
 
@@ -17551,6 +17575,12 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 stop_hint = ""
 
+            # Voice mode with speech output already on (voice.auto_tts /
+            # prior /voice tts) means replies will be spoken — warm the
+            # engine now rather than on the first reply.
+            if _voice_tts_enabled():
+                _tts_lease_async("tui:voice-tts", True)
+
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the
             # loop holds the microphone and would otherwise keep running.
@@ -17567,6 +17597,7 @@ def _(rid, params: dict) -> dict:
             # and silence any in-flight streaming speech.
             os.environ["HERMES_VOICE_TTS"] = "0"
             _tts_stream_stop(user_barge=False)
+            _tts_lease_async("tui:voice-tts", False)
 
         return _ok(
             rid,
@@ -17586,6 +17617,10 @@ def _(rid, params: dict) -> dict:
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
         if not new_value:
             _tts_stream_stop(user_barge=False)
+        # The TTS toggle is the "speech is about to be needed" signal: on →
+        # pre-load the configured engine so the first reply starts hot; off →
+        # release the lease (last holder gone = resident local model freed).
+        _tts_lease_async("tui:voice-tts", new_value)
         # Include ``record_key`` on every branch so a /voice tts toggle
         # doesn't reset the TUI's cached shortcut to the default when a
         # user has a custom binding configured (Copilot review, round 2

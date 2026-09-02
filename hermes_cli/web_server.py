@@ -1836,6 +1836,7 @@ from hermes_cli.web_models import (  # noqa: F401
     LearningNodeEdit,
     DebugShareRequest,
     TTSSpeakRequest,
+    TTSLeaseRequest,
     OAuthSubmitBody,
     BulkDeleteSessions,
     SessionImport,
@@ -5663,6 +5664,43 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
         "mime_type": mime_type,
         "provider": result.get("provider"),
     }
+
+
+@app.post("/api/audio/tts-lease")
+async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
+    """Desktop TTS-output toggles as warm-up / release signals.
+
+    "Read replies aloud" and voice-conversation mode are explicit "speech is
+    about to be needed" gestures. ``active: true`` registers the toggle as a
+    lease on the TTS engine and pre-loads the configured provider (local
+    piper/kittentts model, lazily-installed SDK) so the first spoken reply
+    doesn't pay the load as dead air; ``active: false`` drops the lease and,
+    once no surface holds one, unloads resident local models.
+
+    Blocking work (model load, voice download) runs off the event loop.
+    Warm-up failures are reported in the body, never as an HTTP error — the
+    toggle must succeed even when the engine can't preload.
+    """
+    lease = (payload.lease or "").strip()
+    if not lease:
+        raise HTTPException(status_code=400, detail="lease is required")
+
+    def _apply():
+        from tools.tts_tool import acquire_tts_lease, release_tts_lease
+
+        if payload.active:
+            with _config_profile_scope(profile):
+                return acquire_tts_lease(lease)
+        return release_tts_lease(lease)
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 
 def _split_text_for_speak_stream(text: str, cap: int) -> list:

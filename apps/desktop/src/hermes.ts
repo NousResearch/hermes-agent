@@ -40,6 +40,7 @@ export type {
   AnalyticsTotals,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
+  AudioTtsLeaseResponse,
   AutomationBlueprint,
   AutomationBlueprintField,
   AuxiliaryModelsResponse,

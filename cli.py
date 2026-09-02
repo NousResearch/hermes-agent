@@ -15765,6 +15765,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
+        if self._voice_tts:
+            # Speech output is on from the start — warm the engine now so the
+            # first spoken reply doesn't pay the model load as dead air.
+            self._tts_lease_async(True)
         # Use the startup-pinned cache so the advertised shortcut always
         # matches the live prompt_toolkit binding — reading live config
         # here would drift after a mid-session config edit (Copilot
@@ -15822,6 +15826,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+
+        # Speech output is off with the mode — release the TTS engine lease so
+        # a resident local model (piper/kittentts) is freed once nothing else
+        # in this process still needs it.
+        self._tts_lease_async(False)
 
         # Shut down the persistent audio stream in background
         if recorder is not None:
@@ -16070,6 +16079,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not owned:
             _cprint(f"  {_DIM}Enable with /wake on{_RST}")
 
+    def _tts_lease_async(self, active: bool) -> None:
+        """Acquire/release this CLI's TTS engine lease in the background.
+
+        The /voice tts toggle (and voice-mode on/off with speech output set)
+        is the "TTS is about to be needed / no longer needed" signal:
+        acquiring pre-loads the configured provider so the first reply starts
+        hot; releasing lets the last-holder path unload resident local models.
+        Never blocks the toggle and never fails it.
+        """
+
+        def _run():
+            try:
+                from tools.tts_tool import acquire_tts_lease, release_tts_lease
+
+                if active:
+                    acquire_tts_lease("cli:voice-tts")
+                else:
+                    release_tts_lease("cli:voice-tts")
+            except Exception as e:
+                logger.debug("voice: tts lease active=%s failed: %s", active, e)
+
+        threading.Thread(target=_run, name="tts-lease-cli", daemon=True).start()
+
     def _toggle_voice_tts(self):
         """Toggle TTS output for voice mode."""
         if not self._voice_mode:
@@ -16084,6 +16116,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+
+        # Toggle = warm-up / release signal for the TTS engine (see
+        # tools.tts_tool.acquire_tts_lease).
+        self._tts_lease_async(self._voice_tts)
 
         _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
 

@@ -253,6 +253,54 @@ class TestDeliveredLogNamesTheLane:
         assert "UNVERIFIED" in caplog.text
 
 
+class TestLiveDeliveryIsAFinalNotification:
+    """Cron output is a final user-visible delivery, not a progress send.
+
+    Telegram's adapter defaults to ``_notifications_mode = "important"`` and
+    sends with ``disable_notification=True`` unless ``metadata["notify"]`` is
+    set — so a cron brief without the marker lands silently, which users
+    report as "never delivered" (#77763 thread, #58258 typing bubble). The
+    marker must ride both the text route and the media route, in every
+    Telegram routing mode.
+    """
+
+    def test_text_route_metadata_carries_notify(self):
+        _, router_calls, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1))
+        assert len(router_calls) == 1
+        metadata = router_calls[0]["metadata"]
+        assert metadata["job_id"] == "92e639af907f"
+        assert metadata["notify"] is True
+
+    def test_forum_topic_route_keeps_thread_and_notify(self):
+        _, router_calls, _ = _run(
+            _job(thread_id="99"), "Nightly report.", _SendResult(message_id=1),
+        )
+        metadata = router_calls[0]["metadata"]
+        assert metadata["thread_id"] == "99"
+        assert metadata["notify"] is True
+
+    def test_media_route_metadata_carries_notify(self, tmp_path):
+        media = tmp_path / "report.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        sent = []
+
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+            sent.append({"media": list(media_files), "metadata": metadata})
+            return []
+
+        with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
+             patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+                   side_effect=lambda files: files):
+            error, router_calls, _ = _run(
+                _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
+            )
+
+        assert error is None
+        assert len(router_calls) == 1
+        assert len(sent) == 1
+        assert sent[0]["metadata"]["notify"] is True
+
+
 def test_scheduler_module_exposes_the_confirmation_helper():
     """Guard the import surface the delivery block depends on."""
     assert callable(sched._confirm_adapter_delivery)

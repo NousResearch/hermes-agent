@@ -492,10 +492,119 @@ class TestSendUpdateNotification:
         assert not output_path.exists()
         assert not exit_code_path.exists()
 
+    @pytest.mark.asyncio
+    async def test_disabled_platform_marker_is_discarded_not_retried(self, tmp_path):
+        """A marker naming a platform this profile does not run is consumed.
 
-# ---------------------------------------------------------------------------
-# /update in help and known_commands
-# ---------------------------------------------------------------------------
+        Regression for the permanent retry loop: ``config.platforms`` is
+        pre-seeded with disabled placeholders for the whole catalog, so a stale
+        marker naming a platform with ``enabled=False`` produced an adapter
+        that could never appear. The deferral path then rewrote and re-read the
+        marker on every poll — forever — pinning a steady log loop for the life
+        of the gateway. Such a target is unreachable by construction, so the
+        markers must be consumed instead of preserved.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("Done")
+        exit_code_path.write_text("0")
+
+        # This profile runs Slack only; telegram is present but disabled.
+        runner.config = MagicMock()
+        runner.config.platforms = {
+            Platform.SLACK: MagicMock(enabled=True),
+            Platform.TELEGRAM: MagicMock(enabled=False),
+        }
+        slack_adapter = AsyncMock()
+        runner.adapters = {Platform.SLACK: slack_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._send_update_notification()
+
+        # Definitive decision: no retry is scheduled.
+        assert result is True
+        # Nothing is misdelivered to the wrong platform.
+        slack_adapter.send.assert_not_called()
+        # Every marker is consumed, so the next poll finds nothing to do.
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_enabled_platform_still_defers_while_reconnecting(self, tmp_path):
+        """An enabled-but-reconnecting platform keeps the existing deferral.
+
+        Guards the discard path from over-reaching: when the platform IS
+        configured for this profile the adapter is merely late (the normal case
+        right after the restart ``hermes update`` triggers), so the markers must
+        still survive for a later retry.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("Done")
+        exit_code_path.write_text("0")
+
+        # Discord IS enabled here — it just has not reconnected yet.
+        runner.config = MagicMock()
+        runner.config.platforms = {Platform.DISCORD: MagicMock(enabled=True)}
+        runner.adapters = {}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._send_update_notification()
+
+        assert result is False
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_platform_config_fails_open_to_deferral(self, tmp_path):
+        """An unusable config must not cost the user their notification.
+
+        The enabled-check exists to stop an unreachable retry, never to invent
+        a new way to drop a deliverable result. If the config cannot be read,
+        the safe answer is the pre-existing deferral.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("Done")
+        exit_code_path.write_text("0")
+
+        broken_config = MagicMock()
+        type(broken_config).platforms = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("config unavailable"))
+        )
+        runner.config = broken_config
+        runner.adapters = {}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._send_update_notification()
+
+        assert result is False
+        assert pending_path.exists()
+        assert exit_code_path.exists()
 
 
 class TestUpdateInHelp:

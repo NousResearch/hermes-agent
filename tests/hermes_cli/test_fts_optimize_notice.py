@@ -34,7 +34,17 @@ def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatc
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
-    monkeypatch.setattr(update_cmd.Path, "stat", lambda _path: SimpleNamespace(st_size=512 * 1024 ** 2))
+    # Report a large state.db without patching Path.stat globally: a
+    # 1-arg lambda on the class breaks pathlib.exists(follow_symlinks=...)
+    # for every caller in the process (pytest's own teardown included).
+    real_stat = update_cmd.Path.stat
+
+    def _stat(path, *args, **kwargs):
+        if path.name == "state.db":
+            return SimpleNamespace(st_size=512 * 1024 ** 2)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(update_cmd.Path, "stat", _stat)
 
     update_cmd._print_fts_optimize_available_notice()
 

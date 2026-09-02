@@ -576,3 +576,83 @@ def test_kanban_failure_scan_does_not_drop_older_failure_after_forty_runs(audit_
     failures = module.kanban_failures(since=90)
 
     assert [failure["run_id"] for failure in failures] == [1]
+
+
+def test_fleet_includes_default_and_every_installed_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    home = tmp_path / "home"
+    profiles = home / ".hermes" / "profiles"
+    for name in ("buggy", "coder", "jade", "jade-ops", "product", "qa",
+                 "research", "reviewer", "rsi", "x", "yuki", "yuki-ops"):
+        (profiles / name).mkdir(parents=True)
+    monkeypatch.setattr(module, "HOME", home)
+    monkeypatch.setattr(module, "PROFILES_DIR", profiles)
+    monkeypatch.setattr(module, "CONTRACT", tmp_path / "absent-contract.yaml")
+
+    roster = module.fleet()
+
+    # default + all 12 profile dirs = 13 installed; unlisted installs
+    # still get a slice even with no contract present.
+    assert len(roster) == 13
+    assert roster[0] == "default"
+    assert set(roster) >= {
+        "default", "buggy", "coder", "jade", "jade-ops", "product", "qa",
+        "research", "reviewer", "rsi", "x", "yuki", "yuki-ops",
+    }
+
+
+def test_fleet_contract_order_wins_but_covers_unlisted_installs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    home = tmp_path / "home"
+    profiles = home / ".hermes" / "profiles"
+    for name in ("qa", "reviewer", "x", "yuki", "yuki-ops"):
+        (profiles / name).mkdir(parents=True)
+    contract = tmp_path / "contract.yaml"
+    contract.write_text("fleet: [coder, product, qa, reviewer, yuki, yuki-ops, x]\n")
+    monkeypatch.setattr(module, "HOME", home)
+    monkeypatch.setattr(module, "PROFILES_DIR", profiles)
+    monkeypatch.setattr(module, "CONTRACT", contract)
+
+    roster = module.fleet()
+
+    # Only contracted names that are actually installed come first, in
+    # contract order; installed-but-unlisted names (and default) still appear
+    # so no profile lacks a slice.
+    assert roster[:4] == ["qa", "reviewer", "yuki", "yuki-ops"]
+    assert roster[-1] == "default"
+    assert set(roster) == {"qa", "reviewer", "yuki", "yuki-ops", "x", "default"}
+
+
+def test_audit_emits_empty_slice_for_every_installed_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture):
+    module = _load_module()
+    home = tmp_path / "home"
+    state = home / ".hermes" / "profiles" / "qa" / "state.db"
+    state.parent.mkdir(parents=True)
+    _state_db(state)
+    store = tmp_path / "rsi"
+    store.mkdir()
+    contract = store / "contract.yaml"
+    contract.write_text("fleet: [qa]\n")
+    (store / "last_tick.json").write_text('{"unix": 50}', encoding="utf-8")
+    monkeypatch.setattr(module, "HOME", home)
+    monkeypatch.setattr(module, "KANBAN", home / ".hermes" / "kanban.db")
+    monkeypatch.setattr(module, "EXEC_DB", home / ".hermes" / "cron" / "executions.db")
+    monkeypatch.setattr(module, "PROFILES_DIR", home / ".hermes" / "profiles")
+    monkeypatch.setattr(module, "CONTRACT", contract)
+    monkeypatch.setattr(module, "STORE", store)
+    monkeypatch.setattr(module, "LAST", store / "last_tick.json")
+
+    module.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    # Every installed profile (default + qa) gets an explicit slice, even the
+    # ones with nothing to report and no contracted name.
+    assert set(payload["profiles"]) == {"default", "qa"}
+    for slice_ in payload["profiles"].values():
+        assert isinstance(slice_, dict)
+        assert isinstance(slice_["sessions"], list)
+        assert isinstance(slice_["session_failures"], list)
+        assert isinstance(slice_["cron_failures"], list)
+        assert isinstance(slice_["kanban_failures"], list)
+    on_disk = json.loads((store / "audit" / "latest.json").read_text(encoding="utf-8"))
+    assert set(on_disk["profiles"]) == {"default", "qa"}

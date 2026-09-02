@@ -21,6 +21,7 @@ LAST = STORE / "last_tick.json"
 JOBS = HOME / ".hermes" / "cron" / "jobs.json"
 EXEC_DB = HOME / ".hermes" / "cron" / "executions.db"
 KANBAN = HOME / ".hermes" / "kanban.db"
+PROFILES_DIR = HOME / ".hermes" / "profiles"
 CONTRACT = STORE / "contract.yaml"
 
 DONE_RE = re.compile(r"\b(done|completed|all (?:set|good)|nothing to (?:do|report))\b", re.I)
@@ -92,8 +93,28 @@ def load_yaml(path: Path) -> dict:
 
 
 def fleet() -> list[str]:
-    names = (load_yaml(CONTRACT).get("fleet") or []) if CONTRACT.exists() else []
-    return [str(n) for n in names] or ["coder", "product", "qa", "reviewer", "yuki", "x"]
+    """Every installed profile, contract-listed or not.
+
+    The interview contract requires a structured audit slice for every
+    installed profile: a missing slice is a mandatory validation failure for
+    that profile. Installed = the default instance plus every directory under
+    ``~/.hermes/profiles/``; contract names without an install are skipped.
+    Contract-only ordering is preserved first, then any unlisted installs
+    alphabetically, so output stays deterministic.
+    """
+    installed = ["default"]
+    if PROFILES_DIR.is_dir():
+        installed.extend(
+            sorted(
+                entry.name
+                for entry in PROFILES_DIR.iterdir()
+                if entry.is_dir() and not entry.name.startswith(".")
+            )
+        )
+    contracted = [str(n) for n in (load_yaml(CONTRACT).get("fleet") or [])]
+    ordered = [n for n in contracted if n in installed]
+    ordered.extend(n for n in installed if n not in contracted)
+    return ordered or installed
 
 
 def since_unix() -> float:

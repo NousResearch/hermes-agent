@@ -1575,6 +1575,99 @@ def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
 
+    config_error = None
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config()
+        kanban_cfg = loaded.get("kanban", {}) if isinstance(loaded, dict) else {}
+    except Exception as exc:
+        config_error = exc
+        kanban_cfg = {}
+
+    env_dispatch_override = os.environ.get(
+        "HERMES_KANBAN_DISPATCH_IN_GATEWAY", ""
+    ).strip().lower()
+    dispatch_enabled = bool(kanban_cfg.get("dispatch_in_gateway", True)) and (
+        env_dispatch_override not in {"0", "false", "no", "off"}
+    )
+    review_dispatch = bool(kanban_cfg.get("review_dispatch", True))
+    auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+    print()
+    if config_error is not None:
+        print(
+            "Operational contract unavailable: config could not be loaded; the "
+            "gateway dispatcher will remain disabled."
+        )
+        print(f"  Config error: {config_error}")
+    elif dispatch_enabled:
+        print("Operational contract (effective config):")
+        claimable_statuses = "Ready and Review tasks" if review_dispatch else "Ready tasks"
+        print(
+            "  Gateway dispatch: enabled — a running gateway automatically claims "
+            f"{claimable_statuses} and starts one OS worker process per claim."
+        )
+    else:
+        print("Operational contract (effective config):")
+        if review_dispatch:
+            print(
+                "  Gateway dispatch: disabled — Ready and Review tasks wait for a "
+                "manual dispatch pass."
+            )
+        else:
+            print(
+                "  Gateway dispatch: disabled — Ready tasks wait for a manual "
+                "dispatch pass; Review tasks remain parked for human review."
+            )
+    if config_error is None:
+        if auto_decompose and dispatch_enabled:
+            print(
+                "  Triage orchestration: automatic when the dispatcher runs — it "
+                "auto-decomposes Triage tasks into child tasks."
+            )
+        elif auto_decompose:
+            print(
+                "  Triage orchestration: configured but inactive while gateway dispatch "
+                "is disabled; Triage tasks stay parked until you decompose them manually."
+            )
+        else:
+            print("  Triage orchestration: manual — Triage tasks stay parked until you act.")
+
+    def _positive_int(value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 1 else None
+
+    if config_error is None:
+        running_cap_specs = (
+            ("board", "max_in_progress"),
+            ("per-profile", "max_in_progress_per_profile"),
+        )
+        running_caps = []
+        for label, key in running_cap_specs:
+            value = _positive_int(kanban_cfg.get(key))
+            if value is not None:
+                running_caps.append(f"{label}={value}")
+        if running_caps:
+            print(f"  Running-worker concurrency caps: {', '.join(running_caps)}")
+        else:
+            print(
+                "  No worker concurrency cap is configured; every claimable task may "
+                "start a worker."
+            )
+        max_spawn = _positive_int(kanban_cfg.get("max_spawn"))
+        if max_spawn is not None:
+            print(f"  Per-tick spawn limit: {max_spawn} (not a running-worker cap)")
+        else:
+            print("  No per-tick spawn limit is configured.")
+        print(
+            "  Workers run as the assignee profile with that profile's enabled tools "
+            "and approval policy. Review task descriptions and profile authority "
+            "before enabling automatic dispatch."
+        )
+
     print()
     # Enumerate profiles on disk so the user knows what assignees are
     # already addressable. Multica does this auto-detection on its
@@ -1594,14 +1687,21 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print("No profiles found under ~/.hermes/profiles/.")
         print("Create one with `hermes -p <name> setup` before assigning tasks.")
     print()
-    print("Next step: start the gateway so ready tasks actually get picked up.")
-    print("  hermes gateway start")
-    print()
-    print(
-        "The gateway hosts an embedded dispatcher that ticks every 60 seconds\n"
-        "by default (config: kanban.dispatch_interval_seconds). Without a\n"
-        "running gateway, tasks stay in 'ready' forever."
-    )
+    if config_error is not None:
+        print("Resolve the config error before starting the gateway dispatcher.")
+    elif dispatch_enabled:
+        print("Next step: start the gateway so ready tasks actually get picked up.")
+        print("  hermes gateway start")
+        print()
+        print(
+            "The gateway hosts an embedded dispatcher that ticks every 60 seconds\n"
+            "by default (config: kanban.dispatch_interval_seconds). Without a\n"
+            "running gateway, tasks stay in 'ready' forever."
+        )
+    else:
+        print("Automatic dispatch is off. Ready tasks remain parked.")
+        print("Run `hermes kanban dispatch` for a manual pass, or explicitly set")
+        print("`kanban.dispatch_in_gateway: true` before starting the gateway.")
     return 0
 
 

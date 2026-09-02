@@ -1117,7 +1117,7 @@ class TeamsAdapter(BasePlatformAdapter):
                         # bearer token; the generic cache helper sends none.
                         data = await self._fetch_attachment_bytes(content_url)
                         ext = content_type.split("/")[-1].split(";")[0] or "png"
-                        cached_m = cache_media_bytes(
+                        cached_m = await cache_media_bytes_async(
                             data,
                             filename=att_name or f"image.{ext}",
                             mime_type=content_type,

@@ -65,6 +65,27 @@ async def test_async_cache_wrapper_propagates_validation_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_media_bytes_async_runs_off_loop_and_forwards_kwargs(monkeypatch):
+    loop_thread = threading.get_ident()
+    observed = {}
+
+    def fake_cache_media_bytes(data, *, filename="", mime_type="", default_kind=None):
+        observed["thread"] = threading.get_ident()
+        observed["call"] = (data, filename, mime_type, default_kind)
+        return "cached-media"
+
+    monkeypatch.setattr(base, "cache_media_bytes", fake_cache_media_bytes)
+
+    result = await base.cache_media_bytes_async(
+        b"payload", filename="report.pdf", mime_type="application/pdf", default_kind="document"
+    )
+
+    assert result == "cached-media"
+    assert observed["call"] == (b"payload", "report.pdf", "application/pdf", "document")
+    assert observed["thread"] != loop_thread
+
+
+@pytest.mark.asyncio
 async def test_async_cache_wrapper_uses_active_profile_home(monkeypatch, tmp_path):
     profile_home = tmp_path / "profile"
     monkeypatch.setenv("HERMES_HOME", str(profile_home))

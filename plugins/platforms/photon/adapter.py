@@ -1254,7 +1254,7 @@ class PhotonAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
 
-        def _normalize_binary_payload(
+        async def _normalize_binary_payload(
             payload: Dict[str, Any]
         ) -> tuple[str, MessageType, List[str], List[str]]:
             is_voice = payload.get("type") == "voice"
@@ -1266,8 +1266,10 @@ class PhotonAdapter(BasePlatformAdapter):
             if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
                 is_voice = True
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
-            cached = _cache_inbound_attachment(
-                payload, name, mime, force_audio=is_voice
+            # Base64 decode + media-cache write (fsync-free but still disk
+            # I/O on possibly multi-MB payloads) — keep it off the event loop.
+            cached = await asyncio.to_thread(
+                _cache_inbound_attachment, payload, name, mime, force_audio=is_voice
             )
             if cached:
                 return (
@@ -1415,7 +1417,7 @@ class PhotonAdapter(BasePlatformAdapter):
             text = content.get("text") or ""
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
-            text, mtype, media_urls, media_types = _normalize_binary_payload(content)
+            text, mtype, media_urls, media_types = await _normalize_binary_payload(content)
         elif ctype == "richlink":
             text = _format_richlink_content(content)
             mtype = MessageType.TEXT
@@ -1438,7 +1440,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     text_parts.append(_format_richlink_content(item_content))
                     continue
                 if item_type in {"attachment", "voice"}:
-                    marker, item_mtype, item_urls, item_types = _normalize_binary_payload(
+                    marker, item_mtype, item_urls, item_types = await _normalize_binary_payload(
                         item_content
                     )
                     if mtype == MessageType.TEXT:

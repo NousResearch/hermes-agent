@@ -1276,7 +1276,8 @@ def _route_capture_through_aux_vision(
 
     Returns:
       A JSON-encoded text response on success.
-      ``None`` on failure (caller falls back to the multimodal envelope).
+      ``None`` on failure -- including a ``success: false`` result from
+      ``vision_analyze_tool`` -- so the caller degrades to its AX/SOM payload.
     """
     if not cap.png_b64:
         return None
@@ -1348,6 +1349,23 @@ def _route_capture_through_aux_vision(
         try:
             parsed = json.loads(result_json)
             if isinstance(parsed, dict):
+                # ``vision_analyze_tool`` fills ``analysis`` on failure too --
+                # with an explanation of why it could not look, not a
+                # description of what it saw.  Reading it without checking
+                # ``success`` merges that explanation into ``vision_analysis``,
+                # so the main model is told the screenshot "shows"
+                # ``mimo-v2.5 does not support vision ... Error code: 400``
+                # (#89114).  A failed analysis is not an analysis: return None
+                # and let the caller take the degradation path it already has,
+                # which omits the screenshot, flags ``vision_unavailable`` and
+                # keeps the element index drivable.
+                if parsed.get("success") is False:
+                    logger.warning(
+                        "computer_use: auxiliary.vision could not analyse the "
+                        "capture (%s); degrading to the AX/SOM payload",
+                        str(parsed.get("analysis") or "").strip() or "no detail",
+                    )
+                    return None
                 analysis_text = str(parsed.get("analysis") or "").strip()
         except (TypeError, json.JSONDecodeError):
             analysis_text = result_json.strip()

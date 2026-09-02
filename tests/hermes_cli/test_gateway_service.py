@@ -1683,6 +1683,7 @@ class TestProfileArg:
             "gateway",
             "run",
             "--external-supervisor",
+            "--replace",
         ]
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):

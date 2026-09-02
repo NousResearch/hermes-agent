@@ -1099,7 +1099,9 @@ def _parents_blocking_ready(
 def _invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection,
     parent_id: str,
-    terminations: list[tuple[Optional[int], Optional[str]]],
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[int], Optional[str]]
+    ],
 ) -> None:
     """Delegate to the domain-layer implementation in :mod:`kanban_db`.
 
@@ -1220,8 +1222,12 @@ def _set_status_direct(
                 task_id,
                 terminations,
             )
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    for pid, claim_lock, pid_started, scope in terminations:
+        kanban_db._terminate_reclaimed_worker(
+            pid, claim_lock,
+            scope_unit=scope or None,
+            pid_started_at=pid_started,
+        )
     # If we re-opened something, children may have gone stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)

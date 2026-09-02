@@ -1376,11 +1376,24 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- unavailable — macOS, containers). Written at spawn, cleared with
     -- worker_pid on every dispatcher-side terminal transition.
     worker_scope         TEXT,
-    -- Process creation time (epoch seconds) of the recorded worker_pid,
-    -- captured at spawn. PID-reuse guard for crash detection and
-    -- gateway-restart re-adoption: a recycled PID whose start time
-    -- differs from the recorded one is NOT the worker we spawned.
+    -- Process creation time (epoch seconds) of the recorded worker_pid.
+    -- PID-reuse guard for crash detection and gateway-restart
+    -- re-adoption: a recycled PID whose start time differs from the
+    -- recorded one is NOT the process we recorded. For scoped workers
+    -- this initially fingerprints the systemd-run LAUNCHER pid (all we
+    -- have at spawn); once the worker self-registers it is overwritten
+    -- with the worker's own pid + fingerprint.
     worker_pid_started_at INTEGER,
+    -- Epoch time the WORKER PROCESS itself registered (pid +
+    -- start-time fingerprint) via register_worker_pid — the worker-side
+    -- half of the launcher-vs-worker split: ``systemd-run --scope`` runs
+    -- the command as a child of the systemd-run client, so the pid the
+    -- dispatcher records at spawn is the launcher's, and the launcher
+    -- dies with the gateway while the scoped worker survives. NULL for
+    -- scoped runs until the worker's first heartbeat registers it;
+    -- non-scoped spawns set it at spawn (the recorded pid IS the
+    -- worker).
+    worker_registered_at INTEGER,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -2632,6 +2645,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "worker_pid_started_at",
             "worker_pid_started_at INTEGER",
+        )
+    if "worker_registered_at" not in cols:
+        # Worker-side self-registration timestamp (see schema comment on
+        # the column). NULL on legacy rows; the dispatcher's
+        # registration-grace sweep normalises unscoped legacy rows
+        # lazily (their recorded pid IS the worker).
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "worker_registered_at",
+            "worker_registered_at INTEGER",
         )
     if run_cols and "worker_scope" not in run_cols:
         # Legacy task_runs tables (pre-isolation DBs). A fresh init_db
@@ -5037,7 +5061,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, worker_scope, claim_expires, "
+        "SELECT id, claim_lock, worker_pid, worker_pid_started_at, "
+        "       worker_registered_at, worker_scope, claim_expires, "
         "       last_heartbeat_at, assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -5056,10 +5081,14 @@ def release_stale_claims(
             hb is not None
             and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         )
+        # Liveness via the authoritative signal for this row (scope
+        # cgroup state, else pid+fingerprint) — never bare PID liveness,
+        # which PID reuse turns into endless extensions for a dead run.
+        worker_alive, alive_reason = _run_worker_alive(row)
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and worker_alive
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -5083,7 +5112,7 @@ def release_stale_claims(
                 _append_event(
                     conn, row["id"], "claim_extended",
                     {
-                        "reason": "pid_alive",
+                        "reason": alive_reason,
                         "worker_pid": int(row["worker_pid"]),
                         "claim_lock": row["claim_lock"],
                         "claim_expires_was": int(row["claim_expires"]),
@@ -5101,6 +5130,7 @@ def release_stale_claims(
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
+            pid_started_at=row["worker_pid_started_at"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -5115,7 +5145,8 @@ def release_stale_claims(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "worker_pid_started_at = NULL, worker_scope = NULL "
+                "worker_pid_started_at = NULL, "
+                "worker_registered_at = NULL, worker_scope = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -5191,7 +5222,8 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid, worker_scope "
+        "SELECT status, claim_lock, worker_pid, worker_pid_started_at, "
+        "       worker_scope "
         "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
@@ -5204,13 +5236,24 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
         scope_unit=row["worker_scope"] or None,
+        pid_started_at=row["worker_pid_started_at"],
     )
+    # Never release the claim beside a worker/scope we could not verify
+    # dead — that would spawn a duplicate beside it (same guard as the
+    # TTL path). The operator retries; the next attempt re-stops.
+    if _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_scope_still_stopping",
+        )
+        return False
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL, "
-            "worker_pid_started_at = NULL, worker_scope = NULL "
+            "worker_pid_started_at = NULL, worker_registered_at = NULL, "
+            "worker_scope = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (retry_status, task_id, prev_lock),
@@ -5499,10 +5542,13 @@ def complete_task(
         if not _parents_satisfied(conn, task_id):
             return False
         prior = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?",
+            "SELECT status, worker_scope FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = prior["status"] if prior else None
+        # Scope of the attempt being closed — captured BEFORE the UPDATE
+        # clears it, so the post-commit stop can still address the unit.
+        prior_scope = prior["worker_scope"] if prior else None
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -5513,6 +5559,9 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_pid_started_at = NULL,
+                       worker_registered_at = NULL,
+                       worker_scope = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -5530,6 +5579,9 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_pid_started_at = NULL,
+                       worker_registered_at = NULL,
+                       worker_scope = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -5653,6 +5705,13 @@ def complete_task(
             run_id=run_id,
             summary=(summary if summary is not None else result),
         )
+    # Terminal transition: reap the attempt's scope so descendants the
+    # worker spawned (dev servers, browsers, databases) die with it —
+    # a scope outlives its worker while ANY member lives. Detached:
+    # this runs inside the worker process (see
+    # _stop_scope_after_worker_exit); the dispatcher's audit sweep
+    # backstops the verified kill.
+    _stop_scope_after_worker_exit(prior_scope)
     return True
 
 
@@ -6349,11 +6408,15 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, worker_scope "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
+        # Scope of the attempt being closed (captured pre-clear so the
+        # post-commit stop can address the unit).
+        prior_scope = cur_row["worker_scope"]
         source_status = (
             _retry_status_for_run(conn, task_id)
             if cur_row["status"] == "running"
@@ -6379,6 +6442,9 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_pid_started_at = NULL,
+                       worker_registered_at = NULL,
+                       worker_scope = NULL,
                        block_kind    = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -6415,6 +6481,7 @@ def block_task(
                 run_id=run_id,
                 reason=reason,
             )
+            _stop_scope_after_worker_exit(prior_scope)
             return True
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
@@ -6436,6 +6503,9 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_pid_started_at = NULL,
+                       worker_registered_at = NULL,
+                       worker_scope = NULL,
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
@@ -6475,6 +6545,9 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_pid_started_at = NULL,
+                           worker_registered_at = NULL,
+                           worker_scope = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -6490,6 +6563,9 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_pid_started_at = NULL,
+                           worker_registered_at = NULL,
+                           worker_scope = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -6532,6 +6608,9 @@ def block_task(
         run_id=run_id,
         reason=reason,
     )
+    # Terminal transition for this attempt — reap the scope (detached:
+    # runs inside the worker process; dispatcher audit sweep backstops).
+    _stop_scope_after_worker_exit(prior_scope)
     return True
 
 
@@ -6591,7 +6670,7 @@ def request_review(
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
+            "SELECT assignee, status, claim_lock, current_run_id, worker_scope "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
@@ -6668,7 +6747,10 @@ def request_review(
                SET status        = 'review',
                    claim_lock    = NULL,
                    claim_expires = NULL,
-                   worker_pid    = NULL
+                   worker_pid    = NULL,
+                   worker_pid_started_at = NULL,
+                   worker_registered_at = NULL,
+                   worker_scope = NULL
             """ + assignee_sql + """
              WHERE id = ?
                AND status IN ('running', 'ready')
@@ -6710,6 +6792,11 @@ def request_review(
             },
             run_id=run_id,
         )
+    # The implementer's attempt is over (review lane takes over): reap
+    # its scope detached — see _stop_scope_after_worker_exit.
+    _stop_scope_after_worker_exit(
+        trow["worker_scope"] if trow is not None else None
+    )
     return _ret(True)
 
 
@@ -6734,7 +6821,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            "SELECT status, assignee, current_run_id, worker_scope "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if task_row is None:
@@ -6803,7 +6891,10 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   worker_pid_started_at = NULL,
+                   worker_registered_at = NULL,
+                   worker_scope = NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -6829,6 +6920,11 @@ def request_changes(
             },
             run_id=run_id,
         )
+    # The reviewer's attempt is over (work returns to the implementer):
+    # reap its scope detached — see _stop_scope_after_worker_exit.
+    _stop_scope_after_worker_exit(
+        task_row["worker_scope"] if task_row is not None else None
+    )
     return True, implementer
 
 
@@ -7139,12 +7235,17 @@ def invalidate_descendants_for_parent_reopen(
 
     Returns ``{"invalidated": [...], "terminations": [...]}`` where each
     invalidated entry is ``{id, prior_status, new_status, resume_status}``
-    and each termination is a ``(worker_pid, claim_lock)`` tuple.
+    and each termination is a ``(worker_pid, claim_lock,
+    worker_pid_started_at, worker_scope)`` tuple — pass all four to
+    ``_terminate_reclaimed_worker`` so scoped descendants die with the
+    retraction.
     """
     caller_owns_txn = bool(getattr(conn, "in_transaction", False))
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[int], Optional[str]]
+    ] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -7155,7 +7256,8 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid,
+                   t.worker_pid_started_at, t.claim_lock, t.worker_scope
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -7174,7 +7276,12 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = _retry_status_for_run(
                     conn, row["id"], row["current_run_id"]
                 )
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append(
+                    (
+                        row["worker_pid"], row["claim_lock"],
+                        row["worker_pid_started_at"], row["worker_scope"],
+                    )
+                )
                 run_id = _end_run(
                     conn,
                     row["id"],
@@ -7187,6 +7294,8 @@ def invalidate_descendants_for_parent_reopen(
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
                 "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "worker_pid_started_at = NULL, worker_registered_at = NULL, "
+                "worker_scope = NULL, "
                 "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?",
                 (row["id"],),
             )
@@ -7245,8 +7354,14 @@ def invalidate_descendants_for_parent_reopen(
         # Standalone call: we committed above, so the audit trail is durable
         # — safe to kill workers now. Composed calls leave this to the
         # caller (post-commit), preserving events-before-termination.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        # Scope-aware: a running descendant's whole unit is stopped, so
+        # descendants it spawned die with the retraction.
+        for pid, claim_lock, pid_started, scope in terminations:
+            _terminate_reclaimed_worker(
+                pid, claim_lock,
+                scope_unit=scope or None,
+                pid_started_at=pid_started,
+            )
     return {"invalidated": invalidated, "terminations": terminations}
 
 
@@ -7576,9 +7691,15 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        prior = conn.execute(
+            "SELECT worker_scope FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        prior_scope = prior["worker_scope"] if prior else None
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "    worker_pid_started_at = NULL, worker_registered_at = NULL, "
+            "    worker_scope = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -7593,6 +7714,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    # Archiving a still-running task must not leave its scoped worker
+    # (and whatever it spawned) running untracked — verified stop, with
+    # the dispatcher's audit sweep as the backstop if this one fails.
+    if prior_scope:
+        _stop_kanban_worker_scope(prior_scope)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -7990,13 +8116,20 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        prior = conn.execute(
+            "SELECT worker_scope FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        prior_scope = prior["worker_scope"] if prior else None
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   worker_pid_started_at = NULL,
+                   worker_registered_at = NULL,
+                   worker_scope = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """
@@ -8018,7 +8151,11 @@ def schedule_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-        return True
+    # Scheduling away a still-running task must not leave its scoped
+    # worker running untracked — verified stop (audit sweep backstops).
+    if prior_scope:
+        _stop_kanban_worker_scope(prior_scope)
+    return True
 
 
 # Dispatcher (one-shot pass)
@@ -8152,6 +8289,15 @@ class DispatchResult:
     spawned. ``None`` when memory was fine/unknown and the guard imposed
     no restriction. Reclaim/promotion bookkeeping still ran either way;
     deferred tasks stay queued for the next tick."""
+    late_spawn_failed: list[str] = field(default_factory=list)
+    """Task ids failed by :func:`fail_unregistered_workers` this tick —
+    scoped runs whose worker never registered its pid within the launch
+    grace window (silent systemd-run failure). Runs AFTER adoption so a
+    gateway restart mid-launch is never misread as a dead spawn."""
+    scopes_reaped: list[str] = field(default_factory=list)
+    """Scope unit names stopped by :func:`reap_orphaned_worker_scopes`
+    this tick — the audit backstop that guarantees no worker cgroup
+    outlives its task row (leaked descendants, stale retry units)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -8344,6 +8490,22 @@ _SCOPE_UNIT_UNSAFE = re.compile(r"[^A-Za-z0-9_.\-]")
 # Warn once per process when an explicit isolation request cannot be
 # honoured — per-spawn would spam the gateway log every tick.
 _scope_fallback_warned = False
+# Warn once per process when no computable memory bound forces omitting
+# the scope's memory properties (see _kanban_worker_memory_bytes).
+_memory_bound_omitted_warned = False
+# How long a freshly spawned scoped worker has to self-register its pid
+# (first heartbeat bridge fires on the worker's first activity). Until
+# registration lands the dispatcher treats the run as "starting": it
+# trusts the systemd-run launcher pid, does not adopt or crash-mark the
+# row. Past the grace with no registration the run is classified
+# spawn_failed and the scope stopped — a worker that never became
+# observable cannot be told apart from one that never really started.
+WORKER_REGISTRATION_GRACE_SECONDS = 120
+# How long _default_spawn watches the systemd-run launcher for an early
+# exit before trusting the spawn. Real spawn failures (bus gone, rejected
+# property, unit collision) exit within milliseconds; a healthy
+# ``--scope`` launcher lives as long as the worker.
+WORKER_SPAWN_PROBE_SECONDS = 1.5
 
 
 def _kanban_cfg_from_config() -> dict:
@@ -8412,33 +8574,69 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
     return available
 
 
-def _kanban_worker_scope_unit(task_id: str) -> str:
-    """Deterministic transient unit name for a task's worker.
+def _kanban_worker_scope_unit(task_id: str, run_id: Optional[int]) -> str:
+    """Transient unit name for one ATTEMPT of a task's worker.
 
-    ``hermes-kanban-<task_id>.scope`` — stable across gateway restarts so a
-    re-adopted worker's scope stays addressable by the same
-    ``systemctl --user stop`` call. Task ids are ``t_`` + hex, already
-    unit-safe; the sanitiser is defence for any future id scheme.
+    ``hermes-kanban-<task_id>-r<run_id>.scope`` — unique per attempt, so a
+    retry spawn can never collide with a lingering scope from the attempt
+    it replaced (``systemd-run`` refuses to create a unit that already
+    exists, which would turn a slow-to-die old scope into a spawn
+    failure). The attempt's unit is recorded in ``tasks.worker_scope`` /
+    ``task_runs.worker_scope``, so a re-adopted worker's scope stays
+    addressable by the same ``systemctl --user stop`` call across gateway
+    restarts. Task ids are ``t_`` + hex, already unit-safe; the sanitiser
+    is defence for any future id scheme.
     """
     safe = _SCOPE_UNIT_UNSAFE.sub("-", str(task_id)).strip("-.") or "task"
-    return f"hermes-kanban-{safe}.scope"
+    run_part = f"-r{int(run_id)}" if run_id is not None else ""
+    return f"hermes-kanban-{safe}{run_part}.scope"
 
 
-def _kanban_worker_memory_max_bytes(
+def _task_id_from_kanban_scope_unit(unit: str) -> Optional[str]:
+    """Inverse of :func:`_kanban_worker_scope_unit` for audit sweeps.
+
+    Returns the sanitised task id encoded in a kanban scope unit name
+    (``hermes-kanban-<task>-r<run>.scope`` or the legacy attempt-free
+    ``hermes-kanban-<task>.scope``), or ``None`` for anything else. The
+    returned id is the SANITISED form — callers must treat a lookup miss
+    as "no matching task", never fall back to fuzzy matching.
+    """
+    m = re.match(r"^hermes-kanban-(?P<tid>.+?)(?:-r\d+)?\.scope$", unit)
+    return m.group("tid") if m else None
+
+
+def _kanban_worker_memory_bytes(
     kanban_cfg: Optional[dict] = None,
 ) -> Optional[int]:
-    """Per-worker cgroup memory bound from ``kanban.worker_memory_max_mb``.
+    """Per-worker cgroup memory bound used for BOTH MemoryMax and
+    MemorySwapMax.
 
-    ``None`` defers to the shared default in
-    ``tools.process_registry._worker_memory_max_bytes`` (the tighter of the
-    gateway cgroup limit and half the host RAM, floored at 64 MiB, capped
-    at 4 GiB). An explicit value is clamped to those same bounds so no
-    configuration can hand a worker the whole host.
+    Resolution: explicit ``kanban.worker_memory_max_mb`` (clamped to the
+    shared 64 MiB floor / 4 GiB cap), else the shared default from
+    ``tools.process_registry._worker_memory_max_bytes`` (the tighter of
+    the gateway cgroup limit and half the host RAM). Returns ``None``
+    only when no positive bound can be computed — the spawn path then
+    OMITS both memory properties rather than emitting a broken
+    ``MemoryMax=0`` (0 means "no limit" in systemd, the opposite of the
+    intended bound).
     """
     cfg = _kanban_cfg_from_config() if kanban_cfg is None else (kanban_cfg or {})
     raw = cfg.get("worker_memory_max_mb")
     if raw is None or raw == "":
-        return None
+        from tools.process_registry import _worker_memory_max_bytes
+
+        resolved = _worker_memory_max_bytes()
+        if not resolved or resolved <= 0:
+            global _memory_bound_omitted_warned
+            if not _memory_bound_omitted_warned:
+                _memory_bound_omitted_warned = True
+                _log.warning(
+                    "kanban: no computable per-worker memory bound "
+                    "(helper returned %r) — spawning workers WITHOUT "
+                    "MemoryMax/MemorySwapMax", resolved,
+                )
+            return None
+        return resolved
     try:
         mb = int(raw)
     except (TypeError, ValueError):
@@ -8446,7 +8644,7 @@ def _kanban_worker_memory_max_bytes(
             "kanban: worker_memory_max_mb=%r is not an integer — using the "
             "default", raw,
         )
-        return None
+        return _kanban_worker_memory_bytes({})
     from tools.process_registry import (
         _MIN_WORKER_MEMORY_MAX_BYTES,
         _WORKER_MEMORY_MAX_CAP_BYTES,
@@ -8462,26 +8660,242 @@ def _kanban_worker_memory_max_bytes(
     return min(bytes_, _WORKER_MEMORY_MAX_CAP_BYTES)
 
 
-def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
-    """Stop a worker's transient scope — the whole cgroup, not one pid.
+def _kanban_scope_state(unit_name: Optional[str]) -> str:
+    """``"active"`` / ``"dead"`` / ``"unknown"`` for a worker's scope.
 
-    ``systemctl --user stop`` SIGTERMs every process in the unit and
-    escalates to SIGKILL after its stop timeout, which is what kills the
-    double-forked dev servers / browsers a worker leaves behind. Stopping
-    a unit that already exited is a no-op (True), so this is safe to call
-    speculatively from every terminal path.
+    Wraps ``tools.process_registry._scope_unit_active_state``; for scopes
+    ``active`` means the unit's cgroup still holds at least one process —
+    the authoritative "is anything of this worker alive" signal, immune
+    to both PID reuse and the launcher-vs-worker split.
+    """
+    if not unit_name:
+        return "dead"
+    try:
+        from tools.process_registry import _scope_unit_active_state
+
+        return _scope_unit_active_state(unit_name)
+    except Exception as exc:
+        _log.debug("kanban: scope state probe %s failed: %s", unit_name, exc)
+        return "unknown"
+
+
+def _kanban_list_scope_units(pattern: str) -> dict:
+    """``{unit_name: active_state}`` for kanban-style scopes on the bus.
+
+    Wraps ``tools.process_registry._list_systemd_scope_units``; empty on
+    any failure (the audit sweep treats "cannot list" as "nothing to
+    reap" and retries next tick).
+    """
+    try:
+        from tools.process_registry import _list_systemd_scope_units
+
+        return _list_systemd_scope_units(pattern)
+    except Exception as exc:
+        _log.debug("kanban: scope unit listing failed: %s", exc)
+        return {}
+
+
+def _kanban_scope_is_live(state: str) -> bool:
+    """True when a scope state means "cgroup still holds a process"."""
+    from tools.process_registry import _SCOPE_ACTIVE_STATES
+
+    return state in _SCOPE_ACTIVE_STATES
+
+
+def _stop_kanban_worker_scope(unit_name: Optional[str]) -> bool:
+    """Stop a worker's transient scope — the whole cgroup, not one pid —
+    and VERIFY it is actually dead.
+
+    ``systemctl --user stop`` SIGTERMs every process in the unit;
+    ``_stop_systemd_unit_verified`` then escalates to
+    ``systemctl kill --signal=SIGKILL`` and confirms the unit went
+    inactive, because a scope stays active while ANY descendant (dev
+    server, browser, database) lives and ``--collect`` alone only unloads
+    an already-empty unit. Returns True when the unit is verified gone
+    (or was never there); False means "still stopping" — callers that
+    guard against duplicate spawns must NOT release their claim on False,
+    they defer and retry next tick. Stopping an already-dead unit is a
+    verified no-op (True), so this is safe to call speculatively from
+    every terminal path.
     """
     if not unit_name:
         return False
     try:
-        from tools.process_registry import _stop_systemd_unit
+        from tools.process_registry import _stop_systemd_unit_verified
 
-        return _stop_systemd_unit(unit_name)
+        return _stop_systemd_unit_verified(unit_name)
     except Exception as exc:
         _log.warning(
             "kanban: failed to stop worker scope %s: %s", unit_name, exc,
         )
         return False
+
+
+def _stop_scope_after_worker_exit(unit_name: Optional[str]) -> None:
+    """Best-effort DETACHED scope stop for worker-side terminal paths.
+
+    ``complete_task`` / ``block_task`` run INSIDE the worker process — a
+    synchronous ``systemctl stop`` here would SIGTERM the caller before
+    it returns from its own ``kanban_complete`` call. Everything durable
+    (run outcome, events, hooks) is already written when this fires, so
+    the stop is launched detached and never waited on: the worker gets
+    its terminal signal moments after finishing, and any descendant the
+    worker leaves behind dies with the scope. The dispatcher's
+    ``reap_orphaned_worker_scopes`` audit sweep guarantees the verified
+    kill even if this fire-and-forget attempt is lost.
+    """
+    if not unit_name:
+        return
+    try:
+        import shutil
+
+        binary = shutil.which("systemctl")
+        if binary is None:
+            return
+        subprocess.Popen(  # noqa: S603 -- fixed argv, no shell
+            [binary, "--user", "stop", unit_name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        _log.debug(
+            "kanban: detached scope stop for %s failed: %s", unit_name, exc,
+        )
+
+
+def _run_worker_alive(row: Any) -> "tuple[bool, str]":
+    """Authoritative liveness of a running row's worker → (alive, reason).
+
+    Decision order (never bare PID liveness when a better signal exists):
+
+    1. Scope truth — when the run has a ``worker_scope`` and the unit's
+       state is queryable, that IS the answer: ``active`` means processes
+       of this run exist (the worker or descendants it spawned); ``dead``
+       means the cgroup is empty, so nothing of this run survives even if
+       a recycled PID looks alive.
+    2. PID + start-time fingerprint — for registered workers (and for
+       unscoped runs), the recorded pid must be alive AND present the
+       same creation time; a recycled PID fails the fingerprint.
+    3. Launcher pid — scoped runs that have not registered yet ("starting")
+       are represented by the systemd-run launcher pid, which is all the
+       dispatcher has until the worker self-registers.
+    4. Legacy rows (pre-isolation schema: no scope, no fingerprint) fall
+       back to bare PID liveness — there is no better signal for them.
+
+    ``reason`` names the branch that decided, for events and logs.
+    """
+    scope = row["worker_scope"] if "worker_scope" in row.keys() else None
+    pid = row["worker_pid"] if "worker_pid" in row.keys() else None
+    started_at = (
+        row["worker_pid_started_at"]
+        if "worker_pid_started_at" in row.keys()
+        else None
+    )
+    registered_at = (
+        row["worker_registered_at"]
+        if "worker_registered_at" in row.keys()
+        else None
+    )
+    if scope:
+        state = _kanban_scope_state(scope)
+        if state == "active":
+            return True, "scope_active"
+        if state == "dead":
+            return False, "scope_dead"
+        # unknown: systemctl unreachable — fall through to pid checks
+    if registered_at is not None:
+        if _worker_pid_identity_alive(pid, started_at):
+            return True, "pid_identity"
+        return False, "pid_gone_or_reused"
+    if scope:
+        # Unregistered scoped run: the recorded pid is the launcher.
+        if _worker_pid_identity_alive(pid, started_at):
+            return True, "launcher_alive"
+        return False, "launcher_gone"
+    if started_at is not None:
+        # Unscoped row with a fingerprint but no registered_at (written
+        # before that column existed): the fingerprint is still the
+        # authority — a recycled pid must not pass.
+        if _worker_pid_identity_alive(pid, started_at):
+            return True, "pid_identity"
+        return False, "pid_gone_or_reused"
+    return _pid_alive(pid), "legacy_bare_pid"
+
+
+def register_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int] = None,
+    pid: Optional[int] = None,
+) -> bool:
+    """Worker-side self-registration: the WORKER records its own pid.
+
+    ``systemd-run --scope`` launches the command as a child of the
+    systemd-run client, and that client stays in the gateway's cgroup and
+    dies with the gateway — while the scoped worker survives. The pid the
+    dispatcher records at spawn is therefore the launcher's, useless for
+    adoption or crash detection across a gateway restart. This function
+    is called from the worker process itself (the kanban auto-heartbeat
+    bridge and the explicit ``kanban_heartbeat`` tool) on first activity,
+    and overwrites the launcher pid with the worker's own pid + start-time
+    fingerprint, flipping ``worker_registered_at``.
+
+    Deliberately NOT gated on ``claim_lock``: after a gateway restart the
+    dispatcher re-adopts the row and rewrites the claim, so the worker's
+    pinned env claim lock no longer matches — registration must survive
+    adoption. ``expected_run_id`` still pins the attempt, so a stale
+    worker from a superseded attempt can never hijack the row.
+    """
+    real_pid = int(pid) if pid is not None else os.getpid()
+    started = _worker_pid_start_time(real_pid)
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id, worker_pid, "
+            "       worker_pid_started_at, worker_registered_at "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return False
+        if expected_run_id is not None:
+            if row["current_run_id"] is None:
+                return False
+            if int(row["current_run_id"]) != int(expected_run_id):
+                return False
+        first_registration = row["worker_registered_at"] is None
+        if (
+            not first_registration
+            and row["worker_pid"] is not None
+            and int(row["worker_pid"]) != real_pid
+            and _worker_pid_identity_alive(
+                row["worker_pid"], row["worker_pid_started_at"],
+            )
+        ):
+            # A different, still-alive pid already owns this attempt —
+            # do not let a stray process overwrite it.
+            return False
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, worker_pid_started_at = ?, "
+            "worker_registered_at = ? WHERE id = ? AND status = 'running'",
+            (real_pid, started, now, task_id),
+        )
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+                (real_pid, run_id),
+            )
+        if first_registration:
+            _append_event(
+                conn, task_id, "worker_registered",
+                {"pid": real_pid, "pid_started_at": started},
+                run_id=run_id,
+            )
+    return True
 
 
 def _worker_pid_start_time(pid: int) -> Optional[int]:
@@ -8525,8 +8939,18 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
     scope_unit: Optional[str] = None,
+    pid_started_at: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Scoped workers are killed by stopping (and verifying) the whole
+    transient unit; unscoped workers by the classic SIGTERM→SIGKILL pid
+    loop, gated on the pid's start-time fingerprint so a recycled PID is
+    never signalled. ``terminated`` means "we know nothing of this run is
+    alive"; a scope whose stop could not be verified leaves
+    ``scope_stopped`` False so callers defer the reclaim instead of
+    releasing the claim beside a still-draining cgroup.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -8546,12 +8970,36 @@ def _terminate_reclaimed_worker(
 
     if scope_unit:
         # Scoped worker: stop the whole transient unit (SIGTERM to every
-        # process in the cgroup, SIGKILL escalation) so descendants the
-        # worker spawned — dev servers, headless browsers, databases — die
-        # with it. The pid kill below remains as the backstop for
-        # unisolated workers and for a scope stop that failed.
+        # process in the cgroup, SIGKILL escalation, state verified) so
+        # descendants the worker spawned — dev servers, headless
+        # browsers, databases — die with it.
         info["scope_unit"] = scope_unit
         info["scope_stopped"] = _stop_kanban_worker_scope(scope_unit)
+        if info["scope_stopped"]:
+            # Cgroup verified empty: nothing of this run survives. Skip
+            # the pid kill — the recorded pid is either dead or has been
+            # recycled by an unrelated process, and signalling a
+            # recycled pid hits that process, not our worker.
+            info["termination_attempted"] = True
+            info["terminated"] = True
+            return info
+        # Stop not verified (still draining / systemd wedged). The pid
+        # kill below runs as a backstop, but the caller must defer the
+        # reclaim on scope_stopped=False regardless of the pid's fate.
+
+    if (
+        pid_started_at is not None
+        and _pid_alive(pid)
+        and not _worker_pid_identity_alive(pid, pid_started_at)
+    ):
+        # PID-reuse guard: the worker is gone and the kernel handed its
+        # number to an unrelated process. Nothing of ours to signal —
+        # report terminated (releasing the claim is correct) and record
+        # why, so events/logs can distinguish this from a clean kill.
+        info["pid_reused"] = True
+        info["termination_attempted"] = True
+        info["terminated"] = True
+        return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -8596,15 +9044,23 @@ def _worker_survived_termination(termination: dict) -> bool:
 
     Reclaiming in this state would release the claim and let the dispatcher
     spawn a second worker while the first is still running — the duplication
-    loop. Only host-local workers we actually signalled count: a non-local
-    claim lock or a no-op attempt (no ``os.kill`` available) must fall through
-    to the normal release path, since we cannot manage that worker anyway.
+    loop. Survival now includes the scope dimension: a scoped worker whose
+    unit stop could not be VERIFIED counts as survived even when the
+    recorded pid is gone, because the cgroup may still be draining
+    descendants (dev servers, browsers) that would overlap the retry.
+    Only host-local workers we actually signalled count: a non-local
+    claim lock or a no-op attempt (no ``os.kill`` available) must fall
+    through to the normal release path, since we cannot manage that
+    worker anyway.
     """
-    return bool(
+    if not (
         termination.get("termination_attempted")
         and termination.get("host_local")
-        and not termination.get("terminated")
-    )
+    ):
+        return False
+    if termination.get("scope_unit") and not termination.get("scope_stopped"):
+        return True
+    return not termination.get("terminated")
 
 
 def _defer_reclaim_for_live_worker(
@@ -8744,13 +9200,22 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # Scoped workers: stop the whole unit first. ``systemctl --user
-        # stop`` SIGTERMs every process in the worker's cgroup (dev
+        # Scoped workers: stop the whole unit first, VERIFIED. ``systemctl
+        # --user stop`` SIGTERMs every process in the worker's cgroup (dev
         # servers, browsers, DB engines it spawned) and escalates to
         # SIGKILL itself, so the pid loop below is a backstop, not the
-        # primary mechanism, for isolated runs.
+        # primary mechanism, for isolated runs. If the stop cannot be
+        # confirmed this tick, hold the claim and retry next tick —
+        # releasing a claim while a max-runtime worker still lives would
+        # let the dispatcher spawn a duplicate beside it.
         if row["worker_scope"]:
-            _stop_kanban_worker_scope(row["worker_scope"])
+            if not _stop_kanban_worker_scope(row["worker_scope"]):
+                _log.warning(
+                    "kanban: max-runtime stop of scope %s for task %s "
+                    "unconfirmed; deferring to next tick",
+                    row["worker_scope"], tid,
+                )
+                continue
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
@@ -8782,7 +9247,8 @@ def enforce_max_runtime(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "worker_pid_started_at = NULL, worker_scope = NULL, "
+                "worker_pid_started_at = NULL, "
+                "worker_registered_at = NULL, worker_scope = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -8870,8 +9336,8 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_scope, t.last_heartbeat_at, "
-        "       t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_pid_started_at, t.worker_scope, "
+        "       t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -8900,6 +9366,7 @@ def detect_stale_running(
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
+            pid_started_at=row["worker_pid_started_at"],
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -8916,7 +9383,8 @@ def detect_stale_running(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "worker_pid_started_at = NULL, worker_scope = NULL, "
+                "worker_pid_started_at = NULL, "
+                "worker_registered_at = NULL, worker_scope = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -8994,7 +9462,8 @@ def reconcile_orphaned_running(
     now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid, worker_scope "
+        "SELECT id, claim_lock, claim_expires, worker_pid, "
+        "       worker_pid_started_at, worker_registered_at, worker_scope "
         "FROM tasks "
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
@@ -9002,23 +9471,32 @@ def reconcile_orphaned_running(
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _pid_alive(pid):
+        alive, alive_reason = _run_worker_alive(row)
+        if pid and alive:
             # The recorded worker may still be doing real work — never
             # requeue beside a live process. Retry next tick.
             _log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
-                "pid %s is alive on this host — deferring", tid, pid,
+                "worker pid %s is alive (%s) on this host — deferring",
+                tid, pid, alive_reason,
             )
             continue
         # Worker is gone. If it ran in a scope, reap the unit so nothing
-        # it double-forked survives the requeue.
+        # it double-forked survives the requeue. An unconfirmed stop
+        # defers the requeue for the same reason as a live pid.
         if row["worker_scope"]:
-            _stop_kanban_worker_scope(row["worker_scope"])
+            if not _stop_kanban_worker_scope(row["worker_scope"]):
+                _log.debug(
+                    "kanban reconcile: task %s scope %s still stopping — "
+                    "deferring requeue to next tick", tid, row["worker_scope"],
+                )
+                continue
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "worker_pid_started_at = NULL, worker_scope = NULL, "
+                "worker_pid_started_at = NULL, "
+                "worker_registered_at = NULL, worker_scope = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
@@ -9061,6 +9539,191 @@ def reconcile_orphaned_running(
             "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
         )
     return reconciled
+
+
+def fail_unregistered_workers(conn: sqlite3.Connection) -> list[str]:
+    """Fail ``running`` tasks whose scoped worker never self-registered.
+
+    For scoped runs the dispatcher records the LAUNCHER's pid (the
+    ``systemd-run`` client), not the worker's; the worker proves life by
+    calling ``register_worker_pid`` from its heartbeat bridge on first
+    activity. A row that stays unregistered past
+    ``WORKER_REGISTRATION_GRACE_SECONDS`` breaks the launch contract —
+    whether the exec died before the first tool call or the worker wedged
+    pre-heartbeat, nothing downstream (adoption, crash detection) can
+    vouch for it — so the scope is stopped (verified) and the run is
+    recorded as ``spawn_failed``.
+
+    Also lazily normalizes unscoped running rows with a pid: for a plain
+    spawn the recorded pid IS the worker, so backfill
+    ``worker_registered_at`` (this also covers true legacy rows from
+    before the isolation feature: they are unscoped by definition, since
+    the ``worker_scope`` column shipped with it).
+
+    Returns the list of failed task ids. Safe to call every tick.
+    """
+    now = int(time.time())
+    failed: list[str] = []
+    rows = conn.execute(
+        "SELECT t.id, t.started_at, r.started_at AS run_started_at, "
+        "       t.worker_scope "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL "
+        "  AND t.worker_registered_at IS NULL"
+    ).fetchall()
+    for row in rows:
+        scope = row["worker_scope"]
+        if not scope:
+            # Lazy normalization for unscoped rows (plain spawns: the
+            # recorded pid is the worker itself).
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET worker_registered_at = ? "
+                    "WHERE id = ? AND worker_scope IS NULL "
+                    "  AND worker_pid IS NOT NULL "
+                    "  AND worker_registered_at IS NULL",
+                    (now, row["id"]),
+                )
+            continue
+        started = row["run_started_at"] or row["started_at"]
+        if started is None or (now - int(started)) < WORKER_REGISTRATION_GRACE_SECONDS:
+            continue  # still inside the launch grace window
+        if not _stop_kanban_worker_scope(scope):
+            continue  # stop unconfirmed — retry next tick
+        _record_spawn_failure(
+            conn, row["id"],
+            error=(
+                f"worker never registered its pid within "
+                f"{WORKER_REGISTRATION_GRACE_SECONDS}s (scope {scope}); "
+                "launch failed or the worker wedged before its first "
+                "activity"
+            ),
+        )
+        failed.append(row["id"])
+        _log.warning(
+            "kanban: task %s scoped worker never registered within %ss "
+            "(scope %s) — recorded as spawn failure",
+            row["id"], WORKER_REGISTRATION_GRACE_SECONDS, scope,
+        )
+    return failed
+
+
+def _claimed_worker_scopes_globally() -> Optional[set[str]]:
+    """Scope units claimed by ``running`` rows across ALL boards.
+
+    The audit sweep lists scopes host-globally (the systemd user bus has
+    no board concept), so its notion of "claimed" must be global too — a
+    per-board view would let board A's sweep reap a live worker that
+    board B is running. Membership is by ``tasks.worker_scope`` equality,
+    NOT by parsing the task id back out of the unit name: unit names are
+    sanitised (``_SCOPE_UNIT_UNSAFE`` chars replaced), so a parse-back
+    can silently disagree with the row id it came from.
+
+    Returns ``None`` when any board's database cannot be read — the
+    sweep then reaps NOTHING, because "cannot read a board" must never
+    look like "that board has no live scopes".
+    """
+    claimed: set[str] = set()
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception as exc:
+        _log.debug("kanban: scope sweep cannot list boards: %s", exc)
+        return None
+    slugs = [b.get("slug") for b in boards if b.get("slug")] or [DEFAULT_BOARD]
+    for slug in slugs:
+        try:
+            path = kanban_db_path(board=slug)
+            if not path.exists():
+                continue  # a board with no DB cannot hold running workers
+            ro = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True, timeout=5.0,
+            )
+            try:
+                claimed.update(
+                    r[0]
+                    for r in ro.execute(
+                        "SELECT DISTINCT worker_scope FROM tasks "
+                        "WHERE status = 'running' "
+                        "  AND worker_scope IS NOT NULL"
+                    )
+                )
+            finally:
+                ro.close()
+        except Exception as exc:
+            _log.debug(
+                "kanban: scope sweep cannot read board %s: %s", slug, exc,
+            )
+            return None
+    return claimed
+
+
+def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
+    """Stop systemd scopes that no longer belong to any running task.
+
+    The audit backstop for every fire-and-forget stop the domain layer
+    fires from the worker's own side (completion, block, review paths):
+    the worker cannot wait on its own scope teardown, so those stops are
+    detached and verified here instead. This sweep lists every active
+    ``hermes-kanban-*`` scope on the user bus and stops the ones no
+    running task claims — leaked descendants, scopes from tasks that
+    completed without a stop, or a stale unit name left over from a
+    retry that already moved on to a new unique unit.
+
+    Returns the list of reaped unit names. Safe to call every tick.
+    """
+    if not _kanban_worker_scope_enabled():
+        return []
+    claimed = _claimed_worker_scopes_globally()
+    if claimed is None:
+        return []  # a board was unreadable — reap nothing this tick
+    reaped: list[str] = []
+    active = _kanban_list_scope_units("hermes-kanban-*")
+    for unit, state in active.items():
+        if not _kanban_scope_is_live(state):
+            continue
+        if unit in claimed:
+            continue
+        if not _stop_kanban_worker_scope(unit):
+            continue  # still stopping — retry next tick
+        reaped.append(unit)
+        _log.info(
+            "kanban: reaped orphaned worker scope %s (no running task "
+            "claims it)", unit,
+        )
+    return reaped
+
+
+def stop_all_scoped_workers(conn: sqlite3.Connection) -> list[str]:
+    """Stop every scoped worker claimed by this host.
+
+    The ``kanban.worker_isolation_stop_on_shutdown`` shutdown policy:
+    when true, a graceful gateway shutdown verifies teardown of each
+    still-running isolated worker instead of leaving it to re-adoption
+    (the default). Scoped workers are in their own user systemd scopes
+    so they survive a gateway crash by design; this is the explicit
+    "bring them down with us" switch.
+
+    Returns the list of scope units confirmed stopped. Units that could
+    not be confirmed remain for the next gateway's re-adoption sweep.
+    """
+    stopped: list[str] = []
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    rows = conn.execute(
+        "SELECT id, claim_lock, worker_scope FROM tasks "
+        "WHERE status = 'running' AND worker_scope IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        if not (row["claim_lock"] or "").startswith(host_prefix):
+            continue  # another host owns this worker
+        if not _stop_kanban_worker_scope(row["worker_scope"]):
+            continue  # unconfirmed stop — re-adoption will catch it
+        stopped.append(row["worker_scope"])
+        _log.info(
+            "kanban shutdown: stopped scoped worker %s (task %s)",
+            row["worker_scope"], row["id"],
+        )
+    return stopped
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -9177,7 +9840,8 @@ def adopt_surviving_running_workers(conn: sqlite3.Connection) -> list[str]:
     current = _claimer_id()
     host_prefix = f"{current.split(':', 1)[0]}:"
     rows = conn.execute(
-        "SELECT id, worker_pid, worker_pid_started_at, worker_scope, "
+        "SELECT id, worker_pid, worker_pid_started_at, "
+        "       worker_registered_at, worker_scope, "
         "       claim_lock, last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_lock IS NOT NULL "
@@ -9192,8 +9856,14 @@ def adopt_surviving_running_workers(conn: sqlite3.Connection) -> list[str]:
         if lock == current:
             continue  # Already ours (claimed or adopted on a prior tick).
         pid = int(row["worker_pid"])
-        if not _worker_pid_identity_alive(pid, row["worker_pid_started_at"]):
-            # Dead or pid-reused — detect_crashed_workers handles it.
+        # Authoritative liveness: scope cgroup state for isolated runs,
+        # pid+fingerprint otherwise — never bare PID liveness (a
+        # recycled PID would adopt a stranger's process; the dead
+        # launcher of a scoped run would hide its live worker).
+        alive, alive_reason = _run_worker_alive(row)
+        if not alive:
+            # Dead / pid-reused / scope gone — detect_crashed_workers
+            # and the registration-grace sweep handle it.
             continue
         hb = row["last_heartbeat_at"]
         if hb is None or (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
@@ -9224,6 +9894,7 @@ def adopt_surviving_running_workers(conn: sqlite3.Connection) -> list[str]:
                     "claimer": current,
                     "worker_pid": pid,
                     "scope": row["worker_scope"],
+                    "verified_by": alive_reason,
                     "heartbeat_age_seconds": now - int(hb),
                 },
                 run_id=run_id,
@@ -9231,8 +9902,9 @@ def adopt_surviving_running_workers(conn: sqlite3.Connection) -> list[str]:
             adopted.append(row["id"])
         _log.info(
             "kanban: adopted surviving worker pid %s for task %s "
-            "(previous claimer %s, heartbeat %ss old) — run continues",
-            pid, row["id"], lock, now - int(hb),
+            "(previous claimer %s, heartbeat %ss old, verified by %s) "
+            "— run continues",
+            pid, row["id"], lock, now - int(hb), alive_reason,
         )
     return adopted
 
@@ -9282,9 +9954,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Worker-exit observer payloads (RFC #58548), collected inside the main
     # txn and fired only after every reclaim/accounting txn has committed.
     exited_hook_payloads: list[dict] = []
+    now = int(time.time())
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_pid_started_at, worker_scope, "
+            "SELECT id, worker_pid, worker_pid_started_at, "
+            "       worker_registered_at, worker_scope, "
             "       claim_lock, started_at, assignee "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
@@ -9303,13 +9977,26 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
-            # Liveness with a PID-reuse guard: a recycled pid must not be
-            # mistaken for the worker we spawned (see
-            # ``_worker_pid_identity_alive``). Legacy rows without a
-            # recorded start time fall back to plain liveness.
-            if _worker_pid_identity_alive(
-                row["worker_pid"], row["worker_pid_started_at"],
+            # Scoped runs that have not yet self-registered are still
+            # "starting": the recorded pid is the systemd-run launcher
+            # (which dies with the gateway), so PID reasoning about it is
+            # meaningless. fail_unregistered_workers owns the past-grace
+            # classification; inside the grace the row is skipped.
+            if (
+                row["worker_scope"]
+                and row["worker_registered_at"] is None
+                and started_at is not None
+                and (now - int(started_at)) < WORKER_REGISTRATION_GRACE_SECONDS
             ):
+                continue
+            # Authoritative liveness — scope cgroup state for isolated
+            # runs (a recycled pid must not be mistaken for the worker,
+            # and a dead launcher pid must not hide a live scoped
+            # worker), pid+fingerprint for registered/unscoped runs,
+            # bare liveness only for legacy rows (see
+            # ``_run_worker_alive``).
+            alive, alive_reason = _run_worker_alive(row)
+            if alive:
                 continue
 
             pid = int(row["worker_pid"])
@@ -9379,8 +10066,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} not alive"
                     if pid_reused:
                         error_text += " (pid reused by another process)"
+                    if alive_reason == "scope_dead":
+                        error_text += " (scope cgroup empty)"
                 event_kind = "crashed"
-                event_payload = {"pid": pid, "claimer": row["claim_lock"]}
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "liveness": alive_reason,
+                }
                 if pid_reused:
                     event_payload["pid_reused"] = True
                 if code is not None and kind != "unknown":
@@ -9392,7 +10085,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "worker_pid_started_at = NULL, worker_scope = NULL "
+                "worker_pid_started_at = NULL, "
+                "worker_registered_at = NULL, worker_scope = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, row["id"], pid, row["claim_lock"]),
@@ -9655,6 +10349,8 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "worker_pid_started_at = NULL, "
+                    "worker_registered_at = NULL, worker_scope = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error[:500], task_id),
@@ -9705,6 +10401,8 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "worker_pid_started_at = NULL, "
+                    "worker_registered_at = NULL, worker_scope = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error[:500], task_id),
@@ -9772,13 +10470,22 @@ def _set_worker_pid(
     correlate log lines with OS-level traces without opening the drawer.
     ``worker_pid_started_at`` captures a start-time fingerprint at spawn
     so later liveness checks cannot be fooled by PID reuse.
+
+    For a scoped run the pid is the systemd-run LAUNCHER, not the worker
+    (the launcher client stays in the gateway's cgroup and dies with it);
+    ``worker_registered_at`` stays NULL until the worker registers its
+    own pid via :func:`register_worker_pid`. For a plain spawn the pid IS
+    the worker, so the row counts as registered immediately.
     """
     pid_started = _worker_pid_start_time(int(pid))
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET worker_pid = ?, worker_pid_started_at = ?, "
-            "worker_scope = ? WHERE id = ?",
-            (int(pid), pid_started, scope_unit or None, task_id),
+            "worker_scope = ?, worker_registered_at = ? WHERE id = ?",
+            (
+                int(pid), pid_started, scope_unit or None,
+                None if scope_unit else int(time.time()), task_id,
+            ),
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
@@ -10339,11 +11046,15 @@ def _dispatch_once_locked(
       2. Reclaim stale running tasks (TTL expired).
       3. Reclaim stale running tasks (no recent heartbeat).
       4. Reclaim crashed running tasks (host-local PID no longer alive).
-      5. Promote todo -> ready where all parents are done.
-      6. For each ready task with an assignee, atomically claim and call
+      5. Fail scoped runs whose worker never self-registered (silent
+         systemd-run launch failure, past the launch grace window).
+      6. Promote todo -> ready where all parents are done.
+      7. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
+      8. Audit: stop any active worker scope that no running task claims
+         (leaked descendants / stale retry units).
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
@@ -10406,6 +11117,12 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    # Late spawn-failure sweep: scoped runs whose worker never registered
+    # its pid. MUST run after adoption — a gateway restart mid-launch
+    # would otherwise read as a dead spawn. dry_run gates it because it
+    # records failures and stops scopes.
+    if not dry_run:
+        result.late_spawn_failed = fail_unregistered_workers(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -10866,6 +11583,13 @@ def _dispatch_once_locked(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+    # Scope audit sweep, last so it sees the tick's own effects: every
+    # active hermes-kanban-* scope must map to a running task row that
+    # claims it. This is the verified backstop for the detached
+    # worker-side stops (completion/block/review) and for anything a
+    # failed retry left behind. Read-only in dry_run.
+    if not dry_run:
+        result.scopes_reaped = reap_orphaned_worker_scopes(conn)
     return result
 
 
@@ -11183,8 +11907,10 @@ def _default_spawn(
     # spawn never leaves the previous spawn's unit name behind for the
     # dispatcher to record. Read by ``_dispatch_once_locked`` after the
     # call — same function-attribute pattern detect_crashed_workers uses
-    # for ``_last_rate_limited``.
+    # for ``_last_rate_limited``. ``_last_spawn_error`` mirrors it for the
+    # systemd-run stderr captured on a refused launch.
     _default_spawn._last_scope_unit = ""
+    _default_spawn._last_spawn_error = ""
 
     from hermes_cli.profiles import normalize_profile_name
 
@@ -11356,53 +12082,141 @@ def _default_spawn(
     log_f = open(log_path, "ab")
 
     # Worker isolation: wrap the argv in its own transient systemd user
-    # scope (``hermes-kanban-<task_id>.scope``) so the worker's cgroup —
-    # and every dev server / browser / database it spawns — is independent
-    # of the gateway's, bounded by MemoryMax + MemorySwapMax, and survives
-    # gateway restarts. ``start_new_session`` below still applies inside
-    # the scope (the systemd-run wrapper execs the command; the scope, not
-    # the session, is what isolates the cgroup). Unavailable systemd /
-    # isolation 'none' leaves ``cmd`` byte-identical to today.
+    # scope (``hermes-kanban-<task>-r<run_id>.scope``) so the worker's
+    # cgroup — and every dev server / browser / database it spawns — is
+    # independent of the gateway's, bounded by MemoryMax + MemorySwapMax,
+    # and survives gateway restarts. The unit name embeds the run id, so
+    # a respawn after a failed attempt can never collide with a lingering
+    # half-dead scope from the previous one. ``start_new_session`` below
+    # still applies inside the scope (the systemd-run wrapper execs the
+    # command; the scope, not the session, is what isolates the cgroup).
+    # Unavailable systemd / isolation 'none' leaves ``cmd`` byte-identical
+    # to today.
     launch_cmd = cmd
     scope_unit = ""
+    spawn_err_path = None
     if _kanban_worker_scope_enabled():
         from tools.process_registry import _build_systemd_scope_argv
 
-        memory_max = _kanban_worker_memory_max_bytes()
-        launch_cmd = _build_systemd_scope_argv(
+        scope_unit = _kanban_worker_scope_unit(task.id, task.current_run_id)
+        memory_max = _kanban_worker_memory_bytes()
+        wrapped = _build_systemd_scope_argv(
             cmd,
             task.id,
-            unit_name=_kanban_worker_scope_unit(task.id),
+            unit_name=scope_unit,
             description=f"Hermes kanban worker {task.id}: {task.title}"[:160],
             memory_max_bytes=memory_max,
             memory_swap_max_bytes=memory_max,
         )
-        if launch_cmd[0] != cmd[0]:
-            scope_unit = _kanban_worker_scope_unit(task.id)
+        if wrapped[0] != cmd[0]:
+            launch_cmd = wrapped
+            # The systemd-run client's own stderr is the only place a
+            # refused launch surfaces (user bus gone, unit name rejected,
+            # property refused); the worker's stdout/stderr go to the
+            # normal per-task log. Capture it separately so a launch
+            # failure classifies as spawn_failed with real text instead
+            # of surfacing later as an unexplained "worker crashed".
+            spawn_err_path = log_dir / f"{task.id}.spawn.err"
         else:
             # systemd-run vanished between the availability probe and the
             # build — the helper returned the argv unwrapped. Stay honest:
             # no scope was created, so record none.
             launch_cmd = cmd
+            scope_unit = ""
+    if scope_unit:
+        env["HERMES_KANBAN_SCOPE"] = scope_unit
     _default_spawn._last_scope_unit = scope_unit
 
-    try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+    def _spawn(stderr_target):
+        return subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             launch_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
             stdout=log_f,
-            stderr=subprocess.STDOUT,
+            stderr=stderr_target,
             env=env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
-    except FileNotFoundError:
+
+    def _read_spawn_err() -> str:
+        if spawn_err_path is None:
+            return ""
+        try:
+            return spawn_err_path.read_text("utf-8", "replace").strip()
+        except OSError:
+            return ""
+
+    spawn_err_f = open(spawn_err_path, "wb") if spawn_err_path else None
+    try:
+        try:
+            proc = _spawn(
+                spawn_err_f if spawn_err_f is not None else subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
+        if spawn_err_f is not None:
+            # The systemd-run client exits almost immediately when the
+            # launch is refused; watch it for a short bounded window so
+            # those failures classify NOW as spawn_failed with the
+            # captured stderr. A launcher that survives the window is
+            # healthy — the worker registers its own pid from inside the
+            # scope (see register_worker_pid).
+            deadline = time.monotonic() + WORKER_SPAWN_PROBE_SECONDS
+            while time.monotonic() < deadline and proc.poll() is None:
+                time.sleep(0.05)
+            if proc.poll() is not None:
+                err_text = _read_spawn_err()
+                # Best-effort verified cleanup of whatever half-formed
+                # unit the failed launch left behind.
+                if scope_unit:
+                    _stop_kanban_worker_scope(scope_unit)
+                if _resolve_worker_isolation() != "systemd-scope":
+                    # auto: fall back to a plain spawn for THIS run and
+                    # say so once — a missing user bus must not stall
+                    # the board. Reset EVERYTHING the scope wrap changed:
+                    # launching the wrapped argv again would re-enter
+                    # systemd-run (and "succeed" this time, hiding the
+                    # degraded mode), and the scope env would mislabel
+                    # an unisolated worker.
+                    _log.warning(
+                        "kanban dispatch: task %s systemd-run launch failed "
+                        "(rc=%s: %s) — retrying WITHOUT scope isolation",
+                        task.id, proc.returncode,
+                        err_text or "no stderr captured",
+                    )
+                    launch_cmd = cmd
+                    env.pop("HERMES_KANBAN_SCOPE", None)
+                    _default_spawn._last_scope_unit = ""
+                    proc = _spawn(subprocess.STDOUT)
+                    # NOTE: log_f stays open for the child (see below).
+                    return proc.pid
+                # systemd-scope mode never degrades silently: fail loudly
+                # so the dispatcher records spawn_failed with the cause.
+                _default_spawn._last_spawn_error = err_text
+                raise RuntimeError(
+                    f"systemd-run launch failed for task {task.id} "
+                    f"(rc={proc.returncode}): "
+                    f"{err_text or 'no stderr captured'}"
+                )
+            # Launcher survived its probe window — the run is live.
+            # Drop the spawn-stderr capture so successful runs leave no
+            # stale .spawn.err artifacts behind.
+            spawn_err_f.close()
+            spawn_err_f = None
+            try:
+                os.unlink(spawn_err_path)
+            except OSError:
+                pass
+    except BaseException:
         log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        raise
+    finally:
+        if spawn_err_f is not None:
+            spawn_err_f.close()
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

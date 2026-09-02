@@ -336,12 +336,29 @@ def heartbeat_current_worker_from_env() -> bool:
                 kb.heartbeat_claim(conn, tid, claimer=claim_lock)
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
+            # Scoped workers must self-register: the pid the dispatcher
+            # recorded is the systemd-run LAUNCHER's, not ours, and the
+            # launcher dies with the gateway. Registration (own pid +
+            # start-time fingerprint) is what re-adoption, crash
+            # detection, and the stale sweep key on — it must happen on
+            # first activity, BEFORE the launch grace window can read
+            # this run as a dead spawn. Not claim-gated: adoption may
+            # have rewritten the claim_lock under us mid-run.
             run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
             run_id: Optional[int]
             try:
                 run_id = int(run_id_raw) if run_id_raw else None
             except (TypeError, ValueError):
                 run_id = None
+            try:
+                kb.register_worker_pid(
+                    conn, tid, expected_run_id=run_id, pid=os.getpid(),
+                )
+            except Exception:
+                logger.debug(
+                    "auto-heartbeat: worker pid registration failed",
+                    exc_info=True,
+                )
             try:
                 kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
             except Exception:
@@ -1054,6 +1071,23 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+
+            # Explicit heartbeat = the worker process itself is alive.
+            # Register our own pid + fingerprint (the dispatcher recorded
+            # the systemd-run launcher's pid for scoped runs, which dies
+            # with the gateway). Best-effort: registration failures must
+            # not fail the heartbeat itself.
+            try:
+                kb.register_worker_pid(
+                    conn, tid,
+                    expected_run_id=_worker_run_id(tid),
+                    pid=os.getpid(),
+                )
+            except Exception:
+                logger.debug(
+                    "kanban_heartbeat: worker pid registration failed",
+                    exc_info=True,
+                )
 
             ok = kb.heartbeat_worker(
                 conn,

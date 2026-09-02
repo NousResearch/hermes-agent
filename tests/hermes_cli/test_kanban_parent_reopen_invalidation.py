@@ -123,7 +123,9 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
     )
 
     assert kills and kills[0][0] == 424242
-    assert result["terminations"] == kills
+    # Terminations are (pid, claim_lock, pid_started_at, worker_scope)
+    # tuples; the fake records only the positional prefix.
+    assert [(t[0], t[1]) for t in result["terminations"]] == kills
     child = kb.get_task(conn, child_id)
     assert child is not None
     assert child.status == "todo"

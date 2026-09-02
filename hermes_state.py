@@ -13561,6 +13561,56 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def _dedupe_display_generations(self, rows):
+        """Collapse compaction generations so each message appears once.
+
+        Compaction epochs copy the protected tail into each new generation, so
+        one logical message can exist as several rows (identical
+        role/content/timestamp) with different ``active`` flags and ids. A
+        display read must surface each exactly once: prefer the live row, then
+        the newest generation.
+
+        This is the ONE definition shared by every display projection —
+        :meth:`get_messages` (REST), :meth:`get_resume_conversations` and
+        :meth:`get_ancestor_display_prefix` (gateway resume), and
+        :meth:`get_messages_as_conversation` (warm-session payload) — so the
+        surfaces cannot disagree about the same transcript. *rows* must already
+        be ordered by ``id``; the returned list keeps that order.
+        """
+        seen: Dict[Tuple[Any, ...], Any] = {}
+        for row in rows:
+            dedupe_content = row["content"]
+            if row["role"] == "user":
+                from agent.context_compressor import split_user_originated_turn
+
+                candidate = {
+                    "role": "user",
+                    "content": self._decode_content(row["content"]),
+                    "display_kind": row["display_kind"],
+                    "display_metadata": self._decode_display_metadata(
+                        row["display_metadata"]
+                    ),
+                }
+                handoff, live_view = split_user_originated_turn(candidate)
+                if handoff is not None and live_view is not None:
+                    dedupe_content = self._encode_content(live_view.get("content"))
+            # Tool fields participate in the dedupe key: compaction copies them
+            # verbatim, so identical tool messages across generations still
+            # collapse, while distinct tool calls that happen to share
+            # role/content/timestamp are never merged.
+            key = (
+                row["role"],
+                dedupe_content,
+                row["timestamp"],
+                row["tool_call_id"],
+                row["tool_calls"],
+                row["tool_name"],
+            )
+            cur = seen.get(key)
+            if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
+                seen[key] = row
+        return sorted(seen.values(), key=lambda r: r["id"])
+
     def get_messages(
         self,
         session_id: str,
@@ -13625,14 +13675,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if after_id is not None:
             params.append(after_id)
         if include_compacted:
-            # Compaction epochs copy the protected tail into each new
-            # generation, so the same logical message can exist as several
-            # rows (identical role/content/timestamp) with different active
-            # flags and ids. A display read must surface each message exactly
-            # once: prefer the live row, then the newest generation. Read the
-            # full display set (a session's rows are bounded; the UI-level
-            # 500-row cap lives in the endpoint, not here), dedupe in Python,
-            # then apply paging.
+            # Read the full display set (a session's rows are bounded; the
+            # UI-level 500-row cap lives in the endpoint, not here), dedupe
+            # generations, then apply paging.
             with self._read_ctx() as conn:
                 cursor = conn.execute(
                     "SELECT * FROM messages WHERE session_id = ?" + active_clause
@@ -13640,41 +13685,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     [session_id],
                 )
                 all_rows = cursor.fetchall()
-            seen: dict = {}
-            for row in all_rows:
-                dedupe_content = row["content"]
-                if row["role"] == "user":
-                    from agent.context_compressor import split_user_originated_turn
-
-                    candidate = {
-                        "role": "user",
-                        "content": self._decode_content(row["content"]),
-                        "display_kind": row["display_kind"],
-                        "display_metadata": self._decode_display_metadata(
-                            row["display_metadata"]
-                        ),
-                    }
-                    handoff, live_view = split_user_originated_turn(candidate)
-                    if handoff is not None and live_view is not None:
-                        dedupe_content = self._encode_content(
-                            live_view.get("content")
-                        )
-                # Tool fields participate in the dedupe key: compaction copies
-                # them verbatim, so identical tool messages across generations
-                # still collapse, while distinct tool calls that happen to
-                # share role/content/timestamp are never merged.
-                key = (
-                    row["role"],
-                    dedupe_content,
-                    row["timestamp"],
-                    row["tool_call_id"],
-                    row["tool_calls"],
-                    row["tool_name"],
-                )
-                cur = seen.get(key)
-                if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
-                    seen[key] = row
-            rows = sorted(seen.values(), key=lambda r: r["id"])
+            rows = self._dedupe_display_generations(all_rows)
             if latest:
                 rows = rows[::-1]
             rows = rows[offset:]
@@ -13916,6 +13927,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
+        include_compacted: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -13924,6 +13936,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``include_compacted=True`` additionally loads rows preserved by
+        in-place compaction (``active=0, compacted=1``), deduped by
+        :meth:`_dedupe_display_generations`. DISPLAY reads want this; the
+        model-fed restore must NOT pass it, or a resumed session regrows the
+        very history compaction just summarized away.
 
         ``repair_alternation=True`` runs ``repair_message_sequence`` over the
         loaded list before returning it. Callers that restore a session for
@@ -13939,7 +13957,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if include_ancestors and not self._is_explicit_branch_session(session_id):
             session_ids = self._session_lineage_root_to_tip(session_id)
 
-        active_clause = "" if include_inactive else " AND active = 1"
+        if include_inactive:
+            active_clause = ""
+        elif include_compacted:
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        else:
+            active_clause = " AND active = 1"
         with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
@@ -13957,6 +13980,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 tuple(session_ids),
             ).fetchall()
 
+        if include_compacted:
+            rows = self._dedupe_display_generations(rows)
+
         return self._rows_to_conversation(
             rows,
             session_id=session_id,
@@ -13967,12 +13993,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # Columns every conversation projection decodes. Shared by
     # get_messages_as_conversation and get_resume_conversations so a single
-    # SELECT can feed both the model-fed and display views.
+    # SELECT can feed both the model-fed and display views. ``active`` rides
+    # along so a display read can split the compaction-archived rows from the
+    # live set (and feed _dedupe_display_generations) without a second query.
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
-        "_compressed_summary, timestamp, "
+        "_compressed_summary, timestamp, active, "
         "api_content, display_kind, display_metadata"
     )
 
@@ -14183,6 +14211,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           copied transcript; including the live parent's rows would let messages
           written to the original after the fork leak into the branch.
 
+        The display projection also includes rows preserved by IN-PLACE
+        compaction (``active=0, compacted=1``), deduped by
+        :meth:`_dedupe_display_generations`. Without them a compacted
+        conversation resumes showing only its summary plus the carried-forward
+        tail — the user's own turns read as deleted even though every row is
+        still on disk, and the REST transcript read (which has always included
+        them) disagreed with this one about the same session (#92080).
+
         The display fetch already reads a superset of the model fetch (the tip
         rows are part of the lineage), so serving both from one lineage SELECT
         halves the resume's DB work versus two separate calls, with byte-identical
@@ -14193,7 +14229,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
-                f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                f"FROM messages WHERE session_id IN ({placeholders}) "
+                # Compaction-archived rows (active=0, compacted=1) are display
+                # history; Undo/Rewind rows (active=0, compacted=0) are not.
+                "AND (active = 1 OR compacted = 1) "
                 # ORDER BY id (insertion order) — see get_messages_as_conversation
                 # for why timestamp ordering is unsafe.
                 "ORDER BY id",
@@ -14202,8 +14241,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         # Tip rows are exactly the model-fed set (get_messages_as_conversation
         # with session_ids=[session_id]); filtering the lineage fetch preserves
-        # their relative id order.
-        tip_rows = [r for r in rows if r["session_id"] == session_id]
+        # their relative id order. The model projection stays active-only — it
+        # is the compressed working context and must not regrow the history
+        # compaction just summarized away.
+        tip_rows = [r for r in rows if r["session_id"] == session_id and r["active"]]
         model_history = self._rows_to_conversation(
             tip_rows,
             session_id=session_id,
@@ -14216,7 +14257,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_summary_markers=True,
         )
         display_history = self._rows_to_conversation(
-            rows,
+            self._dedupe_display_generations(rows),
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
@@ -14242,19 +14283,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def get_resume_message_count(
         self, session_id: str, *, tip_only: bool = False
     ) -> int:
-        """Count active rows that a resume would materialize.
+        """Count the rows that a resume would materialize.
 
-        ``tip_only=True`` counts only the tip segment — the set a model-history
-        restore loads (``get_messages_as_conversation`` without ancestors, or
-        the deferred Desktop resume that pages the display transcript over
-        REST and never materializes the ancestor prefix in memory).
+        ``tip_only=True`` counts the tip segment's ACTIVE rows — the set a
+        model-history restore loads (``get_messages_as_conversation`` without
+        ancestors, or the deferred Desktop resume that pages the display
+        transcript over REST and never materializes the ancestor prefix in
+        memory).
+
+        Otherwise this counts the full-lineage DISPLAY set — active rows plus
+        the compaction-archived rows ``get_resume_conversations`` now loads
+        for the transcript. Counting only active rows here would let a
+        heavily-compacted conversation pass a limit sized for a handful of
+        live rows and then materialize tens of thousands.
         """
         session_ids = [session_id] if tip_only else self._resume_lineage_ids(session_id)
+        active_clause = "active = 1" if tip_only else "(active = 1 OR compacted = 1)"
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) FROM messages "
-                f"WHERE session_id IN ({placeholders}) AND active = 1",
+                f"WHERE session_id IN ({placeholders}) AND {active_clause}",
                 tuple(session_ids),
             ).fetchone()
         return int(row[0] if row else 0)
@@ -14272,15 +14321,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (``sessions.max_resume_messages``); 0 disables the guard and returns
         the (bounded) count without raising.
 
-        ``tip_only=True`` bounds only the tip segment, for callers that never
-        materialize the ancestor lineage in memory (tip-only model restore,
-        deferred Desktop resume whose display history is REST-paginated). A
+        ``tip_only=True`` bounds only the tip segment's ACTIVE rows, for
+        callers that never materialize the ancestor lineage or the
+        compaction archive in memory (tip-only model restore, deferred
+        Desktop resume whose display history is REST-paginated). A
         heavily-compressed conversation — 85 compaction segments and ~29k
         lineage rows behind a ~700-row tip — is exactly the shape compression
         is supposed to produce; counting its whole lineage against a limit
         sized for in-memory materialization rejected the healthiest sessions
         (Desktop Bot Chat stuck on "Waking up…" with code 4130) while the
         process would only ever have held the tip.
+
+        The full (non-``tip_only``) bound counts the DISPLAY set — active plus
+        compaction-archived rows — because that is what
+        ``get_resume_conversations`` materializes for the transcript.
         """
         if max_messages is None:
             max_messages = resolved_max_resume_messages()
@@ -14293,12 +14347,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # exact pathological work the disable exists to avoid.
             return 0
         session_ids = [session_id] if tip_only else self._resume_lineage_ids(session_id)
+        active_clause = "active = 1" if tip_only else "(active = 1 OR compacted = 1)"
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM ("
                 f"SELECT 1 FROM messages WHERE session_id IN ({placeholders}) "
-                "AND active = 1 LIMIT ?"
+                f"AND {active_clause} LIMIT ?"
                 ")",
                 (*session_ids, max_messages + 1),
             ).fetchone()
@@ -14374,10 +14429,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
-                f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                f"FROM messages WHERE session_id IN ({placeholders}) "
+                # Display read: compaction-archived rows included, Undo/Rewind
+                # rows excluded (see get_resume_conversations).
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
+        rows = self._dedupe_display_generations(rows)
         ancestor_ids = {
             int(row["id"])
             for row in rows

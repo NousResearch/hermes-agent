@@ -394,4 +394,51 @@ describe('loadArtifactsForSessions', () => {
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
   })
+
+  it('collects images referenced with the #media: markdown href format (#88084)', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Here is the render:\n\n[Image: nahida](#media:D%3A%5CComfyUI%5Coutput%5Cbrat4_nahida_lib_a_00001_.png)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'image',
+      value: 'D:\\ComfyUI\\output\\brat4_nahida_lib_a_00001_.png'
+    })
+  })
+
+  it('collects #media: hrefs with percent-encoded POSIX paths (#88084)', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '[Audio: tts clip](#media:%2FUsers%2Fbrooklyn%2F.hermes%2Fcache%2Faudio%2Ftts_20260501_222725.mp3)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: 'file',
+      value: '/Users/brooklyn/.hermes/cache/audio/tts_20260501_222725.mp3'
+    })
+  })
+
+  it('leaves legacy MEDIA: values and plain links untouched (#88084)', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Old: **MEDIA: /tmp/generated/demo.png**\n\nLink: [docs](https://example.com/docs)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([
+      '/tmp/generated/demo.png',
+      'https://example.com/docs'
+    ])
+  })
 })

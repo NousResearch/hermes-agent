@@ -2782,6 +2782,38 @@ class TestHandleMaxIterations:
         complete_logical.assert_called_once()
         assert complete_logical.call_args.kwargs == {"outcome": "failed"}
 
+    def test_summary_omits_nous_tags_for_lookalike_host(self, agent):
+        """Regression: a base_url with 'nousresearch' as a PATH substring
+        (not the actual host) must not be tagged as a Nous Portal call. The
+        summary path used to do a raw ``"nousresearch" in base_url_lower``
+        check instead of the hostname-anchored base_url_host_matches() used
+        everywhere else in this file for the same identity question."""
+        agent.base_url = "https://evil.example.com/nousresearch/v1"
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "tags" not in kwargs.get("extra_body", {})
+
+    def test_summary_includes_nous_tags_for_nous_portal_host(self, agent):
+        """A genuine (sub)domain of nousresearch.com must still get tagged."""
+        agent.base_url = "https://portal.nousresearch.com/v1"
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "product=hermes-agent" in kwargs.get("extra_body", {}).get("tags", [])
+
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"

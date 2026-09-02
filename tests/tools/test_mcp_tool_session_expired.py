@@ -182,6 +182,10 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     mcp_tool._servers["resumed"] = server
     mcp_tool._server_error_counts.pop("resumed", None)
     mcp_tool._server_breaker_opened_at.pop("resumed", None)
+    # Auto-retry after session expiry is only safe (and only performed) for
+    # tools positively annotated read-only; a write may already have
+    # executed server-side (cloudflare/cloudflare-os#168 port).
+    mcp_tool._tool_read_only_hints.setdefault("resumed", {})["health"] = True
     loop = mcp_tool._mcp_loop
     assert loop is not None
     run_future = asyncio.run_coroutine_threadsafe(
@@ -205,6 +209,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         mcp_tool._servers.pop("resumed", None)
         mcp_tool._server_error_counts.pop("resumed", None)
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
+        mcp_tool._tool_read_only_hints.pop("resumed", None)
 
 
 def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
@@ -264,6 +269,10 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     server._reconnect_event = _ReconnectAdapter()
     mcp_tool._servers["hindsight"] = server
     mcp_tool._server_error_counts["hindsight"] = 7
+    # Read-only annotation: the session-expired auto-retry now only fires
+    # for tools positively marked readOnlyHint=True (write-capable calls
+    # get the outcome-unknown path instead).
+    mcp_tool._tool_read_only_hints.setdefault("hindsight", {})["get_bank"] = True
     # Stamp the breaker "open" far enough in the past that the cooldown has
     # provably elapsed, so this call is a half-open probe. The breaker compares
     # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
@@ -283,6 +292,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
         mcp_tool._servers.pop("hindsight", None)
         mcp_tool._server_error_counts.pop("hindsight", None)
         mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+        mcp_tool._tool_read_only_hints.pop("hindsight", None)
 
 
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):
@@ -402,3 +412,146 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
     finally:
         mcp_tool._servers.pop(f"srv-{op_label}", None)
         mcp_tool._server_error_counts.pop(f"srv-{op_label}", None)
+
+
+# ---------------------------------------------------------------------------
+# At-most-once guard for write-capable tools (cloudflare/cloudflare-os#168
+# port): a session-expired/transport failure on a call that may already have
+# executed server-side must NOT be auto-retried. The transport is healed, and
+# a structured outcome-unknown error tells the model to verify first.
+# ---------------------------------------------------------------------------
+
+
+def test_write_capable_tool_not_retried_on_session_expired(monkeypatch, tmp_path):
+    """A tool WITHOUT readOnlyHint=True must not be auto-retried after a
+    session-expired failure — the call may already have taken effect."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    mcp_tool._ensure_mcp_loop()
+    server, reconnect_flag = _install_stub_server("writesrv")
+
+    call_count = {"n": 0}
+
+    async def _always_expired(*a, **kw):
+        call_count["n"] += 1
+        raise RuntimeError("Session terminated")
+
+    server.session.call_tool = _always_expired
+    mcp_tool._servers["writesrv"] = server
+    mcp_tool._server_error_counts.pop("writesrv", None)
+    # No readOnlyHint entry for this tool → treated as write-capable.
+
+    try:
+        handler = _make_tool_handler("writesrv", "create_invoice", 10.0)
+        parsed = json.loads(handler({}))
+
+        assert "error" in parsed, parsed
+        assert parsed.get("outcome_unknown") is True, parsed
+        assert "may or may not have taken effect" in parsed["error"].lower() \
+            or "unknown" in parsed["error"].lower()
+        # Exactly ONE dispatch — no auto-retry of the write.
+        assert call_count["n"] == 1
+        # The transport was still healed for subsequent calls.
+        assert reconnect_flag.is_set()
+        # Successful reconnect clears breaker state (session-state failure,
+        # not server-health failure).
+        assert mcp_tool._server_error_counts.get("writesrv", 0) == 0
+    finally:
+        mcp_tool._servers.pop("writesrv", None)
+        mcp_tool._server_error_counts.pop("writesrv", None)
+        mcp_tool._server_breaker_opened_at.pop("writesrv", None)
+        mcp_tool._tool_read_only_hints.pop("writesrv", None)
+
+
+def test_read_only_tool_still_auto_retries_on_session_expired(monkeypatch, tmp_path):
+    """A tool annotated readOnlyHint=True keeps the existing one-retry
+    recovery behavior."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    mcp_tool._ensure_mcp_loop()
+    server, reconnect_flag = _install_stub_server("readsrv")
+
+    call_count = {"n": 0}
+
+    async def _sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Session terminated")
+        result = MagicMock()
+        result.is_error = False
+        result.content = [MagicMock(type="text", text="fresh data")]
+        result.structured_content = None
+        return result
+
+    server.session.call_tool = _sequence
+    mcp_tool._servers["readsrv"] = server
+    mcp_tool._server_error_counts.pop("readsrv", None)
+    mcp_tool._tool_read_only_hints.setdefault("readsrv", {})["get_data"] = True
+
+    try:
+        handler = _make_tool_handler("readsrv", "get_data", 10.0)
+        parsed = json.loads(handler({}))
+
+        assert parsed.get("result") == "fresh data", parsed
+        assert call_count["n"] == 2  # original + one retry
+        assert reconnect_flag.is_set()
+    finally:
+        mcp_tool._servers.pop("readsrv", None)
+        mcp_tool._server_error_counts.pop("readsrv", None)
+        mcp_tool._tool_read_only_hints.pop("readsrv", None)
+
+
+def test_tool_is_read_only_fails_safe():
+    """Unknown server/tool metadata classifies as write-capable (False)."""
+    from tools import mcp_tool
+
+    assert mcp_tool._tool_is_read_only("no-such-server", "tool") is False
+    mcp_tool._tool_read_only_hints["known"] = {"reader": True, "writer": False}
+    try:
+        assert mcp_tool._tool_is_read_only("known", "reader") is True
+        assert mcp_tool._tool_is_read_only("known", "writer") is False
+        assert mcp_tool._tool_is_read_only("known", "unlisted") is False
+    finally:
+        mcp_tool._tool_read_only_hints.pop("known", None)
+
+
+def test_session_expired_helper_write_path_returns_outcome_unknown(monkeypatch, tmp_path):
+    """Direct helper coverage: call_may_have_side_effects=True returns the
+    structured outcome-unknown error and never invokes retry_call."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    mcp_tool._ensure_mcp_loop()
+    server, reconnect_flag = _install_stub_server("helper-write")
+    mcp_tool._servers["helper-write"] = server
+
+    retried = {"n": 0}
+
+    def _retry():
+        retried["n"] += 1
+        return '{"result": "should never run"}'
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "helper-write",
+            RuntimeError("Invalid or expired session"),
+            _retry,
+            "tools/call create_thing",
+            call_may_have_side_effects=True,
+        )
+        assert out is not None
+        parsed = json.loads(out)
+        assert parsed.get("outcome_unknown") is True, parsed
+        assert retried["n"] == 0
+        assert reconnect_flag.is_set()
+    finally:
+        mcp_tool._servers.pop("helper-write", None)
+        mcp_tool._server_error_counts.pop("helper-write", None)

@@ -2324,3 +2324,111 @@ def test_migration_adds_worker_columns_without_data_loss(tmp_path, monkeypatch):
         assert done["completed_at"] == now - 8000
     finally:
         conn.close()
+
+
+# A task_runs table as of v2026.8.31 — everything except worker_scope
+# (the one column the isolation feature adds to runs).
+_PRE_CHANGE_TASK_RUNS_SQL = """
+CREATE TABLE IF NOT EXISTS task_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id             TEXT NOT NULL,
+    profile             TEXT,
+    step_key            TEXT,
+    status              TEXT NOT NULL,
+    claim_lock          TEXT,
+    claim_expires       INTEGER,
+    worker_pid          INTEGER,
+    max_runtime_seconds INTEGER,
+    last_heartbeat_at   INTEGER,
+    started_at          INTEGER NOT NULL,
+    ended_at            INTEGER,
+    outcome             TEXT,
+    summary             TEXT,
+    metadata            TEXT,
+    error               TEXT
+);
+"""
+
+
+def test_migration_completes_a_partial_pre_existing_schema(
+    tmp_path, monkeypatch,
+):
+    """I (new e): a DB caught mid-migration — tasks already carries TWO of
+    the three worker-lifecycle columns (with live data in them) while
+    task_runs predates the feature entirely — opens cleanly: the missing
+    column is added, already-migrated values survive untouched, the run
+    table gains its column, and a second open is a no-op."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    db_path = kb.kanban_db_path(board="default")
+    import sqlite3
+
+    raw = sqlite3.connect(db_path)
+    raw.executescript(_PRE_CHANGE_TASKS_SQL)
+    raw.executescript(_PRE_CHANGE_TASK_RUNS_SQL)
+    # Half-migrated tasks: the fingerprint and registration columns
+    # shipped, worker_scope did not (a deploy interrupted mid-rollout).
+    raw.execute("ALTER TABLE tasks ADD COLUMN worker_pid_started_at INTEGER")
+    raw.execute("ALTER TABLE tasks ADD COLUMN worker_registered_at INTEGER")
+    now = int(time.time())
+    raw.execute(
+        "INSERT INTO tasks (id, title, assignee, status, created_by, "
+        "created_at, started_at, worker_pid, worker_pid_started_at, "
+        "worker_registered_at, claim_lock, claim_expires, current_run_id) "
+        "VALUES ('t_partial', 'half migrated', 'elias', 'running', 'op', "
+        "?, ?, 4242, 1712345678, ?, 'oldhost:1', ?, 11)",
+        (now - 5000, now - 4000, now - 3000, now - 60),
+    )
+    raw.execute(
+        "INSERT INTO task_runs (id, task_id, profile, status, claim_lock, "
+        "worker_pid, started_at) VALUES (11, 't_partial', 'elias', "
+        "'running', 'oldhost:1', 4242, ?)",
+        (now - 4000,),
+    )
+    raw.commit()
+    raw.close()
+
+    conn = kb.connect(db_path)
+    try:
+        cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(tasks)")
+        }
+        run_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        assert {"worker_pid_started_at", "worker_scope",
+                "worker_registered_at"} <= cols
+        assert "worker_scope" in run_cols
+        task = conn.execute(
+            "SELECT worker_pid_started_at, worker_registered_at "
+            "FROM tasks WHERE id = 't_partial'"
+        ).fetchone()
+        # The already-migrated half is preserved, not reset to defaults.
+        assert task["worker_pid_started_at"] == 1712345678
+        assert task["worker_registered_at"] == now - 3000
+        run = conn.execute(
+            "SELECT worker_pid, status, worker_scope FROM task_runs "
+            "WHERE id = 11"
+        ).fetchone()
+        assert run["worker_pid"] == 4242
+        assert run["status"] == "running"
+        assert run["worker_scope"] is None
+    finally:
+        conn.close()
+
+    # Idempotent: a second open changes nothing.
+    conn = kb.connect(db_path)
+    try:
+        task = conn.execute(
+            "SELECT worker_pid_started_at, worker_registered_at, "
+            "worker_scope FROM tasks WHERE id = 't_partial'"
+        ).fetchone()
+        assert task["worker_pid_started_at"] == 1712345678
+        assert task["worker_registered_at"] == now - 3000
+        assert task["worker_scope"] is None
+    finally:
+        conn.close()

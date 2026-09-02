@@ -822,7 +822,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         transport=transport,
         api_key_env_vars=tuple(env_vars),
         base_url=api_url,
-        is_aggregator=False,
+        is_aggregator=bool(entry.get("is_aggregator", False)),
         auth_type="api_key",
         source="user-config",
     )

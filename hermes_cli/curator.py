@@ -295,7 +295,26 @@ def _cmd_pin(args) -> int:
             "(only agent-created skills participate in curation)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, True)
+    if not skill_usage.set_pinned(args.skill, True):
+        print(
+            f"curator: could not pin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external). "
+            "`hermes curator list-unmanaged` shows which skills the curator tracks."
+        )
+        return 1
+    if not skill_usage.is_curator_managed(args.skill):
+        # Unmanaged (pre-marker) skills are never touched by auto-transitions,
+        # so "will bypass auto-transitions" overstates what this pin does. The
+        # pin IS recorded (and now visible in `curator status`, #92993) but
+        # only becomes protective once the skill is adopted. Say so, and point
+        # at the handover command (#93002).
+        print(
+            f"curator: pinned '{args.skill}' (recorded; this skill is unmanaged "
+            "— auto-transitions never consider it. Run "
+            f"`hermes curator adopt {args.skill}` to put it under curator "
+            "management)"
+        )
+        return 0
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 
@@ -308,7 +327,18 @@ def _cmd_unpin(args) -> int:
             "there's nothing to unpin (curator only tracks agent-created skills)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, False)
+    if not skill_usage.set_pinned(args.skill, False):
+        print(
+            f"curator: could not unpin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external)."
+        )
+        return 1
+    if not skill_usage.is_curator_managed(args.skill):
+        print(
+            f"curator: unpinned '{args.skill}' (recorded; this skill is "
+            "unmanaged — it was never under auto-transitions to begin with)"
+        )
+        return 0
     print(f"curator: unpinned '{args.skill}'")
     return 0
 
@@ -623,7 +653,9 @@ def _cmd_purge(args) -> int:
 
     purged = 0
     for p in sorted(candidates):
-        before = skill_ledger.capture_before(p)
+        before = skill_ledger.capture_before(
+            p, complete_package=True, skill=p.name
+        )
         try:
             shutil.rmtree(p)
         except OSError as e:

@@ -68,6 +68,13 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         return exact[0].identifier
 
     if len(exact) > 1:
+        # Official catalog entries outrank community mirrors of the same
+        # skill: `hermes skills install impeccable` should resolve to the
+        # curated official/... entry, not stall on skills.sh duplicates.
+        official = [r for r in exact if r.source == "official"]
+        if len(official) == 1:
+            c.print(f"[dim]Resolved to: {official[0].identifier} (official catalog)[/]")
+            return official[0].identifier
         c.print(f"\n[yellow]Multiple skills named '{name}' found:[/]")
         table = Table()
         table.add_column("Source", style="dim")
@@ -252,8 +259,10 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
         f"[bold]Enter a skill name{default_hint}:[/] "
         f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
     )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Name: ").strip()
+        answer = line_input("Name: ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
     if not answer and default:
@@ -277,8 +286,10 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
         c.print(
             "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
         )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Category: ").strip()
+        answer = line_input("Category: ").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     if not answer:
@@ -1835,7 +1846,7 @@ def skills_command(args) -> None:
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
     elif action == "uninstall":
-        do_uninstall(args.name)
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))

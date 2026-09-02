@@ -47,6 +47,11 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
+# Late control-ack handlers (#97948): a compress that outlives its RPC waiter
+# can legitimately run for the full compression ceiling plus a stall-fallback
+# retry, so keep registrations around well past that — but bounded.
+_LATE_CONTROL_TTL_SECS = 1800.0
+_LATE_CONTROL_MAX = 64
 
 
 def append_log_record(path: str | Path, record: str) -> None:
@@ -167,6 +172,11 @@ class HostSupervisor:
         self._restart_times: list[float] = []
         self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
         self._pending_controls: dict[str, queue.Queue[dict]] = {}
+        # request_id -> (registered_at, handler) for control waiters that timed
+        # out but whose host work is still running (#97948). The host emits
+        # its control.ack whenever it finishes; without this the ack matched
+        # no queue and was silently dropped.
+        self._late_control_handlers: dict[str, tuple[float, Callable[[dict], None]]] = {}
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
 
@@ -270,6 +280,27 @@ class HostSupervisor:
         self.start()
         self._send_frame({"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
+    def respond(self, sid: str, params: dict[str, Any], *, timeout: float = 15.0) -> dict:
+        """Deliver an interactive prompt response to the host that owns it."""
+        self.start()
+        request_id = uuid.uuid4().hex
+        q: queue.Queue[dict] = queue.Queue(maxsize=1)
+        with self._lock:
+            self._pending_controls[request_id] = q
+        try:
+            self._send_frame(
+                {
+                    "type": "respond",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "params": dict(params),
+                }
+            )
+            return q.get(timeout=timeout)
+        finally:
+            with self._lock:
+                self._pending_controls.pop(request_id, None)
+
     def reload_mcp(self, sid: str, *, request_id: str | None = None) -> dict:
         return self.control(
             sid,
@@ -286,7 +317,17 @@ class HostSupervisor:
         payload: dict[str, Any] | None = None,
         wait: bool = True,
         timeout: float = 30.0,
+        on_late_ack: Callable[[dict], None] | None = None,
     ) -> dict:
+        """Send a control frame; with ``wait`` block up to ``timeout`` for its ack.
+
+        ``on_late_ack`` (only meaningful with ``wait``) keeps the request
+        adoptable after the waiter gives up: when the host's ``control.ack`` /
+        ``control.error`` / ``error`` for this ``request_id`` eventually
+        arrives, the handler fires once instead of the frame being dropped.
+        Registrations are bounded by ``_LATE_CONTROL_TTL_SECS`` /
+        ``_LATE_CONTROL_MAX``.
+        """
         if route_name not in MUTATOR_ROUTE_TABLE:
             raise ValueError(f"unclassified host mutator route: {route_name}")
         self.start()
@@ -306,9 +347,46 @@ class HostSupervisor:
             return {"status": "sent", "request_id": request_id}
         try:
             return q.get(timeout=timeout)
+        except queue.Empty:
+            if on_late_ack is not None:
+                self._register_late_control_handler(request_id, on_late_ack)
+            raise
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
+
+    def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            expired = [
+                rid
+                for rid, (registered_at, _cb) in self._late_control_handlers.items()
+                if now - registered_at > _LATE_CONTROL_TTL_SECS
+            ]
+            for rid in expired:
+                self._late_control_handlers.pop(rid, None)
+            while len(self._late_control_handlers) >= _LATE_CONTROL_MAX:
+                oldest = min(self._late_control_handlers, key=lambda rid: self._late_control_handlers[rid][0])
+                self._late_control_handlers.pop(oldest, None)
+            self._late_control_handlers[request_id] = (now, handler)
+
+    def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
+        with self._lock:
+            q = self._pending_controls.get(request_id)
+            late = None if q is not None else self._late_control_handlers.pop(request_id, None)
+        if q is not None:
+            try:
+                q.put_nowait(frame)
+            except queue.Full:
+                pass
+            return
+        if late is None:
+            return
+        _registered_at, handler = late
+        try:
+            handler(frame)
+        except Exception:
+            logger.exception("compute host late control ack handler failed (request_id=%s)", request_id)
 
     def _spawn_locked(self, *, reason: str) -> None:
         if self._stopped_respawning:
@@ -430,25 +508,11 @@ class HostSupervisor:
         if ftype in {"turn.end", "turn.error"}:
             self._complete_turn(frame)
             return
-        if ftype in {"control.ack", "control.error", "interrupt.ack", "reload_mcp.ack", "shutdown.ack"}:
-            request_id = str(frame.get("request_id") or "")
-            with self._lock:
-                q = self._pending_controls.get(request_id)
-            if q is not None:
-                try:
-                    q.put_nowait(frame)
-                except queue.Full:
-                    pass
+        if ftype in {"control.ack", "control.error", "respond.ack", "respond.error", "interrupt.ack", "reload_mcp.ack", "shutdown.ack"}:
+            self._deliver_control_frame(str(frame.get("request_id") or ""), frame)
             return
         if ftype == "error" and frame.get("request_id"):
-            request_id = str(frame.get("request_id") or "")
-            with self._lock:
-                q = self._pending_controls.get(request_id)
-            if q is not None:
-                try:
-                    q.put_nowait(frame)
-                except queue.Full:
-                    pass
+            self._deliver_control_frame(str(frame.get("request_id") or ""), frame)
 
     def _complete_turn(self, frame: dict[str, Any]) -> None:
         request_id = str(frame.get("request_id") or "")
@@ -503,6 +567,17 @@ class HostSupervisor:
                     cb(frame)
                 except Exception:
                     logger.exception("compute host error callback failed")
+        # A crashed host will never emit the late acks the timed-out control
+        # waiters are still expecting; fail them the same way so the client's
+        # "still running in the background" notice does not hang forever.
+        with self._lock:
+            late = self._late_control_handlers
+            self._late_control_handlers = {}
+        for request_id, (_registered_at, handler) in late.items():
+            try:
+                handler({"type": "control.error", "request_id": request_id, "reason": reason, "message": message})
+            except Exception:
+                logger.exception("compute host late control error handler failed")
 
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()

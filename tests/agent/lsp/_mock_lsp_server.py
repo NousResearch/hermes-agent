@@ -25,6 +25,10 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   ``didChange`` sleeps ``MOCK_LSP_PUSH_DELAY`` seconds (default 1.0)
   and then pushes EMPTY diagnostics.  Models a server that fixes
   the ghost if you actually wait for it.  Pull endpoint rejects.
+- ``"clean_eof"`` — closes stdout after ``didOpen`` but keeps the
+  process and stdin alive.
+- ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,
+  then keeps the process and stdin alive.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -105,6 +109,14 @@ def main():
             uri = td.get("uri", "")
             version = td.get("version", 0)
             is_change = msg.get("method") == "textDocument/didChange"
+            if not is_change and script in {"clean_eof", "malformed_frame"}:
+                if script == "malformed_frame":
+                    sys.stdout.buffer.write(b"Content-Length: invalid\r\n\r\n")
+                    sys.stdout.buffer.flush()
+                os.close(sys.stdout.fileno())
+                while read_message() is not None:
+                    pass
+                return 0
             error_diag = [
                 {
                     "range": {

@@ -150,6 +150,31 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
 
 
 
+def test_codex_app_server_compression_failure_preserves_bookkeeping():
+    agent = DummyAgent(TurnResult(error="compact failed"))
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert agent.context_compressor.compression_count == 0
+    assert agent.context_compressor.last_prompt_tokens == 123
+    assert agent.warnings
+    assert agent.touch_calls[0] == "context compression started"
+    assert agent.touch_calls[-1] == "context compression failed"
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("warn", "⚠ Codex app-server compaction failed: compact failed"),
+    ]
+
 
 
 
@@ -180,3 +205,119 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert _record_codex_app_server_compaction(agent, turn) is True
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+class RecordingCooldownCompressor(SimpleNamespace):
+    """Compressor stub exposing the real cooldown API surface."""
+
+    def __init__(self, remaining=0.0):
+        super().__init__(
+            compression_count=0,
+            last_compression_rough_tokens=0,
+            last_prompt_tokens=123,
+            last_completion_tokens=45,
+            awaiting_real_usage_after_compression=False,
+        )
+        self.remaining = remaining
+        self.recorded = []
+
+    def get_active_compression_failure_cooldown(self, *, refresh=False):
+        if self.remaining <= 0:
+            return None
+        return {"remaining_seconds": self.remaining, "error": "prior failure"}
+
+    def _record_compression_failure_cooldown(self, seconds, error):
+        self.recorded.append((seconds, error))
+        self.remaining = float(seconds)
+
+
+def test_interrupted_codex_compaction_arms_the_failure_cooldown():
+    """Regression: the codex path returned unchanged with no brake, so the
+    session stayed above threshold and the next turn retried immediately."""
+    from agent.context_compressor import _SUMMARY_FAILURE_COOLDOWN_SECONDS
+
+    agent = DummyAgent(
+        TurnResult(
+            thread_id="thread-1",
+            turn_id="compact-turn-1",
+            interrupted=True,
+            error="compact turn interrupted",
+        ),
+        auto_compaction="hermes",
+    )
+    agent.context_compressor = RecordingCooldownCompressor()
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test"
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent.context_compressor.recorded == [
+        (_SUMMARY_FAILURE_COOLDOWN_SECONDS, "compact turn interrupted")
+    ]
+
+
+def test_codex_compaction_error_without_interrupt_also_arms_cooldown():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1", error="boom"),
+        auto_compaction="hermes",
+    )
+    agent.context_compressor = RecordingCooldownCompressor()
+    messages = [{"role": "user", "content": "hi"}]
+
+    compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test"
+    )
+
+    assert len(agent.context_compressor.recorded) == 1
+    assert agent.context_compressor.recorded[0][1] == "boom"
+
+
+def test_active_cooldown_blocks_automatic_codex_compaction():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
+        auto_compaction="hermes",
+    )
+    agent.context_compressor = RecordingCooldownCompressor(remaining=120.0)
+    session = agent._codex_session
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test"
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert session.calls == 0, "compaction ran despite an active cooldown"
+
+
+def test_force_bypasses_the_codex_compaction_cooldown():
+    """An explicit /compress is a user decision and must not be braked by a
+    failure it did not cause."""
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="compact-turn-1"))
+    agent.context_compressor = RecordingCooldownCompressor(remaining=120.0)
+    session = agent._codex_session
+    messages = [{"role": "user", "content": "hi"}]
+
+    compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test", force=True
+    )
+
+    assert session.calls == 1
+
+
+def test_successful_codex_compaction_arms_no_cooldown():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
+        auto_compaction="hermes",
+    )
+    agent.context_compressor = RecordingCooldownCompressor()
+    messages = [{"role": "user", "content": "hi"}]
+
+    compress_context(
+        agent, messages, "system", approx_tokens=100000, task_id="test"
+    )
+
+    assert agent.context_compressor.recorded == []

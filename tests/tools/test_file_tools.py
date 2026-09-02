@@ -494,25 +494,36 @@ class TestSensitivePathCheck:
 
 
 class TestPatchSchemaShape:
-    """PATCH_SCHEMA must advertise per-mode required params via description
-    text (not JSON-schema ``required``), so strict models like kimi-k2.x stop
-    silently omitting old_string / new_string / patch content."""
+    """The BASE schema is replace-only (V4A layers on for OpenAI-family
+    mains via _patch_schema_overrides — see test_patch_v4a_gate.py). The
+    kimi-k2.x per-mode-description concern now applies to the V4A LAYER,
+    whose composed variant still documents both modes' requirements."""
 
-    def test_per_mode_required_params_documented_in_descriptions(self):
+    def test_base_schema_replace_only_with_real_required(self):
         desc = PATCH_SCHEMA["description"]
-        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
-        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        assert "V4A" not in desc
         props = PATCH_SCHEMA["parameters"]["properties"]
-        for name in ("path", "old_string", "new_string"):
-            assert "REQUIRED when mode='replace'" in props[name]["description"]
-        assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+        assert "mode" not in props and "patch" not in props
+        # replace-only means required can finally be the REAL contract —
+        # no per-mode description hedging needed on the base.
+        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string"]
         assert "must differ from old_string" in props["new_string"]["description"]
 
-    def test_no_anyof_required_stays_mode_only(self):
-        # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the
-        # Moonshot/Kimi schema sanitizer — description-level guidance is the
-        # only provider-safe signalling mechanism.
-        params = PATCH_SCHEMA["parameters"]
+    def test_v4a_layer_keeps_per_mode_documentation(self):
+        """When the V4A layer IS rendered (OpenAI-family), the strict-model
+        guidance survives: per-mode requirements in description text, no
+        anyOf/oneOf (breaks Anthropic/Fireworks/Kimi sanitizers)."""
+        from unittest.mock import patch as _p
+
+        import tools.file_tools as ft
+
+        with _p("agent.auxiliary_client._read_main_provider", return_value="openai"), \
+             _p("agent.auxiliary_client._read_main_model", return_value="gpt-5.2"):
+            o = ft._patch_schema_overrides()
+        desc = o["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        params = o["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
 
@@ -999,4 +1010,37 @@ class TestNotFoundCache:
 
         assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is None, (
             "notify_other_tool_call must clear cached misses"
+        )
+
+
+class TestSSHConfigWriteGateSingleQuery:
+    """Regression: the ssh-config write guard must pass
+    single_query_deny_message to _run_approval_gate (required kwarg since
+    1596148ff). Missing it raises TypeError instead of routing through the
+    approval flow — see issue #93201."""
+
+    def test_gate_call_passes_single_query_deny_message(self):
+        import inspect as _inspect
+        import re as _re
+        import tools.file_tools as ft
+
+        src = _inspect.getsource(ft)
+        idx = src.find("_approval._run_approval_gate(")
+        assert idx != -1, "ssh_config_write gate call not found"
+        block = src[idx:idx + 900]
+        assert "pattern_key=\"ssh_config_write\"" in block
+
+        from tools.approval import _run_approval_gate
+        required = [
+            name for name, param in _inspect.signature(
+                _run_approval_gate).parameters.items()
+            if param.kind == _inspect.Parameter.KEYWORD_ONLY
+            and param.default is _inspect.Parameter.empty
+        ]
+        missing = [k for k in required if not _re.search(
+            rf"\b{k}\s*=", block)]
+        assert missing == [], (
+            f"_run_approval_gate call at ssh_config_write gate is missing "
+            f"required kwargs {missing}; it would raise TypeError instead "
+            f"of showing an approval prompt"
         )

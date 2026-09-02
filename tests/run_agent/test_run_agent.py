@@ -179,6 +179,37 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
     assert db.rows == ["exactly once"]
 
 
+def test_malformed_memory_config_still_builds_default_store():
+    """A non-mapping memory section must not leave an advertised dead tool."""
+    malformed = {"memory": "not-a-mapping"}
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value=malformed,
+        ),
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=["memory"],
+        )
+
+    assert agent._memory_enabled is True
+    assert agent._user_profile_enabled is True
+    assert agent._memory_store is not None
+    assert agent._memory_store.memory_enabled is True
+    assert agent._memory_store.user_profile_enabled is True
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
@@ -873,6 +904,56 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
+    def test_newer_live_revision_wins_over_history(self, agent):
+        agent._todo_store.restore(
+            [{"id": "db", "content": "Current", "status": "in_progress"}],
+            revision=5,
+        )
+        history = [
+            self._assistant_todo_call(),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {"id": "old", "content": "Old", "status": "pending"}
+                        ],
+                        "revision": 4,
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot()["revision"] == 5
+        assert agent._todo_store.read()[0]["id"] == "db"
+
+    def test_history_recovers_newer_snapshot(self, agent):
+        history = [
+            self._assistant_todo_call(),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {"id": "new", "content": "Recovered", "status": "pending"}
+                        ],
+                        "revision": 2,
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot()["revision"] == 2
+        assert agent._todo_store.read()[0]["id"] == "new"
+
 
 
 
@@ -910,8 +991,44 @@ class TestBuildSystemPrompt:
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
         from agent.prompt_builder import MEMORY_GUIDANCE
 
+        agent_with_memory_tool._memory_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
+
+    def test_no_memory_guidance_when_both_builtin_stores_disabled(
+        self, agent_with_memory_tool
+    ):
+        """Guidance must follow the stores, not just the tool's presence.
+
+        With both built-in stores off, ``agent_init`` never builds a
+        ``MemoryStore``, so every memory call returns "Memory is not
+        available" — telling the model to save facts there is a dead
+        instruction paid for on every API call.
+        """
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = False
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert USER_PROFILE_GUIDANCE not in prompt
+
+    def test_profile_guidance_when_only_user_profile_enabled(
+        self, agent_with_memory_tool
+    ):
+        """USER.md alone gets the narrower profile-only guidance.
+
+        The full MEMORY_GUIDANCE block instructs the model to save notes to a
+        MEMORY.md store that does not exist in this configuration, so the
+        profile-specific block is injected instead.
+        """
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = True
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert USER_PROFILE_GUIDANCE in prompt
 
 
 
@@ -971,11 +1088,6 @@ class TestBuildSystemPrompt:
             return next(ln for ln in p.splitlines()
                         if ln.startswith("Conversation started:"))
         assert _line(agent._build_system_prompt()) == _line(agent._build_system_prompt())
-
-    def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
-        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
-        prompt = agent._build_system_prompt()
-        assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -1090,6 +1202,72 @@ class TestToolUseEnforcementConfig:
             a.client = MagicMock()
             prompt = a._build_system_prompt()
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+
+class TestExecutionGuidanceConfig:
+    """End-to-end tests for the agent.execution_guidance config option —
+    from config.yaml through agent_init to the built system prompt."""
+
+    def _make_agent(self, model="deepseek/deepseek-v4-pro", execution_guidance=None):
+        agent_cfg = {"tool_use_enforcement": False}
+        if execution_guidance is not None:
+            agent_cfg["execution_guidance"] = execution_guidance
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ), patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_deepseek_gets_guidance_by_default(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-v4-pro")
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in agent._build_system_prompt()
+
+    def test_gpt_still_gets_guidance(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1")
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in agent._build_system_prompt()
+
+    def test_config_false_suppresses(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="deepseek/deepseek-v4-pro", execution_guidance=False
+        )
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
+
+    def test_config_list_matches(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="moonshotai/kimi-k3", execution_guidance=["kimi"]
+        )
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in agent._build_system_prompt()
+
+    def test_config_list_non_match_suppresses(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="openai/gpt-4.1", execution_guidance=["kimi"]
+        )
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
 
 
 class TestTaskCompletionGuidance:
@@ -2075,7 +2253,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
-            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+            result = agent._invoke_tool("todo_list", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
 
@@ -2167,7 +2345,7 @@ class TestConcurrentToolExecution:
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo_list", "session_search", "memory", "clarify", "delegate_task"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}
@@ -2313,15 +2491,17 @@ class TestAgentRuntimePostHookOwnershipSync:
     """Exercise post-hook ownership through both agent-runtime tool paths."""
 
     _CASES = (
-        ("todo", {"todos": []}),
+        ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
-        ("read_preview", {}),
+        ("desktop_preview", {"action": "read"}),
+        ("drive_preview", {"action": "elements"}),
+        ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
-        ("tour", {"action": "stop"}),
+        ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -2363,6 +2543,14 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_preview_tool.read_preview_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.drive_preview_tool.drive_preview_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.annotate_preview_tool.annotate_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
@@ -2546,6 +2734,42 @@ class TestHandleMaxIterations:
             outcome="success",
         )
 
+    def test_suppress_status_output_keeps_iteration_warning_off_stdout(self, agent, capsys):
+        """Machine-readable mode (-Q/oneshot) must not contaminate stdout (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.suppress_status_output = True
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        captured = capsys.readouterr()
+        assert result == "Summary"
+        assert "Reached maximum iterations" not in captured.out
+
+    def test_plain_quiet_mode_still_prints_iteration_warning(self, agent, capsys):
+        """Interactive CLI runs quiet_mode=True by default — the warning must
+        still show there; only suppress_status_output gates it (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.quiet_mode = True
+        agent.suppress_status_output = False
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        assert result == "Summary"
+        combined = "\n".join(printed) + capsys.readouterr().out
+        assert "Reached maximum iterations" in combined
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
@@ -2704,6 +2928,51 @@ class TestHandleMaxIterations:
         assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
             "call_123"
         ]
+
+    def test_api_sanitizer_matches_responses_id_when_result_keyed_on_id(self, agent):
+        """Inverse of the call_id case: a tool_call carries BOTH ``id`` (fc_...)
+        and a distinct ``call_id``, but the matching result is keyed on ``id``.
+        The sanitizer preferred ``call_id`` only, so it treated the valid
+        result as orphaned, dropped it, and injected a bogus
+        '[Result unavailable ...]' stub — silently eating a real tool result
+        (e.g. mnemosyne_recall / cronjob list). The result must survive intact.
+        (#55626)"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_456",
+                        "call_id": "call_456",
+                        "type": "function",
+                        "function": {"name": "mnemosyne_recall", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "fc_456", "content": '{"results": [1, 2]}'},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "fc_456"
+        assert tool_msgs[0]["content"] == '{"results": [1, 2]}'
+        assert "Result unavailable" not in tool_msgs[0]["content"]
+
+    def test_api_sanitizer_still_drops_genuinely_orphaned_result(self, agent):
+        """The id-variant matching must not weaken orphan removal: a tool result
+        whose tool_call_id matches NO assistant tool_call (neither call_id nor
+        id) is still dropped. (#55626 regression guard)"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "call_nomatch", "content": "orphan"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert all(m.get("role") != "tool" for m in sanitized)
 
     def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
         """A tool_call with id but empty function.name makes the Responses-API
@@ -3356,6 +3625,49 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
+
+    def test_openrouter_empty_retry_bypasses_response_cache(self, agent, monkeypatch):
+        """An OpenRouter empty retry must not replay the cached empty response."""
+        self._setup_agent(agent)
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        content_resp = _mock_response(
+            content="Fresh provider response.",
+            finish_reason="stop",
+        )
+        responses = iter([empty_resp, content_resp])
+        request_kwargs = []
+
+        def _create(**kwargs):
+            request_kwargs.append(kwargs)
+            return next(responses)
+
+        original_build_api_kwargs = agent._build_api_kwargs
+
+        def _build_api_kwargs(*args, **kwargs):
+            built = original_build_api_kwargs(*args, **kwargs)
+            built["extra_headers"] = {"X-Custom-Header": "preserved"}
+            return built
+
+        agent.client.chat.completions.create.side_effect = _create
+        monkeypatch.setattr(agent, "_build_api_kwargs", _build_api_kwargs)
+        monkeypatch.setattr(
+            "agent.conversation_loop.jittered_backoff",
+            lambda *args, **kwargs: 0.0,
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["final_response"] == "Fresh provider response."
+        assert "X-OpenRouter-Cache" not in request_kwargs[0].get(
+            "extra_headers", {}
+        )
+        assert request_kwargs[1]["extra_headers"]["X-Custom-Header"] == "preserved"
+        assert request_kwargs[1]["extra_headers"]["X-OpenRouter-Cache"] == "false"
 
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""
@@ -4028,11 +4340,11 @@ class TestRunConversation:
         assert requested_caps == [65536, 65536]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
-        """Ollama-hosted GLM responses can misreport truncated output as stop."""
+        """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""
         self._setup_agent(agent)
         agent.base_url = "http://localhost:11434/v1"
         agent._base_url_lower = agent.base_url.lower()
-        agent.model = "glm-5.1:cloud"
+        agent.model = "glm-4-9b"  # local GLM — no :cloud suffix
 
         tool_turn = _mock_response(
             content="",
@@ -4072,11 +4384,18 @@ class TestRunConversation:
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
-
-
-
-
-
+    @pytest.mark.parametrize("base_url, model", [
+        ("https://ollama.com/v1", "glm-5.3-flash"),      # Ollama Cloud host (#72316)
+        ("http://localhost:11434/v1", "glm-5.1:cloud"),  # :cloud via local proxy (#98406)
+    ])
+    def test_ollama_cloud_glm_stop_is_never_rewritten(self, agent, base_url, model):
+        """Ollama Cloud reports finish_reason faithfully — an unpunctuated stop stays stop."""
+        self._setup_agent(agent)
+        agent.base_url = base_url
+        agent._base_url_lower = base_url.lower()
+        agent.model = model
+        unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
+        assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
@@ -4102,7 +4421,7 @@ class TestRunConversation:
         # Should have a user-friendly response (not None)
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
-        assert "/thinkon" in result["final_response"]
+        assert "/reasoning" in result["final_response"]
 
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
@@ -4432,6 +4751,118 @@ class TestRunConversation:
         assert second_call["max_tokens"] <= 936
         assert agent.context_compressor.context_length == 200_000
         mock_compress.assert_called_once()
+
+    def test_output_cap_retry_before_generic_retry_exhaustion(self, agent):
+        """Provider max-output-cap 400s clamp via the output-cap handler, not
+        the generic retry loop ("failed after 3 retries").
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "deepseek"
+        agent.base_url = "https://api.deepseek.com/v1"
+        agent.model = "deepseek-v4-flash"
+        agent.max_tokens = 98_304
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "[400]: max_tokens (98304) exceeds model's maximum output tokens "
+            "(65536) for model deepseek-v4-flash "
+            "(ref: 7735422e-9cb4-4075-a779-dfecb3204a0e)"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock(return_value=(
+            [{"role": "user", "content": "hello"}],
+            "You are helpful.",
+        ))
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 65_472
+        assert agent.context_compressor.context_length == 200_000
+
+    def test_output_cap_retry_when_gateway_wraps_error_as_rate_limit(self, agent):
+        """Some relays wrap the upstream max-output 400 as HTTP 429. The
+        parseable output cap must still route into the output-cap handler
+        instead of burning generic rate-limit retries (#72281).
+        """
+        self._run_wrapped_429_output_cap(agent, fallback_chain=[])
+
+    def test_wrapped_output_cap_429_not_consumed_by_eager_fallback(self, agent):
+        """With a NON-EMPTY fallback chain, the eager rate-limit fallback must
+        NOT consume the wrapped output-cap 429 — the failure is a deterministic
+        request-shape problem the clamp fixes in one retry; switching provider
+        burns a fallback slot for nothing (#72281 ordering guard).
+        """
+        self._run_wrapped_429_output_cap(
+            agent,
+            fallback_chain=[{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}],
+        )
+
+    def _run_wrapped_429_output_cap(self, agent, *, fallback_chain):
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "custom"
+        agent.base_url = "http://192.168.1.254:20128/v1"
+        agent.model = "deepseekv4flash"
+        agent.max_tokens = 98_304
+        agent.compression_enabled = True
+        agent._fallback_chain = fallback_chain
+        agent._fallback_index = 0
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "Error code: 429 - {'error': {'message': \"[400]: max_tokens "
+            "(98304) exceeds model's maximum output tokens (65536) for model "
+            "deepseek-v4-flash (ref: 37bde60f-44e7-44e2-b995-4af17fba6d6b)\", "
+            "'type': 'rate_limit_error', 'code': 'rate_limit_exceeded'}}"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 429
+        exc.code = "rate_limit_exceeded"
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock(return_value=(
+            [{"role": "user", "content": "hello"}],
+            "You are helpful.",
+        ))
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 65_472
+        assert agent.context_compressor.context_length == 200_000
+        # The clamp, not provider failover, must have recovered: no fallback
+        # slot consumed and the model unchanged.
+        assert agent._fallback_index == 0
+        assert agent.model == "deepseekv4flash"
 
     def test_output_cap_retry_with_large_api_only_content(self, agent):
         """When a large system prompt makes api_messages huge while persisted

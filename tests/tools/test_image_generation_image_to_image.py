@@ -276,9 +276,14 @@ class TestDynamicSchema:
         from tools.image_generation_tool import _build_dynamic_image_schema
 
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        desc = _build_dynamic_image_schema()["description"]
-        assert "text-to-image" in desc and "image-to-image" in desc
-        assert "routes automatically" in desc
+        schema = _build_dynamic_image_schema()
+        # Edit capability now surfaces as ADVERTISED PARAMS, not prose
+        # (#95681 diet): image_url + reference_image_urls present with the
+        # catalog's per-model cap; description states the edit path.
+        props = schema["parameters"]["properties"]
+        assert "image_url" in props
+        assert "reference_image_urls" in props
+        assert "edit / transform" in schema["description"]
 
 
     def test_builder_wired_into_registry(self):

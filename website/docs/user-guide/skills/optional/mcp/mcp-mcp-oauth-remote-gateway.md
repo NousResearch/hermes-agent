@@ -15,7 +15,7 @@ Manual OAuth for remote MCP servers on headless gateways.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mcp/mcp-oauth-remote-gateway` |
-| Path | `optional-skills/mcp/mcp-oauth-remote-gateway` |
+| Path | `optional-skills/mcp\mcp-oauth-remote-gateway` |
 | Version | `1.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

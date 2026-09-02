@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.memory.openviking as openviking_module
+from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _DEFERRED_COMMIT_TIMEOUT,
     _VikingClient,
 )
+
+_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
@@ -271,7 +274,10 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
 
 
-def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("peer_key", [None, "actor_peer_id", "agent_id"])
+def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(
+    tmp_path, monkeypatch, peer_key,
+):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -282,10 +288,10 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     active_path = openviking_home / "ovcli.conf"
     saved_path = openviking_home / "ovcli.conf.VPS"
     active_path.write_text(json.dumps({"url": "http://active.test"}), encoding="utf-8")
-    saved_path.write_text(
-        json.dumps({"url": "https://vps.example", "api_key": "user-key"}),
-        encoding="utf-8",
-    )
+    saved_values = {"url": "https://vps.example", "api_key": "user-key"}
+    if peer_key:
+        saved_values[peer_key] = "existing-peer"
+    saved_path.write_text(json.dumps(saved_values), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
 
@@ -315,7 +321,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
         "root_api_key": "",
         "account": "",
         "user": "",
-        "agent": "",
+        "agent": "existing-peer" if peer_key else "",
     }]
     assert config["memory"]["provider"] == "openviking"
     assert config["memory"]["openviking"] == {
@@ -325,6 +331,9 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     env_text = env_path.read_text(encoding="utf-8")
     assert "OPENVIKING_" not in env_text
     assert "OTHER_KEY=keep" in env_text
+    settings = openviking_module._resolve_connection_settings(config["memory"]["openviking"])
+    assert settings["agent"] == ("existing-peer" if peer_key else "")
+    assert json.loads(saved_path.read_text(encoding="utf-8")) == saved_values
 
 
 def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
@@ -352,8 +361,6 @@ def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeyp
         if label == "OpenViking user API key":
             assert secret is True
             return "user-key"
-        if label == openviking_module._AGENT_PROMPT_LABEL:
-            return default
         raise AssertionError(f"Unexpected prompt: {label}")
 
     values = openviking_module._prompt_manual_connection_values(
@@ -753,20 +760,54 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
         return SimpleNamespace(
             status_code=200,
             text="",
-            json=lambda: {"status": "ok", "result": {"uri": "viking://user/memories/x.md"}},
+            json=lambda: {"status": "ok", "result": {"uri": "viking://~/memories/x.md"}},
             raise_for_status=lambda: None,
         )
 
     monkeypatch.setattr(client._httpx, "delete", capture_delete)
 
-    assert client.delete("/api/v1/fs", params={"uri": "viking://user/memories/x.md"}) == {
+    assert client.delete("/api/v1/fs", params={"uri": "viking://~/memories/x.md"}) == {
         "status": "ok",
-        "result": {"uri": "viking://user/memories/x.md"},
+        "result": {"uri": "viking://~/memories/x.md"},
     }
     assert captured["url"] == "https://example.com/api/v1/fs"
-    assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
+    assert captured["kwargs"]["params"] == {"uri": "viking://~/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert captured["kwargs"]["headers"]["User-Agent"] == _EXPECTED_USER_AGENT
+
+
+def test_viking_client_upload_uses_user_agent_without_json_content_type(
+    tmp_path,
+    monkeypatch,
+):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    upload = tmp_path / "notes.txt"
+    upload.write_text("notes", encoding="utf-8")
+    captured = {}
+
+    def capture_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"result": {"temp_file_id": "temp-1"}},
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    assert client.upload_temp_file(upload) == "temp-1"
+    assert captured["url"] == "https://example.com/api/v1/resources/temp_upload"
+    headers = captured["kwargs"]["headers"]
+    assert headers["User-Agent"] == _EXPECTED_USER_AGENT
+    assert "Content-Type" not in headers
 
 
 def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
@@ -808,14 +849,19 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
         "/api/v1/system/status",
         "/api/v1/admin/accounts",
     ]
-    assert calls[0][1] == {"Accept": "application/json"}
-    assert calls[1][1] == {"Accept": "application/json"}
+    expected_anonymous_headers = {
+        "Accept": "application/json",
+    }
+    assert calls[0][1] == expected_anonymous_headers
+    assert calls[1][1] == expected_anonymous_headers
     for _url, headers in calls[2:]:
         assert headers["X-API-Key"] == "secret-key"
         assert headers["Authorization"] == "Bearer secret-key"
 
 
-def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
+def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_headers(
+    monkeypatch,
+):
     captured_headers = []
     client = _VikingClient(
         "https://openviking.example",
@@ -874,7 +920,9 @@ def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatc
     payload = client.health_payload()
     assert payload == modern
     assert client.health() is True
-    assert calls[0] == {"Accept": "application/json"}
+    assert calls[0] == {
+        "Accept": "application/json",
+    }
     assert "Authorization" in calls[1]
     assert calls[1]["Authorization"].startswith("Bearer account.user.")
     assert "X-API-Key" in calls[1]
@@ -1313,6 +1361,60 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     assert provider._memory_write_threads == set()
 
 
+def test_memory_write_uses_one_connection_for_identity_uri_and_post(monkeypatch):
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._agent = "alice-agent"
+    provider._ensure_client = lambda: True
+
+    identity_started = threading.Event()
+    release_identity = threading.Event()
+    write_finished = threading.Event()
+    writes = []
+
+    class StubClient:
+        def __init__(self, user, agent):
+            self._user = user
+            self._agent = agent
+
+        def get(self, path, **kwargs):
+            assert path == "/api/v1/system/status"
+            identity_started.set()
+            assert release_identity.wait(timeout=2.0)
+            return {"status": "ok", "result": {"user": self._user}}
+
+        def post(self, path, payload=None, **kwargs):
+            writes.append((self._user, self._agent, path, payload))
+            write_finished.set()
+            return {"status": "ok"}
+
+    alice = StubClient("alice", "alice-agent")
+    bob = StubClient("bob", "bob-agent")
+    provider._client = alice
+    monkeypatch.setattr(provider, "_new_client", lambda: alice)
+
+    provider.on_memory_write("add", "user", "remember this")
+    assert identity_started.wait(timeout=2.0), "identity probe did not start"
+
+    # Simulate a profile reload while the write worker is resolving identity.
+    provider._client = bob
+    provider._agent = "bob-agent"
+    release_identity.set()
+
+    assert write_finished.wait(timeout=2.0), "memory write did not finish"
+    for worker in list(provider._memory_write_threads):
+        worker.join(timeout=2.0)
+
+    assert len(writes) == 1
+    user, agent, path, payload = writes[0]
+    assert (user, agent, path) == ("alice", "alice-agent", "/api/v1/content/write")
+    assert payload["uri"].startswith(
+        "viking://user/alice/peers/alice-agent/memories/preferences/mem_"
+    )
+    assert provider._memory_write_threads == set()
+
+
 def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -1346,6 +1448,8 @@ def _mock_session_start_reads(
         request_params = dict(params or {})
         uri = request_params.get("uri", "")
         calls.append((path, request_params, kwargs.get("timeout")))
+        if path == "/api/v1/system/status":
+            return {"status": "ok", "result": {"user": "default"}}
         response = responses.get((path, uri), "")
         if isinstance(response, Exception):
             raise response
@@ -1369,10 +1473,10 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     calls = _mock_session_start_reads(
         provider,
         {
-            ("/api/v1/content/read", "viking://user/memories/profile.md"): (
+            ("/api/v1/content/read", "viking://user/default/memories/profile.md"): (
                 "User prefers concise answers."
             ),
-            ("/api/v1/fs/ls", "viking://user/memories/preferences"): _memory_listing(
+            ("/api/v1/fs/ls", "viking://user/default/memories/preferences"): _memory_listing(
                 {"isDir": True, "rel_path": "owner"},
                 {
                     "isDir": False,
@@ -1386,7 +1490,7 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
                 },
                 {"isDir": False, "rel_path": "owner/ignored.txt", "abstract": "ignore"},
             ),
-            ("/api/v1/fs/ls", "viking://user/memories/entities"): _memory_listing(
+            ("/api/v1/fs/ls", "viking://user/default/memories/entities"): _memory_listing(
                 {
                     "isDir": False,
                     "rel_path": "people/ada.md",
@@ -1400,13 +1504,13 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     first = provider.prefetch("What should we recall?", session_id="sid-123")
     second = provider.prefetch("What should we recall?", session_id="sid-123")
 
-    assert '<user-profile uri="viking://user/memories/profile.md">' in first
+    assert '<user-profile uri="viking://user/default/memories/profile.md">' in first
     assert "User prefers concise answers." in first
     assert "<available-memories>" in first
-    assert "viking://user/memories/preferences/" in first
+    assert "viking://user/default/memories/preferences/" in first
     assert "owner/z-last.md — Keep replies compact." in first
     assert first.index("owner/a-first.md") < first.index("owner/z-last.md")
-    assert "viking://user/memories/entities/" in first
+    assert "viking://user/default/memories/entities/" in first
     assert "people/ada.md — Ada Lovelace is a collaborator." in first
     assert "owner/ignored.txt" not in first
     assert "<preferences" not in first
@@ -1415,17 +1519,61 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     assert "<user-profile" not in second
     assert "recalled context" in second
     assert [(path, params) for path, params, _timeout in calls] == [
-        ("/api/v1/content/read", {"uri": "viking://user/memories/profile.md"}),
+        # The user-space probe runs once, before the first URI is built.
+        ("/api/v1/system/status", {}),
+        ("/api/v1/content/read", {"uri": "viking://user/default/memories/profile.md"}),
         (
             "/api/v1/fs/ls",
-            {"uri": "viking://user/memories/preferences", **_SESSION_START_LIST_PARAMS},
+            {"uri": "viking://user/default/memories/preferences", **_SESSION_START_LIST_PARAMS},
         ),
         (
             "/api/v1/fs/ls",
-            {"uri": "viking://user/memories/entities", **_SESSION_START_LIST_PARAMS},
+            {"uri": "viking://user/default/memories/entities", **_SESSION_START_LIST_PARAMS},
         ),
     ]
     assert provider._search_prefetch_context.call_count == 2
+
+
+def test_session_start_reuses_one_fallback_user_after_status_probe_failure():
+    provider = _make_prefetch_provider()
+    provider._user = "configured-user"
+    provider._client._user = "configured-user"
+    provider._search_prefetch_context = MagicMock(return_value="")
+    status_calls = 0
+    status_timeouts = []
+    read_uris = []
+
+    def fake_get(path, params=None, **kwargs):
+        nonlocal status_calls
+        if path == "/api/v1/system/status":
+            status_calls += 1
+            status_timeouts.append(kwargs.get("timeout"))
+            if status_calls == 1:
+                raise RuntimeError("temporary status failure")
+            return {"status": "ok", "result": {"user": "alice"}}
+
+        uri = (params or {}).get("uri", "")
+        read_uris.append(uri)
+        if path == "/api/v1/content/read":
+            return {"result": "Configured-user profile."}
+        return {"result": []}
+
+    provider._client.get.side_effect = fake_get
+
+    block = provider.prefetch("What should we recall?", session_id="sid-fallback")
+
+    assert status_calls == 1
+    assert len(status_timeouts) == 1
+    assert 0 < status_timeouts[0] <= 3.0
+    assert read_uris == [
+        "viking://user/configured-user/memories/profile.md",
+        "viking://user/configured-user/memories/preferences",
+        "viking://user/configured-user/memories/entities",
+    ]
+    assert (
+        '<user-profile uri="viking://user/configured-user/memories/profile.md">'
+        in block
+    )
 
 
 def test_prefetch_reinjects_after_in_place_compression_same_session():
@@ -1435,7 +1583,9 @@ def test_prefetch_reinjects_after_in_place_compression_same_session():
 
     def fake_get(path, params=None, **kwargs):
         uri = (params or {}).get("uri", "")
-        if uri == "viking://user/memories/profile.md":
+        if path == "/api/v1/system/status":
+            return {"status": "ok", "result": {"user": "default"}}
+        if uri == "viking://user/default/memories/profile.md":
             return {"result": next(profiles)}
         return {"result": []}
 

@@ -340,12 +340,20 @@ class TeamsMeetingPipeline:
         try:
             job = self._persist_job(job, status="resolving_meeting")
             notification = meeting_ref.metadata.get("notification") if isinstance(meeting_ref.metadata, dict) else {}
+            meeting_id = meeting_ref.meeting_id
+            organizer_user_id = meeting_ref.organizer_user_id
+            if isinstance(notification, dict) and notification:
+                parsed_id, parsed_org, _extra = _meeting_ids_from_notification(notification)
+                if parsed_org:
+                    organizer_user_id = organizer_user_id or parsed_org
+                if parsed_id and not looks_like_transcript_id(parsed_id):
+                    meeting_id = parsed_id
             resolved_meeting = await resolve_meeting_reference(
                 self.graph_client,
-                meeting_id=meeting_ref.meeting_id,
+                meeting_id=meeting_id,
                 join_web_url=meeting_ref.join_web_url or meeting_ref.metadata.get("join_web_url"),
                 tenant_id=meeting_ref.tenant_id,
-                organizer_user_id=meeting_ref.organizer_user_id,
+                organizer_user_id=organizer_user_id,
             )
             if meeting_ref.metadata:
                 resolved_meeting.metadata = {**meeting_ref.metadata, **resolved_meeting.metadata}

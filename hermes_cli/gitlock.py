@@ -15,6 +15,11 @@ This module provides two small, defensive helpers used by the update paths:
 
 * :func:`clear_stale_git_locks` — remove abandoned ``.git`` lock files (with
   an age + git-process guard so a live fetch is never yanked).
+* :func:`clear_stale_tmp_packs` — remove aborted-fetch ``tmp_pack_*`` /
+  ``tmp_idx_*`` debris from ``.git/objects/pack``. On flaky lines every
+  timed-out fetch leaves one behind; unchecked they accumulated to 6 GB /
+  hundreds of files over 9 days and eventually corrupted the pack directory
+  outright, permanently wedging the update check (#93732).
 * :func:`is_ancestor_of_head` — ask whether a remote tip is already contained
   in HEAD. Used by the shallow-clone update check to avoid reporting a false
   "update available" when local cherry-picks sit on top of the remote tip.
@@ -100,6 +105,66 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
                 logger.info("Removed stale git lock %s", lock_path)
         except OSError:
             logger.debug("Could not clear %s (skipping)", lock_path, exc_info=True)
+    return removed
+
+
+# Aborted-fetch pack debris younger than this is presumed live (a fetch may
+# be writing it right now) and is never removed. A healthy fetch completes in
+# minutes; the same 10-minute bar the lock sweep uses is comfortably safe.
+STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
+
+# Temp-file prefixes git writes into .git/objects/pack during a transfer and
+# renames away on success. Anything left with these names after a fetch died
+# is garbage by definition — git itself never reuses or cleans them.
+_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_")
+
+
+def clear_stale_tmp_packs(
+    repo_root: Path, *, min_age_seconds: Optional[int] = None
+) -> List[str]:
+    """Remove aborted-fetch temp pack files under ``.git/objects/pack``.
+
+    Every ``git fetch`` that dies mid-transfer (timeout, HTTP 429, dropped
+    connection) leaves a ``tmp_pack_*`` (and sometimes ``tmp_idx_*``) file
+    behind, and git never cleans them up. On a flaky line the banner's
+    background update check produces several per day; observed in the wild
+    at hundreds of files / 6 GB after 9 days, after which the pack directory
+    corrupted outright and every fetch failed permanently (#93732).
+
+    Same safety contract as :func:`clear_stale_git_locks`: only files older
+    than the age floor, never while a git process is running, never raises.
+    Returns the removed paths.
+    """
+    pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+    if not pack_dir.is_dir():
+        return []
+
+    if _git_proc_running():
+        logger.debug("git process running; skipping tmp-pack sweep")
+        return []
+
+    cutoff = time.time() - (
+        min_age_seconds if min_age_seconds is not None else STALE_TMP_PACK_MIN_AGE_SECONDS
+    )
+    removed: List[str] = []
+    try:
+        entries = list(pack_dir.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        name = entry.name
+        if not name.startswith(_TMP_PACK_PREFIXES):
+            continue
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                size = entry.stat().st_size
+                entry.unlink()
+                removed.append(str(entry))
+                logger.info(
+                    "Removed aborted-fetch pack debris %s (%d bytes)", entry, size
+                )
+        except OSError:
+            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
     return removed
 
 

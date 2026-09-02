@@ -18,15 +18,17 @@ import tui_gateway.server as server
 from toolsets import TOOLSETS, resolve_toolset
 
 GUI_TOOLS = {
+    "annotate_preview",
+    "desktop_preview",
+    "drive_preview",
     "close_terminal",
     "focus_pane",
-    "open_preview",
-    "read_preview",
     "read_terminal",
     "read_window_below",
     "react_to_message",
     "setup_mcp",
-    "tour",
+    "show_tip",
+    "gui_tour",
 }
 
 
@@ -41,7 +43,13 @@ def no_desktop_env(monkeypatch):
 
 class TestDesktopUiToolset:
     def test_holds_exactly_the_gui_affordances(self):
-        assert set(resolve_toolset("desktop_ui")) == GUI_TOOLS
+        # apply_layout registers into desktop_ui via the registry (not the
+        # static toolsets.py list), so force discovery first — otherwise the
+        # result depends on which earlier test imported tool modules
+        # (pre-existing ordering flake, surfaced by the #97979 test sweep).
+        from tools.registry import discover_builtin_tools
+        discover_builtin_tools()
+        assert set(resolve_toolset("desktop_ui")) == GUI_TOOLS | {"apply_layout"}
 
     def test_stays_off_the_core_tool_list(self):
         """Core ships on every API call — a GUI-only tool must not be there."""

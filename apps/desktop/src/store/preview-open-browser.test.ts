@@ -30,7 +30,8 @@ describe('openBrowserTab', () => {
     expect(tabs[0]?.target.url).toBe('https://example.com')
   })
 
-  it('reuses the one Browser tab rather than stacking duplicates', () => {
+  // "Show me the browser" is idempotent — the "+" is how you ask for another.
+  it('shows the browser it already has rather than stacking duplicates', () => {
     openBrowserTab()
     openBrowserTab()
     openBrowserTab()
@@ -38,7 +39,6 @@ describe('openBrowserTab', () => {
     expect($previewTabs.get()).toHaveLength(1)
   })
 
-  // A file tab is keyed by identity; only the web surface is a singleton.
   it('leaves other preview tabs alone', () => {
     openPreview({ kind: 'file', label: 'notes.md', source: '/work/notes.md', url: 'file:///work/notes.md' })
     openBrowserTab()

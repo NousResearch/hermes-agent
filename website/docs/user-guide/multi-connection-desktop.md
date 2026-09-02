@@ -170,10 +170,31 @@ that live on one gateway.
   avatars remain a separate control after the divider. The same selector scales
   from two gateways to a larger fleet without turning backends into profile-like
   glyphs or crowding profile actions out of the rail.
-- Selecting a gateway restores the last profile used there. The profile rail
-  then shows only that gateway's profiles; the home pill returns to its default
-  profile and the layers pill shows **All profiles on this gateway**.
-  **Cmd/Ctrl+1–9** continue to switch profiles within the active gateway.
+- Selecting a gateway restores the last profile used there. The home pill
+  returns to its default profile and the layers pill shows **All profiles on
+  this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
+  active gateway.
+- With several gateways the profile rail is a **fleet rail**: every registered
+  gateway's profiles sit on the one strip, each group headed by that gateway's
+  kind glyph (device, network, terminal, cloud) — the same glyph the gateway
+  selector uses. The active gateway's squares look exactly as they do on a
+  single-gateway Desktop; the other gateways' squares are dimmed ("at rest").
+  Hovering an at-rest square names its machine (`omer · This device`), so two
+  same-named profiles on different machines never read alike.
+- Clicking an at-rest square performs the same switch as the gateway selector,
+  landing on that exact `(gateway, profile)`: the square spins while the
+  target is dialed, the previous gateway stays painted until the target
+  answers, and a dead target fails the click with a message rather than
+  leaving the window half-switched. Groups keep registry order whichever
+  gateway is active, so a square never moves under the pointer that clicked
+  it. Right-click on an at-rest square offers **Switch to**, **Color**,
+  **Rename**, **Edit SOUL.md** and **Delete**, all executed on the square's
+  own gateway; the delete confirmation names the machine.
+- A gateway the last enumeration could not reach keeps its squares, marked
+  with an amber dot on its glyph — a sleeping box is still yours. Two
+  registrations of one backend collapse to a single group. Past thirteen
+  squares across the fleet, the strip condenses into one menu sectioned by
+  gateway.
 - The selected gateway survives a quit and relaunch only when **Settings →
   Gateways → At startup, return to Sessions on the last-used gateway** is on.
   The preference and gateway id live in the app's user-data registry, so
@@ -211,10 +232,11 @@ home, not a second add flow.
 
 Sessions intentionally show one active gateway at a time: this keeps files,
 tools, channels, cron, and session history in one understandable execution
-context. Bot Mode serves a different job and may present the union roster,
-grouped by gateway, so a user can open one agent on a NAS and another on a VPS
-from one surface. Opening a bot still activates its exact `(gateway, profile)`
-route.
+context. The fleet profile rail widens only the *picker* — the workspace still
+lives on exactly one `(gateway, profile)` after every click. Bot Mode serves a
+different job and may present the union roster, grouped by gateway, so a user
+can open one agent on a NAS and another on a VPS from one surface. Opening a
+bot still activates its exact `(gateway, profile)` route.
 
 Direct bot mentions and delegation remain gateway-local by default. Crossing a
 backend boundary changes filesystem, credentials, tools, and trust context, so
@@ -238,18 +260,27 @@ Each instance reports independently, so one unreachable box never wedges the
 batch. Backends that manage updates externally (Docker, Nix) refuse politely
 with their own message, per row.
 
+You rarely need the Settings button, though: once more than one update target
+exists, the app's regular update affordances (**Update now** on the About
+panel, ⌘K **Update Hermes**, the update-ready toast) run the same fan-out
+automatically — active backend first, then every other eligible gateway, then
+the desktop app itself last. See
+[Updating](./desktop.md#updating) in the desktop guide.
+
 ## Security notes
 
-- **Where tokens live.** Remote-gateway session tokens are encrypted at rest
-  with Electron's `safeStorage` (the OS keychain — Keychain on macOS, DPAPI
-  on Windows, the session keyring backend on Linux) and stay in the Electron
-  main process; the renderer and plugins never see token bytes. OAuth tokens
-  for native sign-in are stored the same way, keyed by gateway base URL, and
-  refreshed automatically before expiry.
-- **Keyring-less Linux.** On a Linux session without a usable keychain the
-  app cannot encrypt the token; saving one raises an explicit opt-in dialog
-  before it will store the
-  token in plain text.
+- **Where tokens live.** Remote-gateway session tokens (and native sign-in
+  OAuth tokens, keyed by gateway base URL) are stored in the app's user-data
+  directory as owner-only (0600) files, in the Electron main process; the
+  renderer and plugins never see token bytes.
+- **Optional keychain encryption.** By default the tokens are **not** run
+  through the OS keychain — on macOS in particular, Electron's `safeStorage`
+  parks a per-app key in the login keychain, and a locked or broken keychain
+  turns that into a password prompt on every launch. If you want at-rest
+  encryption on top of the file permissions, turn on **Settings → Gateway →
+  "Encrypt saved secrets with the OS keychain"**; existing stored secrets are
+  re-encrypted in place (Keychain on macOS, DPAPI on Windows, the session
+  keyring backend on Linux). Turning it back off decrypts them again.
 - **The registry file** (`connections.json` under the app's user-data
   directory) holds labels, URLs, and hosts — secrets only ever appear inside
   encrypted envelopes.

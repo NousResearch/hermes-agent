@@ -98,8 +98,12 @@ _TOOL_SCOPED_EVENTS = {"pre_tool_call", "post_tool_call"}
 # kwargs promoted to top-level payload keys (mirrors shell hooks wire).
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
-# (event, url) pairs already wired to the plugin manager in this process.
-_registered: Set[Tuple[str, str]] = set()
+# (home, event, url) triples already wired to the plugin manager in this
+# process. Home is part of the key so a multiplexed gateway's secondary
+# profiles — each with their own plugin manager (see
+# hermes_cli.plugins.get_plugin_manager) — can register identical webhook
+# targets without the first profile's registration shadowing the rest.
+_registered: Set[Tuple[str, str, str]] = set()
 _registered_lock = threading.Lock()
 
 _delivery_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -180,15 +184,17 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
         return []
 
     from hermes_cli.plugins import get_plugin_manager
+    from hermes_constants import get_hermes_home
 
     manager = get_plugin_manager()
+    home_key = str(get_hermes_home().expanduser().resolve())
 
     registered: List[WebhookTarget] = []
     with _registered_lock:
         for target in targets:
             wired_any = False
             for event in target.events:
-                key = (event, target.url)
+                key = (home_key, event, target.url)
                 if key in _registered:
                     continue
                 manager._hooks.setdefault(event, []).append(
@@ -229,6 +235,29 @@ def flush(timeout: float = 5.0) -> bool:
         time.sleep(0.02)
     with _delivery_queue.all_tasks_done:
         return _delivery_queue.unfinished_tasks == 0
+
+
+def re_register_config_hooks() -> None:
+    """Re-register outbound webhooks from config after a plugin force-reload.
+
+    Mirrors ``agent.shell_hooks.re_register_config_hooks``: config-owned
+    outbound-webhook callbacks live in the same ``_hooks`` dict that
+    ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
+    so without this the force-reloaded profile's outbound webhooks go
+    silently inert (#92682 review). Only the current home's idempotence
+    keys are cleared so a force-reload in one profile cannot invalidate
+    another profile's still-live registration.
+    """
+    from hermes_cli.config import load_config
+    from hermes_constants import get_hermes_home
+
+    home_key = str(get_hermes_home().expanduser().resolve())
+    with _registered_lock:
+        _registered.difference_update(
+            {key for key in _registered if key[0] == home_key}
+        )
+
+    register_from_config(load_config())
 
 
 def reset_for_tests() -> None:
@@ -416,8 +445,13 @@ def _serialize_payload(
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
+    # Resolved at fire time from the bound home so a multiplexed gateway's
+    # receivers can tell which profile emitted the event (#92674).
+    from hermes_cli.profiles import get_active_profile_name
+
     payload = {
         "hook_event_name": event,
+        "profile": get_active_profile_name(),
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",

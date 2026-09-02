@@ -4,7 +4,9 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
+import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
@@ -15,7 +17,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
-import { hostPathLabel, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
@@ -135,6 +137,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
   const imageIsWeb = isWebUrl(target.imageUrl)
+  const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
   // The edit verbs and spell-check actions act on the sender's FOCUSED
@@ -192,7 +195,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   if (linkUrl) {
     sections.push(
       [
-        linkIsWeb ? (
+        linkIsWeb && openInApp ? (
           <Item
             icon="globe"
             key="link-open-app"
@@ -232,7 +235,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   if (target.onImage) {
     sections.push(
       [
-        imageIsWeb ? (
+        imageIsWeb && openInApp ? (
           <Item
             icon="globe"
             key="image-open-app"
@@ -305,8 +308,13 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     // SELECTION, so they need selected text — not just field content.
     // Inputs and textareas carry their selection on the element (Chrome
     // never reflects it into window.getSelection()); contenteditable uses
-    // the document selection the resolver captured. Paste needs a
-    // non-empty clipboard, select all needs the field to hold anything.
+    // the document selection the resolver captured. Select all needs the
+    // field to hold anything. Paste is intentionally NOT gated on a
+    // clipboard probe: its action is webContents.paste() in main — the
+    // same path Ctrl+V takes — which resolves the system clipboard itself,
+    // while the renderer-side readClipboard probe can report empty on
+    // Windows even when that path succeeds (#91553). Pasting with an
+    // empty clipboard is a harmless no-op, so the item fails open.
     const formField =
       target.editable instanceof HTMLInputElement || target.editable instanceof HTMLTextAreaElement
         ? target.editable
@@ -336,7 +344,6 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.copy}
       />,
       <Item
-        disabled={!open.clipboardHasText}
         key="edit-paste"
         label={copy.edit.paste}
         onSelect={() => editableCommand('paste')}
@@ -376,6 +383,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
   const sections: ReactNode[][] = []
   const linkUrl = params.linkURL
   const imageUrl = params.srcURL
+  const openInApp = !hudForcesNativeLinks()
 
   // Same trap-timing rule as the dom side: dispatch AFTER the menu closes,
   // so the webview's focus() is not stolen back by the radix content.
@@ -387,7 +395,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
   if (linkUrl) {
     sections.push(
       [
-        isWebUrl(linkUrl) ? (
+        isWebUrl(linkUrl) && openInApp ? (
           <Item
             icon="globe"
             key="guest-link-open-app"
@@ -565,6 +573,15 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
       />,
+      // The pointer-only way back to a hidden tab strip: right-clicking the
+      // shell reaches this menu from anywhere, including a zone that has no
+      // chrome left to right-click.
+      <Item
+        icon="layout-menubar"
+        key="shell-tabstrip"
+        label={t.keybinds.actions['view.toggleTabStrip']}
+        onSelect={() => void toggleTargetZoneTabStrip()}
+      />,
       <Item
         icon="settings-gear"
         key="shell-settings"
@@ -609,7 +626,11 @@ export function AppContextMenu() {
       const element = event.target instanceof Element ? event.target : null
 
       // Surfaces with their own Radix context menu keep the whole gesture.
-      if (element?.closest('[data-slot="context-menu-trigger"]')) {
+      // Guard the dedicated marker first: Radix `asChild` Slot merges
+      // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
+      // (status bar footer is `data-slot="statusbar"`). The marker is stamped
+      // after `{...props}` on ContextMenuTrigger and is not overwritten.
+      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
         return
       }
 
@@ -675,6 +696,7 @@ export function AppContextMenu() {
         align="start"
         className="w-56"
         onCloseAutoFocus={event => event.preventDefault()}
+        portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
         side="bottom"
       >
         {sections.map((section, index) => (

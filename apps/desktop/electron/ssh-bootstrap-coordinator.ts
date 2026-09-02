@@ -23,8 +23,16 @@ function createBootstrapCoordinator() {
   const pending = new Map<string, any>()
   const generations = new Map<string, number>()
   const drains = new Map<string, Promise<void>>()
+  let shutdownRequested = false
 
-  function start(scope, fingerprint, run) {
+  function start(scope, fingerprint, run, metadata = null) {
+    if (shutdownRequested) {
+      const error: any = new Error('SSH bootstrap was cancelled because Desktop is quitting.')
+      error.kind = 'superseded'
+
+      return Promise.reject(error)
+    }
+
     const current = pending.get(scope)
 
     if (current?.fingerprint === fingerprint) {
@@ -57,7 +65,7 @@ function createBootstrapCoordinator() {
 
     const drain = drains.get(scope) || Promise.resolve()
     const predecessor = current ? Promise.allSettled([current.promise, drain]) : drain
-    const entry: any = { controller, fingerprint, forceCleanups, generation, promise: null, scope }
+    const entry: any = { controller, fingerprint, forceCleanups, generation, metadata, promise: null, scope }
 
     const promise = predecessor
       .then(() => {
@@ -121,6 +129,13 @@ function createBootstrapCoordinator() {
     }
   }
 
+  function shutdown() {
+    // Terminal: reconnect callbacks during a prevented first quit must not
+    // spawn a replacement serve --isolated for an app that is already leaving.
+    shutdownRequested = true
+    cancelAll()
+  }
+
   async function forceCleanupAll() {
     const cleanups = [...active].flatMap(entry => [...entry.forceCleanups])
     await Promise.allSettled(cleanups.map(cleanup => cleanup()))
@@ -130,7 +145,7 @@ function createBootstrapCoordinator() {
     return [...active].map(entry => entry.promise)
   }
 
-  return { active, cancel, cancelAll, cancelAndWait, forceCleanupAll, pending, promises, start }
+  return { active, cancel, cancelAll, cancelAndWait, forceCleanupAll, pending, promises, shutdown, start }
 }
 
 export { createBootstrapCoordinator, sshConfigFingerprint }

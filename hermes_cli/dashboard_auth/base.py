@@ -61,8 +61,16 @@ class LoginStart:
     Portal's ``/oauth/authorize``). ``cookie_payload`` is a dict of cookie
     name → serialised value that the auth route will ``Set-Cookie`` on the
     response. Used for PKCE state, CSRF nonces, etc. Cookies set here MUST
-    be HttpOnly + Secure (when over HTTPS) + SameSite=Lax with a TTL ≤ 10
-    minutes (the login lifetime).
+    be HttpOnly + Secure (when over HTTPS) with a TTL ≤ 10 minutes (the
+    login lifetime).
+
+    SameSite: use ``Lax`` by default. The one exception is the PKCE state
+    cookie, which is ``SameSite=None; Secure`` over HTTPS — it is set on
+    the ``/auth/login`` 302 and has to survive the cross-site redirect
+    chain back from the IDP, which Chromium drops intermittently under
+    ``Lax`` (crbug 40508226). Over plain HTTP it stays ``Lax``, since
+    ``SameSite=None`` requires ``Secure``. See
+    :func:`hermes_cli.dashboard_auth.cookies.set_pkce_cookie`.
     """
 
     redirect_url: str
@@ -100,6 +108,45 @@ class RefreshExpiredError(Exception):
     middleware may try remaining providers. It clears cookies and forces
     re-login only after every reachable provider rejects the token.
     """
+
+
+def classify_jwks_lookup_error(exc: BaseException) -> Exception:
+    """Map a ``PyJWKClient.get_signing_key_from_jwt`` failure to the protocol.
+
+    Only a genuine transport failure (the IDP's JWKS endpoint could not be
+    fetched) is a :class:`ProviderError` — middleware turns that into 503
+    "auth provider unreachable" so a flaky IDP never forces a logout.
+
+    Everything else means the token itself cannot be verified by this
+    provider and is an :class:`InvalidCodeError` (``verify_session`` returns
+    ``None``, the middleware tries the next provider / refresh / 401):
+
+    * ``jwt.DecodeError`` — the bearer is not a JWT at all (an opaque peer
+      key, a legacy session token, garbage). #94558: hosted agents answered
+      every non-JWT bearer with a fast 503 ``Auth provider 'nous'
+      unreachable`` even though Portal was healthy, because "cannot parse"
+      and "cannot reach" were folded into one branch.
+    * ``jwt.PyJWKSetError`` — the JWKS was fetched fine but holds no key for
+      this token's ``kid`` (rotated/foreign key). The provider was reached;
+      the token is simply not one of ours.
+
+    ``PyJWKClientConnectionError`` is the only ``PyJWKClientError`` subclass
+    that denotes unreachability; a bare ``PyJWKClientError`` (unexpected
+    JWKS shape) is kept as a provider fault since the IDP misbehaved.
+    """
+    try:
+        import jwt
+    except Exception:  # pragma: no cover - jwt is a hard dep of these providers
+        return ProviderError(f"JWKS lookup failed: {exc!r}")
+    if isinstance(exc, jwt.PyJWKClientConnectionError):
+        return ProviderError(f"JWKS lookup failed: {exc}")
+    if isinstance(exc, (jwt.DecodeError, jwt.PyJWKSetError)):
+        return InvalidCodeError(f"token not verifiable by this provider: {exc}")
+    if isinstance(exc, jwt.PyJWKClientError):
+        return ProviderError(f"JWKS lookup failed: {exc}")
+    if isinstance(exc, jwt.InvalidTokenError):
+        return InvalidCodeError(f"token not verifiable by this provider: {exc}")
+    return ProviderError(f"JWKS lookup failed: {exc!r}")
 
 
 class DashboardAuthProvider(ABC):

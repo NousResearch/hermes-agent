@@ -13,8 +13,9 @@ from urllib.parse import quote, unquote
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
 
+# Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...).
 _USERS_MEETING_RE = re.compile(
-    r"(?i)(?:^|/)users/([^/]+)/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
+    r"(?i)(?:^|/)users(?:\('([^']+)'\)|/([^/'()]+))/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
 )
 _COMM_MEETING_RE = re.compile(
     r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
@@ -58,8 +59,8 @@ def parse_graph_meeting_resource(resource: str) -> dict[str, str | None]:
 
     users_match = _USERS_MEETING_RE.search(text)
     if users_match:
-        organizer_user_id = unquote(users_match.group(1) or "").strip() or None
-        meeting_id = unquote(users_match.group(2) or users_match.group(3) or "").strip() or None
+        organizer_user_id = unquote(users_match.group(1) or users_match.group(2) or "").strip() or None
+        meeting_id = unquote(users_match.group(3) or users_match.group(4) or "").strip() or None
 
     if not meeting_id:
         comm_match = _COMM_MEETING_RE.search(text)
@@ -333,7 +334,12 @@ async def download_transcript_text(
     with tempfile.NamedTemporaryFile(prefix="teams-transcript-", suffix=suffix, delete=False) as handle:
         destination = Path(handle.name)
     try:
-        await client.download_to_file(_transcript_download_path(meeting_ref, transcript), destination)
+        # Graph's transcript /content endpoint rejects JSON content negotiation.
+        await client.download_to_file(
+            _transcript_download_path(meeting_ref, transcript),
+            destination,
+            headers={"Accept": "text/vtt"},
+        )
         text = destination.read_text(encoding=encoding).strip()
     except MicrosoftGraphAPIError as exc:
         raise _wrap_graph_error(

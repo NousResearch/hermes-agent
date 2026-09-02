@@ -10,8 +10,9 @@ compressor to fire on every subsequent turn with no progress.
 The fix adds two safeguards:
 1. _find_tail_cut_by_tokens: when the whole transcript fits in soft_ceiling,
    re-walk with the raw (non-inflated) budget to find a meaningful cut.
-2. compress(): when compress_start >= compress_end, record the no-op as
-   an ineffective compression so should_compress() anti-thrashing fires.
+2. compress(): when compress_start >= compress_end, defer retries via the
+   structural no-op backoff (#93022) so should_compress() anti-thrashing
+   fires without burning anti-thrash strikes on transcript-shape facts.
 """
 
 from unittest.mock import patch, MagicMock
@@ -56,15 +57,16 @@ def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
 # ---------------------------------------------------------------------------
 
 class TestCompressNoOpRegistersIneffective:
-    """When compress_start >= compress_end, the fix records this as
-    an ineffective compression so the anti-thrashing guard fires.
+    """When compress_start >= compress_end, the fix defers further attempts
+    via the structural no-op backoff (#93022) so the anti-thrashing guard
+    fires.
 
     We trigger this path by having _find_tail_cut_by_tokens return
     head_end (which makes compress_end = head_end + 1, same as
     compress_start after alignment)."""
 
-    def test_no_op_increments_counter(self):
-        """compress_start >= compress_end -> _ineffective_compression_count += 1"""
+    def test_no_op_arms_structural_backoff(self):
+        """compress_start >= compress_end -> backoff armed, strikes untouched."""
         comp = _make_compressor(
             summary_target_ratio=0.45,
             config_context_length=96000,
@@ -80,8 +82,14 @@ class TestCompressNoOpRegistersIneffective:
 
         result = comp.compress(messages, current_tokens=73_000)
 
-        assert comp._ineffective_compression_count >= 1, (
-            f"Expected ineffective_compression_count >= 1, got {comp._ineffective_compression_count}"
+        assert len(result) == len(messages), (
+            "no-op compression must return the transcript unchanged"
+        )
+        assert comp._ineffective_compression_count == 0, (
+            "a structural impossibility is not an ineffective strike (#93022)"
+        )
+        assert comp._structural_no_op_backoff_until > time.monotonic(), (
+            "structural no-op must arm the retry backoff"
         )
 
 
@@ -98,9 +106,11 @@ class TestCompressNoOpRegistersIneffective:
         comp.compress(messages, current_tokens=73_000)
         comp.compress(messages, current_tokens=73_000)
 
-        assert comp._ineffective_compression_count >= 2
+        assert comp._ineffective_compression_count == 0, (
+            "structural no-ops defer via backoff instead of striking (#93022)"
+        )
         assert not comp.should_compress(73_000), (
-            "should_compress should return False after 2+ ineffective compressions"
+            "should_compress should return False while the structural backoff holds"
         )
 
 

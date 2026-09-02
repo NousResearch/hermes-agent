@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from agent.portal_tags import get_conversation_context
+from agent.portal_tags import get_affinity_scope, get_conversation_context
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -121,8 +121,9 @@ class OpenRouterProfile(ProviderProfile):
         # hashing the opening messages, and it activates stickiness on the
         # first successful request rather than only after a cache hit.
         #
-        # Resolve it from the ambient conversation contextvar first, explicit
-        # argument as fallback. The gap this closes is the auxiliary call sites
+        # Resolve it from the declared routing scope first (set only by a host
+        # that names its own conversation, #96811), then the ambient conversation
+        # contextvar, with the explicit argument as fallback. The gap this closes is the auxiliary call sites
         # — compression, title generation, vision, web_extract, session_search,
         # MoA slots — which funnel through ``agent.auxiliary_client``. That
         # module has no session handle and passes no ``session_id``, so those
@@ -133,7 +134,9 @@ class OpenRouterProfile(ProviderProfile):
         # (f2f4df064d). The ambient value is the session-lineage ROOT, so it
         # also stays stable for installs that opt out of the default
         # ``compression.in_place: true`` and across delegate-subagent trees.
-        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
+        sticky_key = _cache_scope_from_session_id(
+            get_affinity_scope() or get_conversation_context() or session_id
+        )
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
@@ -222,7 +225,9 @@ class OpenRouterProfile(ProviderProfile):
         # backend server via this header, and aux calls pass no session_id, so
         # reading the ambient conversation keeps compression/vision/MoA traffic
         # on the same Grok backend as the conversation it belongs to.
-        grok_conv_id = _cache_scope_from_session_id(get_conversation_context() or session_id)
+        grok_conv_id = _cache_scope_from_session_id(
+            get_affinity_scope() or get_conversation_context() or session_id
+        )
         if grok_conv_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
             extra_headers["x-grok-conv-id"] = grok_conv_id
         if extra_headers:

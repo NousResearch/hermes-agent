@@ -34,4 +34,34 @@ class TestTuiApprovalEmitRedaction:
         assert emitted["payload"]["description"] == "x"
         assert "github.com" in emitted["payload"]["command"]
 
+    @pytest.mark.parametrize(
+        ("allow_session", "allow_permanent", "expected"),
+        [
+            (True, True, ["once", "session", "always", "deny"]),
+            (True, False, ["once", "session", "deny"]),
+            (False, False, ["once", "deny"]),
+        ],
+    )
+    def test_emit_approval_request_honors_allowed_scopes(
+        self, monkeypatch, allow_session, allow_permanent, expected
+    ):
+        from tui_gateway import server as tui_server
+
+        emitted = {}
+        monkeypatch.setattr(
+            tui_server,
+            "_emit",
+            lambda event, sid, payload=None: emitted.update({"payload": payload}),
+        )
+
+        tui_server._emit_approval_request(
+            "sess-1",
+            {
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
+                "command": "<write to AGENTS.md>",
+            },
+        )
+
+        assert emitted["payload"]["choices"] == expected
 

@@ -1,6 +1,8 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { installWindowStateBridge, type WindowStateBridge } from '../../test/window-state'
+
 import { StatusPulse } from './status-pulse'
 
 interface PlayedAnimation {
@@ -9,12 +11,7 @@ interface PlayedAnimation {
   options: KeyframeAnimationOptions
 }
 
-interface WindowStatePayload {
-  isMinimized?: boolean
-  isVisible?: boolean
-}
-
-let windowStateCallback: ((payload: WindowStatePayload) => void) | undefined
+let windowState: WindowStateBridge
 
 function installMatchMedia(matches: boolean) {
   vi.stubGlobal(
@@ -29,20 +26,6 @@ function installMatchMedia(matches: boolean) {
   )
 }
 
-function installWindowStateBridge() {
-  const off = vi.fn()
-
-  window.hermesDesktop = {
-    onWindowStateChanged: vi.fn(callback => {
-      windowStateCallback = callback
-
-      return off
-    })
-  } as unknown as typeof window.hermesDesktop
-
-  return off
-}
-
 describe('StatusPulse', () => {
   const played: PlayedAnimation[] = []
 
@@ -50,7 +33,7 @@ describe('StatusPulse', () => {
     vi.useFakeTimers()
     vi.spyOn(window.document, 'hasFocus').mockReturnValue(true)
     installMatchMedia(false)
-    installWindowStateBridge()
+    windowState = installWindowStateBridge()
     Object.defineProperty(HTMLElement.prototype, 'animate', {
       configurable: true,
       value: (keyframes: Keyframe[], options: KeyframeAnimationOptions) => {
@@ -71,7 +54,6 @@ describe('StatusPulse', () => {
   afterEach(() => {
     cleanup()
     played.length = 0
-    windowStateCallback = undefined
     Reflect.deleteProperty(HTMLElement.prototype, 'animate')
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     vi.useRealTimers()
@@ -98,12 +80,12 @@ describe('StatusPulse', () => {
   })
 
   it('cancels scheduled work while minimized and restarts once visible', () => {
-    const offWindowState = installWindowStateBridge()
+    windowState = installWindowStateBridge()
     const mounted = render(<StatusPulse kind="opacity" />)
 
     expect(played).toHaveLength(1)
 
-    act(() => windowStateCallback?.({ isMinimized: true, isVisible: false }))
+    act(() => windowState.emit({ isMinimized: true, isVisible: false }))
 
     expect(played[0]?.cancel).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
@@ -111,12 +93,12 @@ describe('StatusPulse', () => {
     act(() => vi.advanceTimersByTime(5_000))
     expect(played).toHaveLength(1)
 
-    act(() => windowStateCallback?.({ isMinimized: false, isVisible: true }))
+    act(() => windowState.emit({ isMinimized: false, isVisible: true }))
     expect(played).toHaveLength(2)
 
     mounted.unmount()
     expect(played[1]?.cancel).toHaveBeenCalledTimes(1)
-    expect(offWindowState).toHaveBeenCalledTimes(1)
+    expect(windowState.off).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
   })
 

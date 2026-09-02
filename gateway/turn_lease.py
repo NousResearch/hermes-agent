@@ -66,7 +66,10 @@ DEFAULT_MAX_LEASES = 512
 # HERMES_TURN_LEASE_TIMEOUT bridge because lease contention is not agent
 # inactivity. A caller that reaches this bound must reject the turn rather than
 # run it concurrently with the holder.
-DEFAULT_LEASE_WAIT = 1800.0
+# Keep contention fail-closed, but never pin a sequential platform updater for
+# minutes. A waiter that cannot acquire promptly is rejected with a resend
+# notice; it is never authorized to run without serialization.
+DEFAULT_LEASE_WAIT = 5.0
 
 
 class TurnLeaseTimeoutError(TimeoutError):

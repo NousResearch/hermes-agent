@@ -3007,7 +3007,12 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")
             return
 
-        snapshot = list(getattr(self, "conversation_history", None) or [])
+        # Structural clone; see _clone_background_review_messages (#100795).
+        from agent.turn_finalizer import _clone_background_review_messages
+
+        snapshot = _clone_background_review_messages(
+            getattr(self, "conversation_history", None) or []
+        )
         if not snapshot:
             _cprint(f"  {_DIM}Nothing to refine yet — the conversation is empty.{_RST}")
             return

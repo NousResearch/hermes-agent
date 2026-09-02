@@ -3019,7 +3019,12 @@ class GatewaySlashCommandsMixin:
         if agent is None:
             return "Nothing to refine yet — send a message first."
 
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        # Structural clone; see _clone_background_review_messages (#100795).
+        from agent.turn_finalizer import _clone_background_review_messages
+
+        snapshot = _clone_background_review_messages(
+            getattr(agent, "_session_messages", None) or []
+        )
         if not snapshot:
             return "Nothing to refine yet — the conversation is empty."
 

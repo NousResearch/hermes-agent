@@ -337,6 +337,40 @@ def test_final_mirror_failure_is_visible_at_warning_level(tmp_path, caplog):
     provider.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("registry_text", "expected_warning"),
+    [
+        ("{not valid JSON", "cannot read mirror registry"),
+        ("[]", "invalid mirror registry format: expected a JSON object"),
+        (
+            json.dumps({"entries": []}),
+            "invalid mirror registry format: missing version",
+        ),
+        (
+            json.dumps({"version": 3, "entries": []}),
+            "unsupported mirror registry version 3: expected 2",
+        ),
+    ],
+)
+def test_invalid_registry_blocks_add_without_overwriting_it(
+    tmp_path, caplog, registry_text, expected_warning
+):
+    path = _registry_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(registry_text, encoding="utf-8")
+    original = path.read_bytes()
+    client = _FakeVikingClient()
+    provider = _provider(tmp_path, client)
+
+    with caplog.at_level("WARNING", logger="plugins.memory.openviking"):
+        provider.on_memory_write("add", "user", "Do not orphan this memory")
+        provider.shutdown()
+
+    assert client.snapshot() == []
+    assert path.read_bytes() == original
+    assert any(expected_warning in record.message for record in caplog.records)
+
+
 def test_failed_replace_keeps_previous_registry_mapping(tmp_path, caplog):
     client = _FakeVikingClient()
     provider = _provider(tmp_path, client)

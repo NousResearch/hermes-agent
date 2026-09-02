@@ -177,8 +177,19 @@ class NativeMemoryMirror:
         except Exception as exc:
             raise RuntimeError(f"cannot read mirror registry {path}: {exc}") from exc
 
-        if not isinstance(payload, dict) or payload.get("version") != _REGISTRY_VERSION:
-            raise RuntimeError(f"unsupported or invalid mirror registry: {path}")
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"invalid mirror registry format: expected a JSON object: {path}"
+            )
+
+        if "version" not in payload:
+            raise RuntimeError(f"invalid mirror registry format: missing version: {path}")
+        found_version = payload["version"]
+        if found_version != _REGISTRY_VERSION:
+            raise RuntimeError(
+                "unsupported mirror registry version "
+                f"{found_version!r}: expected {_REGISTRY_VERSION}: {path}"
+            )
         entries = payload.get("entries")
         if not isinstance(entries, list):
             raise RuntimeError(f"invalid mirror registry entries: {path}")

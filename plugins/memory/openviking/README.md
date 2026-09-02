@@ -209,6 +209,20 @@ Registry writes request file mode `0600` on POSIX systems. That mode is not an
 equivalent Windows ACL guarantee, so Windows deployments should rely on the
 normal account/filesystem access controls protecting `HERMES_HOME`.
 
+An unreadable registry, an invalid registry structure, or an unsupported
+registry version blocks all mirror operations. This prevents Hermes from
+creating OpenViking files that it cannot track and prevents an older Hermes
+version from overwriting mappings written by a newer version. The warning
+identifies the registry path and distinguishes an unsupported version from an
+invalid format.
+
+Stop Hermes before repairing the registry. For an unsupported version, run a
+Hermes version that supports the reported registry version; do not delete or
+replace the file. For an unreadable or invalid registry, restore a valid backup.
+If no backup exists, rename the invalid file and restart Hermes only if you
+accept that its existing OpenViking files will no longer have stable mappings.
+Those files then require manual cleanup by exact URI.
+
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as
 `viking://user/default/peers/hermes/memories/preferences/mem_abc123.md` (any

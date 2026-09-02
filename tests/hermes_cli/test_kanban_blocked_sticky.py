@@ -29,12 +29,31 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 import time
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+
+
+def _load_dashboard_router():
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_blocked_sticky_test",
+        plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.router
 
 
 @pytest.fixture
@@ -46,6 +65,13 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+@pytest.fixture
+def dashboard_client(kanban_home: Path) -> TestClient:
+    app = FastAPI()
+    app.include_router(_load_dashboard_router(), prefix="/api/plugins/kanban")
+    return TestClient(app)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +100,102 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             promoted = kb.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initially_blocked_child_requires_explicit_unblock_after_parent_completion(
+    kanban_home: Path,
+) -> None:
+    """A child created as blocked is a human gate, not a dependency wait."""
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="implementation")
+        blocked_child_id = kb.create_task(
+            conn,
+            title="human approval",
+            parents=[parent_id],
+            initial_status="blocked",
+        )
+        ready_child_id = kb.create_task(
+            conn,
+            title="ordinary dependent",
+            parents=[parent_id],
+        )
+
+        blocked_child = kb.get_task(conn, blocked_child_id)
+        ready_child = kb.get_task(conn, ready_child_id)
+        assert blocked_child is not None and blocked_child.status == "blocked"
+        assert ready_child is not None and ready_child.status == "todo"
+
+        parent = kb.claim_task(conn, parent_id, claimer="test-parent")
+        assert parent is not None
+        assert kb.complete_task(
+            conn,
+            parent_id,
+            summary="implementation complete",
+            expected_run_id=parent.current_run_id,
+        )
+
+        blocked_child = kb.get_task(conn, blocked_child_id)
+        ready_child = kb.get_task(conn, ready_child_id)
+        assert ready_child is not None and ready_child.status == "ready"
+        assert blocked_child is not None and blocked_child.status == "blocked"
+        assert kb.claim_task(conn, blocked_child_id, claimer="must-not-claim") is None
+        before_unblock_events = {
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?",
+                (blocked_child_id,),
+            ).fetchall()
+        }
+        assert before_unblock_events.isdisjoint({"promoted", "claimed", "spawned"})
+
+        assert kb.unblock_task(conn, blocked_child_id)
+        blocked_child = kb.get_task(conn, blocked_child_id)
+        assert blocked_child is not None and blocked_child.status == "ready"
+        assert kb.claim_task(conn, blocked_child_id, claimer="after-unblock") is not None
+
+
+@pytest.mark.parametrize("transition", ["promote", "status"])
+def test_operator_transition_clears_initial_block_stickiness(
+    kanban_home: Path,
+    dashboard_client: TestClient,
+    transition: str,
+) -> None:
+    """Audited operator overrides must not poison later breaker recovery."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="human gate",
+            initial_status="blocked",
+        )
+
+        if transition == "promote":
+            ok, error = kb.promote_task(conn, task_id, actor="operator")
+            assert ok and error is None
+        else:
+            response = dashboard_client.patch(
+                f"/api/plugins/kanban/tasks/{task_id}",
+                json={"status": "todo"},
+            )
+            assert response.status_code == 200, response.text
+            assert kb.recompute_ready(conn) == 1
+
+        claimed = kb.claim_task(conn, task_id, claimer="test-worker")
+        assert claimed is not None
+        assert kb._record_task_failure(
+            conn,
+            task_id,
+            "spawn failed",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=True,
+            end_run=True,
+        )
+        blocked = kb.get_task(conn, task_id)
+        assert blocked is not None and blocked.status == "blocked"
+
+        assert kb.recompute_ready(conn) == 1
+        recovered = kb.get_task(conn, task_id)
+        assert recovered is not None and recovered.status == "ready"
 
 
 

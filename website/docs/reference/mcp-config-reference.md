@@ -34,6 +34,7 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    forward_run_metadata: false
     tools:
       include: []
       exclude: []
@@ -57,10 +58,36 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `forward_run_metadata` | bool | both | Forward private API run metadata as MCP `tools/call.params._meta` (default: `false`) |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+
+## Private metadata per API run
+
+An authenticated API client can attach private metadata to one agent run with
+the `X-Hermes-MCP-Metadata` header. The value is an unpadded base64url-encoded
+JSON object, with a decoded limit of 8 KiB and a maximum nesting depth of 64.
+
+Hermes forwards this object only to servers that explicitly opt in:
+
+```yaml
+mcp_servers:
+  employee:
+    url: "https://example.internal/mcp"
+    headers:
+      Authorization: "Bearer ${EMPLOYEE_MCP_TOKEN}"
+    forward_run_metadata: true
+```
+
+The object is sent in MCP `tools/call.params._meta`. It is not appended to the
+user message, system prompt, tool arguments, or model-facing tool schema. The
+same private context is propagated to delegated child agents. For non-streaming
+API requests, its value also contributes to the idempotency fingerprint so a
+cached response cannot be reused across different bindings; the raw object is
+not stored in the idempotency cache. The MCP server remains responsible for
+validating signatures, expiry, and scope.
 
 ## `tools` policy keys
 

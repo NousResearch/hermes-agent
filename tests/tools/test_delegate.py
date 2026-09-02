@@ -17,6 +17,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.mcp_run_context import mcp_run_metadata, read_mcp_run_metadata
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -351,6 +352,35 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_workers_inherit_private_mcp_metadata(self, mock_run):
+        metadata = {"employee": "employee-42"}
+        observed = []
+
+        def _run(*_args, **kwargs):
+            observed.append(read_mcp_run_metadata())
+            return {
+                "task_index": kwargs["task_index"],
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 0,
+            }
+
+        mock_run.side_effect = _run
+        parent = _make_mock_parent()
+        with mcp_run_metadata(metadata):
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(observed, [metadata, metadata])
+        self.assertIsNone(read_mcp_run_metadata())
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
@@ -2103,6 +2133,37 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_single_child_worker_inherits_private_mcp_metadata(self):
+        from tools.delegate_tool import _run_single_child
+
+        metadata = {"employee": "employee-42"}
+        observed = []
+        child = MagicMock()
+        child._credential_pool = None
+        child._subagent_id = None
+        child.tool_progress_callback = None
+        child.run_conversation.side_effect = lambda **_kwargs: (
+            observed.append(read_mcp_run_metadata())
+            or {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+
+        with mcp_run_metadata(metadata):
+            result = _run_single_child(
+                task_index=0,
+                goal="Read employee schedule",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(observed, [metadata])
+        self.assertIsNone(read_mcp_run_metadata())
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 

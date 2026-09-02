@@ -53,6 +53,37 @@ curl http://localhost:8642/v1/chat/completions \
 
 Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
+## Private MCP metadata
+
+Server-to-server clients can attach private context to one agent run with:
+
+```text
+X-Hermes-MCP-Metadata: <unpadded-base64url-json-object>
+```
+
+The header requires API key authentication and is limited to 8 KiB after
+decoding, with a maximum nesting depth of 64. Hermes keeps the decoded object
+outside model messages and tool schemas. It is forwarded as MCP
+`tools/call.params._meta` only to an MCP server configured with
+`forward_run_metadata: true`. Delegated child agents inherit the same private
+context. Non-streaming idempotency fingerprints include it, without storing the
+raw object in the idempotency cache, so different employee bindings cannot
+share a cached response.
+
+For example, the decoded JSON can contain an opaque, signed binding:
+
+```json
+{
+  "acme.employee": {
+    "binding": "<opaque-signed-binding>",
+    "expires_at": "2026-09-02T12:00:00Z"
+  }
+}
+```
+
+Hermes transports this metadata but does not treat it as identity. The target
+MCP server must validate its signature, expiry, and authorization scope.
+
 ## Endpoints
 
 ### POST /v1/chat/completions
@@ -351,7 +382,19 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`,
+`conversation_history`, or `previous_response_id`. Authenticated callers can
+also pass `X-Hermes-Session-Id`. When the same session ID is reused without
+explicit history or `previous_response_id`, Hermes loads that transcript from
+the session database before starting the new run. Hermes follows any
+compression-created child session and publishes the current session ID in the
+completed run status. The header and body value must match when both are
+present.
+
+An explicit `conversation_history` takes precedence even when it is an empty
+array. Hermes persists the resulting transcript as the active history for that
+session. This lets an API client replace stale stored context without it
+reappearing on the next turn.
 
 ### GET /v1/runs/\{run_id\}
 

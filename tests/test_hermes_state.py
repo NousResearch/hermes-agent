@@ -4651,6 +4651,66 @@ class TestGetMessagesPagination:
         assert exc_info.value.message_count == 5
         assert exc_info.value.limit == 4
 
+    def test_resume_safety_tip_only_counts_the_tip_segment(self, db):
+        """A deep compression lineage behind a small tip resumes tip-only.
+
+        The Desktop Bot Chat shape: many compaction segments (~29k rows of
+        lineage) and a small live tip. Callers that never materialize the
+        ancestors (deferred / omit_messages / lazy resume, tip-only model
+        restore) must be bounded by the tip alone, and the message must name
+        the scope it counted.
+        """
+        prev = None
+        for i in range(6):
+            sid = f"seg-{i}"
+            kwargs = {"parent_session_id": prev} if prev else {}
+            db.create_session(session_id=sid, source="tui", **kwargs)
+            db.append_messages_batch(
+                sid,
+                [{"role": "user", "content": f"{sid}-{j}"} for j in range(4)],
+            )
+            if i < 5:
+                db.end_session(sid, "compression")
+            prev = sid
+
+        assert db.get_resume_message_count("seg-5") == 24
+        assert db.get_resume_message_count("seg-5", tip_only=True) == 4
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
+            db.assert_resume_safe("seg-5", max_messages=10)
+        assert "across its lineage" in str(full.value)
+        assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
+            db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
+        assert tip.value.message_count == 4
+        assert "in its tip segment" in str(tip.value)
+
+    def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
+        """An explicit /branch copy owns its transcript: the guard and the
+        resume readers must agree that its lineage is itself alone."""
+        db.create_session(session_id="parent", source="tui")
+        db.append_messages_batch(
+            "parent",
+            [{"role": "user", "content": f"parent-{i}"} for i in range(6)],
+        )
+        db.create_session(
+            session_id="branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_messages_batch(
+            "branch",
+            [{"role": "user", "content": f"branch-{i}"} for i in range(2)],
+        )
+
+        _, display = db.get_resume_conversations("branch")
+        assert len(display) == 2
+        assert db.get_ancestor_display_prefix("branch") == []
+        # Before: the guard walked parent_session_id and counted 8, so a branch
+        # could be refused for rows a resume would never load.
+        assert db.get_resume_message_count("branch") == 2
+        assert db.assert_resume_safe("branch", max_messages=5) == 2
+
     def test_export_safety_is_bounded_to_the_requested_active_segment(self, db):
         db.create_session(session_id="root", source="cli")
         db.append_messages_batch(

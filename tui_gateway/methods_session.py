@@ -659,20 +659,37 @@ def _(rid, params: dict) -> dict:
         # (see _todo_state_from_history) — no extra transcript read here.
 
         # Every interactive resume path materializes the model history, even when
-        # omit_messages suppresses the response copy. Count the complete lineage
-        # before any reopen/history read so a runaway transcript cannot exhaust
-        # the dashboard. The metadata fallback keeps lightweight test/adaptor DBs
-        # that predate the shared SessionDB guard compatible. The limit resolves
-        # from config (sessions.max_resume_messages, 0 disables).
+        # omit_messages suppresses the response copy. Count what THIS path will
+        # actually load before any reopen/history read so a runaway transcript
+        # cannot exhaust the dashboard. Only the non-deferred, non-omitted
+        # resume reads the whole compression lineage (ancestors → tip) into
+        # memory; the deferred Desktop resume (display transcript paged over
+        # REST), the omit_messages resume, and the lazy watch resume all load
+        # the TIP segment only — guarding those against the full-lineage count
+        # rejected exactly the well-compressed conversations compaction is
+        # meant to produce (85 segments / ~29k lineage rows / ~700-row tip →
+        # 4130 and a Bot Chat stuck on "Waking up…"). The metadata fallback
+        # keeps lightweight test/adaptor DBs that predate the shared SessionDB
+        # guard compatible. The limit resolves from config
+        # (sessions.max_resume_messages, 0 disables).
         from hermes_state import (
             SessionResumeTooLargeError,
             resolved_max_resume_messages,
         )
 
+        eager_build = is_truthy_value(params.get("eager_build", False))
+        guard_tip_only = (
+            is_truthy_value(params.get("lazy", False))
+            or omit_messages
+            or (defer_history and not eager_build)
+        )
         safety_check = getattr(db, "assert_resume_safe", None)
         try:
             if callable(safety_check):
-                safety_check(target)
+                if guard_tip_only:
+                    safety_check(target, tip_only=True)
+                else:
+                    safety_check(target)
             else:
                 resume_limit = resolved_max_resume_messages()
                 stored_message_count = int(found.get("message_count") or 0)

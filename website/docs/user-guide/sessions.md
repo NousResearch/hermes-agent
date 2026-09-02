@@ -888,6 +888,34 @@ Active sessions are never auto-pruned, regardless of age. Ended sessions are
 aged from their latest message, so a long-lived conversation used recently is
 not deleted merely because it began before the retention window.
 
+### Oversized-Transcript Guards
+
+Two limits stop a runaway transcript from being loaded into memory all at once
+(both default to `20000` active messages; `0` disables the guard):
+
+```yaml
+sessions:
+  max_resume_messages: 20000   # interactive resume (CLI / TUI / Desktop)
+  max_export_messages: 20000   # one-shot in-memory export of a single session
+```
+
+`max_resume_messages` bounds **what the resume actually loads**, not the whole
+history of the conversation:
+
+- A plain interactive resume (CLI `--resume`, the TUI) materializes the full
+  compression lineage — every compacted segment plus the live tip — so it is
+  bounded across the lineage.
+- Desktop's cold resume pages the transcript over REST and only holds the live
+  tip segment in memory, so it is bounded by the tip alone. A long-lived chat
+  that has been compacted many times (dozens of segments, tens of thousands of
+  archived rows behind a small tip) is exactly what compression is meant to
+  produce and opens normally; its footer message count reflects the stored
+  lineage, not the live prompt.
+
+When a resume is refused the client receives error code `4130` with the count
+and the scope it was measured against (`across its lineage` or
+`in its tip segment`). `hermes sessions export` still works for such sessions.
+
 ### Manual Cleanup
 
 ```bash

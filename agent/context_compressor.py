@@ -525,6 +525,12 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
 # in the protected head, so compaction leaves it BEFORE the summary — and
 # SUMMARY_PREFIX tells the model to do nothing when no user message follows.
+# Set on a compaction carrier when the in-flight task was merged onto it (the
+# carrier ends the list, so a standalone user row would break alternation).
+# conversation_compression._ensure_compressed_has_user_turn treats it as
+# "intent present" so it does not insert a second copy of the same request.
+_INFLIGHT_REPLAY_MERGED_KEY = "_inflight_replay_merged"
+
 _INFLIGHT_TASK_REPLAY_HEADER = (
     "[STILL IN PROGRESS — this is the active request, restated after the "
     "compaction boundary because it was not finished yet. Continue it; do not "
@@ -6720,12 +6726,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         whose only user-role row is an inherited summary yields ``None`` and is
         never re-animated (#80622).
         """
+        from agent.conversation_compression import _is_real_user_message
+
         last_user_idx = -1
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
-            if cls._is_actionable_user_turn(
-                msg
-            ) and not cls._is_synthetic_compression_user_turn(msg):
+            # _is_real_user_message also rejects metadata-flagged scaffolding
+            # (_todo_snapshot_synthetic, recovery nudges, ...) that
+            # _is_actionable_user_turn cannot see.
+            if cls._is_actionable_user_turn(msg) and _is_real_user_message(msg):
+                last_user_idx = i
+                break
+            if isinstance(msg, dict) and msg.get(_INFLIGHT_REPLAY_MERGED_KEY):
+                # A previous cycle merged the live request onto this summary
+                # carrier; it is the only copy left, so it is still the task.
                 last_user_idx = i
                 break
         if last_user_idx < 0:
@@ -6793,6 +6807,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             return compressed
 
         task_text = _content_text_for_contains(inflight.get("content")).strip()
+        if _INFLIGHT_TASK_REPLAY_HEADER in task_text:
+            # Already a restatement from an earlier compaction (standalone row
+            # or merged onto a carrier): take the text after the header so a
+            # task that survives >1 cycle never stacks headers or drags the
+            # old summary along.
+            task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
         if not task_text:
             return compressed
 
@@ -6816,22 +6836,42 @@ This compaction should PRIORITISE preserving all information related to the focu
             ),
             None,
         )
+        if inflight.get(_INFLIGHT_REPLAY_MERGED_KEY):
+            # Never copy a summary carrier (metadata would mark the replay
+            # synthetic): restate as a plain user row.
+            replay = {"role": "user", "content": task_text}
+        else:
+            replay = _fresh_compaction_message_copy(inflight)
+        replay.pop(_COMPACTION_TAIL_MARKER, None)
+        if isinstance(replay.get("content"), str):
+            # Plain text: rebuild from the header-stripped task text so a
+            # task surviving several compactions never stacks headers.
+            replay["content"] = _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text
+        else:
+            # Multimodal parts: keep them, prepend the header text part.
+            replay["content"] = _append_text_to_content(
+                replay.get("content"),
+                _INFLIGHT_TASK_REPLAY_HEADER + "\n",
+                prepend=True,
+            )
+        drop_stale_api_content(replay)
+
         if last_visible_role == "user":
+            # Alternation is judged on template-visible rows only (tool_calls /
+            # tool rows are exempt), so a user-pinned summary followed by a
+            # tool tail still "ends on user": a standalone user row would break
+            # the Mistral-style pre-flight check (#58753). Merge onto the
+            # carrier instead and flag it — the carrier's own metadata marks it
+            # synthetic, and without the flag _ensure_compressed_has_user_turn
+            # would insert a second copy of the same request.
             carrier["content"] = _append_text_to_content(
                 carrier.get("content"),
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
+            carrier[_INFLIGHT_REPLAY_MERGED_KEY] = True
             drop_stale_api_content(carrier)
             return compressed
 
-        replay = _fresh_compaction_message_copy(inflight)
-        replay.pop(_COMPACTION_TAIL_MARKER, None)
-        replay["content"] = _append_text_to_content(
-            replay.get("content"),
-            _INFLIGHT_TASK_REPLAY_HEADER + "\n",
-            prepend=True,
-        )
-        drop_stale_api_content(replay)
         compressed.append(replay)
         return compressed
 
@@ -8675,13 +8715,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         # handoff (single-prompt cron shape: the job prompt is pinned in the
         # protected head). SUMMARY_PREFIX reads that as "no user message after
         # the summary → do nothing", so restate it past the boundary (#100818).
+        # Run BEFORE the in-flight re-append: the sanitizer's trailing-in-flight
+        # exemption (#79278) walks back from the list end, and a replay user row
+        # sitting there would make a genuinely pending assistant(tool_calls) look
+        # orphaned and get its calls stripped.
+        compressed = self._sanitize_tool_pairs(compressed)
         compressed = self._reappend_inflight_user_task(
             compressed, self._find_inflight_user_task(messages)
         )
 
         self.compression_count += 1
-
-        compressed = self._sanitize_tool_pairs(compressed)
 
         # Replace image parts in all compressed messages before the newest
         # image-bearing user turn with a short text placeholder. Without

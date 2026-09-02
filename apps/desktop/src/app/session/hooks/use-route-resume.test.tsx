@@ -101,6 +101,60 @@ describe('useRouteResume', () => {
     expect(resumeSession).not.toHaveBeenCalled()
   })
 
+  it('does not honor a leftover 4001 rebind during a /:sid -> /new delete transition', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // Idle reap queued requestSessionResume, then the user deleted the chat.
+    // Draft state lands before React Router flips /:sid -> /new.
+    activeSessionIdRef.current = null
+    selectedStoredSessionIdRef.current = null
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
   it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()

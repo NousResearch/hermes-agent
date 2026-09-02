@@ -30,6 +30,7 @@ const gateway = vi.hoisted(() => {
       if (method === "prompt.submit" && params.text === "failed prompt" && this.requests.filter(({ method: requestMethod, params: requestParams }) => requestMethod === "prompt.submit" && requestParams.text === "failed prompt").length === 1) throw new Error("submit failed");
       if (method === "session.interrupt" && this.interrupt) await this.interrupt;
       if (method === "session.activate" || method === "session.resume") return { session_id: "runtime-1", messages: [{ id: 7, role: "user", text: "previous prompt" }, { id: 8, role: "assistant", content: "previous answer" }], ...this.snapshot } as T;
+      if (method === "session.branch") return { session_id: "branch-runtime", stored_session_id: "branch-durable", title: "Branch" } as T;
       if (method === "complete.slash") return { items: [{ display: "/help", text: "/help" }], replace_from: 0 } as T;
       if (method === "model.options") return { providers: [{ slug: "openai-codex", models: ["gpt-5.6-luna", "gpt-5.6-sol"] }, { slug: "openrouter", models: ["minimax/minimax-m3:free"] }] } as T;
       return (method === "session.create" ? { session_id: "session-1" } : { status: "streaming" }) as T;
@@ -179,6 +180,15 @@ describe("NativeChatPage", () => {
     expect(host.querySelector("[data-slot='transcript-search']")?.textContent).toContain("1 match");
     await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Clear message search']")?.click());
     expect(host.querySelectorAll("[data-slot='transcript-row']").length).toBeGreaterThan(1);
+  });
+
+  it("branches the active session from the command palette using the durable branch id", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "k", ctrlKey: true })));
+    const branch = host.querySelector<HTMLButtonElement>("button[aria-label='Branch current session']");
+    expect(branch).toBeTruthy();
+    await act(async () => branch?.click());
+    expect(gateway.instance?.requests.some(({ method, params }) => method === "session.branch" && params.session_id === "session-1")).toBe(true);
   });
 
   it("supports edit-as-draft and rerunning the latest prompt", async () => {

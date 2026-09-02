@@ -7,6 +7,7 @@ export type ChatCommandPaletteProps = {
   onNewChat: () => void;
   onToggleSessions: () => void;
   onInsertPrompt: (prompt: string) => void;
+  onBranchSession?: () => void;
   queuedCount: number;
   onClearQueue: () => void;
 };
@@ -17,6 +18,7 @@ export function CommandPalette({
   onNewChat,
   onToggleSessions,
   onInsertPrompt,
+  onBranchSession,
   queuedCount,
   onClearQueue,
 }: ChatCommandPaletteProps) {
@@ -28,9 +30,10 @@ export function CommandPalette({
     { id: "heartbeat", label: "Draft heartbeat command", hint: "Fill /heartbeat every 10m …", action: () => onInsertPrompt("/heartbeat every 10m ") },
     { id: "loop", label: "Draft recurring loop command", hint: "Fill /loop 10m …", action: () => onInsertPrompt("/loop 10m ") },
     { id: "new", label: "New chat", hint: "Start a fresh session", action: onNewChat },
+    ...(onBranchSession ? [{ id: "branch", label: "Branch current session", hint: "Create a safe copy before exploring", action: onBranchSession }] : []),
     { id: "sessions", label: "Toggle sessions", hint: "Show or hide the session navigator", action: onToggleSessions },
     ...(queuedCount > 0 ? [{ id: "clear-queue", label: "Clear prompt queue", hint: `${queuedCount} queued prompt${queuedCount === 1 ? "" : "s"}`, action: onClearQueue }] : []),
-  ], [onClearQueue, onFocusComposer, onInsertPrompt, onNewChat, onToggleSessions, queuedCount]);
+  ], [onBranchSession, onClearQueue, onFocusComposer, onInsertPrompt, onNewChat, onToggleSessions, queuedCount]);
 
   const visibleCommands = commands.filter((command) => `${command.label} ${command.hint}`.toLowerCase().includes(query.trim().toLowerCase()));
 

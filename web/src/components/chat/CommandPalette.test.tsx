@@ -16,6 +16,7 @@ describe("CommandPalette", () => {
     onNewChat: vi.fn(),
     onToggleSessions: vi.fn(),
     onInsertPrompt: vi.fn(),
+    onBranchSession: vi.fn(),
     queuedCount: 0,
     onClearQueue: vi.fn(),
   });
@@ -61,6 +62,14 @@ describe("CommandPalette", () => {
     await act(async () => root.render(createElement(CommandPalette, callbacks)));
     await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Draft heartbeat command']")?.click());
     expect(callbacks.onInsertPrompt).toHaveBeenCalledWith("/heartbeat every 10m ");
+    expect(callbacks.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a branch command when the parent provides it", async () => {
+    const callbacks = props();
+    await act(async () => root.render(createElement(CommandPalette, callbacks)));
+    await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Branch current session']")?.click());
+    expect(callbacks.onBranchSession).toHaveBeenCalledTimes(1);
     expect(callbacks.onClose).toHaveBeenCalledTimes(1);
   });
 });

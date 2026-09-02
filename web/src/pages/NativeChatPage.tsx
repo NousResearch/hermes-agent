@@ -68,6 +68,12 @@ type ResumeResponse = {
   pending_clarify?: ClarifySnapshot;
 };
 
+type BranchResponse = {
+  session_id?: string;
+  stored_session_id?: string;
+  title?: string;
+};
+
 function snapshotText(message: ResumeMessage): string {
   if (typeof message.text === "string") return message.text;
   if (typeof message.content === "string") return message.content;
@@ -786,6 +792,33 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     setFreshGeneration((generation) => generation + 1);
   }, [setSearchParams]);
 
+  const branchSession = useCallback(async () => {
+    if (!sessionId || connectionState !== "open") return;
+    const turnActive = streaming || tools.some((tool) => tool.state === "running") || turnStartedAt !== null;
+    if (turnActive) {
+      setError("Wait for the active turn to finish before branching");
+      setErrorAction(null);
+      return;
+    }
+    setError(null);
+    setErrorAction(null);
+    setStatus("Branching…");
+    try {
+      const response = await gateway.request<BranchResponse>("session.branch", { session_id: sessionId });
+      const target = response.stored_session_id ?? response.session_id;
+      if (!target) throw new Error("Gateway returned no branch session id");
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous);
+        next.set("resume", target);
+        return next;
+      }, { replace: false });
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setErrorAction("reconnect");
+      setStatus("Branch failed");
+    }
+  }, [connectionState, gateway, sessionId, setSearchParams, streaming, tools, turnStartedAt]);
+
   const submit = useCallback(async (event?: FormEvent, pendingPrompt?: PendingPrompt) => {
     event?.preventDefault();
     if (submitInFlightRef.current) return;
@@ -1072,6 +1105,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
           onNewChat={startNewChat}
           onToggleSessions={toggleSessionNavigator}
           onInsertPrompt={applyQuickPrompt}
+          onBranchSession={sessionId ? branchSession : undefined}
           queuedCount={queuedPrompts.length}
           onClearQueue={() => setQueuedPrompts([])}
         />

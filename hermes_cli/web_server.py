@@ -873,6 +873,8 @@ _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 # place: constant memory, no base64 inflation, no proxy body-size 502s (NS-501).
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
+from hermes_cli.web_server_files import _normalize_whatwg_windows_drive_pathname  # noqa: E402
+
 # Stable install identity for /api/status: one uuid4 hex per physical install,
 # persisted under the ROOT Hermes home (not the profile HERMES_HOME) so every
 # profile reports the same id and the desktop can collapse duplicate roster rows

@@ -1130,6 +1130,17 @@ def test_payload_encoded_size_boundary_is_exact_and_bounded():
         _freeze_memory_observation_payload(over)
 
 
+def test_negative_huge_integer_is_rejected_without_abs(monkeypatch):
+    """The pre-encoding guard must not duplicate an oversized negative int."""
+    monkeypatch.setattr(
+        "builtins.abs",
+        lambda _value: pytest.fail("oversized negative integer called abs"),
+    )
+    negative_huge = -(1 << (4 * MAX_MEMORY_OBSERVATION_BYTES + 1))
+    with pytest.raises(ValueError, match="payload is too large"):
+        _freeze_memory_observation_payload(negative_huge)
+
+
 def test_ordered_valid_observations_unaffected_by_shared_operation_budget(
     monkeypatch,
 ):

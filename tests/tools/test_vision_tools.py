@@ -305,6 +305,207 @@ class TestVisionConfig:
         assert kwargs["timeout"] == 120.0
 
 
+class TestPublicImageUrlPassthrough:
+    @staticmethod
+    def _response(text="Public URL image"):
+        response = MagicMock()
+        response.choices[0].message.content = text
+        return response
+
+    @pytest.mark.asyncio
+    async def test_public_http_url_is_sent_to_auxiliary_provider(self):
+        public_url = "https://images.example.com/cat.png"
+        resolved = MagicMock(
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            mime="image/png",
+        )
+
+        with (
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=resolved,
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=self._response(),
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(public_url, "describe this", "test/model")
+            )
+
+        assert result["success"] is True
+        sent_url = mock_llm.await_args.kwargs["messages"][0]["content"][1][
+            "image_url"
+        ]["url"]
+        assert sent_url == public_url
+        mock_llm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_public_url_rejection_retries_with_inline_image(self):
+        public_url = "https://images.example.com/cat.png"
+        inline_url = "data:image/png;base64,abc"
+        resolved = MagicMock(
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            mime="image/png",
+        )
+        sent_urls = []
+
+        async def fake_llm(**kwargs):
+            sent_urls.append(
+                kwargs["messages"][0]["content"][1]["image_url"]["url"]
+            )
+            if len(sent_urls) == 1:
+                raise RuntimeError("provider could not fetch image URL")
+            return self._response("Inline fallback image")
+
+        with (
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=resolved,
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value=inline_url,
+            ),
+            patch("tools.vision_tools.async_call_llm", side_effect=fake_llm),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(public_url, "describe this", "test/model")
+            )
+
+        assert result["success"] is True
+        assert sent_urls == [public_url, inline_url]
+
+    @pytest.mark.asyncio
+    async def test_non_fetch_error_does_not_retry_inline(self):
+        public_url = "https://images.example.com/cat.png"
+        resolved = MagicMock(
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            mime="image/png",
+        )
+
+        with (
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=resolved,
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("rate limit exceeded"),
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(public_url, "describe this", "test/model")
+            )
+
+        assert result["success"] is False
+        assert "rate limit exceeded" in result["error"]
+        mock_llm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_public_url_success_omits_inline_resize_note(self):
+        public_url = "https://images.example.com/large.png"
+        resolved = MagicMock(
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            mime="image/png",
+        )
+
+        def fake_resize(*args, scale_out=None, **kwargs):
+            scale_out.update(
+                orig_width=4000,
+                orig_height=2000,
+                new_width=1000,
+                new_height=500,
+            )
+            return "data:small"
+
+        with (
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=resolved,
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,oversized",
+            ),
+            patch("tools.vision_tools._MAX_BASE64_BYTES", 10),
+            patch("tools.vision_tools._resize_image_for_vision", side_effect=fake_resize),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=self._response(),
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(public_url, "describe this", "test/model")
+            )
+
+        assert result["success"] is True
+        assert result["analysis"] == "Public URL image"
+        assert "scale_note" not in result
+
+    @pytest.mark.asyncio
+    async def test_public_url_region_uses_cropped_inline_image(self, tmp_path):
+        public_url = "https://images.example.com/cat.png"
+        inline_url = "data:image/png;base64,cropped"
+        resolved = MagicMock(
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            mime="image/png",
+        )
+        cropped = tmp_path / "crop.png"
+        cropped.write_bytes(resolved.data)
+
+        with (
+            patch(
+                "tools.image_source.resolve_image_source",
+                new_callable=AsyncMock,
+                return_value=resolved,
+            ),
+            patch(
+                "tools.vision_tools._crop_image_region",
+                return_value=(cropped, "image/png", None),
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value=inline_url,
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=self._response("Cropped image"),
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    public_url,
+                    "read this area",
+                    "test/model",
+                    region=[0, 0, 4, 4],
+                )
+            )
+
+        assert result["success"] is True
+        sent_url = mock_llm.await_args.kwargs["messages"][0]["content"][1][
+            "image_url"
+        ]["url"]
+        assert sent_url == inline_url
+
+
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):

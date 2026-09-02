@@ -8231,12 +8231,6 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
         logger.debug("No MCP servers configured")
         return []
 
-    # SDK import is deferred to HERE so a config with zero MCP servers (the
-    # default) never pays the ~260ms `mcp` import on CLI startup.
-    if not _ensure_mcp_sdk():
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
-        return []
-
     if allowed_mcp_names is not None:
         # Filter by MCP-server-name match. Built-in toolset names that aren't
         # MCP servers will simply not match — that's fine; they don't need
@@ -8255,6 +8249,13 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
         if not servers:
             logger.debug("No MCP servers in --toolsets filter; skipping MCP load entirely")
             return []
+
+    # SDK import is deferred to HERE so a config with zero MCP servers (the
+    # default) — or a -t/--toolsets filter that keeps none — never pays the
+    # ~260ms `mcp` import on CLI startup.
+    if not _ensure_mcp_sdk():
+        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        return []
 
     # Cross-process discovery guard (#62771). A lock loser waits for
     # the holder, then performs its own process-local discovery. If locking is

@@ -240,8 +240,14 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
     }
     seen: dict[str, dict] = {}
 
+    sdk_probes = {"n": 0}
+
+    def _fake_ensure_sdk():
+        sdk_probes["n"] += 1
+        return True
+
     monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: dict(servers))
-    monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", lambda: True)
+    monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", _fake_ensure_sdk)
     monkeypatch.setattr(mcp_tool, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
     monkeypatch.setattr(mcp_tool, "_release_mcp_discovery_lock", lambda *_a, **_k: None, raising=False)
 
@@ -262,10 +268,13 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
     mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
     assert set(seen) == {"code-mcp"}
 
-    # `-t terminal` — no MCP server in the filter: skip the whole MCP load.
+    # `-t terminal` — no MCP server in the filter: skip the whole MCP load,
+    # including the ~260ms `mcp` SDK import.
     seen.clear()
+    sdk_probes["n"] = 0
     assert mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
     assert seen == {}
+    assert sdk_probes["n"] == 0
 
 
 def test_background_discovery_honors_server_filter(monkeypatch, _reset_mcp_server_filter):

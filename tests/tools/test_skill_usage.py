@@ -151,7 +151,7 @@ def test_bump_use_associates_wisdom_candidate_with_task_session(
 
     captured = {}
 
-    def record_successful_use(skill_name, *, task_id=None, session_id=None):
+    def record_successful_use_async(skill_name, *, task_id=None, session_id=None):
         captured.update(
             skill_name=skill_name,
             task_id=task_id,
@@ -160,8 +160,8 @@ def test_bump_use_associates_wisdom_candidate_with_task_session(
 
     monkeypatch.setattr(
         qualification,
-        "record_successful_use",
-        record_successful_use,
+        "record_successful_use_async",
+        record_successful_use_async,
     )
 
     skill_usage.bump_use("candidate-skill", task_id="session-1")

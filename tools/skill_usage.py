@@ -906,9 +906,9 @@ def bump_use(
             reuse_after_patch=facts["reuse_after_patch"],
         )
         try:
-            from hermes_wisdom.qualification import record_successful_use
+            from hermes_wisdom.qualification import record_successful_use_async
 
-            record_successful_use(
+            record_successful_use_async(
                 skill_name,
                 task_id=task_id,
                 # Skill invocation call sites carry the live transcript key as

@@ -13,6 +13,7 @@ from hermes_wisdom.qualification import (
     process_due_stability_jobs,
     record_mutation,
     record_successful_use,
+    snapshot_tree,
 )
 from hermes_wisdom.store import WisdomStore
 
@@ -112,6 +113,56 @@ def test_high_usage_threshold_uses_consecutive_business_days_and_deduplicates(
     assert [tuple(row) for row in reviews] == [
         (events[0]["skill_id"], events[0]["content_hash"], "pending")
     ]
+
+
+def test_candidate_hash_tracks_editorial_enrichment(monkeypatch, tmp_path: Path):
+    skill = _skill(tmp_path)
+    _eligible(monkeypatch, skill)
+    store = _configured_store(tmp_path)
+    old_hash, old_tree = snapshot_tree(skill)
+    skill_id = store.register_skill(
+        skill,
+        content_hash=old_hash,
+        source_kind="local",
+        tree=old_tree,
+        snapshot_text="workflow",
+    )
+
+    def enrich(path: Path):
+        skill_md = path / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8").replace(
+                "editorial_name: Learned Workflow",
+                "editorial_name: Human Friendly Workflow",
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "editorial_name": "Human Friendly Workflow",
+            "editorial_description": "Reuse a workflow refined through practice.",
+            "changed": True,
+        }
+
+    monkeypatch.setattr(
+        "hermes_wisdom.qualification.ensure_skill_editorial_metadata", enrich
+    )
+    event_id = _emit_candidate(
+        store,
+        skill_id=skill_id,
+        skill_name="learned-skill",
+        content_hash=old_hash,
+        qualification="high_usage",
+        local_reasons={},
+        session_id=None,
+        task_id=None,
+    )
+
+    assert event_id
+    new_hash, _tree = snapshot_tree(skill)
+    event = store.local_events(kind="wisdom.candidate")[0]
+    assert new_hash != old_hash
+    assert event["content_hash"] == new_hash
+    assert store.local_skill(skill_id)["current_hash"] == new_hash
 
 
 def test_weekend_usage_neither_advances_nor_breaks_business_day_streak(

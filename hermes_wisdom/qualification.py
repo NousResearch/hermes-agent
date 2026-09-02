@@ -13,10 +13,10 @@ from typing import Any
 
 from hermes_constants import get_skills_dir
 from hermes_time import get_timezone
-from agent.skill_utils import load_skill_editorial_metadata
 from tools.skill_usage import _find_skill_dir, is_bundled, is_hub_installed
 
 from .contract import sha256_address
+from .editorial import ensure_skill_editorial_metadata
 from .store import WisdomStore
 
 logger = logging.getLogger(__name__)
@@ -190,13 +190,24 @@ def _emit_candidate(
     local = store.local_skill(skill_id)
     source = Path(str(local["canonical_path"])) if local else None
     editorial = (
-        load_skill_editorial_metadata(source, fallback_name=skill_name)
+        ensure_skill_editorial_metadata(source)
         if source is not None
         else {
             "editorial_name": skill_name,
             "editorial_description": "",
+            "changed": False,
         }
     )
+    editorial_changed = bool(editorial.pop("changed", False))
+    if source is not None and editorial_changed:
+        content_hash, tree = snapshot_tree(source)
+        store.register_skill(
+            source,
+            content_hash=content_hash,
+            source_kind="local",
+            tree=tree,
+            snapshot_text=_frontmatter_free_text(source),
+        )
     event_id = store.emit_local_event(
         kind="wisdom.candidate",
         skill_id=skill_id,
@@ -435,4 +446,24 @@ def record_mutation_async(
 
     threading.Thread(
         target=run, name=f"wisdom-qualify-{skill_name[:32]}", daemon=True
+    ).start()
+
+
+def record_successful_use_async(
+    skill_name: str, *, task_id: str | None = None, session_id: str | None = None
+) -> None:
+    """Keep qualification and legacy metadata enrichment off the active turn."""
+
+    def run() -> None:
+        try:
+            record_successful_use(
+                skill_name,
+                task_id=task_id,
+                session_id=session_id,
+            )
+        except Exception:
+            logger.debug("Wisdom use qualification failed", exc_info=True)
+
+    threading.Thread(
+        target=run, name=f"wisdom-qualify-use-{skill_name[:32]}", daemon=True
     ).start()

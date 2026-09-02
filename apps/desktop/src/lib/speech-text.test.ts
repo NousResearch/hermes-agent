@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
-  it('summarizes fenced code blocks instead of reading them literally', () => {
+  it('does not speak placeholders for fenced code blocks', () => {
+    // The "code block omitted" summary used to be read aloud as English text
+    // (#86602). Code that can't be spoken should be silence, not a sentence.
+    // The "here is code:" colon also closes: the voice never waits on it.
     expect(sanitizeTextForSpeech('Here is code:\n```ts\nconst x = 1\n```\nDone.')).toBe(
-      'Here is code: code block omitted Done.'
+      'Here is code. Done.'
     )
   })
 
@@ -40,6 +43,90 @@ Full detail stays visible on screen.`
 Second sentence.`
 
     expect(sanitizeTextForSpeech(text)).toBe('First sentence. Second sentence.')
+  })
+
+  it('does not speak MEDIA file-link tokens', () => {
+    // Rendering shows these as "Open inference-server-shopping-list.xlsx";
+    // the hyphenated slug + odd extension made the voice loop ("eeeeee").
+    const text = 'The files are below.\nMEDIA:/Users/ricardo/Documents/inference-server-shopping-list.xlsx\nBye.'
+
+    expect(sanitizeTextForSpeech(text)).toBe('The files are below. Bye.')
+  })
+
+  it('does not speak a placeholder word for URLs', () => {
+    // Used to say the English word "link" (#86602); URLs are silence now.
+    expect(sanitizeTextForSpeech('See https://example.com/a-huge-page for details')).toBe(
+      'See for details'
+    )
+  })
+
+  it('expands symbols into words a voice can say', () => {
+    const spoken = sanitizeTextForSpeech('~100 users, 2× RTX 5090, ≈50% sure, €5 each. Next → done.')
+
+    expect(spoken).toContain('about 100 users')
+    expect(spoken).toContain('2 times RTX 5090')
+    expect(spoken).toContain('about 50 percent')
+    expect(spoken).toContain('5 euros')
+    expect(spoken).toContain('to done')
+  })
+
+  it('keeps ~~strike~~ readable instead of speaking tildes', () => {
+    expect(sanitizeTextForSpeech('This ~~is~~ old.')).toBe('This is old.')
+  })
+
+  it('tames em dashes into speakable pauses', () => {
+    // Real repro: "peek — the app password" produced an audible growl.
+    // Lowercase after the dash is a comma pause; uppercase opens a sentence.
+    // Digit-to-digit ranges become "to"; a dash next to a digit on one side
+    // still gets tamed instead of surviving raw.
+    expect(sanitizeTextForSpeech("The file's below if you want to peek — the app password is safe.")).toBe(
+      "The file's below if you want to peek, the app password is safe."
+    )
+    expect(sanitizeTextForSpeech('You can peek — Done.')).toBe('You can peek. Done.')
+    expect(sanitizeTextForSpeech('Mix red — green — blue.')).toBe('Mix red, green, blue.')
+    expect(sanitizeTextForSpeech('Step 1 — open the file.')).toBe('Step 1, open the file.')
+    expect(sanitizeTextForSpeech('See pages 5–10.')).toBe('See pages 5 to 10.')
+  })
+
+  it('expands trailing and bare euro signs', () => {
+    // PT/ES convention writes the sign after the amount ("1.499,90 €").
+    expect(sanitizeTextForSpeech('Costs 1.499,90 € per unit.')).toBe('Costs 1.499,90 euros per unit.')
+    expect(sanitizeTextForSpeech('Prices in € are stable.')).toBe('Prices in euros are stable.')
+  })
+
+  it('closes a colon orphaned when its file link is stripped', () => {
+    // Inline form: "below: MEDIA:/path" on one line. The link is stripped
+    // mid-line, orphaning the colon at the end of the text. It must close.
+    expect(sanitizeTextForSpeech('The file is below: MEDIA:/tmp/x.py')).toBe('The file is below.')
+  })
+
+  it('tames bare file paths into a spoken placeholder', () => {
+    // No MEDIA: marker: "~/.config/himalaya/config.toml" in prose looped the
+    // voice into "aaaa". Paths are screen addresses, not speech.
+    expect(sanitizeTextForSpeech('check the config at ~/.config/himalaya/config.toml')).toBe(
+      'check the config at the path'
+    )
+    expect(sanitizeTextForSpeech('read /etc/hosts for the mapping')).toBe('read the path for the mapping')
+    expect(sanitizeTextForSpeech('open src/lib/app.ts to edit')).toBe('open the path to edit')
+    // Not paths: slashed words, N/A, dates, decimal fractions, rates.
+    expect(sanitizeTextForSpeech('pick A and/or B')).toBe('pick A and/or B')
+    expect(sanitizeTextForSpeech('status is N/A')).toBe('status is N/A')
+    expect(sanitizeTextForSpeech('due 2026/06/02')).toBe('due 2026/06/02')
+    expect(sanitizeTextForSpeech('ratio 1.5/2.5')).toBe('ratio 1.5/2.5')
+    expect(sanitizeTextForSpeech('pay 5/month')).toBe('pay 5/month')
+    expect(sanitizeTextForSpeech('~100 users')).toBe('about 100 users')
+  })
+
+  it('closes a colon that a code block used to follow', () => {
+    // The real repro: "one line added to the regex list:" then a code fence.
+    // The voice hit the colon, found a wall of punctuation, and stuttered.
+    expect(
+      sanitizeTextForSpeech('One line added to the regex list:\n```ts\nconst x = 1\n```\nBye.')
+    ).toBe('One line added to the regex list. Bye.')
+  })
+
+  it('closes a colon that ends the speakable text', () => {
+    expect(sanitizeTextForSpeech('The regex list:')).toBe('The regex list.')
   })
 
   it.each([

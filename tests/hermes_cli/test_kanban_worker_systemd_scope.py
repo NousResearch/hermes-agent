@@ -2208,6 +2208,96 @@ def test_invalidate_descendants_stops_scope(shims, conn):
     assert row["worker_scope"] is None
 
 
+def test_reopen_demotion_checks_identity_for_every_descendant(
+    shims, conn, monkeypatch,
+):
+    """W: the reopen demotion's run-identity guard must not depend on the
+    row still having a worker_scope. Phase 0 can confirm the OLD scoped
+    run's cgroup empty while a retry replaces it with a fresh UNSCOPED
+    run (the spawn-fallback shape) before the demotion transaction — a
+    stop verdict about the old run must not demote (or kill) the new
+    one. Per-row guards, not a blanket stand-down: an unchanged unscoped
+    running descendant still demotes with its kill queued."""
+    import threading
+
+    parent = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent)
+    child = kb.create_task(
+        conn, title="replaced child", assignee="builder", parents=[parent],
+    )
+    kb.claim_task(conn, child, claimer=kb._claimer_id())
+    # The old run: scoped, cgroup already empty (the unit was never
+    # written, so the Phase 0 probe confirms dead instantly).
+    old_unit = kb._kanban_worker_scope_unit("t_w_old", 1)
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_scope=? WHERE id=?",
+        (old_unit, child),
+    )
+    # Positive control: an unscoped running descendant whose identity
+    # stays stable across the two phases — still demoted, kill queued.
+    steady = kb.create_task(
+        conn, title="steady child", assignee="builder", parents=[parent],
+    )
+    kb.claim_task(conn, steady, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=424242 WHERE id=?",
+        (steady,),
+    )
+    conn.commit()
+
+    # Race the probe->txn window: right after the OLD scope's stop
+    # confirms, replace the run with a fresh UNSCOPED worker.
+    real_stop = kb.request_worker_scope_stop
+    replaced = threading.Event()
+
+    def stop_then_replace(unit, **kwargs):
+        result = real_stop(unit, **kwargs)
+        if result and unit == old_unit and not replaced.is_set():
+            replaced.set()
+            new_pid = shims.sleeper()
+            with kb.write_txn(conn):
+                kb._end_run(conn, child, outcome="crashed", status="ready")
+                conn.execute(
+                    "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                    "claim_expires=NULL, worker_pid=NULL, "
+                    "worker_pid_started_at=NULL, worker_registered_at=NULL, "
+                    "worker_scope=NULL WHERE id=?",
+                    (child,),
+                )
+            assert kb.claim_task(conn, child, claimer=kb._claimer_id())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='running' WHERE id=?", (child,),
+                )
+            kb._set_worker_pid(conn, child, new_pid)
+            stop_then_replace.new_pid = new_pid
+        return result
+
+    monkeypatch.setattr(kb, "request_worker_scope_stop", stop_then_replace)
+
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent, author="operator",
+    )
+    assert replaced.is_set()
+    row = conn.execute(
+        "SELECT status, worker_scope, worker_pid FROM tasks WHERE id=?",
+        (child,),
+    ).fetchone()
+    # The new run is NOT demoted, never queued for a kill, and its
+    # worker survives the retraction untouched.
+    assert row["status"] == "running"
+    assert row["worker_scope"] is None
+    assert row["worker_pid"] == stop_then_replace.new_pid
+    assert kb._pid_alive(stop_then_replace.new_pid)
+    assert all(entry["id"] != child for entry in result["invalidated"])
+    assert all(
+        t[0] != stop_then_replace.new_pid for t in result["terminations"]
+    )
+    # The stable unscoped sibling demotes as before.
+    assert any(entry["id"] == steady for entry in result["invalidated"])
+    assert any(t[0] == 424242 for t in result["terminations"])
+
+
 def test_completion_stops_scope_and_reaps_leaked_descendant(shims, conn, kanban_home):
     """Normal completion must not leak the worker's descendants: the
     worker-side stop is detached (it cannot wait on its own teardown), the

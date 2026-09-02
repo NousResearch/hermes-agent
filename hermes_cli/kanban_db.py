@@ -7523,12 +7523,16 @@ def invalidate_descendants_for_parent_reopen(
     # once the verified-stop service lands the kill. Runs before the
     # write transaction so the stop probe never sits inside it.
     # The probed run identity (current_run_id + worker fingerprint) is
-    # captured here and re-compared inside the transaction: a concurrent
-    # retry can replace the descendant's run between the two phases, and
-    # a stop verdict about the OLD run must never demote the NEW one.
+    # captured here for EVERY running descendant — scoped or not (pass 8,
+    # W) — and re-compared inside the transaction: a concurrent retry can
+    # replace the descendant's run between the two phases (including
+    # scoped -> unscoped, the spawn-fallback shape), and a stop verdict
+    # about the OLD run must never demote the NEW one. The guard used to
+    # key on the row still having a worker_scope, so a confirmed-dead
+    # scoped run replaced by a fresh UNSCOPED run slipped past it.
     deferred: set[str] = set()
-    probed_identity: dict[str, tuple[Any, Any, Any]] = {}
-    scoped_rows = conn.execute(
+    probed_identity: dict[str, tuple[Any, Any, Any, Any]] = {}
+    running_rows = conn.execute(
         """
         WITH RECURSIVE descendants(id) AS (
             SELECT child_id FROM task_links WHERE parent_id = ?
@@ -7541,17 +7545,21 @@ def invalidate_descendants_for_parent_reopen(
                t.current_run_id, t.worker_pid_started_at
         FROM descendants d
         JOIN tasks t ON t.id = d.id
-        WHERE t.status = 'running' AND t.worker_scope IS NOT NULL
+        WHERE t.status = 'running'
         """,
         (task_id,),
     ).fetchall()
-    for row in scoped_rows:
+    for row in running_rows:
         probed_identity[row["id"]] = (
             row["current_run_id"],
             row["worker_pid"],
             row["worker_pid_started_at"],
             row["worker_scope"],
         )
+        if not row["worker_scope"]:
+            # Unscoped: nothing to stop here — the pid is terminated
+            # post-commit; only its captured identity matters below.
+            continue
         if request_worker_scope_stop(
             row["worker_scope"], task_id=row["id"], conn=conn,
         ):
@@ -7602,7 +7610,6 @@ def invalidate_descendants_for_parent_reopen(
                 continue
             if (
                 previous_status == "running"
-                and row["worker_scope"]
                 and probed_identity.get(row["id"]) != (
                     row["current_run_id"],
                     row["worker_pid"],
@@ -7611,10 +7618,11 @@ def invalidate_descendants_for_parent_reopen(
                 )
             ):
                 # The run was replaced (or first appeared) after the
-                # Phase 0 probe: the confirmed-empty verdict belonged to
-                # the previous run's cgroup, not this worker's. Skip the
-                # demotion — the row stays running and the next
-                # reconcile/invalidate pass re-probes the new scope.
+                # Phase 0 probe — scoped OR unscoped (pass 8, W): the
+                # confirmed-empty verdict belonged to the previous run's
+                # cgroup, not this worker's. Skip the demotion — the row
+                # stays running and the next reconcile/invalidate pass
+                # re-probes the new scope.
                 _log.info(
                     "kanban: descendant %s of reopened %s changed runs "
                     "between the stop probe and the demotion (run %s -> "

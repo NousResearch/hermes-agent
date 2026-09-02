@@ -168,14 +168,19 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
 
 
 def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Path) -> None:
-    """The heartbeat must emit ``compacting`` status events, not just DB touches.
+    """The heartbeat must re-emit the compacting status, not just DB touches.
 
     Remote transports (e.g. the Android relay app) run idle-progress turn
     watchdogs that ``session.interrupt`` a turn after ~180s with no gateway
     events. Compression is silent on the event stream, so without periodic
-    ``status_callback`` heartbeats a long compression is killed mid-flight
-    and retriggers forever on sessions near the context ceiling.
+    status heartbeats a long compression is killed mid-flight and retriggers
+    forever on sessions near the context ceiling.
     """
+    from agent.conversation_compression import (
+        COMPACTION_HEARTBEAT_STATUS,
+        is_compaction_progress_status,
+    )
+
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HEARTBEAT_STATUS_TEST"
     db.create_session(session_id, source="test")
@@ -203,23 +208,62 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
 
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    from agent.conversation_compression import (
-        COMPACTION_HEARTBEAT_STATUS,
-        is_compaction_progress_status,
-    )
-
-    heartbeats = [
-        (event, message)
-        for event, message in status_events
-        if message == COMPACTION_HEARTBEAT_STATUS
-    ]
-    # One emit at heartbeat start plus at least one periodic tick while the
-    # summary call blocks.
-    assert len(heartbeats) >= 2
+    heartbeats = [e for e in status_events if e[1] == COMPACTION_HEARTBEAT_STATUS]
+    assert heartbeats, "no heartbeat status reached the client"
     # Same "lifecycle" key as the other compaction statuses so the TUI gateway
     # re-tags it to kind="compacting" and Telegram edits one bubble in place.
     assert {event for event, _ in heartbeats} == {"lifecycle"}
     assert is_compaction_progress_status(COMPACTION_HEARTBEAT_STATUS)
+    # Exactly one routine start line precedes the first heartbeat; the
+    # heartbeat no longer re-emits a start of its own (adapters without
+    # send_or_update_status would otherwise post two messages).
+    assert status_events[0][1] != COMPACTION_HEARTBEAT_STATUS
+    # Every heartbeat is a periodic tick: none may precede the first
+    # "in progress" DB touch, which is what start() would have produced.
+    first_tick_touch = touch_calls.index("context compression in progress")
+    assert first_tick_touch >= 1  # "started" touch came first
+    assert len(heartbeats) <= touch_calls.count("context compression in progress")
+
+
+def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Path) -> None:
+    """A context engine that suppresses the routine start status opens no
+    visible compaction phase; the heartbeat must not open one either (there
+    would be no terminal edge to close it)."""
+    from agent.conversation_compression import COMPACTION_HEARTBEAT_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_QUIET_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with patch(
+        "agent.conversation_compression.automatic_compaction_status_message",
+        return_value="",
+    ):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert all(m != COMPACTION_HEARTBEAT_STATUS for _, m in status_events)
+    assert "context compression in progress" in touch_calls  # DB touches still ran
 
 
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:

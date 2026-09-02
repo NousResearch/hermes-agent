@@ -2315,6 +2315,8 @@ class _CompressionActivityHeartbeat:
         self,
         agent: Any,
         interval_seconds: float | None = None,
+        *,
+        emit_client_status: bool = False,
         commit_fence: Optional[CompressionCommitFence] = None,
     ) -> None:
         self._agent = agent
@@ -2331,6 +2333,10 @@ class _CompressionActivityHeartbeat:
         if not math.isfinite(interval_seconds):
             interval_seconds = 60.0
         self._interval_seconds = max(0.1, interval_seconds)
+        # Only a compression that opened a VISIBLE compaction phase (the
+        # routine start status was emitted) keeps it alive with heartbeats;
+        # quiet context engines emit neither (#98371 follow-up).
+        self._emit_client_status = emit_client_status
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -2343,7 +2349,6 @@ class _CompressionActivityHeartbeat:
         # if a prior timeout/cooldown stamp is still on the agent.
         self._suppressed = False
         self._touch("context compression started", allow_terminal_overwrite=True)
-        self._emit_progress_status()
         self._thread.start()
         return self
 
@@ -2405,7 +2410,7 @@ class _CompressionActivityHeartbeat:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 
     def _emit_progress_status(self) -> None:
-        """Publish a client-visible ``compacting`` status line.
+        """Re-publish the compacting status so remote transports see progress.
 
         Compression can stream for minutes with no deltas, tool events, or
         status lines reaching remote transports. Idle-progress watchdogs on
@@ -2413,22 +2418,23 @@ class _CompressionActivityHeartbeat:
         treat the silence as a dead turn and fire ``session.interrupt`` —
         killing a healthy compression mid-flight and rolling back its work,
         which retriggers on the next prompt and loops forever on sessions
-        near the context ceiling. A periodic ``status_callback`` heartbeat
-        gives every transport a progress event to re-arm on.
+        near the context ceiling (#98371).
+
+        Routed through ``agent._emit_status`` like every other compaction
+        status: same "lifecycle" key (the TUI gateway re-tags it to
+        ``compacting``; Telegram edits one bubble per key), same chat-platform
+        filter, same CLI print path.
         """
-        status_callback = getattr(self._agent, "status_callback", None)
-        if not status_callback:
+        if not self._emit_client_status:
+            return
+        emit = getattr(self._agent, "_emit_status", None)
+        if not callable(emit):
             return
         try:
-            # Same "lifecycle" key as every other compaction status: the
-            # TUI gateway re-tags it to kind="compacting" via
-            # is_compaction_progress_status, and Telegram's per-key
-            # send_or_update_status edits the existing bubble instead of
-            # appending one per tick.
-            status_callback("lifecycle", COMPACTION_HEARTBEAT_STATUS)
+            emit(COMPACTION_HEARTBEAT_STATUS)
         except Exception:
             logger.debug(
-                "status_callback error in compression heartbeat", exc_info=True
+                "status emit error in compression heartbeat", exc_info=True
             )
 
     def _run(self) -> None:
@@ -4183,7 +4189,9 @@ def compress_context(
 
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
-            agent, commit_fence=commit_fence
+            agent,
+            commit_fence=commit_fence,
+            emit_client_status=_compaction_status_emitted,
         ).start()
         # Publish forward progress to the commit fence while the summary LLM
         # call streams. Async hosts (gateway session hygiene) poll
@@ -5779,7 +5787,9 @@ def _compress_context_via_codex_app_server(
 
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
-        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        _activity_heartbeat = _CompressionActivityHeartbeat(
+            agent, emit_client_status=True
+        ).start()
         result = codex_session.compact_thread()
     except BaseException:
         if _activity_heartbeat is not None:

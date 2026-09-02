@@ -1631,6 +1631,18 @@ class TestGrok43StaleCacheGuard:
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
 
 
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
+
+
 class TestGrok46StaleCacheGuard:
     """Pre-catalog builds resolved grok-4.6 via the generic 'grok-4' catch-all
     (256,000) and persisted it before the 500K catalog entry existed.

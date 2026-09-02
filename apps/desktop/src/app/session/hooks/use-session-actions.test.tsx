@@ -4799,8 +4799,8 @@ describe('selectSidebarItem', () => {
 
       expect(navigate).not.toHaveBeenCalled()
       expect($routeTiles.get()).toEqual([
-        { dir: 'right', path: '/kanban' },
-        { dir: 'right', path: '/llm-usage' }
+        { dir: 'center', path: '/kanban' },
+        { dir: 'center', path: '/llm-usage' }
       ])
       expect(revealTreePane).toHaveBeenCalledWith('route-tile:/kanban')
       expect(revealTreePane).toHaveBeenCalledWith('route-tile:/llm-usage')

@@ -18,6 +18,7 @@ import {
 } from '@/store/native-notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
+import { openRouteTile } from '@/store/route-tiles'
 import {
   $selectedStoredSessionId,
   getRememberedRoute,
@@ -135,7 +136,12 @@ export function useDesktopIntegrations({
           return
         }
 
-        const route = getRememberedRoute(activeProfile)
+        const remembered = getRememberedRoute(activeProfile)
+        // A remembered plugin page (legacy: it used to be a router
+        // destination) re-opens as its route TILE, and the chat restore below
+        // still runs so main comes back to the session it was on.
+        const rememberedTile = remembered && appViewForPath(remembered) === 'extension' ? remembered : null
+        const route = rememberedTile ? null : remembered
         const routeSession = route ? routeSessionId(route) : null
         const last = getRememberedSessionId(activeProfile)
 
@@ -159,6 +165,10 @@ export function useDesktopIntegrations({
         }
 
         restoredRef.current = true
+
+        if (rememberedTile) {
+          openRouteTile(rememberedTile, 'center')
+        }
 
         if (
           route &&
@@ -210,11 +220,15 @@ export function useDesktopIntegrations({
     // Remember the open chat (session id for notifications/resume) AND the last
     // non-overlay route (a page like /skills, or a session route) per profile.
     // Session-shaped routes require an explicit matching owner; unresolved and
-    // wrong-profile rows must not replace known-safe navigation.
+    // wrong-profile rows must not replace known-safe navigation. A contributed
+    // route is transient (the router steps straight back off it into a tile),
+    // so it never replaces the remembered route either.
+    const view = appViewForPath(locationPathname)
+
     if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
       setRememberedSessionId(routedSessionId, activeProfile)
       setRememberedRoute(locationPathname, activeProfile)
-    } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
+    } else if (!routedSessionId && !isOverlayView(view) && view !== 'extension') {
       setRememberedRoute(locationPathname, activeProfile)
       setRememberedSessionOwner(null, undefined, activeProfile)
     }

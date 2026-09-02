@@ -79,10 +79,14 @@ const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route
 const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => route.path))
 
 // ── Contributed routes — the `routes` registry area ─────────────────────────
-// A contribution mounts a FULL PAGE in the workspace pane at `data.path`
-// (`render` on the contribution itself, like every other area). Contributed
-// paths are reserved exactly like APP_ROUTES so the session-id parser never
-// mistakes them for a session route. Navigate with `host.navigate(path)`.
+// A contribution mounts a FULL PAGE at `data.path` (`render` on the
+// contribution itself, like every other area). The page shows as a ROUTE TILE
+// — a closeable tab stacked into the workspace strip (see `RouteTilePane`) —
+// never as the workspace pane's own content: landing the router on the path
+// (`host.navigate(path)`, a deep link, a remembered route) opens the tile and
+// steps the router back (`ChatRoutesSurface`). Contributed paths are reserved
+// exactly like APP_ROUTES so the session-id parser never mistakes them for a
+// session route.
 
 export const ROUTES_AREA = 'routes'
 
@@ -236,12 +240,14 @@ export function appViewForPath(pathname: string): AppView {
 }
 
 /** Does `to` land on a full page rendered INSIDE the workspace pane
- *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
- *  they float over whatever the workspace is already showing. */
+ *  (skills/messaging/artifacts)? Overlays don't count — they float over
+ *  whatever the workspace is already showing. Neither do contributed routes:
+ *  the router never settles on one (the landing becomes a route tile), and
+ *  counting it would front the workspace over the tab it just opened. */
 function isWorkspacePageRoute(to: string): boolean {
   const view = appViewForPath(to)
 
-  return view !== 'chat' && !isOverlayView(view)
+  return view !== 'chat' && view !== 'extension' && !isOverlayView(view)
 }
 
 /** True while the workspace pane shows a FULL PAGE (skills/messaging/

@@ -766,7 +766,10 @@ export function useSessionActions({
 
       if (item.route) {
         if (isContributedRoute(item.route)) {
-          openRouteTile(item.route)
+          // A plugin page is a TAB in the workspace strip (center), the same
+          // dock a sidebar session gets — not a split beside main. The row's
+          // right-click "Open in split" submenu is the explicit edge path.
+          openRouteTile(item.route, 'center')
 
           return
         }

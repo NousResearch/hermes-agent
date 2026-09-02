@@ -7018,6 +7018,7 @@ def resolve_nous_runtime_credentials(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_refresh: bool = False,
+    stale_access_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Resolve Nous inference credentials for runtime use.
@@ -7025,8 +7026,14 @@ def resolve_nous_runtime_credentials(
     Ensures access_token is a valid inference-scoped JWT, refreshing it when
     needed. Concurrent processes coordinate through the auth store file lock.
 
-    Returns dict with: provider, base_url, api_key, key_id, expires_at,
-    expires_in, source ("invoke_jwt"), and auth_path.
+    ``stale_access_token`` is the bearer that just failed upstream (401). When
+    set together with ``force_refresh``, the refresh POST is skipped if the
+    store — re-read under the lock — already holds a *different*, usable
+    token: another process won the rotation, so this caller adopts it
+    instead of rotating the shared grant again. Without this, N concurrent
+    processes hitting the same hourly expiry issue N refreshes, and each
+    rotation invalidates the token a sibling just adopted (Sep 2026: 120
+    subagents, 81 refreshes, ~540 401s in eight minutes).
     """
     sequence_id = uuid.uuid4().hex[:12]
 
@@ -7039,6 +7046,20 @@ def resolve_nous_runtime_credentials(
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
                             provider="nous", relogin_required=True)
+
+        def _already_rotated_by_peer(token: Any) -> bool:
+            return bool(
+                force_refresh
+                and stale_access_token
+                and isinstance(token, str)
+                and token
+                and token != stale_access_token
+                and _nous_invoke_jwt_status(
+                    token,
+                    scope=state.get("scope"),
+                    expires_at=state.get("expires_at"),
+                ) is None
+            )
 
         persisted_state = dict(state)
         state_persisted = False
@@ -7185,6 +7206,16 @@ def resolve_nous_runtime_credentials(
                 scope=state.get("scope"),
                 expires_at=state.get("expires_at"),
             )
+            # Under the store lock: if the bearer that failed upstream is no
+            # longer the one on disk and the on-disk one is usable, a peer
+            # already rotated — adopt, never re-POST the shared grant.
+            if _already_rotated_by_peer(access_token):
+                _oauth_trace(
+                    "refresh_skipped_peer_rotated",
+                    sequence_id=sequence_id,
+                    access_token_fp=_token_fingerprint(access_token),
+                )
+                force_refresh = False
             if force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
@@ -7202,6 +7233,13 @@ def resolve_nous_runtime_credentials(
                             expires_at=state.get("expires_at"),
                         )
                         _persist_state("post_shared_merge_access_unusable")
+                        if _already_rotated_by_peer(access_token):
+                            _oauth_trace(
+                                "refresh_skipped_peer_rotated",
+                                sequence_id=sequence_id,
+                                access_token_fp=_token_fingerprint(access_token),
+                            )
+                            force_refresh = False
 
                     if force_refresh or invoke_jwt_status is not None:
                         if not isinstance(refresh_token, str) or not refresh_token:

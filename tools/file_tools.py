@@ -1437,7 +1437,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _resolve_container_task_id,
         _resolve_task_host_cwd,
         _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
+        _is_container_backend,
     )
     import time
 
@@ -1536,7 +1536,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             # bypass the guard.  Valid in-container override paths (RL/benchmark
             # sandboxes that set cwd to /workspace, /root, etc.) are absolute
             # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+            if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
                 if cwd != config["cwd"]:
                     logger.info(
                         "Ignoring host/relative cwd override %r for %s backend "

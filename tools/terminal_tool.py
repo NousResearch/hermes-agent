@@ -2065,8 +2065,12 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
 
     Shared by the terminal tool's own get-or-create path and the lazy
     :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+
+    Unknown keys are passed through so a plugin-registered backend can read its
+    own config values from ``container_config`` without the core enumerating
+    them (the forward-compat ``**kwargs`` contract on ``create_environment``).
     """
-    return {
+    known = {
         "container_cpu": config.get("container_cpu", 1),
         "container_memory": config.get("container_memory", 5120),
         "container_disk": config.get("container_disk", 51200),
@@ -2090,6 +2094,10 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "docker_shared_container_key": config.get("docker_shared_container_key", ""),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
     }
+    for key, value in config.items():
+        if key not in known:
+            known[key] = value
+    return known
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,

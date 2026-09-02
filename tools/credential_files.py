@@ -526,8 +526,23 @@ def from_agent_visible_cache_path(
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") not in {"docker", "apple_container"}:
-        return container_path
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("docker", "apple_container"):
+        pass  # /root/.hermes default
+    else:
+        # Plugin-registered backends declare where synced cache files land via
+        # ``cache_path_base``; None means host paths remain correct and there is
+        # nothing to reverse-translate.
+        plugin_base = None
+        try:
+            from agent.terminal_env_registry import provider_flag
+
+            plugin_base = provider_flag(backend, "cache_path_base", None)
+        except Exception:
+            plugin_base = None
+        if not plugin_base:
+            return container_path
+        container_base = str(plugin_base)
 
     path = Path(container_path)
     for mount in get_cache_directory_mounts(container_base=container_base):

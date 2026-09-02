@@ -4080,10 +4080,22 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     Docker and Apple Container are exceptions once host paths are bind-mounted:
     at that point a command like ``rm -rf /workspace`` reaches host files, so it
     must go through the normal approval flow.
+
+    Plugin-registered backends declare their isolation via the provider's
+    ``skip_container_guards`` attribute (defaults to ``is_container``; backends
+    that can mount host paths override it to False).
     """
     if env_type in {"docker", "apple_container"}:
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    # Plugin-registered backend: consult the registry (fail-soft to False so an
+    # unknown or misbehaving backend never skips approval).
+    try:
+        from agent.terminal_env_registry import provider_flag
+    except Exception:
+        return False
+    return bool(provider_flag(env_type, "skip_container_guards", False))
 
 
 def check_dangerous_command(command: str, env_type: str,

@@ -1737,3 +1737,119 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+# ---------------------------------------------------------------------------
+# Named custom providers: key_env must actually be set
+# ---------------------------------------------------------------------------
+
+def _doctor_output_for_config(monkeypatch, tmp_path, config_text: str) -> str:
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+_KEY_ENV_CONFIG = (
+    "model:\n"
+    "  provider: mylocal\n"
+    "  default: gemma-4-e4b-it-mlx\n"
+    "providers:\n"
+    "  mylocal:\n"
+    "    base_url: http://127.0.0.1:1234/v1\n"
+    "    key_env: MYLOCAL_API_KEY\n"
+)
+_KEY_ENV_MESSAGE = "model.provider 'mylocal' reads its API key from MYLOCAL_API_KEY, which is not set"
+
+
+def test_run_doctor_flags_unset_key_env_for_active_custom_provider(monkeypatch, tmp_path):
+    """The registry credential check skips custom providers; the runtime would
+    fail every request with an auth error once key_env resolves to nothing."""
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, _KEY_ENV_CONFIG)
+
+    assert _KEY_ENV_MESSAGE in out
+    assert "declares key_env: MYLOCAL_API_KEY" in out
+
+
+def test_run_doctor_key_env_check_is_quiet_when_the_variable_is_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("MYLOCAL_API_KEY", "lm-secret")
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, _KEY_ENV_CONFIG)
+
+    assert "MYLOCAL_API_KEY, which is not set" not in out
+
+
+def test_run_doctor_key_env_check_is_quiet_with_an_inline_api_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    cfg = _KEY_ENV_CONFIG + "    api_key: inline-secret\n"
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
+
+    assert "MYLOCAL_API_KEY, which is not set" not in out
+
+
+def test_run_doctor_key_env_check_is_quiet_with_a_key_cmd(monkeypatch, tmp_path):
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    cfg = _KEY_ENV_CONFIG + "    key_cmd: print-my-token\n"
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
+
+    assert "MYLOCAL_API_KEY, which is not set" not in out
+
+
+def test_run_doctor_key_env_check_covers_the_legacy_custom_providers_list(monkeypatch, tmp_path):
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    cfg = (
+        "model:\n"
+        "  provider: mylocal\n"
+        "  default: gemma-4-e4b-it-mlx\n"
+        "custom_providers:\n"
+        "  - name: mylocal\n"
+        "    base_url: http://127.0.0.1:1234/v1\n"
+        "    key_env: MYLOCAL_API_KEY\n"
+    )
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
+
+    assert _KEY_ENV_MESSAGE in out
+
+
+def test_run_doctor_key_env_check_only_looks_at_the_active_provider(monkeypatch, tmp_path):
+    # An inactive entry with an unset key_env is not this section's business.
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    cfg = (
+        "model:\n"
+        "  provider: nous\n"
+        "  default: hermes-4-70b\n"
+        "providers:\n"
+        "  mylocal:\n"
+        "    base_url: http://127.0.0.1:1234/v1\n"
+        "    key_env: MYLOCAL_API_KEY\n"
+    )
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
+
+    assert "MYLOCAL_API_KEY, which is not set" not in out

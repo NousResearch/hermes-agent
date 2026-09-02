@@ -1255,6 +1255,35 @@ def check_macos_full_disk_access() -> None:
     )
 
 
+def _custom_provider_entry_for(provider, custom_providers, aliases_fn=None):
+    """The ``providers:`` / ``custom_providers`` entry that ``model.provider`` names.
+
+    Matches through the same alias set the runtime resolver uses
+    (``hermes_cli.providers.custom_provider_aliases``) so a display name,
+    the ``providers.<key>`` mapping key and its ``custom:<key>`` form all
+    resolve to the entry. Returns None when no entry matches.
+    """
+    wanted = str(provider or "").strip().lower()
+    if not wanted:
+        return None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        provider_key = str(entry.get("provider_key") or "").strip()
+        aliases = set()
+        if aliases_fn is not None:
+            try:
+                aliases = {str(a).strip().lower() for a in aliases_fn(name or provider_key, provider_key)}
+            except Exception:
+                aliases = set()
+        aliases.update(a.lower() for a in (name, provider_key) if a)
+        if wanted in aliases:
+            return entry
+    return None
+
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1717,6 +1746,54 @@ def run_doctor(args):
                 except Exception:
                     pass
 
+            # Named custom providers (``providers:`` / ``custom_providers``) are
+            # not in PROVIDER_REGISTRY, so the credential check above skips
+            # them entirely. The runtime resolves their key as key_env, then
+            # inline api_key, then key_cmd (hermes_cli/runtime_provider.py), so
+            # a key_env naming an unset variable passed doctor and only failed
+            # at the first request with an auth error.
+            if provider and provider not in {"auto", "custom"} and custom_providers:
+                try:
+                    from hermes_cli.config import get_env_value
+                    entry = _custom_provider_entry_for(
+                        provider, custom_providers, _custom_provider_aliases
+                    )
+                    if entry is not None:
+                        # The compatibility view normalises the ``providers:``
+                        # mapping and does not carry every key (key_cmd is
+                        # read from the raw entry at runtime), so consult the
+                        # raw mapping as well before calling a key absent.
+                        raw_entry = {}
+                        raw_key = str(entry.get("provider_key") or entry.get("name") or "").strip()
+                        raw_providers = cfg.get("providers")
+                        if raw_key and isinstance(raw_providers, dict):
+                            for cand_key, cand in raw_providers.items():
+                                if isinstance(cand, dict) and str(cand_key).strip().lower() == raw_key.lower():
+                                    raw_entry = cand
+                                    break
+                        def _field(name):
+                            return str(entry.get(name) or raw_entry.get(name) or "").strip()
+                        key_env = _field("key_env") or _field("api_key_env")
+                        has_other_source = bool(_field("api_key") or _field("key_cmd"))
+                        if (
+                            key_env
+                            and not has_other_source
+                            and not str(get_env_value(key_env) or "").strip()
+                        ):
+                            _fail_and_issue(
+                                f"model.provider '{provider_raw}' reads its API key from "
+                                f"{key_env}, which is not set",
+                                f"(set {key_env} in {_DHH}/.env)",
+                                (
+                                    f"Custom provider '{provider_raw}' declares key_env: {key_env} "
+                                    f"but that variable is unset and the entry has no inline api_key "
+                                    f"or key_cmd, so every request will fail with an auth error. "
+                                    f"Set {key_env} in {_DHH}/.env or add api_key to the provider entry."
+                                ),
+                                issues,
+                            )
+                except Exception:
+                    pass
         except Exception as e:
             check_warn("Could not validate model/provider config", f"({e})")
     else:

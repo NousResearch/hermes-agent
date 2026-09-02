@@ -2484,6 +2484,7 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    botChat: 'Bot Chat',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

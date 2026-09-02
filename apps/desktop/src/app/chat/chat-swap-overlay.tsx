@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
-export function ChatSwapOverlay({ profile }: { profile: string | null }) {
+export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolean; profile: string | null }) {
   const { t } = useI18n()
   const [label, setLabel] = useState<null | string>(profile)
 
@@ -22,8 +22,10 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
       aria-hidden
       className={cn(
         'pointer-events-none absolute inset-0 z-50 flex items-center justify-center transition-opacity duration-150 ease-out',
+        botMode && profile ? 'bg-(--ui-chat-surface-background)' : '',
         profile ? 'opacity-100' : 'opacity-0'
       )}
+      data-slot="chat-swap-overlay"
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
         {/* Was a local 80ms setInterval + setState braille ticker — the same
@@ -34,7 +36,7 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
             `paused` restores the old "no ticking once the swap is done"
             behaviour while the overlay fades out still mounted. */}
         <GlyphSpinner className="w-3 justify-start text-(--ui-accent)" paused={!profile} spinner="braille" />
-        {t.composer.wakingProfile(label ?? '')}
+        {t.composer.wakingProfile(botMode ? t.composer.botChat : (label ?? ''))}
       </div>
     </div>
   )

@@ -2068,6 +2068,7 @@ export const zhHant = defineLocale({
 
   composer: {
     message: '訊息',
+    botChat: '機器人聊天',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',

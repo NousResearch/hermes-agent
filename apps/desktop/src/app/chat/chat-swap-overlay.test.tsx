@@ -39,6 +39,21 @@ describe('ChatSwapOverlay', () => {
     expect(screen.getByText(/turqoise/)).toBeTruthy()
   })
 
+  it('conceals the interim session shell and raw profile name in Bot Mode', () => {
+    const { container } = render(
+      <div>
+        <span>New session</span>
+        <ChatSwapOverlay botMode profile="persephone" />
+      </div>
+    )
+
+    const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
+
+    expect(overlay?.className).toContain('bg-(--ui-chat-surface-background)')
+    expect(screen.queryByText(/persephone/i)).toBeNull()
+    expect(screen.getByText(/Bot Chat/i)).toBeTruthy()
+  })
+
   it('keeps the last profile name through the fade-out, with the glyph frozen', () => {
     const { container, rerender } = render(<ChatSwapOverlay profile="turqoise" />)
 

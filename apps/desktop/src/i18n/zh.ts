@@ -2649,6 +2649,7 @@ export const zh: Translations = {
 
   composer: {
     message: '消息',
+    botChat: '机器人聊天',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',

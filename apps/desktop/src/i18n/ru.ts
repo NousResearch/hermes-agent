@@ -2520,6 +2520,7 @@ export const ru = defineLocale({
   },
   composer: {
     message: 'Сообщение',
+    botChat: 'Чат с ботом',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',

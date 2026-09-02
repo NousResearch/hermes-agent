@@ -1833,6 +1833,7 @@ export const ar = defineLocale({
   },
   composer: {
     message: 'الرسالة',
+    botChat: 'دردشة البوت',
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',

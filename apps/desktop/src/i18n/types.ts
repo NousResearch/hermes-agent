@@ -2128,6 +2128,7 @@ export interface Translations {
 
   composer: {
     message: string
+    botChat: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

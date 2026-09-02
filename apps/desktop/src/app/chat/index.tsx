@@ -14,6 +14,7 @@ import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
@@ -398,6 +399,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
+  const workspaceMode = useStore($workspaceMode)
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
   // Multi-pane dimming: only the focused surface paints at full strength, so
@@ -714,7 +716,7 @@ const ChatViewContent = memo(function ChatViewContent({
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
+          <ChatSwapOverlay botMode={workspaceMode === 'bots'} profile={gatewaySwapTarget} />
           {/* Paint-first wake (#89843): transcript is live, profile gate still
               settling in the background — subtle badge, not an overlay. */}
           {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}

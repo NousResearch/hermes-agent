@@ -11,6 +11,8 @@ module-level constants live in hermes_state_common.
 import logging
 import json
 import time
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -266,13 +268,105 @@ class SessionPortabilityMixin:
         decoded = self._decode_content(row["content"])
         return decoded if isinstance(decoded, str) else ""
 
+    @staticmethod
+    def _export_timing_iso(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+    @staticmethod
+    def _build_export_timings(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Derive model-safe timing evidence from persisted message metadata.
+
+        Session exports are often attached to bug reports. The transcript already
+        stores per-message timestamps, but a raw JSON reader should not have to
+        infer whether a slow turn was one long model gap or many small tool/result
+        intervals. Keep this projection text-free: ids, roles, counts, and
+        durations only, with no prompt text, tool arguments, or tool results.
+        """
+        timestamped: List[tuple[Dict[str, Any], float]] = []
+        for msg in messages:
+            try:
+                ts = float(msg.get("timestamp"))
+            except (TypeError, ValueError):
+                continue
+            timestamped.append((msg, ts))
+
+        role_counts = Counter(
+            str(msg.get("role") or "unknown") for msg in messages
+        )
+        tool_calls_emitted = 0
+        for msg in messages:
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                tool_calls_emitted += len(tool_calls)
+            elif tool_calls:
+                tool_calls_emitted += 1
+
+        intervals = []
+        largest_gap_ms = 0
+        for (prev_msg, prev_ts), (next_msg, next_ts) in zip(
+            timestamped, timestamped[1:]
+        ):
+            gap_ms = max(0, int(round((next_ts - prev_ts) * 1000)))
+            largest_gap_ms = max(largest_gap_ms, gap_ms)
+            intervals.append(
+                {
+                    "from_message_id": prev_msg.get("id"),
+                    "to_message_id": next_msg.get("id"),
+                    "from_role": prev_msg.get("role"),
+                    "to_role": next_msg.get("role"),
+                    "gap_ms": gap_ms,
+                }
+            )
+
+        timing_count = len(timestamped)
+        if timing_count:
+            first_ts = timestamped[0][1]
+            last_ts = timestamped[-1][1]
+            wall_clock_ms = max(0, int(round((last_ts - first_ts) * 1000)))
+            unavailable_reason = None
+        else:
+            first_ts = last_ts = None
+            wall_clock_ms = None
+            unavailable_reason = "no_timestamped_messages"
+
+        return {
+            "source": "message_timestamps",
+            "available": timing_count > 0,
+            "complete": False,
+            "unavailable_reason": unavailable_reason,
+            "message_timestamps": {
+                "available": timing_count,
+                "missing": max(0, len(messages) - timing_count),
+            },
+            "first_message_at": (
+                SessionPortabilityMixin._export_timing_iso(first_ts)
+                if first_ts is not None
+                else None
+            ),
+            "last_message_at": (
+                SessionPortabilityMixin._export_timing_iso(last_ts)
+                if last_ts is not None
+                else None
+            ),
+            "wall_clock_ms": wall_clock_ms,
+            "largest_gap_ms": largest_gap_ms if timing_count > 1 else None,
+            "role_counts": dict(role_counts),
+            "tool_result_count": role_counts.get("tool", 0),
+            "tool_calls_emitted": tool_calls_emitted,
+            "intervals": intervals,
+        }
+
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
         if not session:
             return None
         messages = self.get_messages(session_id)
-        return {**session, "messages": messages}
+        return {
+            **session,
+            "messages": messages,
+            "timings": self._build_export_timings(messages),
+        }
 
     def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a compression lineage as one logical session dict."""
@@ -303,7 +397,11 @@ class SessionPortabilityMixin:
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])
-            results.append({**session, "messages": messages})
+            results.append({
+                **session,
+                "messages": messages,
+                "timings": self._build_export_timings(messages),
+            })
         return results
 
     def adopt_session_lineage_from(

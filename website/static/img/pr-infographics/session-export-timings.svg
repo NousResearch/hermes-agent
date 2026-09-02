@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Session Export Timings</title>
+  <desc id="desc">Nous Research technical infographic showing text-free timing evidence in Hermes session exports.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#10243b"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4ee3ff"/>
+      <stop offset="1" stop-color="#2b85ff"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .label{font:700 34px Inter,Arial,sans-serif;fill:#f4fbff;letter-spacing:.3px}
+      .small{font:600 23px Inter,Arial,sans-serif;fill:#b8d7ec}
+      .tiny{font:500 18px Inter,Arial,sans-serif;fill:#8eb3ca}
+      .mono{font:600 20px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#d8f8ff}
+      .card{fill:#0d1c2f;stroke:#24506f;stroke-width:2;rx:28}
+      .accent{fill:#ffbf57}
+      .cyan{fill:#54e1ff}
+      .line{stroke:#54e1ff;stroke-width:5;stroke-linecap:round;filter:url(#glow)}
+      .grid{stroke:#18324a;stroke-width:1}
+    </style>
+  </defs>
+  <rect width="1200" height="1200" fill="url(#bg)"/>
+  <g opacity=".35">
+    <path class="grid" d="M0 100H1200M0 200H1200M0 300H1200M0 400H1200M0 500H1200M0 600H1200M0 700H1200M0 800H1200M0 900H1200M0 1000H1200M0 1100H1200"/>
+    <path class="grid" d="M100 0V1200M200 0V1200M300 0V1200M400 0V1200M500 0V1200M600 0V1200M700 0V1200M800 0V1200M900 0V1200M1000 0V1200M1100 0V1200"/>
+  </g>
+  <text x="72" y="98" class="label" font-size="52">Session Export Timings</text>
+  <text x="74" y="138" class="small">Durable, text-free evidence for slow-turn bug reports</text>
+
+  <rect x="70" y="190" width="1060" height="390" class="card"/>
+  <text x="110" y="245" class="label">Message timestamp projection</text>
+  <g transform="translate(120 300)">
+    <circle cx="0" cy="0" r="18" fill="url(#cyan)"/><text x="38" y="8" class="small">user</text>
+    <line x1="20" y1="0" x2="255" y2="0" class="line"/>
+    <circle cx="275" cy="0" r="18" class="accent"/><text x="313" y="8" class="small">assistant</text>
+    <line x1="295" y1="0" x2="555" y2="0" class="line"/>
+    <circle cx="575" cy="0" r="18" fill="#9ef28f"/><text x="613" y="8" class="small">tool</text>
+    <line x1="595" y1="0" x2="780" y2="0" class="line"/>
+    <circle cx="800" cy="0" r="18" class="accent"/><text x="838" y="8" class="small">assistant</text>
+    <path d="M30 55v28h225V55M305 55v28h250V55M605 55v28h175V55" fill="none" stroke="#ffbf57" stroke-width="4"/>
+    <text x="90" y="122" class="mono">1.25s</text>
+    <text x="390" y="122" class="mono">1.75s</text>
+    <text x="660" y="122" class="mono">0.50s</text>
+  </g>
+
+  <rect x="70" y="620" width="330" height="240" class="card"/>
+  <text x="105" y="675" class="label">Wall-clock span</text>
+  <text x="105" y="745" class="label" font-size="56" fill="#54e1ff">3.5s</text>
+  <text x="105" y="795" class="tiny">first message → last message</text>
+
+  <rect x="435" y="620" width="330" height="240" class="card"/>
+  <text x="470" y="675" class="label">Largest gap</text>
+  <text x="470" y="745" class="label" font-size="56" fill="#ffbf57">1.75s</text>
+  <text x="470" y="795" class="tiny">pinpoints the slowest interval</text>
+
+  <rect x="800" y="620" width="330" height="240" class="card"/>
+  <text x="835" y="675" class="label">Tool-call counts</text>
+  <text x="835" y="745" class="label" font-size="56" fill="#9ef28f">1 / 1</text>
+  <text x="835" y="795" class="tiny">emitted calls / tool results</text>
+
+  <rect x="70" y="900" width="520" height="205" class="card"/>
+  <text x="105" y="955" class="label">Text-free evidence</text>
+  <text x="105" y="1010" class="small">No prompt text</text>
+  <text x="105" y="1050" class="small">No tool arguments</text>
+  <text x="105" y="1090" class="small">No tool results</text>
+  <text x="500" y="1035" font-size="70" fill="#54e1ff">⌁</text>
+
+  <rect x="625" y="900" width="505" height="205" class="card"/>
+  <text x="660" y="955" class="label">timings</text>
+  <text x="660" y="1000" class="mono">{ source: message_timestamps }</text>
+  <text x="660" y="1038" class="mono">{ wall_clock_ms: 3500 }</text>
+  <text x="660" y="1076" class="mono">{ complete: false }</text>
+
+  <text x="72" y="1160" class="tiny">Nous Research</text>
+</svg>

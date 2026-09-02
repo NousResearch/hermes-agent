@@ -6191,6 +6191,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
+        response_session_id = session_id
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
@@ -6492,7 +6493,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = {"X-Hermes-Session-Id": str(session_id)}
+        response_headers = {}
+        if response_session_id:
+            response_headers["X-Hermes-Session-Id"] = response_session_id
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(

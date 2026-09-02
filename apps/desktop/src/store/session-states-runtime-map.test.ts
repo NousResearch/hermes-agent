@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
@@ -167,5 +169,46 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
 
     dropSessionState('rt-dropped')
     expect(knownOwnerForSession('rt-dropped')).toBeUndefined()
+  })
+
+  it('answers an approval on a sole-local registry install through the primary socket (#96394)', async () => {
+    // The reported topology: a modern Desktop (connections bridge present,
+    // registry loaded with exactly one `local` connection), one profile, and
+    // an approval.request whose runtime id has no tile / hint / row binding.
+    // hasRegistryTopology() is true here, so the ambient escape hatch is
+    // closed by design — the exact owner must come from the event itself.
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { connections: { list: async () => null } }
+    $connectionsRegistry.set({
+      activeConnectionId: 'local',
+      connections: [{ id: 'local', kind: 'local', label: 'Local' }]
+    } as never)
+    $profiles.set([{ name: 'default' }] as never)
+
+    const primaryRequest = vi.fn(async (method: string, params: unknown) => ({ method, params, via: 'primary' }))
+
+    setPrimaryGateway({ onEvent: () => () => undefined, request: primaryRequest, state: 'open' } as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local' })
+
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+
+    try {
+      // Before the event lands the owner is unknown and routing still fails closed.
+      await expect(
+        requestForOwnedSession('rt-approval', ambient as never, 'approval.respond', { session_id: 'rt-approval' })
+      ).rejects.toSatisfy(isSessionOwnerResolutionError)
+
+      // use-gateway-boot stamps every primary event with the active connection
+      // id (Electron resolves the sole local connection to `local`).
+      recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-approval' })
+
+      await expect(
+        requestForOwnedSession('rt-approval', ambient as never, 'approval.respond', { session_id: 'rt-approval' })
+      ).resolves.toEqual({ method: 'approval.respond', params: { session_id: 'rt-approval' }, via: 'primary' })
+      expect(ambient).not.toHaveBeenCalled()
+    } finally {
+      setPrimaryGateway(null)
+      $connectionsRegistry.set(null)
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

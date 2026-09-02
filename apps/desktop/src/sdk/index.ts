@@ -1321,7 +1321,15 @@ export const host = {
    *  that profile's gateway. The source primary opens state.db directly. */
   listPersistedSessions: async (
     route: PluginProfileRoute | null,
-    options: { profile: string; limit?: number }
+    options: {
+      profile: string
+      limit?: number
+      offset?: number
+      minMessages?: number
+      archived?: 'exclude' | 'include' | 'only'
+      order?: 'created' | 'recent'
+      includeHidden?: boolean
+    }
   ): Promise<PaginatedSessions> => {
     if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
@@ -1334,15 +1342,22 @@ export const host = {
     }
 
     const limit = Math.min(500, Math.max(0, options.limit ?? 200))
+    const offset = Math.max(0, options.offset ?? 0)
+    const minMessages = Math.max(0, options.minMessages ?? 0)
 
     const query = new URLSearchParams({
       limit: String(limit),
-      offset: '0',
-      min_messages: '0',
-      archived: 'exclude',
-      order: 'created',
-      profile
+      offset: String(offset),
+      min_messages: String(minMessages),
+      archived: options.archived ?? 'exclude',
+      order: options.order ?? 'created'
     })
+
+    if (options.includeHidden) {
+      query.set('include_hidden', 'true')
+    }
+
+    query.set('profile', profile)
 
     return hermesApi<PaginatedSessions>({
       ...(route ? { connectionId: route.connectionId } : {}),

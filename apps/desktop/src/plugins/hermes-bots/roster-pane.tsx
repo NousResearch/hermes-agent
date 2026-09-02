@@ -42,6 +42,7 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
+import { BotConversationHistoryDialog } from './conversation-history'
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
 import {
   $botMeta,
@@ -275,6 +276,7 @@ export function BotsPane() {
   >(null)
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
+  const [historyBot, setHistoryBot] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
   const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
@@ -338,6 +340,8 @@ export function BotsPane() {
 
     return activityOf(b) - activityOf(a)
   })
+
+  const selectedBotRow = selectedRosterBot(roster, selectedRosterKey)
 
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a
@@ -561,6 +565,7 @@ export function BotsPane() {
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
+      onHistory={setHistoryBot}
       onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
     />
@@ -730,6 +735,19 @@ export function BotsPane() {
           Bots
         </span>
         <div className="flex items-center gap-0.5">
+          {selectedBotRow && !groupChatName ? (
+            <Tip label={b.history.openFor(displayName(selectedBotRow, botRosterMeta(selectedBotRow, allMeta)))}>
+              <Button
+                aria-label={b.history.openFor(displayName(selectedBotRow, botRosterMeta(selectedBotRow, allMeta)))}
+                className="rounded-md text-(--ui-text-tertiary) hover:text-foreground"
+                onClick={() => setHistoryBot(selectedBotRow)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="history" />
+              </Button>
+            </Tip>
+          ) : null}
           <Tip
             label={activityToasts ? 'Activity toasts on — click to silence' : 'Activity toasts off — click to enable'}
           >
@@ -983,6 +1001,15 @@ export function BotsPane() {
           </div>
         </div>
       )}
+      <BotConversationHistoryDialog
+        bot={historyBot}
+        onOpenChange={open => {
+          if (!open) {
+            setHistoryBot(null)
+          }
+        }}
+        open={Boolean(historyBot)}
+      />
       <CreateAgentDialog
         onClose={() => {
           setCreateOpen(false)

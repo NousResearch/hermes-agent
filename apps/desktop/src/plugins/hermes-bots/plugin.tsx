@@ -1,5 +1,6 @@
 /**
- * Hermes Bot Mode — a "one chat per agent" roster for the Hermes desktop.
+ * Hermes Bot Mode — a persistent home chat plus recoverable conversations for
+ * every agent profile in the Hermes desktop.
  *
  * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
  * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
@@ -93,7 +94,7 @@ export default {
   id: ID,
   name: 'Bots',
   description:
-    'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
+    'Bot Mode — a roster with durable conversation history, avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
     // The user's own roster sections. Read once at register; every mutation

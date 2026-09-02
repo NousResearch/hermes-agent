@@ -59,7 +59,7 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onHistory={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }
@@ -140,6 +140,26 @@ describe('the menu opens the same forever-chat a row click does', () => {
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
+  })
+
+  it('routes conversation history through the row callback', async () => {
+    const bot = { name: 'alpha' } as RosterRow
+    const onHistory = vi.fn()
+
+    render(
+      <BotRow
+        bot={bot}
+        onDelete={noop}
+        onEdit={noop}
+        onGroup={noop}
+        onHistory={onHistory}
+        onNewSection={noop}
+      />
+    )
+    fireEvent.contextMenu(screen.getByRole('button'))
+    fireEvent.click(await screen.findByText('Conversation history'))
+
+    expect(onHistory).toHaveBeenCalledWith(bot)
   })
 })
 

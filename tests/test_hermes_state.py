@@ -2770,7 +2770,17 @@ class TestCompressionChainProjection:
         solo_row = next(s for s in sessions if s["id"] == "solo")
         assert solo_row.get("_lineage_ids") is None
 
+    def test_list_preserves_named_root_title_for_projected_row(self, db):
+        import time as _time
 
+        self._build_compression_chain(db, _time.time() - 3600)
+        assert db.set_session_title("root1", "Group: Build Council") is True
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["title"] is None
+        assert tip_row["_lineage_root_title"] == "Group: Build Council"
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
         """The list must show the tip's id/message_count/preview in place of

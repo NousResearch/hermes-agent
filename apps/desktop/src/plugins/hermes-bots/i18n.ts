@@ -104,8 +104,8 @@ type BotsMessages = {
     helpPromptPlaceholder: string
     descriptionHint: string
     newChatWith: string
-    /** Re-opens the forever-chat on purpose. A plain row click only returns to
-     *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
+    conversationHistory: string
+    /** Re-opens the forever-chat on purpose. */
     openBotChat: string
     duplicate: string
     duplicateFailed: string
@@ -122,6 +122,24 @@ type BotsMessages = {
     chatEmpty: string
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
     kickoff: string
+  }
+  /** Durable saved conversations for one selected bot profile. */
+  history: {
+    title: (bot: string) => string
+    description: string
+    openFor: (bot: string) => string
+    openConversation: (title: string) => string
+    openFailed: string
+    search: string
+    searchPlaceholder: string
+    failedTitle: string
+    readFailure: string
+    emptyTitle: string
+    emptyDescription: string
+    untitled: string
+    archived: string
+    noMatch: (query: string) => string
+    count: (count: number) => string
   }
   /** Avatar picker: shapes, blobs, pets, uploads, generation. */
   avatar: {
@@ -335,6 +353,7 @@ const en: BotsMessages = {
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
+    conversationHistory: 'Conversation history',
     openBotChat: 'Open Bot Chat',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
@@ -349,6 +368,23 @@ const en: BotsMessages = {
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
     chatEmpty: 'Say something to get started.',
     kickoff: 'Hey, tell me about yourself!'
+  },
+  history: {
+    title: bot => `${bot} conversations`,
+    description: 'Every saved conversation with this bot. Closing a tab never deletes it from here.',
+    openFor: bot => `Conversation history for ${bot}`,
+    openConversation: title => `Open ${title}`,
+    openFailed: 'Could not open that conversation',
+    search: 'Search conversations',
+    searchPlaceholder: 'Search conversations…',
+    failedTitle: 'Could not load conversations',
+    readFailure: 'The saved conversation list could not be read. Your conversations have not been deleted.',
+    emptyTitle: 'No saved conversations',
+    emptyDescription: 'Start a new chat with this bot and it will remain recoverable here.',
+    untitled: 'Untitled conversation',
+    archived: 'Archived',
+    noMatch: query => `No conversations match “${query}”`,
+    count: count => `${count} ${count === 1 ? 'conversation' : 'conversations'}`
   },
   avatar: {
     classicShapes: 'Classic shapes',
@@ -552,6 +588,7 @@ const ja: BotsMessages = {
     helpPromptPlaceholder: 'このボットは何を手伝いますか？',
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
+    conversationHistory: '会話履歴',
     openBotChat: 'ボットチャットを開く',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
@@ -566,6 +603,23 @@ const ja: BotsMessages = {
     remoteConnectionsUnsupported: '他の接続上のボットとチャットするには Hermes Desktop を更新してください。',
     chatEmpty: '何か書いて始めましょう。',
     kickoff: 'こんにちは、自己紹介をしてください！'
+  },
+  history: {
+    title: bot => `${bot} の会話`,
+    description: 'このボットとの保存済み会話です。タブを閉じても、ここから削除されません。',
+    openFor: bot => `${bot} の会話履歴`,
+    openConversation: title => `${title} を開く`,
+    openFailed: '会話を開けませんでした',
+    search: '会話を検索',
+    searchPlaceholder: '会話を検索…',
+    failedTitle: '会話を読み込めませんでした',
+    readFailure: '保存済み会話の一覧を読み取れませんでした。会話は削除されていません。',
+    emptyTitle: '保存済みの会話はありません',
+    emptyDescription: 'このボットと新しいチャットを始めると、ここからいつでも再開できます。',
+    untitled: '無題の会話',
+    archived: 'アーカイブ済み',
+    noMatch: query => `「${query}」に一致する会話はありません`,
+    count: count => `${count} 件の会話`
   },
   avatar: {
     classicShapes: 'クラシックシェイプ',
@@ -765,6 +819,7 @@ const zh: BotsMessages = {
     helpPromptPlaceholder: '这个机器人应该帮你做什么？',
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
+    conversationHistory: '对话历史',
     openBotChat: '打开机器人聊天',
     duplicate: '复制',
     duplicateFailed: '复制失败',
@@ -779,6 +834,23 @@ const zh: BotsMessages = {
     remoteConnectionsUnsupported: '请更新 Hermes Desktop 以与其他连接上的机器人聊天。',
     chatEmpty: '说点什么开始吧。',
     kickoff: '你好，介绍一下你自己吧！'
+  },
+  history: {
+    title: bot => `${bot} 的对话`,
+    description: '与此机器人保存的所有对话。关闭标签页不会从这里删除对话。',
+    openFor: bot => `${bot} 的对话历史`,
+    openConversation: title => `打开 ${title}`,
+    openFailed: '无法打开该对话',
+    search: '搜索对话',
+    searchPlaceholder: '搜索对话…',
+    failedTitle: '无法加载对话',
+    readFailure: '无法读取已保存的对话列表。你的对话并未被删除。',
+    emptyTitle: '没有已保存的对话',
+    emptyDescription: '与此机器人开始新聊天后，可随时从这里恢复。',
+    untitled: '未命名对话',
+    archived: '已归档',
+    noMatch: query => `没有与“${query}”匹配的对话`,
+    count: count => `${count} 个对话`
   },
   avatar: {
     classicShapes: '经典形状',
@@ -978,6 +1050,7 @@ const zhHant: BotsMessages = {
     helpPromptPlaceholder: '這個機器人應該幫你做什麼？',
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
+    conversationHistory: '對話記錄',
     openBotChat: '開啟機器人聊天',
     duplicate: '複製',
     duplicateFailed: '複製失敗',
@@ -992,6 +1065,23 @@ const zhHant: BotsMessages = {
     remoteConnectionsUnsupported: '請更新 Hermes Desktop 以與其他連線上的機器人聊天。',
     chatEmpty: '說點什麼開始吧。',
     kickoff: '你好，介紹一下你自己吧！'
+  },
+  history: {
+    title: bot => `${bot} 的對話`,
+    description: '與此機器人儲存的所有對話。關閉分頁不會從這裡刪除對話。',
+    openFor: bot => `${bot} 的對話記錄`,
+    openConversation: title => `開啟 ${title}`,
+    openFailed: '無法開啟該對話',
+    search: '搜尋對話',
+    searchPlaceholder: '搜尋對話…',
+    failedTitle: '無法載入對話',
+    readFailure: '無法讀取已儲存的對話清單。你的對話並未被刪除。',
+    emptyTitle: '沒有已儲存的對話',
+    emptyDescription: '與此機器人開始新聊天後，可隨時從這裡恢復。',
+    untitled: '未命名對話',
+    archived: '已封存',
+    noMatch: query => `沒有與「${query}」相符的對話`,
+    count: count => `${count} 個對話`
   },
   avatar: {
     classicShapes: '經典形狀',

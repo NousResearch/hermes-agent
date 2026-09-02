@@ -29,7 +29,7 @@ vi.mock('./canonical-chat', () => ({
 
 const { host } = await import('@hermes/plugin-sdk')
 const { $openBotChat, $selectedBot } = await import('./bot-state')
-const { openRosterBot, trackInboundActivity } = await import('./roster-actions')
+const { openRosterBot, supersedeRosterOpen, trackInboundActivity } = await import('./roster-actions')
 const { $selectedStoredSessionId } = await import('@/store/session')
 
 const bot = { connectionId: 'local', name: 'alpha' } as RosterRow
@@ -89,6 +89,26 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
     await expect(openRosterBot(bot)).resolves.toBe(false)
 
     expect($openBotChat.get()).toBeNull()
+  })
+
+  it('lets an explicit history selection supersede a canonical lookup that has not opened yet', async () => {
+    let finishPreparing: (() => void) | undefined
+
+    prepareBotSource.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishPreparing = resolve
+        })
+    )
+
+    const opening = openRosterBot(canonicalBot)
+
+    await Promise.resolve()
+    supersedeRosterOpen()
+    finishPreparing?.()
+
+    await expect(opening).resolves.toBe(false)
+    expect(openBotCanonicalChat).not.toHaveBeenCalled()
   })
 })
 

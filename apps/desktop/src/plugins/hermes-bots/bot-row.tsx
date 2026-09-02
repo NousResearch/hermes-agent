@@ -85,12 +85,13 @@ interface BotRowProps {
   onDelete: (bot: RosterRow) => void
   onEdit: (bot: RosterRow) => void
   onGroup: (bot: RosterRow) => void
+  onHistory?: (bot: RosterRow) => void
   /** Opens the New section dialog; the bot is filed into it on create. */
   onNewSection: (bot: RosterRow) => void
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+export function BotRow({ bot, onDelete, onEdit, onGroup, onHistory, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const activeProfile = useValue(host.state.profile)
@@ -311,6 +312,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        {onHistory ? (
+          <ContextMenuItem onSelect={() => onHistory(bot)}>{b.bot.conversationHistory}</ContextMenuItem>
+        ) : null}
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {

@@ -2089,6 +2089,68 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_pages_one_profile_past_the_fanout_cap(self):
+        """A profile-scoped history browser must reach rows after 500.
+
+        The aggregate endpoint historically over-fetched every profile from
+        offset zero and capped that fanout at 500. Reusing it for one Bot's
+        durable history made page four empty even when more rows existed.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(505):
+                session_id = f"bot-history-page-{i:03d}"
+                db.create_session(session_id=session_id, source="bot-history-page")
+                db.append_message(session_id=session_id, role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions",
+            params={
+                "profile": "default",
+                "source": "bot-history-page",
+                "limit": 10,
+                "offset": 500,
+                "order": "recent",
+            },
+        )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 505
+        assert len(payload["sessions"]) == 5
+
+    def test_profiles_sessions_can_include_hidden_bot_workspace_conversations(self):
+        """Bot side chats are hidden from global recents but must remain
+        enumerable through an explicit profile-scoped recovery read."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session_id = "hidden-bot-side-chat"
+            db.create_session(session_id=session_id, source="desktop")
+            db.append_message(session_id=session_id, role="user", content="recover me")
+            db.set_session_hidden(session_id, True)
+        finally:
+            db.close()
+
+        hidden = self.client.get(
+            "/api/profiles/sessions",
+            params={"profile": "default", "source": "desktop", "limit": 10},
+        )
+        included = self.client.get(
+            "/api/profiles/sessions",
+            params={"profile": "default", "source": "desktop", "limit": 10, "include_hidden": True},
+        )
+
+        assert hidden.status_code == 200
+        assert hidden.json()["sessions"] == []
+        assert included.status_code == 200
+        assert [row["id"] for row in included.json()["sessions"]] == [session_id]
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

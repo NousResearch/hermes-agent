@@ -244,6 +244,7 @@ def get_profiles_sessions(
     source: str = None,
     sources: str = None,
     exclude_sources: str = None,
+    include_hidden: bool = False,
     full: bool = False,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
@@ -289,9 +290,14 @@ def get_profiles_sessions(
     source_filter = source or None
     source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
     exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
-    # Over-fetch per profile so the merged+sorted window is correct for the
-    # requested page. Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    # Cross-profile aggregation has to over-fetch each owner from zero before it
+    # can merge and page the combined recency order. A caller that names ONE
+    # profile needs no fanout or merge window: pass its offset straight through
+    # to SQLite so durable history remains pageable beyond the 500-row fanout
+    # safety cap.
+    profile_scoped = bool(profile and profile != "all")
+    per_profile = limit if profile_scoped else min(max(limit + offset, limit), 500)
+    per_profile_offset = offset if profile_scoped else 0
 
     merged: List[Dict[str, Any]] = []
     total = 0
@@ -322,7 +328,7 @@ def get_profiles_sessions(
                 sources=source_list or None,
                 exclude_sources=exclude_list or None,
                 limit=per_profile,
-                offset=0,
+                offset=per_profile_offset,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -330,6 +336,7 @@ def get_profiles_sessions(
                 # Same SQL-level blob skip as /api/sessions (see above).
                 compact_rows=not full,
                 include_pinned=True,
+                include_hidden=include_hidden,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -360,12 +367,17 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    # Pinned rows are back-filled past each profile's LIMIT on purpose; keep
-    # them in the merged window instead of re-dropping them on recency.
-    window = merged[offset:offset + limit]
-    if len(merged) > offset + limit:
-        seen = {id(s) for s in window}
-        window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
+    if profile_scoped:
+        # SQLite already applied this page's offset. Keep pinned rows that
+        # list_sessions_rich deliberately back-filled past the page limit.
+        window = merged
+    else:
+        # Pinned rows are back-filled past each profile's LIMIT on purpose; keep
+        # them in the merged window instead of re-dropping them on recency.
+        window = merged[offset:offset + limit]
+        if len(merged) > offset + limit:
+            seen = {id(s) for s in window}
+            window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
     if not full:
         _strip_session_list_rows(window)
     return {

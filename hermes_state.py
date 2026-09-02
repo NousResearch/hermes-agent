@@ -12317,6 +12317,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # Preserve the root's started_at for stable sort order, but
                 # surface the tip's identity and activity data.
                 merged = dict(s)
+                merged["_lineage_root_title"] = s.get("title")
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",

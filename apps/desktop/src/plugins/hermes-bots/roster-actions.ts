@@ -173,6 +173,12 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   }
 }
 
+/** Let a more specific Bot navigation (history, group, etc.) invalidate a row
+ * click whose canonical-session lookup has not reached its open yet. */
+export function supersedeRosterOpen(): void {
+  bumpBotOpenGeneration()
+}
+
 /** Select one exact roster owner and open its canonical Bot Chat — the same
  *  session the row previews. Resolution always goes through the owner
  *  profile's "Bot Chat" title registry: an already-open canonical tab is

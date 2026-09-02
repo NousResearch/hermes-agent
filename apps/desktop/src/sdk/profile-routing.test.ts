@@ -339,6 +339,36 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('pages persisted sessions in recent order for a complete history browser', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    vi.mocked(hermesApi).mockResolvedValueOnce({ sessions: [] })
+
+    await host.listPersistedSessions(route, {
+      profile: 'backend-worker',
+      limit: 75,
+      offset: 150,
+      minMessages: 1,
+      archived: 'include',
+      order: 'recent',
+      includeHidden: true
+    })
+
+    expect(hermesApi).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      path:
+        '/api/profiles/sessions?limit=75&offset=150&min_messages=1&archived=include&order=recent&include_hidden=true&profile=backend-worker',
+      timeoutMs: 60_000
+    })
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
     // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
     // lock + a 600s turn, doubled by the bounded retry). Without a way to pass

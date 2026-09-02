@@ -72,6 +72,67 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
 
 
 @pytest.mark.asyncio
+async def test_enrich_message_with_transcription_strips_sender_prefixed_placeholder():
+    """Shared multi-user sessions label the captionless-voice placeholder as
+    ``"[Javi] (The user sent a message with no text content)"`` before STT
+    enrichment. The prefixed marker must be stripped too, or the model sees
+    an "empty" message next to the transcript and answers "your voice message
+    came through empty" despite having the words."""
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "write me a user flow for the epic",
+            "provider": "local_command",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "[Javi] (The user sent a message with no text content)",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "write me a user flow for the epic" in result
+    assert "(The user sent a message with no text content)" not in result
+    assert transcripts == ["write me a user flow for the epic"]
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_strips_placeholder_embedded_in_merged_text():
+    """Merged follow-up events can embed the placeholder between real lines
+    (``'"note one"\n[Javi] (The user sent a message with no text content)\n[Javi] "note two"'``).
+    Every placeholder line is removed, not just a whole-text equality."""
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "note one",
+            "provider": "local_command",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            '"note one"\n[Javi] (The user sent a message with no text content)\n[Javi] "note two"',
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "note one" in result
+    assert "note two" in result
+    assert "(The user sent a message with no text content)" not in result
+    assert transcripts == ["note one"]
+
+
+@pytest.mark.asyncio
 async def test_enrich_message_with_transcription_guards_empty_transcript():
     """success=True with an empty/whitespace transcript must not emit empty
     quotes — it gets a sentinel note and is excluded from transcripts (#41603)."""

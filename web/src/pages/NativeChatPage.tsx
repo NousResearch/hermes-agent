@@ -1,9 +1,10 @@
 import {
-  Fragment,
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type FormEvent,
@@ -18,6 +19,13 @@ import { ChatSessionList, type SessionActivityStatus } from "@/components/ChatSe
 import { SlashPopover, type SlashPopoverHandle } from "@/components/SlashPopover";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { mergeSnapshotTranscript, snapshotHasField, snapshotMatchesSession } from "@/lib/native-chat-reconcile";
+import {
+  initialNativeChatTimeline,
+  projectTimelineEntries,
+  reduceNativeChatTimeline,
+  type TimelineEventInput,
+} from "@/lib/native-chat-timeline";
+import { getVirtualRange } from "@/lib/native-chat-virtualization";
 import { appendVoiceTranscript, canRecordVoice, chooseRecordingMimeType } from "@/lib/voice";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
@@ -154,6 +162,19 @@ function eventElapsedMs(payload: TextPayload, startedAt?: number): number | unde
   return undefined;
 }
 
+function toTimelineEvent(event: GatewayEvent): TimelineEventInput {
+  const payload = (event.payload ?? {}) as TextPayload;
+  const rawEventId = (event as GatewayEvent & { event_id?: unknown }).event_id ?? payload.event_id ?? payload.eventId;
+  const rawSeq = (event as GatewayEvent & { seq?: unknown }).seq ?? payload.seq;
+  return {
+    type: event.type,
+    session_id: event.session_id,
+    payload: event.payload,
+    event_id: typeof rawEventId === "string" ? rawEventId : undefined,
+    seq: typeof rawSeq === "number" ? rawSeq : undefined,
+  };
+}
+
 export function shouldFollowTranscript(distanceFromBottom: number): boolean {
   return distanceFromBottom <= 96;
 }
@@ -250,6 +271,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [freshGeneration, setFreshGeneration] = useState(0);
   const [draft, setDraft] = useState("");
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [timelineState, dispatchTimeline] = useReducer(reduceNativeChatTimeline, initialNativeChatTimeline);
+  const liveTimelineMessages = useMemo(() => projectTimelineEntries(timelineState.entries), [timelineState.entries]);
+  const displayTranscript = useMemo(() => mergeSnapshotTranscript(transcript, liveTimelineMessages), [liveTimelineMessages, transcript]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resyncState, setResyncState] = useState<ResyncState>("idle");
@@ -282,6 +306,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const virtualRowHeightsRef = useRef(new Map<string, number>());
+  const [virtualMeasureRevision, setVirtualMeasureRevision] = useState(0);
+  const [virtualViewport, setVirtualViewport] = useState({ scrollTop: 0, viewportHeight: 600 });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const slashPopoverRef = useRef<SlashPopoverHandle>(null);
   const followTranscriptRef = useRef(true);
@@ -310,7 +337,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       element.scrollTop = element.scrollHeight;
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [approval, clarify, error, status, tools, transcript]);
+  }, [approval, clarify, displayTranscript, error, status, tools]);
 
   const handleTranscriptScroll = useCallback(() => {
     const element = transcriptRef.current;
@@ -318,6 +345,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
     const shouldFollow = shouldFollowTranscript(distanceFromBottom);
     followTranscriptRef.current = shouldFollow;
+    setVirtualViewport((current) => current.scrollTop === element.scrollTop ? current : { ...current, scrollTop: element.scrollTop });
     setShowScrollToBottom(!shouldFollow);
   }, []);
 
@@ -326,7 +354,30 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     if (!element) return;
     followTranscriptRef.current = true;
     element.scrollTop = element.scrollHeight;
+    setVirtualViewport((current) => ({ ...current, scrollTop: element.scrollHeight }));
     setShowScrollToBottom(false);
+  }, []);
+
+  const measureTranscriptRow = useCallback((id: string, node: HTMLElement | null) => {
+    if (!node) return;
+    const height = Math.ceil(node.getBoundingClientRect().height);
+    if (height <= 0) return;
+    const previous = virtualRowHeightsRef.current.get(id);
+    if (previous !== undefined && Math.abs(previous - height) < 1) return;
+    virtualRowHeightsRef.current.set(id, height);
+    setVirtualMeasureRevision((revision) => revision + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    const updateViewport = () => {
+      const element = transcriptRef.current;
+      if (!element) return;
+      const viewportHeight = element.clientHeight || 600;
+      setVirtualViewport((current) => current.viewportHeight === viewportHeight ? current : { ...current, viewportHeight });
+    };
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
   }, []);
 
   const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
@@ -553,19 +604,53 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         }
       })();
     });
-    const offStart = gateway.on("message.start", (event) => { const payload = accept(event, true); if (!payload) return; const id = `assistant-${++messageSequenceRef.current}`; assistantIdRef.current = id; setStreaming(true); setTurnStartedAt((started) => started ?? Date.now()); setStatus("Thinking…"); setTranscript((messages) => [...messages, { id, role: "assistant", text: "", streaming: true }]); });
-    const offDelta = gateway.on("message.delta", (event) => { const payload = accept(event, true); if (!payload) return; const text = eventText(event); if (!text) return; setTranscript((messages) => { const id = assistantIdRef.current; if (!id) return [...messages, { id: `assistant-${++messageSequenceRef.current}`, role: "assistant", text, streaming: true }]; return messages.map((message) => message.id === id ? { ...message, text: message.text + text } : message); }); });
+    const offStart = gateway.on("message.start", (event) => {
+      if (!accept(event, true)) return;
+      const id = `assistant-${++messageSequenceRef.current}`;
+      assistantIdRef.current = id;
+      dispatchTimeline({ type: "append", event: toTimelineEvent(event), entryId: id });
+      setStreaming(true);
+      setTurnStartedAt((started) => started ?? Date.now());
+      setStatus("Thinking…");
+    });
+    const offDelta = gateway.on("message.delta", (event) => {
+      if (!accept(event, true)) return;
+      const text = eventText(event);
+      if (!text) return;
+      const id = assistantIdRef.current ?? `assistant-${++messageSequenceRef.current}`;
+      if (!assistantIdRef.current) {
+        assistantIdRef.current = id;
+        dispatchTimeline({ type: "append", event: toTimelineEvent(event), entryId: id });
+      }
+      dispatchTimeline({ type: "update", event: toTimelineEvent(event), entryId: id });
+    });
     const offThinking = gateway.on("thinking.delta", (event) => { const p = accept(event, true); if (p && eventText(event)) setStatus(`Thinking: ${eventText(event)}`); });
     const offReasoning = gateway.on("reasoning.delta", (event) => { const p = accept(event, true); if (p && eventText(event)) setStatus(`Reasoning: ${eventText(event)}`); });
     const offInterim = gateway.on("message.interim", (event) => { const p = accept(event, true); const text = eventText(event); if (!p || !text) return; setTranscript((messages) => [...messages, { id: `interim-${++messageSequenceRef.current}`, role: "assistant", text }]); });
     const offToolGenerating = gateway.on("tool.generating", (event) => { const p = accept(event, true); if (p) setStatus(`Preparing tool: ${String(p.name ?? "tool")}`); });
-    const offComplete = gateway.on("message.complete", (event) => { if (!accept(event, true)) return; const text = eventText(event); setTranscript((messages) => messages.map((message) => message.id === assistantIdRef.current ? { ...message, ...(text && !message.text ? { text } : {}), streaming: false } : message)); assistantIdRef.current = null; setStreaming(false); setTurnStartedAt(null); setStatus("Ready"); });
+    const offComplete = gateway.on("message.complete", (event) => {
+      if (!accept(event, true)) return;
+      const id = assistantIdRef.current;
+      if (id) dispatchTimeline({ type: "complete", event: toTimelineEvent(event), entryId: id });
+      assistantIdRef.current = null;
+      setStreaming(false);
+      setTurnStartedAt(null);
+      setStatus("Ready");
+    });
     const offToolStart = gateway.on("tool.start", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); const startedAt = Date.now(); setStatus(`Running tool: ${String(p.name ?? "tool")}`); setTools((items) => items.some((item) => item.id === id) ? items : [...items, { id, name: String(p.name ?? "tool"), state: "running", context: typeof p.context === "string" ? p.context : undefined, args: p.args, startedAt }]); });
     const offToolProgress = gateway.on("tool.progress", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? ""); if (!id) return; const progress = typeof p.progress === "string" ? p.progress : typeof p.text === "string" ? p.text : ""; if (progress) setStatus(`Working: ${progress}`); setTools((items) => items.map((item) => item.id === id ? { ...item, progress: progress || item.progress, elapsedMs: eventElapsedMs(p, item.startedAt) } : item)); });
     const offToolComplete = gateway.on("tool.complete", (event) => { const p = accept(event, true); if (!p) return; const id = String(p.tool_id ?? `${p.name ?? "tool"}-${Date.now()}`); setTools((items) => { const existing = items.find((item) => item.id === id); const elapsed = eventElapsedMs(p, existing?.startedAt); return existing ? items.map((item) => item.id === id ? { ...item, state: "complete", args: p.args ?? item.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : item.summary, elapsedMs: elapsed ?? item.elapsedMs } : item) : [...items, { id, name: String(p.name ?? "tool"), state: "complete", args: p.args, result: p.result, summary: typeof p.summary === "string" ? p.summary : undefined, elapsedMs: elapsed }]; }); });
     const offApproval = gateway.on("approval.request", (event) => { const p = accept(event, true); if (!p || typeof p.request_id !== "string") return; setApproval({ request_id: p.request_id, command: typeof p.command === "string" ? p.command : undefined, description: typeof p.description === "string" ? p.description : undefined, choices: Array.isArray(p.choices) ? p.choices.filter((x): x is string => typeof x === "string") : undefined, allow_permanent: p.allow_permanent !== false }); });
     const offClarify = gateway.on("clarify.request", (event) => { const p = accept(event, true); if (!p || typeof p.request_id !== "string") return; setClarify({ request_id: p.request_id, question: typeof p.question === "string" ? p.question : undefined, choices: Array.isArray(p.choices) ? p.choices.filter((x): x is string => typeof x === "string") : null, multi_select: p.multi_select === true, questions: Array.isArray(p.questions) ? p.questions as ClarificationRequest["questions"] : undefined }); });
-    const offError = gateway.on("error", (event) => { if (!accept(event, true)) return; setError(eventText(event) || "Gateway error"); setStreaming(false); setTurnStartedAt(null); setStatus("Error"); });
+    const offError = gateway.on("error", (event) => {
+      if (!accept(event, true)) return;
+      const id = assistantIdRef.current;
+      if (id) dispatchTimeline({ type: "error", event: toTimelineEvent(event), entryId: id });
+      setError(eventText(event) || "Gateway error");
+      setStreaming(false);
+      setTurnStartedAt(null);
+      setStatus("Error");
+    });
     const offStatus = gateway.on("status.update", (event) => { if (accept(event, true)) setStatus(eventText(event) || "Working…"); });
     const offInfo = gateway.on("session.info", (event) => {
       const p = accept(event, true);
@@ -585,6 +670,10 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       assistantIdRef.current = null;
       setSessionId(null);
       setTranscript([]);
+      dispatchTimeline({ type: "reset" });
+      virtualRowHeightsRef.current.clear();
+      setVirtualMeasureRevision((revision) => revision + 1);
+      setVirtualViewport((current) => ({ ...current, scrollTop: 0 }));
       setTools([]);
       setApproval(null);
       setClarify(null);
@@ -922,7 +1011,19 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     resumeParam ? { [resumeParam]: sessionActivityStatus } : {}
   ), [resumeParam, sessionActivityStatus]);
   const elapsedSeconds = turnStartedAt == null ? 0 : Math.max(0, Math.floor((clockNow - turnStartedAt) / 1000));
-  const lastAssistantId = [...transcript].reverse().find((message) => message.role === "assistant")?.id;
+  const measuredHeights = useMemo(
+    () => {
+      void virtualMeasureRevision;
+      return displayTranscript.map((message) => virtualRowHeightsRef.current.get(message.id) ?? 0);
+    },
+    [displayTranscript, virtualMeasureRevision],
+  );
+  const virtualRange = useMemo(
+    () => getVirtualRange(displayTranscript.length, virtualViewport.scrollTop, virtualViewport.viewportHeight, measuredHeights, 144, 6),
+    [displayTranscript.length, measuredHeights, virtualViewport],
+  );
+  const visibleTranscript = displayTranscript.slice(virtualRange.start, virtualRange.end);
+  const lastAssistantId = [...displayTranscript].reverse().find((message) => message.role === "assistant")?.id;
   const connectionTone = connectionState === "open"
     ? "success"
     : connectionState === "error"
@@ -941,6 +1042,15 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [isWorking]);
+
+  useLayoutEffect(() => {
+    const container = transcriptRef.current;
+    if (!container) return;
+    for (const row of Array.from(container.querySelectorAll<HTMLElement>("[data-slot='transcript-row']"))) {
+      const id = row.dataset.messageId;
+      if (id) measureTranscriptRow(id, row);
+    }
+  }, [approval, clarify, displayTranscript, error, measureTranscriptRow, status, tools, virtualRange.end, virtualRange.start]);
 
   return (
     <section
@@ -1140,10 +1250,10 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
             aria-live="polite"
             aria-relevant="additions text"
           >
-            {approval && <ApprovalCard request={approval} onRespond={respondApproval} />}
-            {clarify && <ClarificationCard request={clarify} onRespond={respondClarify} />}
-            {transcript.length === 0 && !approval && !clarify && (
-              <div data-slot="chat-empty-state" className="max-w-2xl space-y-3 py-8 text-sm text-text-secondary">
+            {approval && <div className="pb-3"><ApprovalCard request={approval} onRespond={respondApproval} /></div>}
+            {clarify && <div className="pb-3"><ClarificationCard request={clarify} onRespond={respondClarify} /></div>}
+            {displayTranscript.length === 0 && !approval && !clarify && (
+              <div data-slot="chat-empty-state" className="max-w-2xl space-y-3 pb-3 py-8 text-sm text-text-secondary">
                 <p>{chat.startConversation}</p>
                 <div className="space-y-2" role="group" aria-label={chat.tryPrompt}>
                   <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{chat.tryPrompt}</p>
@@ -1163,43 +1273,69 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                 </div>
               </div>
             )}
-            {transcript.map((message) => (
-              <Fragment key={message.id}>
-                {activityStatus && message.id === assistantIdRef.current && (
-                  <div
-                    data-slot="turn-activity"
-                    className="mb-1 flex w-fit max-w-[85%] items-center gap-2 border-l-2 border-primary px-2 py-1 text-sm text-primary"
-                    aria-label="Agent activity"
-                  >
-                    <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full bg-primary motion-safe:animate-pulse" />
-                    <span>{activityStatus}</span>
-                    <span className="font-mono text-xs text-text-secondary">{elapsedSeconds}s</span>
-                  </div>
-                )}
-                <TranscriptBubble
-                  message={message}
-                  onUseAsPrompt={applyMessageAsPrompt}
-                  onEdit={applyMessageAsPrompt}
-                  onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}
-                  onSpeak={speakMessage}
+            {displayTranscript.length > 0 && (
+              <>
+                <div
+                  data-slot="transcript-virtual-spacer"
+                  data-total-height={virtualRange.totalHeight}
+                  data-range-start={virtualRange.start}
+                  data-range-end={virtualRange.end}
+                  style={{ height: virtualRange.offsetTop }}
+                  aria-hidden="true"
                 />
-                {message.id === lastAssistantId && tools.length > 0 && (
+                {visibleTranscript.map((message) => (
                   <div
-                    data-testid="tool-timeline"
-                    data-slot="tool-timeline"
-                    className="mt-3 space-y-2"
-                    aria-label="Tool activity timeline"
+                    key={message.id}
+                    ref={(node) => measureTranscriptRow(message.id, node)}
+                    data-slot="transcript-row"
+                    data-message-id={message.id}
+                    className="pb-3"
                   >
-                    {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
+                    {activityStatus && message.id === assistantIdRef.current && (
+                      <div
+                        data-slot="turn-activity"
+                        className="mb-1 flex w-fit max-w-[85%] items-center gap-2 border-l-2 border-primary px-2 py-1 text-sm text-primary"
+                        aria-label="Agent activity"
+                      >
+                        <span aria-hidden className="inline-block h-2 w-2 shrink-0 rounded-full bg-primary motion-safe:animate-pulse" />
+                        <span>{activityStatus}</span>
+                        <span className="font-mono text-xs text-text-secondary">{elapsedSeconds}s</span>
+                      </div>
+                    )}
+                    <TranscriptBubble
+                      message={message}
+                      onUseAsPrompt={applyMessageAsPrompt}
+                      onEdit={applyMessageAsPrompt}
+                      onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}
+                      onSpeak={speakMessage}
+                    />
+                    {message.id === lastAssistantId && tools.length > 0 && (
+                      <div
+                        data-testid="tool-timeline"
+                        data-slot="tool-timeline"
+                        className="mt-3 space-y-2"
+                        aria-label="Tool activity timeline"
+                      >
+                        {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
+                      </div>
+                    )}
                   </div>
-                )}
-              </Fragment>
-            ))}
+                ))}
+                <div
+                  data-slot="transcript-virtual-spacer"
+                  data-total-height={virtualRange.totalHeight}
+                  data-range-start={virtualRange.start}
+                  data-range-end={virtualRange.end}
+                  style={{ height: virtualRange.bottomSpacer }}
+                  aria-hidden="true"
+                />
+              </>
+            )}
             {!lastAssistantId && tools.length > 0 && (
               <div
                 data-testid="tool-timeline"
                 data-slot="tool-timeline"
-                className="space-y-2"
+                className="pb-3 space-y-2"
                 aria-label="Tool activity timeline"
               >
                 {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}

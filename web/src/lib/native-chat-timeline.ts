@@ -22,7 +22,8 @@ export type TimelineAction =
   | { type: "append"; event: TimelineEventInput; entryId?: string }
   | { type: "update"; event: TimelineEventInput; entryId?: string }
   | { type: "complete"; event: TimelineEventInput; entryId?: string }
-  | { type: "error"; event: TimelineEventInput; entryId?: string };
+  | { type: "error"; event: TimelineEventInput; entryId?: string }
+  | { type: "reset" };
 
 /** The gateway's event envelope is intentionally loose; this adapter only
  * consumes the fields currently emitted by the native page/gateway. */
@@ -90,6 +91,9 @@ export function reduceNativeChatTimeline(
   state: NativeChatTimelineState = initialNativeChatTimeline,
   action: TimelineAction,
 ): NativeChatTimelineState {
+  if (action.type === "reset") {
+    return { entries: [], seenEventIds: new Set<string>(), lastSeqBySession: {} };
+  }
   const payload = objectPayload(action.event.payload);
   const session = sessionId(action.event);
   const turn = turnId(payload);
@@ -127,6 +131,15 @@ export function reduceNativeChatTimeline(
     ? state.lastSeqBySession
     : { ...state.lastSeqBySession, [session]: seq };
   return { entries, seenEventIds, lastSeqBySession };
+}
+
+export function projectTimelineEntries(entries: readonly TimelineEntry[]): Array<{ id: string; role: "assistant"; text: string; streaming: boolean }> {
+  return entries.map((entry) => ({
+    id: entry.id,
+    role: "assistant" as const,
+    text: entry.text,
+    streaming: entry.status === "streaming",
+  }));
 }
 
 export function reduceNativeChatTimelineEvent(

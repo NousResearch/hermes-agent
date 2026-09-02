@@ -651,6 +651,22 @@ describe("NativeChatPage", () => {
     expect(host.textContent).toContain("previous answer");
   });
 
+  it("windows a large resumed transcript while preserving virtual spacer height", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const largeSnapshot = { session_id: "session-1", messages: Array.from({ length: 120 }, (_, index) => ({ id: `row-${index}`, role: index % 2 === 0 ? "user" : "assistant", text: `message-${index}` })) };
+    gateway.instance!.snapshot = largeSnapshot;
+    await act(async () => {
+      gateway.instance?.stateHandler?.("closed");
+      gateway.instance?.stateHandler?.("open");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(gateway.instance?.requests.some(({ method }) => method === "session.activate")).toBe(true);
+    const rows = host.querySelectorAll("[data-slot='transcript-row']");
+    expect(rows.length).toBeLessThan(120);
+    expect(host.querySelector("[data-slot='transcript-virtual-spacer']")?.getAttribute("data-total-height")).toBe("17280");
+  });
+
   it("clears resume and creates a fresh session from New chat without stale tool activity", async () => {
     await act(async () => root.render(createElement(MemoryRouter, { initialEntries: ["/chat?resume=durable-1"] }, createElement(NativeChatPage))));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });

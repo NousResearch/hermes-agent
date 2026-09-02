@@ -4,6 +4,7 @@ import {
   initialNativeChatTimeline,
   reduceNativeChatTimeline,
   reduceNativeChatTimelineEvent,
+  projectTimelineEntries,
   type NativeChatTimelineState,
 } from "./native-chat-timeline";
 
@@ -87,5 +88,28 @@ describe("native chat timeline reducer", () => {
     state = reduceNativeChatTimeline(state, { type: "error", event: event("error", { turn_id: "t1", message_id: "m1", message: "failed" }) });
 
     expect(state.entries[0]).toMatchObject({ text: "x", status: "error", error: "failed" });
+  });
+
+  it("resets all timeline entries, identity, and sequence watermarks immutably", () => {
+    const state = stream(
+      { ...event("message.start", { turn_id: "t1", message_id: "m1" }), event_id: "e1", seq: 4 },
+    );
+    const reset = reduceNativeChatTimeline(state, { type: "reset" });
+
+    expect(reset).toEqual(initialNativeChatTimeline);
+    expect(reset).not.toBe(state);
+    expect(reset.entries).not.toBe(state.entries);
+    expect(reset.seenEventIds).not.toBe(state.seenEventIds);
+  });
+
+  it("projects reducer entries into renderable assistant messages", () => {
+    const state = stream(
+      event("message.start", { turn_id: "t1", message_id: "m1" }),
+      event("message.delta", { turn_id: "t1", message_id: "m1", text: "partial" }),
+      event("message.complete", { turn_id: "t1", message_id: "m1" }),
+    );
+    expect(projectTimelineEntries(state.entries)).toEqual([
+      { id: "m1", role: "assistant", text: "partial", streaming: false },
+    ]);
   });
 });

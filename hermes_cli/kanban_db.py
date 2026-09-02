@@ -9447,8 +9447,12 @@ def check_respawn_guard(
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) authored by the card's own
+        assignee — that role already opened a PR, so re-spawning risks a
+        duplicate. A PR URL left by a *different* role (comment ``author``
+        != card ``assignee``, e.g. an implementer's PR on a card since
+        reassigned to a reviewer/tester) is a handoff artifact and does
+        NOT block the successor's respawn.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9456,7 +9460,7 @@ def check_respawn_guard(
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -9537,13 +9541,26 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    #    Only a comment authored by THIS card's assignee counts: the comment
+    #    ``author`` is the posting worker's ``HERMES_PROFILE``, which the
+    #    dispatcher sets to the card's ``assignee``. A PR URL left by a
+    #    different role (e.g. an implementer's PR on a card since reassigned
+    #    to a reviewer/tester) is a handoff artifact, not this role's own PR,
+    #    so it must not block the successor's respawn.
+    assignee = row["assignee"]
+    if assignee:
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        for c in conn.execute(
+            "SELECT author, body FROM task_comments "
+            "WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if (
+                c["author"] == assignee
+                and c["body"]
+                and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
+            ):
+                return "active_pr"
 
     return None
 

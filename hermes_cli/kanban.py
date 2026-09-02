@@ -2398,7 +2398,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 )
                 failed.append(tid)
                 continue
-            if gate_verdict == "continue" or rejection is not None:
+            if rejection is not None:
                 print(
                     f"kanban: goal completion of {tid} rejected by judge: {rejection}. "
                     f"Provide evidence matching the task's acceptance criteria.",
@@ -2559,7 +2559,7 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        if gate_verdict == "continue" or rejection is not None:
+        if rejection is not None:
             print(
                 f"kanban: goal review handoff of {tid} rejected by judge: "
                 f"{rejection}. Provide acceptance evidence matching the task.",

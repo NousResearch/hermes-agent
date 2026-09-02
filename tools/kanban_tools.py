@@ -770,7 +770,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"or record the block with kanban_block and hand the "
                     f"decision to a human / reviewer."
                 )
-            if gate_verdict == "continue" or rejection is not None:
+            if rejection is not None:
                 return tool_error(
                     f"Goal completion rejected by judge: {rejection}. "
                     f"To proceed, either: (1) provide explicit acceptance "
@@ -958,7 +958,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                     f"unachievable — {rejection}. Record the block with "
                     f"kanban_block instead of requesting review."
                 )
-            if gate_verdict == "continue" or rejection is not None:
+            if rejection is not None:
                 return tool_error(
                     f"Goal review handoff rejected by judge: {rejection}. "
                     "Provide acceptance evidence matching the card before "

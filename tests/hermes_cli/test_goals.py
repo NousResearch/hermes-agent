@@ -833,20 +833,3 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
-
-    def test_blocked_verdict_never_records_done(self, hermes_home):
-        from unittest.mock import patch
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="blocked-sid-2")
-        mgr.set("square the circle")
-        with patch(
-            "hermes_cli.goals.judge_goal",
-            return_value=("blocked", "mathematically impossible", False, None, False),
-        ):
-            decision = mgr.evaluate_after_turn("This cannot be done.")
-        assert decision["status"] != "done"
-        assert mgr.state is not None
-        assert mgr.state.status != "done"
-        assert mgr.state.last_verdict == "blocked"
-

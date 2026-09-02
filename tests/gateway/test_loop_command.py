@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -323,3 +324,76 @@ async def test_loop_wakeup_watcher_keeps_event_loop_responsive_under_writer_lock
     assert released.is_set()
     # If the DB call ran on the loop thread, one heartbeat gap would be ~hold_s.
     assert max(gaps) < hold_s / 2, f"event loop stalled for {max(gaps):.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_loop_wakeup_watcher_runs_every_sessiondb_call_off_loop_thread(loop_env):
+    """Full wakeup path (slash-command loop, adapter present): list_active_loops,
+    fire_tick and complete_tick must each execute on an executor thread, never
+    on the event-loop thread (#92413)."""
+    runner = _make_runner()
+    runner._running = True
+    runner._running_agents = {}
+
+    class _Adapter:
+        handled = []
+
+        async def handle_message(self, event):
+            self.handled.append(event.text)
+
+    runner.adapters = {Platform.DISCORD: _Adapter()}
+    runner._build_process_event_source = lambda evt: SimpleNamespace(
+        platform=Platform.DISCORD, chat_id=evt["chat_id"], chat_type=evt["chat_type"],
+        thread_id=evt["thread_id"] or None, user_id=evt["user_id"], user_name=evt["user_name"],
+    )
+    runner._session_key_for_source = lambda source: "agent:main:discord:channel:chat-loop"
+
+    # A slash-command loop that is due now.
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m /status"))
+    state = loops.load_loop("sid-gateway-loop")
+    state.next_due_at = time.time() - 1
+    loops.save_loop("sid-gateway-loop", state)
+
+    loop_thread = threading.current_thread()
+    on_loop_calls = []
+
+    def _record(name):
+        if threading.current_thread() is loop_thread:
+            on_loop_calls.append(name)
+
+    real_list = loops.list_active_loops
+    real_fire = loops.LoopManager.fire_tick
+    real_complete = loops.LoopManager.complete_tick
+
+    def _list_active_loops(*a, **k):
+        _record("list_active_loops")
+        return real_list(*a, **k)
+
+    def _fire_tick(self):
+        _record("fire_tick")
+        return real_fire(self)
+
+    def _complete_tick(self, last_response):
+        _record("complete_tick")
+        return real_complete(self, last_response)
+
+    orig_sleep = asyncio.sleep
+    calls = {"n": 0}
+
+    async def _one_pass_sleep(delay):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            runner._running = False
+        return await orig_sleep(0)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(loops, "list_active_loops", _list_active_loops)
+        mp.setattr(loops.LoopManager, "fire_tick", _fire_tick)
+        mp.setattr(loops.LoopManager, "complete_tick", _complete_tick)
+        mp.setattr(asyncio, "sleep", _one_pass_sleep)
+        await GatewayRunner._loop_wakeup_watcher(runner, interval=0)
+
+    assert _Adapter.handled == ["/status"], _Adapter.handled
+    assert on_loop_calls == [], f"SessionDB calls ran on the event-loop thread: {on_loop_calls}"
+    # complete_tick ran (slash-command loops complete immediately).
+    assert loops.load_loop("sid-gateway-loop").ticks_fired == 1

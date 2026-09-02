@@ -270,6 +270,61 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
 
+    def test_multiplex_scoped_profile_never_borrows_process_env(
+        self, monkeypatch, tmp_path
+    ):
+        """Under multiplex a scoped profile sees ONLY its own Google Chat
+        settings, and the ADC branch fails closed instead of authenticating
+        as the default profile's service account (#73439)."""
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "default-proj")
+        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME", "default-sub")
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/default.json")
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        profile_home = tmp_path / "beta"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text(
+            "GOOGLE_CHAT_PROJECT_ID=beta-proj\nGOOGLE_CHAT_SUBSCRIPTION_NAME=beta-sub\n"
+        )
+        set_multiplex_active(True)
+        token = set_secret_scope(build_profile_secret_scope(profile_home))
+        try:
+            seed = _gc_mod._env_enablement() or {}
+            beta = GoogleChatAdapter(
+                PlatformConfig(enabled=True, extra={"project_id": "beta-proj", "subscription_name": "beta-sub"})
+            )
+            with pytest.raises(ValueError, match="ADC skipped"):
+                beta._load_sa_credentials()
+        finally:
+            from agent.secret_scope import reset_secret_scope
+
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+        assert seed["project_id"] == "beta-proj"
+        assert "service_account_json" not in seed
+        assert beta._bootstrap_spaces == ""
+
+    def test_multiplex_default_profile_constructs_unscoped(self, monkeypatch):
+        """The default profile's adapter is built OUTSIDE any scope while
+        multiplex is active (gateway startup/reconnect); it must keep reading
+        its own process env instead of raising UnscopedSecretError."""
+        from agent.secret_scope import set_multiplex_active
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")
+        set_multiplex_active(True)
+        try:
+            default = GoogleChatAdapter(_base_config())
+        finally:
+            set_multiplex_active(False)
+        assert default._bootstrap_spaces == "spaces/DEFAULT"
+
 
 # ===========================================================================
 # Pure helpers

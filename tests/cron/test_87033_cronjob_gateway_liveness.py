@@ -201,6 +201,12 @@ class _LivenessPatches:
         )
         self._stack.enter_context(
             patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            )
+        )
+        self._stack.enter_context(
+            patch(
                 "gateway.status.is_gateway_runtime_lock_active",
                 return_value=self._lock_active,
             )
@@ -258,6 +264,10 @@ class TestRuntimeLockFirstLiveness:
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
         ):
             assert cron_cli._builtin_gateway_liveness() is False
 
@@ -278,6 +288,39 @@ class TestRuntimeLockFirstLiveness:
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_running_multiplexer_counts_as_alive_for_named_profile(self):
+        """A satellite profile has no own PID; the default multiplexer ticks it."""
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=True,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_no_multiplexer_and_no_pids_is_still_false(self):
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is False
 
 
 class TestCronStatusLockFirst:
@@ -312,7 +355,14 @@ class TestCronStatusLockFirst:
 
     def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
         text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
-        assert "NOT fire" not in text
+        # The lock-first contract (#87033): an active runtime lock means the
+        # gateway process is alive, so the RED "Gateway is not running" alarm
+        # must never fire. Since #98790 a never-written heartbeat is no longer
+        # silently green — the YELLOW first-heartbeat notice (which also says
+        # "NOT fire") is expected here, so assert on the red alarm itself
+        # rather than the "NOT fire" substring both messages share.
+        assert "Gateway is not running" not in text
+        assert "has not reported a heartbeat" in text
         assert "Gateway is running" in text or "running" in text
 
     def test_no_lock_no_pids_still_warns(self, hermes_env):

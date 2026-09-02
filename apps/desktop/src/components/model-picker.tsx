@@ -1,12 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
-import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import { useStoreSelector } from '@/lib/use-session-slice'
+import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -27,7 +31,9 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
+  ownerConnectionId?: string
   profile?: string
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
    * rung of the overlay ladder when it opens over another fixed overlay (the
@@ -45,7 +51,9 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  ownerConnectionId,
   profile = 'default',
+  request,
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -58,10 +66,85 @@ export function ModelPickerDialog({
   const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
-    queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
     enabled: open
   })
+
+  // Live load state for the managed local server: which model is loading
+  // into memory right now, with a REAL percent (per-tensor callback relayed
+  // over the router's SSE stream). Polled only while the picker is open —
+  // 2s idle cadence is enough for a bar under a ~40s load. Errors read as
+  // "nothing loading" (remote-only installs have no local-models routes).
+  // Every local-models read here sits behind the --local launch flag (strict:
+  // the llamacpp provider group hides even with staged models on disk).
+  const localModelsEnabled = $localModelsEnabled.get()
+
+  const localStatus = useQuery({
+    queryKey: ['local-models-loading', profile],
+    queryFn: () => getLocalModelsStatus(),
+    enabled: open && localModelsEnabled,
+    refetchInterval: 2_000,
+    retry: false
+  })
+
+  const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
+
+  // Models on their way into the local library right now (downloads +
+  // quickstart runs), rendered as grayed progress rows. The jobs store
+  // republishes every ~700ms with fresh byte counts while anything runs —
+  // and this dialog stays MOUNTED app-wide when closed — so subscribe only
+  // to download identity (changes when a download starts/ends, and never
+  // while closed); each row selects its own percent scalar (#72163 class).
+  const downloadsKey = useStoreSelector($localRuntimeJobs, jobs =>
+    open && localModelsEnabled
+      ? runningModelDownloads(jobs)
+          .map(job => `${job.job_id}\u0000${job.target}`)
+          .join('\u0001')
+      : ''
+  )
+
+  const downloads = useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+
+  // Rediscover in-flight work on open: the poller idles when nothing was
+  // running, and a download can start from any surface.
+  useEffect(() => {
+    if (open && localModelsEnabled) {
+      watchLocalRuntimeJobs()
+    }
+  }, [open, localModelsEnabled])
+
+  // A finished download turns into a real selectable model — refetch the
+  // options so the placeholder row is replaced while the picker is open.
+  const refetchOptions = modelOptions.refetch
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let prevActive = runningModelDownloads($localRuntimeJobs.get()).length > 0
+
+    return $localRuntimeJobs.listen(next => {
+      const active = runningModelDownloads(next).length > 0
+
+      if (prevActive && !active) {
+        void refetchOptions()
+      }
+
+      prevActive = active
+    })
+  }, [open, refetchOptions])
 
   const providers = modelOptions.data?.providers ?? []
 
@@ -113,8 +196,10 @@ export function ModelPickerDialog({
             <ModelResults
               currentModel={optionsModel || currentModel}
               currentProvider={optionsProvider || currentProvider}
+              downloads={downloads}
               error={error}
               loading={loading}
+              loadingModels={loadingModels}
               onSelectModel={selectModel}
               providers={providers}
               search={search}
@@ -141,6 +226,8 @@ function ModelResults({
   providers,
   currentModel,
   currentProvider,
+  downloads,
+  loadingModels,
   onSelectModel,
   search
 }: {
@@ -149,6 +236,8 @@ function ModelResults({
   providers: ModelOptionProvider[]
   currentModel: string
   currentProvider: string
+  downloads: { jobId: string; target: string }[]
+  loadingModels: Record<string, LocalModelLoadProgress>
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
@@ -184,15 +273,29 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // The local provider sits behind the --local launch flag (strict: staged
+  // models on disk don't show without it). Module-level read — a launch flag
+  // can't change mid-session.
+  const localModelsShown = $localModelsEnabled.get()
+
+  const configured = providers.filter(
+    p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)
+  )
+
+  // In-flight local downloads render as disabled progress rows: inside the
+  // Local group when it exists, else as their own group (first download —
+  // nothing staged yet, so the backend reports no Local provider at all).
+  const visibleDownloads = downloads.filter(job => !q || (job.target || '').toLowerCase().includes(q))
+  const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
 
   return (
     <>
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
         const models = (provider.models ?? []).filter(m => matches(provider, m))
+        const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
 
-        if (models.length === 0) {
+        if (models.length === 0 && groupDownloads.length === 0) {
           return null
         }
 
@@ -211,6 +314,10 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              // Managed local model loading into memory right now: show the
+              // real load percent inline (keyed by exact model id — remote
+              // providers never match).
+              const loadProgress = loadingModels[model]
 
               return (
                 <CommandItem
@@ -232,6 +339,19 @@ function ModelResults({
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches query={search} text={model} />
                   </span>
+                  {loadProgress && (
+                    <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
+                      <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                        <span
+                          className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                          style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                        />
+                      </span>
+                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">
+                        {loadProgress.percent}%
+                      </span>
+                    </span>
+                  )}
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}
@@ -239,6 +359,9 @@ function ModelResults({
                 </CommandItem>
               )
             })}
+            {groupDownloads.map(job => (
+              <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+            ))}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
                 {copy.proNeedsSubscription}
@@ -247,7 +370,53 @@ function ModelResults({
           </CommandGroup>
         )
       })}
+      {!hasLocalGroup && visibleDownloads.length > 0 && (
+        <CommandGroup heading={copy.localDownloadsHeading} key="local-downloads">
+          {visibleDownloads.map(job => (
+            <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+          ))}
+        </CommandGroup>
+      )}
     </>
+  )
+}
+
+// The backend's provider row for staged local models (inventory.py's
+// _local_runtime_row). Downloads-in-flight attach to this group.
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// A model still downloading: visible so the user knows it's coming (and
+// where it will land), disabled so it can't be selected early, with the
+// same byte progress the settings pane shows. Percent is selected here, per
+// row, so the poller's 700ms byte ticks repaint this leaf only.
+function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
+  const percent = useStoreSelector(
+    $localRuntimeJobs,
+    jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null
+  )
+
+  return (
+    <CommandItem
+      className="flex items-center gap-2 pl-6 font-mono opacity-60"
+      disabled
+      value={`downloading:${jobId}`}
+    >
+      <span className="min-w-0 flex-1 truncate">{target}</span>
+      <span className="flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+        <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <span
+            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            style={{ width: `${Math.max(2, percent ?? 0)}%` }}
+          />
+        </span>
+        <span className="text-[0.62rem] tabular-nums text-muted-foreground">
+          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+        </span>
+      </span>
+    </CommandItem>
   )
 }
 

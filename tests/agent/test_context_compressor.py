@@ -421,6 +421,31 @@ class TestCompress:
         assert t < MINIMUM_CONTEXT_LENGTH
         assert t == 54400  # 85% of 64000
 
+    def test_threshold_floor_capped_at_85_percent_of_window(self):
+        """The MINIMUM_CONTEXT_LENGTH floor must not consume the window's
+        output headroom. At context_length == 65,536 (a common local-model
+        window) the floored threshold used to pass through at 64,000 — 97.7%
+        of the window, ~1.5K tokens of output room — so pre-API compaction
+        effectively could not fire. Providers that silently truncate
+        over-window prompts instead of rejecting them (e.g. ollama's
+        OpenAI-compatible endpoint) never delivered the reactive
+        context-overflow backstop either: a live session rode into the window
+        ceiling and each length-continuation retry re-sent a window-filling
+        prompt (observed 65,120 -> 65,273 prompt tokens against 65,536,
+        leaving 263 output tokens) until the turn died with "Response
+        remained truncated after 4 continuation attempts". The floor is now
+        capped at 85% of the effective input budget whenever it is the
+        binding term."""
+        t = ContextCompressor._compute_threshold_tokens(65_536, 0.50)
+        assert t == int(65_536 * 0.85)  # 55,705
+        # Any window where the floor lands above 85% is capped the same way.
+        assert ContextCompressor._compute_threshold_tokens(70_000, 0.50) == 59_500
+        # Floor binding but at/under the 85% cap: unchanged.
+        assert ContextCompressor._compute_threshold_tokens(100_000, 0.50) == 64_000
+        # An explicit threshold_percent above 85% is user intent, not the
+        # floor — it is not capped.
+        assert ContextCompressor._compute_threshold_tokens(372_000, 0.90) == 334_800
+
 
 
 
@@ -2426,36 +2451,39 @@ class TestLazyContextResolution:
 
 
 class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+    """Regression guards for the preflight token-display seed
+    (ContextCompressor.maybe_seed_preflight_display_tokens, called from
+    build_turn_context).
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Policy: seed ONLY from the 0 state ("no reading yet", #34282 — the seed
+    keeps the status bar live when a provider reports no usage). Any
+    non-zero value is preserved: the -1 post-compression sentinel (#36718 —
+    compress_context parks it while awaiting real usage, and the seed must
+    not clobber it) AND any positive real provider reading (#81481 — the
+    rough estimate intentionally over-counts CJK / reasoning replay, so it
+    must never overwrite a real measurement).
     """
-
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
-        _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
 
     def test_sentinel_preserved_after_compression(self, compressor):
         compressor.last_prompt_tokens = -1
         # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+        compressor.maybe_seed_preflight_display_tokens(250_000)
+        assert compressor.last_prompt_tokens == -1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+    def test_zero_state_still_seeded(self, compressor):
+        # 0 means "no reading yet" — the seed keeps the status bar live when
+        # providers report no usage.
+        compressor.last_prompt_tokens = 0
+        compressor.maybe_seed_preflight_display_tokens(50_000)
+        assert compressor.last_prompt_tokens == 50_000
 
-
+    def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
+        # Regression for the 492K-vs-685K display jump: a real provider
+        # reading must never be replaced by the schema/reasoning-inflated
+        # rough preflight estimate (#81481 class inflation).
+        compressor.last_prompt_tokens = 492_000
+        compressor.maybe_seed_preflight_display_tokens(685_344)
+        assert compressor.last_prompt_tokens == 492_000
 
 class TestTurnPairPreservation:
     """Causal Coupling guard (#22523): compaction must never orphan a user turn.

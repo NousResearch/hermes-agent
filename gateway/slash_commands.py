@@ -4449,6 +4449,67 @@ class GatewaySlashCommandsMixin:
         with _profile_runtime_scope(profile_home):
             return await self._handle_compress_command_inner(event)
 
+    async def _compress_codex_app_server_session(
+        self, session_key: str, session_id: str
+    ) -> str:
+        """Manual /compress for codex_app_server sessions (#73503).
+
+        Compacts the LIVE cached agent's app-server thread via
+        ``thread/compact/start`` (through ``_compress_context``'s codex route
+        with ``force=True``, which bypasses the automatic-mode gate in every
+        ``compression.codex_app_server_auto`` mode — a manual /compress is an
+        explicit user decision) and keeps that agent cached, so the compacted
+        thread is what the next turn continues from. Never builds a temporary
+        compression agent and never rewrites the transcript mirror: neither
+        can shrink the server-side thread that is the model's real context.
+        """
+        agent = None
+        lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache is not None:
+            if lock:
+                with lock:
+                    entry = cache.get(session_key)
+            else:
+                entry = cache.get(session_key)
+            agent = entry[0] if isinstance(entry, tuple) and entry else entry
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        if (
+            agent is None
+            or agent is _AGENT_PENDING_SENTINEL
+            or getattr(agent, "_codex_session", None) is None
+        ):
+            return (
+                "🗜️ Nothing to compact: this session runs on the Codex "
+                "app-server runtime, whose context lives in a Codex-owned "
+                "thread that only exists while the agent is active. Send a "
+                "message first, then /compress — or /reset to start fresh."
+            )
+
+        compressor = getattr(agent, "context_compressor", None)
+        count_before = getattr(compressor, "compression_count", 0)
+        try:
+            await self._run_in_executor_with_context(
+                lambda: agent._compress_context(
+                    [], "", force=True,
+                )
+            )
+        except Exception as exc:
+            return t("gateway.compress.failed", error=exc)
+        count_after = getattr(compressor, "compression_count", 0)
+        if count_after > count_before:
+            return (
+                "🗜️ Codex app-server thread compacted (thread/compact). "
+                "The transcript mirror is unchanged by design — the "
+                "app-server now carries the compacted context."
+            )
+        return (
+            "⚠️ Codex app-server compaction did not complete — the thread "
+            "is unchanged. Check the app-server logs, retry /compress, or "
+            "/reset for a clean session."
+        )
+
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
@@ -4538,6 +4599,23 @@ class GatewaySlashCommandsMixin:
                 source=source,
                 session_key=session_key,
             )
+            if str(runtime_kwargs.get("api_mode") or "").lower() == "codex_app_server":
+                # codex app-server runtime (#73503): the model's working
+                # context is the app-server's server-side thread, owned by the
+                # LIVE cached agent (agent/codex_runtime.py — one
+                # CodexAppServerSession per AIAgent, spawned lazily on first
+                # turn). A temporary compression agent has no thread, so the
+                # codex route in _compress_context_via_codex_app_server bailed
+                # at its "no active codex thread" guard, the transcript came
+                # back unchanged, and the finally-clause eviction below then
+                # destroyed the only real context. Compact the live agent's
+                # thread via thread/compact/start instead — and KEEP the agent
+                # cached so the compacted thread survives to the next turn.
+                # No local transcript fallback in any mode: rewriting the
+                # mirror cannot shrink the thread.
+                return await self._compress_codex_app_server_session(
+                    session_key, session_entry.session_id
+                )
             if not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
 
@@ -5121,10 +5199,19 @@ class GatewaySlashCommandsMixin:
                     s for s in titled
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
+                # A non-admin `--all` silently falls back to same-origin
+                # scoping; say so instead of rendering an unexplained
+                # narrower list (sibling of the /sessions `all` notice).
+                scope_note = (
+                    t("gateway.resume.all_requires_admin")
+                    if allow_all and not self._resume_caller_is_admin(source)
+                    else None
+                )
                 if not titled:
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
-                    return t("gateway.resume.no_named_sessions")
+                    base = t("gateway.resume.no_named_sessions")
+                    return f"{base}\n{scope_note}" if scope_note else base
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
@@ -5135,6 +5222,8 @@ class GatewaySlashCommandsMixin:
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
+                if scope_note:
+                    lines.append(scope_note)
                 lines.append(t("gateway.resume.list_footer_numbered"))
                 return "\n".join(lines)
             except Exception as e:
@@ -5280,6 +5369,15 @@ class GatewaySlashCommandsMixin:
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
         cross_origin = include_all and self._resume_caller_is_admin(source)
+        # Don't silently no-op a requested widening: a non-admin `/sessions all`
+        # used to render the same scoped list with zero feedback, which reads
+        # as "my session vanished" (community report, Aug 2026).
+        scope_notice = None
+        if include_all and not cross_origin:
+            scope_notice = (
+                "_Note: `all` (cross-chat listing) requires a configured admin; "
+                "showing this chat's sessions only._"
+            )
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
@@ -5287,6 +5385,7 @@ class GatewaySlashCommandsMixin:
             source=source.platform.value if source.platform else None,
             session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
+            include_current_session=True,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
             search_query=search_query,
@@ -5311,6 +5410,7 @@ class GatewaySlashCommandsMixin:
             rows,
             include_source=cross_origin,
             title=title,
+            notice=scope_notice,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
@@ -5789,20 +5889,21 @@ class GatewaySlashCommandsMixin:
                     i += 1
 
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db, release_shared_session_db
             from agent.insights import InsightsEngine
 
             loop = asyncio.get_running_loop()
 
             def _run_insights():
-                db = SessionDB()
+                db = get_shared_session_db()
                 try:
                     engine = InsightsEngine(db)
                     report = engine.generate(days=days, source=source)
                     result = engine.format_gateway(report)
                     return result
                 finally:
-                    db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(db)
 
             return await loop.run_in_executor(None, _run_insights)
         except Exception as e:

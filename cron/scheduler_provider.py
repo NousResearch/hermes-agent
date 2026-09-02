@@ -558,8 +558,11 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
+        default_profile=None,
     ):
         import logging
+        from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
         from cron.jobs import (
             clear_ticker_error,
@@ -585,6 +588,8 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
+                default_profile=default_profile,
             )
             return
 
@@ -626,7 +631,14 @@ class InProcessCronScheduler(CronScheduler):
                 # stop_event (set by the main thread's signal handler), not by
                 # an exception in this daemon thread, so swallowing it and
                 # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
+                if isinstance(e, CronTickYielded):
+                    # Expected while this process is stale and a fresh gateway
+                    # owns the runtime lock: not an error to debug, but it IS
+                    # recorded below so status shows why ticks aren't firing
+                    # from here. tick() already logged it once per episode.
+                    logger.info("Cron tick yielded: %s", e)
+                else:
+                    logger.error("Cron tick error: %s", e, exc_info=True)
                 # Persist the failure reason next to the heartbeat markers so
                 # `hermes cron status`/`list` (separate processes) can show
                 # WHY ticks fail, not just that the success marker is stale —
@@ -656,6 +668,8 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
+        default_profile=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -667,6 +681,7 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
+        from cron.scheduler import CronTickYielded
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -706,44 +721,75 @@ class InProcessCronScheduler(CronScheduler):
         while not stop_event.is_set():
             ok = False
             _tick_error = None
+            _profile_errors: dict[str, str] = {}
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for entry in _existing_profile_homes(profile_homes):
+                        _pname = entry[0] if isinstance(entry, tuple) else None
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
+                                # Deliver each profile's cron via ITS OWN adapters.
+                                # The shared `adapters` set belongs to the default
+                                # profile only. A secondary profile uses its own map
+                                # in profile_adapters[name], which is populated only
+                                # once that profile's bot connects. A secondary must
+                                # NEVER fall back to the default profile's `adapters`
+                                # (that ships its cron output through the wrong bot),
+                                # so before its adapter connects — map absent or empty
+                                # — it simply does not deliver this tick.
+                                if _pname is None or _pname == default_profile:
+                                    _tick_adapters = adapters
+                                else:
+                                    _tick_adapters = (profile_adapters or {}).get(_pname) or {}
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=_tick_adapters,
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,
                                 )
+                        except CronTickYielded as e:
+                            # This profile is served stale and a fresh
+                            # gateway owns its runtime lock: record the yield
+                            # for THIS profile's status only, and keep
+                            # ticking the remaining profiles — one profile's
+                            # fresh gateway must not cancel another profile's
+                            # only ticker in the same cycle.
+                            logger.info("Cron tick yielded for profile at %s: %s", home, e)
+                            _profile_errors[str(home)] = f"{type(e).__name__}: {e}"
                         finally:
                             reset_hermes_home_override(home_token)
-                ok = True
+                    ok = not _profile_errors
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
                 # EMFILE: reclaim fds + exponential backoff (#87644).
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
-            else:
-                _tick_error = None
-            # Record per-profile heartbeat after each tick cycle.
+            # Record per-profile heartbeat after each tick cycle. Distinguish
+            # a COMPLETED cycle (``_tick_error`` unset) — where each profile's
+            # beat reflects its own outcome, so a yielding profile does not
+            # darken healthy siblings — from an aborted one (exception), where
+            # no profile completed and all beats are unsuccessful (#32612).
             for entry in _existing_profile_homes(profile_homes):
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:
                     with use_cron_store(home):
-                        record_ticker_heartbeat(success=ok)
+                        _home_ok = (
+                            _tick_error is None and str(home) not in _profile_errors
+                        )
+                        record_ticker_heartbeat(success=_home_ok)
                         # Surface the failure reason (or clear it) per profile
                         # so `hermes cron status` can show WHY ticks fail
                         # (#68483).
-                        if ok:
+                        if _home_ok:
                             clear_ticker_error()
+                        elif str(home) in _profile_errors:
+                            record_ticker_error(_profile_errors[str(home)])
                         elif _tick_error:
                             record_ticker_error(_tick_error)
                 finally:

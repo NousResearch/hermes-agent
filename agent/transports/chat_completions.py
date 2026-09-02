@@ -27,6 +27,61 @@ from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
+# xAI's chat-completions API reserves the function name ``tool_search`` for
+# its own server-side tool and rejects any request declaring a client
+# function with that name (HTTP 400 "The function name tool_search is
+# reserved for the tool_search tool", #95003). The Tool Search bridge
+# (tools/tool_search.py) assembles its client-side discovery tool under the
+# same literal name for every provider, so Grok providers are unusable
+# whenever the bridge is active. Mirror the web_search treatment in
+# transports/codex.py (_rename_client_web_search_for_xai): alias the wire
+# declaration and map the alias back in normalize_response. The alias value
+# matches _CODEX_TOOL_SEARCH_ALIAS from the Codex-side fix for the same
+# reserved-name class (#83122) so the two transports stay consistent.
+_XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
+
+
+def _rename_tool_search_bridge_for_xai(
+    tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Rename the client ``tool_search`` bridge declaration to a wire alias.
+
+    Only the wire name changes: descriptions, schemas, and the other two
+    bridge names (``tool_describe`` / ``tool_call`` — not reserved by xAI)
+    pass through untouched. Returns ``(rewritten_tools, alias_map)`` where
+    ``alias_map`` maps each alias THIS request emits back to the original
+    name; the caller stashes it on the transport so ``normalize_response``
+    only reverses aliases that were actually sent. If a real tool already
+    occupies ``hermes_tool_search``, the bridge takes a ``_2``/``_3``
+    suffix instead of duplicating a wire name.
+    """
+    rewritten: list[dict[str, Any]] = []
+    alias_map: dict[str, str] = {}
+    taken = {
+        (tool.get("function") or {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    taken.discard(None)
+    for tool in tools:
+        if (
+            isinstance(tool, dict)
+            and (tool.get("function") or {}).get("name") == "tool_search"
+        ):
+            alias = _XAI_TOOL_SEARCH_ALIAS
+            suffix = 2
+            while alias in taken:
+                alias = f"{_XAI_TOOL_SEARCH_ALIAS}_{suffix}"
+                suffix += 1
+            taken.add(alias)
+            alias_map[alias] = "tool_search"
+            aliased = dict(tool)
+            aliased["function"] = {**tool["function"], "name": alias}
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten, alias_map
+
 
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
@@ -277,6 +332,13 @@ class ChatCompletionsTransport(ProviderTransport):
     The default path for OpenAI-compatible providers.
     """
 
+    # Wire-alias provenance of the most recent request built for this
+    # transport: ``{alias_sent_on_wire: original_tool_name}``. ``None``
+    # means no request recorded provenance (normalize-only call sites) —
+    # fall back to the static alias constant. An empty dict means the last
+    # request emitted no aliases, so no reverse rewrite may run (#95003).
+    _last_wire_aliases: dict[str, str] | None = None
+
     @property
     def api_mode(self) -> str:
         return "chat_completions"
@@ -316,6 +378,10 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - Provider-specific ordered replay sidecars --
+          ``anthropic_content_blocks`` and ``bedrock_content_blocks`` are
+          durable-history data for their native transports, not part of the
+          Chat Completions schema. They must not cross a provider boundary.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
@@ -330,7 +396,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
             ):
                 needs_sanitize = True
                 break
@@ -401,7 +470,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -409,7 +481,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
+                out_msg.pop("platform_message_id", None)  # gateway dedup id
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                out_msg.pop("anthropic_content_blocks", None)
+                out_msg.pop("bedrock_content_blocks", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -925,6 +1000,19 @@ class ChatCompletionsTransport(ProviderTransport):
                 # preserve an explicit blank name for Hermes's recovery path.
                 if tc_function is None or function_name is None:
                     continue
+                # Map THIS request's wire aliases back before dispatch.
+                # Request-local provenance: when the paired request recorded
+                # its alias map, only those aliases are reversed — a real
+                # user/plugin/MCP tool that happens to be named
+                # ``hermes_tool_search`` dispatches as itself when no alias
+                # was emitted. The static-constant fallback covers
+                # normalize-only call sites with no recorded request.
+                _alias_map = self._last_wire_aliases
+                if _alias_map is None:
+                    if function_name == _XAI_TOOL_SEARCH_ALIAS:
+                        function_name = "tool_search"
+                elif function_name in _alias_map:
+                    function_name = _alias_map[function_name]
                 function_arguments = getattr(tc_function, "arguments", None)
                 # Preserve provider-specific extras on the tool call.
                 # Gemini 3 thinking models attach extra_content with

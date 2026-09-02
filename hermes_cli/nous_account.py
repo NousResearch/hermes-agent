@@ -396,6 +396,50 @@ def get_nous_portal_account_info(
     )
 
 
+def nous_policy_present() -> Optional[bool]:
+    """Whether the caller's org carries a restrictive model/provider policy.
+
+    Reads the ``policy_present`` claim off the access token, so it costs no
+    request; ``/api/oauth/account`` does not carry it. Stamped at mint time, so
+    it goes stale until the next token refresh.
+
+    ``None`` is unknown — an older mint or an unreadable claim — and must not be
+    reported as the absence of a policy.
+    """
+    try:
+        from hermes_cli.auth import get_provider_auth_state, _decode_jwt_claims
+
+        state = get_provider_auth_state("nous") or {}
+        access_token = state.get("access_token")
+        if not isinstance(access_token, str) or not access_token.strip():
+            return None
+        claims = _decode_jwt_claims(access_token)
+        if not claims:
+            return None
+        return _coerce_bool(claims.get("policy_present"))
+    except Exception:
+        return None
+
+
+def nous_policy_notice(*, removed: bool) -> str:
+    """A one-line notice for a list the org's policy narrowed, else ``""``.
+
+    A blocked model is omitted rather than marked, which reads as "Hermes does
+    not support this". This says which it is without enumerating the blocked
+    set, which under an allowlist is most of the catalog.
+
+    *removed* is whether the filter actually dropped anything. The catalog read
+    fails open — an anonymous or empty one narrows nothing — so the claim alone
+    would label a full list as filtered.
+    """
+    if not removed or nous_policy_present() is not True:
+        return ""
+    return (
+        "Your organization restricts which models are available — "
+        "models outside its policy are not listed."
+    )
+
+
 def _fresh_account_info(
     *,
     state: dict[str, Any],

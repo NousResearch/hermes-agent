@@ -661,6 +661,42 @@ class TestSkillsHubSourcesEndpoint:
         assert isinstance(body["installed"], dict)
 
 
+class TestOfficialSkillsCatalogEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_full_catalog_with_installed_flags(self, monkeypatch):
+        # Serve the catalog from OptionalSkillSource.list_local() (no network),
+        # with the per-profile installed map marking already-installed rows.
+        metas = [
+            _FakeMeta("official/gifs/gif-search", "builtin", "official"),
+            _FakeMeta("official/creative/ascii-art", "builtin", "official"),
+        ]
+        monkeypatch.setattr(
+            "tools.skills_hub.OptionalSkillSource.list_local",
+            lambda self: metas,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_server._installed_hub_identifiers",
+            lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
+        )
+        r = self.client.get("/api/skills/hub/official")
+        assert r.status_code == 200
+        skills = r.json()["skills"]
+        by_ident = {s["identifier"]: s for s in skills}
+        assert set(by_ident) == {
+            "official/gifs/gif-search",
+            "official/creative/ascii-art",
+        }
+        # Category derived from the identifier's directory segment.
+        assert by_ident["official/gifs/gif-search"]["category"] == "gifs"
+        assert by_ident["official/creative/ascii-art"]["category"] == "creative"
+        # Installed flag comes from the profile's hub lock.
+        assert by_ident["official/gifs/gif-search"]["installed"] is True
+        assert by_ident["official/creative/ascii-art"]["installed"] is False
+
+
 class TestSkillsHubPreviewEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):

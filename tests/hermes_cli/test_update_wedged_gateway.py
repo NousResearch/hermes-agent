@@ -205,7 +205,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     monkeypatch.setattr(
         gateway_cli,
         "terminate_pid",
-        lambda pid, force=False: events.append(("kill" if force else "term", pid)),
+        lambda pid, force=False, **kwargs: events.append(("kill" if force else "term", pid)),
     )
     # Never let a real SIGUSR1 escape to the live test PID — the drain path
     # goes through _graceful_restart_via_sigusr1 (in-place restart) before
@@ -326,7 +326,7 @@ class TestEscalateWedgedGateway:
         monkeypatch.setattr(
             gateway_cli,
             "terminate_pid",
-            lambda pid, force=False: signals.append(("kill" if force else "term", pid)),
+            lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
         monkeypatch.setattr(
             gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: True
@@ -347,7 +347,7 @@ class TestEscalateWedgedGateway:
         monkeypatch.setattr(
             gateway_cli,
             "terminate_pid",
-            lambda pid, force=False: signals.append(("kill" if force else "term", pid)),
+            lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
         monkeypatch.setattr(gateway_cli, "_wait_for_pid_exit", fake_wait)
 
@@ -357,7 +357,7 @@ class TestEscalateWedgedGateway:
     def test_total_wait_budget_is_bounded_well_under_drain(self, monkeypatch):
         """Worst case must be seconds, never the 180s drain budget."""
         waits = []
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False, **kwargs: None)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
@@ -368,7 +368,7 @@ class TestEscalateWedgedGateway:
         assert sum(waits) < 30.0
 
     def test_process_already_gone_is_success(self, monkeypatch):
-        def raise_gone(pid, force=False):
+        def raise_gone(pid, force=False, **kwargs):
             raise ProcessLookupError
 
         monkeypatch.setattr(gateway_cli, "terminate_pid", raise_gone)
@@ -381,7 +381,7 @@ class TestEscalateWedgedGateway:
     def test_sigkill_permission_error_does_not_raise(self, monkeypatch):
         calls = []
 
-        def term(pid, force=False):
+        def term(pid, force=False, **kwargs):
             calls.append(force)
             if force:
                 raise PermissionError
@@ -420,9 +420,9 @@ class TestLaunchdRestartWedgedIntegration:
             lambda pid, **kw: events.append("escalate") or True,
         )
         monkeypatch.setattr(
-            gateway_cli,
-            "terminate_pid",
-            lambda pid, force=False: events.append("sigterm"),
+        gateway_cli,
+        "terminate_pid",
+            lambda pid, force=False, **kwargs: events.append("sigterm"),
         )
         # Never let a real SIGUSR1 escape to PID 4242 during tests.
         monkeypatch.setattr(
@@ -585,7 +585,7 @@ class TestLoopTickWitness:
             monkeypatch.setattr(
                 gateway_cli,
                 "terminate_pid",
-                lambda pid, force=False: events.append(("kill" if force else "term", pid)),
+                lambda pid, force=False, **kwargs: events.append(("kill" if force else "term", pid)),
             )
             # Never let a real SIGUSR1 escape to os.getpid() — the drain
             # path now goes through _graceful_restart_via_sigusr1 (in-place

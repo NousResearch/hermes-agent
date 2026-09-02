@@ -1207,9 +1207,18 @@ export const host = {
    *  `null` when the owner has nothing open. A roster click asks this before
    *  resolving the canonical chat, so the tabs the user left (and the ones
    *  they closed) are respected. Presentation only: no gateway activation,
-   *  no session create. Feature-detect on older desktops. */
-  focusOpenWorkspaceSession: (workspaceOwnerKey: string): null | string =>
-    focusWorkspaceOwnerSessionTile(workspaceOwnerKey),
+   *  no session create. Feature-detect on older desktops.
+   *
+   *  `isStaleTile` (hermes-agent#90102): the caller's reconciliation probe
+   *  against backend truth. The tile bucket is a Local Storage cache — a
+   *  persisted bot tile can name a session the backend has since superseded,
+   *  and fronting it pinned the roster click to a stale finished session
+   *  forever. Tiles the probe rejects are discarded (never fronted), so the
+   *  caller falls through to its authoritative open path. */
+  focusOpenWorkspaceSession: (
+    workspaceOwnerKey: string,
+    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean
+  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

@@ -380,6 +380,11 @@ def collect_runtime_inventory() -> UpdatePlan:
                         "argv": entry.get("argv") or "",
                         "host": entry.get("host") or "",
                         "port": entry.get("port"),
+                        # Process incarnation, not just the numeric PID: a
+                        # post-update survivor probe that compares PIDs alone
+                        # calls a NEW serve that reused the number a survivor
+                        # (#92145 review).
+                        "create_time": entry.get("create_time"),
                     },
                 )
             )

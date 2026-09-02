@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
     _is_connection_error,
     aux_interrupt_protection,
     call_llm,
+    extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -151,19 +152,59 @@ _SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
     "no api key found",
 )
 
-_HYGIENE_IDLE_TIMEOUT_MARKERS: tuple[str, ...] = (
+_HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS: tuple[str, ...] = (
     "session hygiene compression timed out",
+    "hygiene compression deferred: turn-hold budget expired",
 )
 
 
-def _is_hygiene_idle_timeout_error(error: object) -> bool:
-    """Return True when the durable cooldown came from a hygiene watchdog timeout.
+def _is_hygiene_preagent_only_cooldown(error: object) -> bool:
+    """Return True for a cooldown that belongs only to pre-agent hygiene.
 
-    That persist is intentional for the pre-agent hygiene pass (#74136) but
-    must not block the in-conversation compressor (#86972).
+    Hygiene watchdog timeouts and turn-hold deferrals intentionally persist
+    retry spacing for the pre-agent pass (#74136), but neither is evidence of
+    an auxiliary-model failure and neither may block the in-agent compressor
+    (#86972).
     """
     text = str(error or "").strip().casefold()
-    return any(marker in text for marker in _HYGIENE_IDLE_TIMEOUT_MARKERS)
+    return any(
+        marker in text for marker in _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS
+    )
+
+
+def _response_finish_reason(response: Any) -> str:
+    """Return ``choices[0].finish_reason`` from a dict- or object-shaped response.
+
+    Mirrors the defensive message extraction in ``_generate_summary``: some
+    OpenAI-compatible proxies / local backends return plain dicts, others
+    return SDK objects, and either may omit the field entirely. Returns the
+    lowercased finish reason, or ``""`` when absent/unreadable.
+    """
+    try:
+        if isinstance(response, dict):
+            choices = response.get("choices") or [{}]
+            first = choices[0] if choices else {}
+            reason = (
+                first.get("finish_reason")
+                if isinstance(first, dict)
+                else getattr(first, "finish_reason", None)
+            )
+        else:
+            choices = getattr(response, "choices", None) or []
+            reason = getattr(choices[0], "finish_reason", None) if choices else None
+        return str(reason).strip().lower() if reason else ""
+    except Exception:
+        return ""
+
+
+# RuntimeError marker raised when the summarizer's generation stopped on the
+# output-token cap (``finish_reason == "length"``). A length stop means the
+# summary text is PARTIAL — persisting it as a compaction checkpoint would
+# silently truncate the conversation's memory and feed the cut-off text back
+# into every subsequent iterative-update prompt. The except-branch classifier
+# below keys on this exact substring, so keep raise sites and the classifier
+# in sync. (Ported from earendil-works/pi#7048 / commit 97fa14e39.)
+_TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
@@ -252,6 +293,13 @@ COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 # rolling summary, so dropping or rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 _DB_PERSISTED_MARKER = "_db_persisted"
+# Marks a message dict as carried-forward compaction tail (verbatim rows the
+# compressor protected from summarization). archive_and_compact() archives
+# these originals as rewind-style (active=0, compacted=0) instead of
+# compacted=1, so they stop satisfying search_messages' recall filter and
+# duplicating their live copies (#86366). Never persisted: _insert_message_rows
+# only reads known columns.
+_COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
@@ -1531,7 +1579,18 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
+    # The wire ships at most ONE of the generic thinking keys: every request
+    # build pops ``reasoning`` after (optionally) promoting it into
+    # ``reasoning_content`` (``apply_reasoning_content_policy``), and a
+    # non-empty stored ``reasoning_content`` always displaces it. Charging
+    # both keys double-counted the same thinking text on echo-back providers
+    # that persist it under both (#84371 comment: +53% vs real
+    # prompt_tokens). Mirror the wire: reasoning_content wins when present.
+    _rc = msg.get("reasoning_content")
+    _skip_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
+        if key == "reasoning" and _skip_reasoning_dup:
+            continue
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
@@ -2921,11 +2980,11 @@ class ContextCompressor(ContextEngine):
                 self._last_summary_error = None
             return None
 
-        # Hygiene idle-watchdog timeouts persist the same column so the
-        # pre-agent pass can skip (#74136), but they are not evidence of a
-        # 429/aux-model fault. The in-conversation compressor has its own
-        # budget and must still be allowed to run (#86972).
-        if _is_hygiene_idle_timeout_error(state.get("error")):
+        # Hygiene watchdog timeouts and turn-hold deferrals persist the same
+        # column so the pre-agent pass can skip (#74136), but they are not
+        # evidence of a 429/aux-model fault. The in-conversation compressor has
+        # its own budget and must still be allowed to run (#86972).
+        if _is_hygiene_preagent_only_cooldown(state.get("error")):
             # A later hygiene write can overwrite a previous aux-model row
             # on the shared column. Drop any in-memory cooldown so the
             # in-agent compressor is not still blocked after this refresh.
@@ -3262,10 +3321,20 @@ class ContextCompressor(ContextEngine):
         equal the ENTIRE window — auto-compression can never fire because the
         provider rejects the request before usage reaches 100% (#14690).
 
-        When the floor would meet or exceed the context window, trigger at
-        ``_MIN_CTX_TRIGGER_RATIO`` (85%) of the window — high enough that a
-        small model uses most of its context before compacting, but below
-        100% so compaction fires before the provider rejects the request.
+        Near-minimum windows degenerate the same way without ever tripping an
+        equality check: at ``context_length == 65536`` the floored threshold
+        used to pass through at 64,000 — 97.7% of the window, ~1.5K tokens of
+        output room. Providers that silently truncate over-window prompts
+        instead of rejecting them (e.g. ollama's OpenAI-compatible endpoint)
+        never deliver the reactive context-overflow backstop either, so a
+        session rides into the window ceiling and every length-continuation
+        retry re-sends a window-filling prompt for a shrinking sliver of
+        output. Whenever the floor is the binding term, it is therefore capped
+        at ``_MIN_CTX_TRIGGER_RATIO`` (85%) of the effective input budget —
+        high enough that a small model uses most of its context before
+        compacting, but low enough that compaction fires while output room
+        remains. An explicit ``threshold_percent`` above 85% is user intent,
+        not the floor, and is not capped.
 
         The provider reserves ``max_tokens`` of output space out of the same
         window, so the usable INPUT budget is ``context_length - max_tokens``.
@@ -3281,13 +3350,17 @@ class ContextCompressor(ContextEngine):
             effective_window = context_length
         pct_value = int(effective_window * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
-        # If flooring pushed the threshold to/over the effective window it can
-        # never be reached. Trigger at 85% of the effective input budget so a
-        # minimum-context model rides most of its budget before compacting
-        # instead of wasting half.
+        # The floor must not consume the window's output headroom: cap it at
+        # 85% of the effective input budget whenever it is the binding term.
+        # (An explicit threshold_percent above 85% is user intent — kept.)
+        trigger_cap = int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO)
+        if effective_window > 0 and floored > pct_value and floored > trigger_cap:
+            floored = max(pct_value, trigger_cap)
+        # If the percentage itself reaches the effective window it can never
+        # be reached — trigger at 85% of the window, below 100% so compaction
+        # fires before the provider rejects (or silently clips) the request.
         if effective_window > 0 and floored >= effective_window:
-            return max(1, min(int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
-                              effective_window - 1))
+            return max(1, min(trigger_cap, effective_window - 1))
         return floored
     def __init__(
         self,
@@ -3522,6 +3595,14 @@ class ContextCompressor(ContextEngine):
         # the session unchanged instead of destroying the middle window for a
         # deterministic placeholder (#94448). Independent of abort_on_summary_failure.
         self._last_summary_empty_content_failure: bool = False
+        # Set when summary generation ultimately fails because the summarizer
+        # stopped on its output-token cap (finish_reason == "length") — the
+        # summary text is PARTIAL and must never become a compaction
+        # checkpoint. compress() must ABORT and preserve the session unchanged
+        # exactly like the empty-content class: a truncated checkpoint
+        # silently destroys the compacted middle and compounds across
+        # iterative updates. (Ported from earendil-works/pi#7048.)
+        self._last_summary_truncated_failure: bool = False
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
         # succeeded.  Silent recovery would hide the broken config.
@@ -3600,6 +3681,26 @@ class ContextCompressor(ContextEngine):
         # it armed for a later, unrelated reading.
         self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
+
+    def maybe_seed_preflight_display_tokens(self, preflight_tokens: int) -> None:
+        """Seed ``last_prompt_tokens`` from a rough preflight estimate, display-only.
+
+        Policy (co-located with the rest of the speculative-seed lifecycle —
+        see ``snapshot_preflight_display_tokens`` /
+        ``rollback_interrupted_preflight_display_tokens``): seed ONLY from
+        the 0 state ("no reading yet", #34282). Any non-zero value is
+        preserved — the -1 post-compression sentinel (#36718) AND any real
+        provider reading (#81481: the rough estimate intentionally
+        over-counts CJK / reasoning replay, 1.4-2.5x on heavy sessions, and
+        must never overwrite a real measurement).
+
+        Accepted trade-off: a provider reporting partial usage (e.g.
+        excluding cache-discounted tokens) pins the meter low until its next
+        report — preferred over estimator inflation.
+        """
+        _last = self.last_prompt_tokens
+        if _last == 0 and preflight_tokens > _last:
+            self.last_prompt_tokens = preflight_tokens
 
     def snapshot_preflight_display_tokens(self) -> int:
         """Capture the display token count before a speculative preflight seed."""
@@ -3984,11 +4085,16 @@ class ContextCompressor(ContextEngine):
             # Same newest-turn-only thinking charge as the tail-cut walk
             # (#73624) — this boundary decides which tool results stay
             # prunable, and overcharging stale thinking shrinks that window.
+            # Echo-back routes charge every turn (#84371 estimator parity).
             _newest_asst_idx = _last_assistant_index(result)
+            _charge_all_thinking = self._stale_thinking_on_wire()
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(
-                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                    msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or i == _newest_asst_idx
+                    ),
                 )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -5241,22 +5347,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 )
             if self._compression_cancelled():
                 raise AuxiliaryExplicitCancellation()
-            # ``_validate_llm_response`` only guarantees ``choices[0].message``
-            # exists, not that it's an object with ``.content``. Some
-            # OpenAI-compatible proxies / local backends return a dict- or
-            # str-shaped message; coerce defensively instead of crashing.
-            if isinstance(response, dict):
-                choices = response.get("choices") or [{}]
-                message = choices[0].get("message") if isinstance(choices[0], dict) else getattr(choices[0], "message", None)
-            else:
-                message = response.choices[0].message
-            if isinstance(message, dict):
-                content = message.get("content")
-            else:
-                content = getattr(message, "content", message)
-            # Handle cases where content is not a string (e.g., dict from llama.cpp)
-            if not isinstance(content, str):
-                content = str(content) if content else ""
+            # Dict/object/str messages + reasoning-field fallback (DeepSeek /
+            # Qwen / Kimi return content="" with the summary in
+            # reasoning_content). Cap the fallback so a CoT dump cannot
+            # become the compaction summary.
+            content = extract_content_or_reasoning(
+                response, max_reasoning_chars=8000
+            )
             # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels)
             # return a well-formed HTTP 200 with an empty or whitespace-only
             # ``content`` instead of an error or empty ``choices``. That payload
@@ -5270,6 +5367,23 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not content.strip():
                 raise RuntimeError(
                     "Context compression LLM returned empty content "
+                    f"(provider={self.provider or 'auto'} "
+                    f"model={self.summary_model or self.model})"
+                )
+            # A finish_reason of "length" means the summarizer hit its output
+            # token cap mid-generation: the text present is PARTIAL. Persisting
+            # a partial summary as the compaction checkpoint silently truncates
+            # the conversation's memory — the cut-off text replaces the real
+            # middle turns AND is fed back into every subsequent iterative
+            # update prompt, compounding the loss across compactions. Treat it
+            # as a failure so it routes through the same main-model fallback +
+            # abort machinery as other degraded responses instead of becoming
+            # a checkpoint. (Ported from earendil-works/pi#7048.)
+            if _response_finish_reason(response) == "length":
+                raise RuntimeError(
+                    "Context compression summary was truncated "
+                    f"({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
+                    "token cap and the summary is incomplete "
                     f"(provider={self.provider or 'auto'} "
                     f"model={self.summary_model or self.model})"
                 )
@@ -5300,6 +5414,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_auth_failure = False
             self._last_summary_network_failure = False
             self._last_summary_empty_content_failure = False
+            self._last_summary_truncated_failure = False
             return self._with_summary_prefix(summary)
         except Exception as e:
             # ``call_llm`` raises ``RuntimeError`` for two very different cases:
@@ -5373,6 +5488,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 or "llm returned none response" in _err_str
                 or "llm returned invalid response" in _err_str
             )
+            # Summarizer stopped on its output-token cap (finish_reason ==
+            # "length"): the summary text is partial and must never become a
+            # compaction checkpoint. Same degraded-response handling shape as
+            # empty content — one main-model retry (a larger/unconstrained
+            # model may finish the summary), then ABORT preserving the session
+            # unchanged. (Ported from earendil-works/pi#7048.)
+            _is_truncated_summary = (
+                isinstance(e, RuntimeError)
+                and _TRUNCATED_SUMMARY_MARKER in _err_str
+            )
             # Authentication, permission, and exhausted-quota failures are NOT
             # transient or fixable by retrying the same request. Flag them so
             # compress() preserves the session instead of rotating into a
@@ -5398,13 +5523,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                     e,
                 )
             if (
-                (_is_model_not_found or _is_timeout or _is_json_decode or _is_streaming_closed or _is_empty_content)
+                (_is_model_not_found or _is_timeout or _is_json_decode or _is_streaming_closed or _is_empty_content or _is_truncated_summary)
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
                 if _is_json_decode:
                     _reason = "returned invalid JSON"
+                elif _is_truncated_summary:
+                    _reason = "returned a truncated summary (output token cap)"
                 elif _is_empty_content:
                     _reason = "returned empty content"
                 elif _is_model_not_found:
@@ -5464,7 +5591,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     min(self._consecutive_timeout_failures,
                         len(_TIMEOUT_COOLDOWN_LADDER)) - 1
                 ]
-            elif _is_json_decode or _is_streaming_closed or _is_empty_content:
+            elif _is_json_decode or _is_streaming_closed or _is_empty_content or _is_truncated_summary:
                 _transient_cooldown = 30
             else:
                 _transient_cooldown = 60
@@ -5483,6 +5610,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             # auth-failure carve-out; independent of abort_on_summary_failure.
             if _is_streaming_closed:
                 self._last_summary_network_failure = True
+            elif _is_truncated_summary:
+                self._last_summary_truncated_failure = True
             elif _is_empty_content:
                 self._last_summary_empty_content_failure = True
             logger.warning(
@@ -6553,6 +6682,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
+    def _stale_thinking_on_wire(self) -> bool:
+        """Whether the active route replays stale thinking text (#84371).
+
+        The tail-budget walks and the preflight trigger must charge the SAME
+        stale-thinking policy or a reasoning-heavy session can look
+        over-threshold to one and fully tail-protected to the other — the
+        infinite ineffective compaction loop.  Echo-back chat-completions
+        families (DeepSeek/Kimi/MiMo thinking mode) replay stored
+        ``reasoning_content`` on EVERY assistant turn, so the walk must
+        charge it everywhere; codex_responses and strict providers never
+        ship the text keys, so newest-turn-only stands (#73624).
+        """
+        try:
+            from agent.message_sanitization import stale_thinking_reaches_wire
+
+            return stale_thinking_reaches_wire(
+                getattr(self, "api_mode", "") or "",
+                getattr(self, "provider", "") or "",
+                getattr(self, "model", "") or "",
+                getattr(self, "base_url", "") or "",
+            )
+        except Exception:
+            return False
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -6598,12 +6751,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         # fields any transport still replays (#73624) — every older turn's
         # reasoning/reasoning_content is stripped or padded at send time,
         # so charging it here spends tail budget on bytes that never ship.
+        # Exception: echo-back providers (DeepSeek/Kimi/MiMo thinking mode
+        # on chat_completions) replay stale thinking on EVERY turn — charge
+        # it everywhere so this walk agrees with the preflight trigger
+        # (#84371 estimator parity).
         _newest_asst_idx = _last_assistant_index(messages)
+        _charge_all_thinking = self._stale_thinking_on_wire()
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             msg_tokens = _estimate_msg_budget_tokens(
-                msg, charge_stale_thinking=(i == _newest_asst_idx)
+                msg,
+                charge_stale_thinking=(
+                    _charge_all_thinking or i == _newest_asst_idx
+                ),
             )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
@@ -6631,7 +6792,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
                 raw_tok = _estimate_msg_budget_tokens(
-                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                    raw_msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or j == _newest_asst_idx
+                    ),
                 )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
@@ -6943,6 +7107,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 response = call_llm(**call_kwargs)
         except Exception as exc:
             logger.info("micro-summarization call failed: %s", exc)
+            return None
+
+        # A length stop means the merged rolling summary is partial —
+        # persisting it would silently drop the tail of the merge and feed
+        # the cut-off text into every later micro-compact pass. Leave the
+        # exchange unabsorbed instead; a later pass retries it.
+        # (Same class as _generate_summary's guard; pi#7048.)
+        if _response_finish_reason(response) == "length":
+            logger.warning(
+                "micro-summarization output hit the token cap "
+                "(finish_reason=length) — discarding partial summary",
+            )
             return None
 
         message = response.choices[0].message
@@ -7317,7 +7493,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not session_db or not session_id:
             return
         try:
-            session_db.archive_and_compact(session_id, compacted_messages)
+            # The splice result is [..verbatim prefix.., summary_marker,
+            # ..verbatim suffix..]: every row except the single marker is a
+            # carried-forward original (#86366) — archive their pre-splice
+            # originals rewind-style instead of compacted=1.
+            session_db.archive_and_compact(
+                session_id,
+                compacted_messages,
+                tail_count=max(0, len(compacted_messages) - 1),
+            )
             # Shared post-commit contract with the in-place batch commit and
             # the proactive prune (#98450) — one stamp site for the class.
             stamp_db_persisted_markers(compacted_messages)
@@ -7527,7 +7711,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False
         # NOTE: do NOT reset _last_summary_auth_failure,
-        # _last_summary_network_failure, or _last_summary_empty_content_failure
+        # _last_summary_network_failure, _last_summary_empty_content_failure,
+        # or _last_summary_truncated_failure
         # here.  These flags are set by _generate_summary() on a terminal
         # failure and are already cleared on a successful summary.  Resetting them eagerly defeats the cooldown
         # protection: _generate_summary() returns None from the cooldown
@@ -7884,6 +8069,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             or self._last_summary_auth_failure
             or self._last_summary_network_failure
             or self._last_summary_empty_content_failure
+            or self._last_summary_truncated_failure
         ):
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
@@ -7893,6 +8079,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                 telemetry["failure_class"] = "summary_auth_failure"
             elif self._last_summary_network_failure:
                 telemetry["failure_class"] = "summary_network_failure"
+            elif self._last_summary_truncated_failure:
+                telemetry["failure_class"] = "summary_truncated_failure"
             elif self._last_summary_empty_content_failure:
                 telemetry["failure_class"] = "summary_empty_content_failure"
             else:
@@ -7920,6 +8108,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "unchanged; the session was NOT rotated. This is "
                         "transient: retry with /compress once connectivity "
                         "recovers, or continue the conversation as-is.",
+                        n_skipped,
+                    )
+                elif self._last_summary_truncated_failure:
+                    logger.warning(
+                        "Summary generation failed (output hit the token cap; "
+                        "summary is incomplete) — aborting compression. "
+                        "%d message(s) preserved unchanged; the session was NOT "
+                        "rotated. A truncated summary would silently lose "
+                        "context: retry with /compress, or raise the "
+                        "summarizer's output budget.",
                         n_skipped,
                     )
                 elif self._last_summary_empty_content_failure:
@@ -8172,6 +8370,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         if _force_user_leading and first_tail_visible_idx is not None:
             _merge_target_idx = first_tail_visible_idx
         for tail_idx, msg in enumerate(tail_messages):
+            # Tag the carried-forward tail so archive_and_compact() can
+            # classify these rows' originals as superseded-duplicate
+            # (rewind semantics) instead of "summarized away" (#86366).
+            if isinstance(msg, dict):
+                msg[_COMPACTION_TAIL_MARKER] = True
             if _merge_summary_into_tail and tail_idx == _merge_target_idx:
                 # Merge the summary into the tail message that collided.
                 old_content = msg.get("content", "")

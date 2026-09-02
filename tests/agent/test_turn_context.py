@@ -15,7 +15,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_context import (
+    PreflightCompressionTimedOut,
+    TurnContext,
+    build_turn_context,
+)
 from hermes_state import SessionDB
 
 
@@ -208,6 +212,44 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
+
+
+def test_preflight_timeout_stops_turn_before_provider_boundary():
+    """An unchanged oversized payload must not escape turn construction."""
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.max_compression_attempts = 3
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=2,
+        protect_last_n=2,
+        threshold_tokens=1_000,
+        context_length=4_000,
+        summary_target_ratio=0.3,
+        last_prompt_tokens=0,
+        should_compress=lambda tokens=None: True,
+        should_compress_info=lambda tokens=None: (True, None),
+        get_active_compression_failure_cooldown=lambda: None,
+    )
+
+    def stalled_compression(messages, *_args, **_kwargs):
+        agent._last_compression_timed_out = True
+        return messages, "SYSTEM"
+
+    agent._compress_context = MagicMock(side_effect=stalled_compression)
+    oversized_history = [
+        {"role": "assistant", "content": "x" * 8_000},
+    ]
+    provider_call = MagicMock()
+
+    def run_turn():
+        context = _build(agent, conversation_history=oversized_history)
+        provider_call(context.messages)
+
+    with pytest.raises(PreflightCompressionTimedOut, match="provider call was not sent"):
+        run_turn()
+
+    agent._compress_context.assert_called_once()
+    provider_call.assert_not_called()
 
 
 def test_user_message_preserves_platform_event_timestamp():

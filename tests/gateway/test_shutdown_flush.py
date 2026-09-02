@@ -116,21 +116,21 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     )
 
     class InterruptingDB:
-        closed = False
+        released = False
 
         def append_message(self, **_kwargs):
             raise KeyboardInterrupt
 
-        def close(self):
-            self.closed = True
-
     db = InterruptingDB()
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda: db)
+    monkeypatch.setattr(
+        "hermes_state.release_or_close", lambda _: setattr(db, "released", True)
+    )
 
     with pytest.raises(KeyboardInterrupt):
         recover_pending_to_db()
 
-    assert db.closed is True
+    assert db.released is True
 
 
 def test_serialise_object_with_text():

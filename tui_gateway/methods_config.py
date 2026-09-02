@@ -123,6 +123,9 @@ def _(rid, params: dict) -> dict:
     Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
     """
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         with _profile_db(params) as db:
             if db is None:
                 return _ok(
@@ -135,6 +138,9 @@ def _(rid, params: dict) -> dict:
                 hydrate=False,
                 session_limit=int(params.get("session_limit") or 2000),
                 include_discovered=True,
+            )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
             )
             return _ok(
                 rid,
@@ -155,6 +161,9 @@ def _(rid, params: dict) -> dict:
     built from the same authoritative grouping as ``projects.tree`` so ids and
     membership match exactly. Used when the user enters a project."""
     try:
+        from tui_gateway.project_tree import stamp_profile
+        from tui_gateway.server import _response_profile_name
+
         project_id = str(params.get("project_id") or "")
         if not project_id:
             return _err(rid, 5063, "project_id required")
@@ -172,6 +181,9 @@ def _(rid, params: dict) -> dict:
                 session_limit=int(params.get("session_limit") or 5000),
                 include_discovered=False,
             )
+            stamp_profile(
+                tree["projects"], _response_profile_name(params.get("profile"))
+            )
             proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
             return _ok(rid, {"project": proj})
     except Exception as e:
@@ -179,6 +191,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("config.get")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     key = params.get("key", "")
     if key == "provider":

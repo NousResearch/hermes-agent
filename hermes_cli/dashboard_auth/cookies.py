@@ -66,7 +66,12 @@ Refresh-token handling:
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import re
 from typing import Literal, Optional, Tuple
+from urllib.parse import unquote
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -294,8 +299,35 @@ def _pkce_attrs(*, use_https: bool, prefix: str) -> dict:
     return attrs
 
 
+def encode_pkce_payload(parts: dict[str, str]) -> str:
+    """Serialise PKCE segments to the wire value: ``base64url(JSON)``.
+
+    The urlsafe base64 alphabet (``A-Za-z0-9-_``, padding stripped) is a
+    strict subset of the RFC 6265 cookie-octet set — no ``;`` (attribute
+    terminator), no ``"`` and no ``\\`` (the chars that make Python's
+    http.cookies emit the quoted ``\\073`` form, which strict cookie-aware
+    proxy hops such as Go's net/http reject outright). The ``=`` padding
+    is stripped because http.cookies treats ``=`` as outside its legal
+    unquoted set and would re-wrap the value in the quoted form this
+    codec exists to avoid; the parser restores the padding. JSON carries
+    the segments, so no delimiter can ever collide with segment values —
+    the delimiter/quoting bug class this codec replaces (see
+    :func:`parse_pkce_payload` for the two legacy formats it superseded).
+    """
+    raw = json.dumps(parts, separators=(",", ":"), sort_keys=True)
+    return (
+        base64.urlsafe_b64encode(raw.encode("utf-8"))
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+
 def set_pkce_cookie(
-    response: Response, *, payload: str, use_https: bool, prefix: str = "",
+    response: Response,
+    *,
+    payload: dict[str, str],
+    use_https: bool,
+    prefix: str = "",
 ) -> None:
     # SameSite=None when HTTPS: the PKCE cookie is set on the /auth/login
     # 302 response (redirecting to the IDP) and must survive the cross-site
@@ -306,9 +338,18 @@ def set_pkce_cookie(
     # sidesteps the bug — these cookies are explicitly designed for cross-site
     # delivery and Chromium processes them reliably during redirects.
     # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
+    #
+    # Value encoding: ``payload`` is the segment dict
+    # (``{"provider": …, "state": …, "verifier": …, "next": …}``) and goes
+    # on the wire as base64url(JSON) via encode_pkce_payload() — plain
+    # RFC 6265 cookie-octets end to end, so every cookie-aware hop
+    # (browsers, Go net/http proxies, Python parsers) passes the value
+    # through untouched. Readers decode via parse_pkce_payload(), which
+    # also keeps a compatibility ladder for cookies minted by the two
+    # earlier wire formats during a rolling upgrade.
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
-        payload,
+        encode_pkce_payload(payload),
         max_age=_PKCE_MAX_AGE,
         **_pkce_attrs(use_https=use_https, prefix=prefix),
     )
@@ -367,6 +408,72 @@ def read_session_provider(request: Request) -> Optional[str]:
 
 def read_pkce_cookie(request: Request) -> Optional[str]:
     return _read_with_fallback(request, PKCE_COOKIE)
+
+
+# base64url wire values are exactly the urlsafe alphabet (padding is
+# stripped by the encoder; the decoder restores it). Used as a cheap
+# pre-filter before attempting the JSON decode so legacy wire forms
+# (which always contain ``%`` or ``;``) never even reach the base64
+# decoder.
+_B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
+
+
+def parse_pkce_payload(raw: str) -> dict[str, str]:
+    """Decode + parse a PKCE cookie value into its segment dict.
+
+    Single inverse of :func:`set_pkce_cookie` /
+    :func:`encode_pkce_payload`. EVERY reader of the PKCE cookie must go
+    through this helper — a reader that interprets the raw wire value
+    itself parses zero segments and silently disables whatever check it
+    was feeding (provider dispatch, CSRF state, native-flow broker
+    binding).
+
+    Compatibility ladder — the PKCE cookie has a 10-minute TTL and is
+    opaque + server-set, so during a rolling upgrade a cookie minted by
+    one server version can arrive at another. Three formats, tried in
+    order; each rung is unambiguous:
+
+    1. **base64url(JSON)** (current): the wire value is pure urlsafe
+       base64 that decodes to a JSON object. Legacy forms can never
+       match — they always contain ``%`` (URL-encoded, #99176) or a raw
+       ``;`` (oldest flat form), both outside the base64url alphabet.
+    2. **Oldest flat form** (pre-#99176): raw ``;`` between segments
+       (``provider=…;state=…;verifier=…``). Split as-is WITHOUT
+       unquoting the payload — the ``next`` segment carries its own
+       single URL-encoding, and unquoting here would turn a ``%3B``
+       inside it into a bogus delimiter and truncate the post-login
+       target. Neither newer format can contain a raw ``;``.
+    3. **URL-encoded flat form** (#99176): the whole flat payload passed
+       through ``quote(payload, safe="")`` — no raw ``;`` possible
+       (it is ``%3B``); unquote once, then split.
+
+    Rollout directions: OLD cookie → NEW server is handled here (rungs
+    2 and 3 parse both legacy forms correctly). NEW cookie → OLD server
+    (a rollback, or a mixed fleet routing the callback to a not-yet-
+    upgraded instance) fails the OAuth state check — the old reader
+    can't find a ``state`` segment in the base64url blob — and the user
+    simply retries login against the now-consistent fleet; no data loss,
+    nothing minted.
+    """
+    if _B64URL_RE.match(raw):
+        try:
+            padded = raw + "=" * (-len(raw) % 4)
+            decoded = json.loads(
+                base64.urlsafe_b64decode(padded.encode("ascii"))
+            )
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            decoded = None
+        if isinstance(decoded, dict):
+            return {str(k): str(v) for k, v in decoded.items()}
+    if ";" in raw:
+        # Oldest flat form: already flat, split as-is (no unquote).
+        return dict(
+            seg.split("=", 1) for seg in raw.split(";") if "=" in seg
+        )
+    # #99176 URL-encoded flat form: unquote once, then split.
+    return dict(
+        seg.split("=", 1) for seg in unquote(raw).split(";") if "=" in seg
+    )
 
 
 def set_sso_attempt_cookie(

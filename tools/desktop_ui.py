@@ -29,6 +29,30 @@ def available() -> bool:
     return _emit is not None
 
 
+def user_enabled(setting: str, default: bool) -> bool:
+    """Read one of the desktop's Appearance switches from ``display.<setting>``.
+
+    The renderer owns these toggles and mirrors them onto the CONNECTED
+    gateway's config (``config.set``), so this reads the user's real answer
+    whether that gateway is local, SSH, URL, or cloud — where an env var would
+    only ever describe the process. Tool ``check_fn``s call it to withdraw
+    themselves from the schema when the user has switched the feature off:
+    Hermes should not be told about a surface it isn't allowed to use.
+
+    An unreadable config falls back to ``default``, which is how a feature that
+    ships on stays on rather than disappearing on a transient read error.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        display = load_config_readonly().get("display")
+    except Exception:
+        return default
+    if not isinstance(display, dict) or setting not in display:
+        return default
+    return bool(display.get(setting))
+
+
 def emit(event: str, payload: dict) -> bool:
     """Route ``event`` to the window that owns the current turn.
 

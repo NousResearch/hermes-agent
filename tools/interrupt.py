@@ -79,9 +79,20 @@ def is_interrupted() -> bool:
     Safe to call from any thread — each thread only sees its own
     interrupt state.
     """
-    tid = threading.current_thread().ident
+    return is_thread_interrupted(threading.current_thread().ident)
+
+
+def is_thread_interrupted(thread_id: int | None) -> bool:
+    """Check whether *thread_id* has an interrupt bit set.
+
+    Used when a wait is moved onto a deadline worker (``run_bounded_sync``)
+    so ``/stop`` targeting the original tool-worker tid still kills the
+    subprocess (#94285). ``None`` is never interrupted.
+    """
+    if thread_id is None:
+        return False
     with _lock:
-        return tid in _interrupted_threads
+        return thread_id in _interrupted_threads
 
 
 def get_interrupt_reason() -> str | None:

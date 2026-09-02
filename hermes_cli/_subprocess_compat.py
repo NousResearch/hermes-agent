@@ -29,6 +29,7 @@ guarantee.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,7 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
+    "pid_is_hermes",
 ]
 
 
@@ -387,6 +389,89 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
+
+def _process_start_time(pid: int) -> int | None:
+    """Return the repository's stable process-start fingerprint, if available."""
+    try:
+        from gateway.status import get_process_start_time
+
+        return get_process_start_time(pid)
+    except Exception:
+        return None
+
+
+def _text_names_hermes(text: str) -> bool:
+    """True when *text* names Hermes at a path-segment / token boundary.
+
+    A bare ``"hermes" in text`` substring test would also match unrelated
+    processes whose paths merely contain the letters (``...\\shermesa\\...``),
+    which is exactly the false-positive class this guard exists to prevent.
+    Instead, split on path separators and whitespace and require a segment
+    that *starts with* ``hermes`` (``hermes``, ``hermes.exe``, ``hermes_cli``,
+    ``hermes-agent``, ``hermes-runtime``) or the hidden-dir form
+    ``.hermes``/``.hermes-runtime``.
+    """
+    for token in re.split(r"[\\/\s=,;\"']+", text.lower()):
+        if token.startswith("hermes") or token.startswith(".hermes"):
+            return True
+    return False
+
+
+def _process_command_is_hermes(pid: int) -> bool:
+    """Best-effort check that *pid* currently runs Hermes code."""
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        command = " ".join(process.cmdline() or [])
+        executable = process.exe() or ""
+        return _text_names_hermes(f"{command} {executable}")
+    except Exception:
+        return False
+
+
+def pid_is_hermes(
+    pid: int,
+    *,
+    expected_start_time: int | None = None,
+) -> bool:
+    """Return whether it is safe to use ``taskkill`` for *pid*.
+
+    The PID must be valid, currently exist, and identify a Hermes process. When
+    the caller captured a start-time fingerprint before the destructive action,
+    the live process must still have the same ``(pid, start_time)`` identity.
+    Any ambiguity fails closed. Non-Windows callers have no ``taskkill`` path,
+    so a valid PID with no (or a matching) explicit expectation is accepted
+    there — but a caller-provided fingerprint that no longer matches is a
+    recycled PID on every platform and is always refused.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if not IS_WINDOWS:
+        if expected_start_time is None:
+            return True
+        try:
+            return _process_start_time(pid) == expected_start_time
+        except Exception:
+            return False
+
+    try:
+        current_start_time = _process_start_time(pid)
+    except Exception:
+        return False
+    if current_start_time is None:
+        return False
+    if (
+        expected_start_time is not None
+        and current_start_time != expected_start_time
+    ):
+        return False
+    try:
+        return _process_command_is_hermes(pid)
+    except Exception:
+        return False
+
+
 def kill_process_tree(proc: "subprocess.Popen") -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
@@ -459,6 +544,12 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     except OSError:
         pass
     if IS_WINDOWS:
+        # No identity guard here on purpose: *proc* is our own retained
+        # ``Popen`` handle. The child cannot be reaped (and its PID cannot be
+        # recycled) while we still hold the handle, so an identity check could
+        # only ever false-refuse a legitimate cleanup. The fail-closed
+        # ``pid_is_hermes`` guard is for BARE pids from state files or process
+        # scans, where recycling is real.
         try:
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],

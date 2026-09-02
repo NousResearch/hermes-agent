@@ -15,6 +15,7 @@ the late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 import asyncio  # noqa: F401 — used by handlers
 import json
 import logging
+import sqlite3
 import time  # noqa: F401
 from typing import Any, Dict, List, Optional  # noqa: F401
 
@@ -30,6 +31,7 @@ from hermes_cli.web_models import (
     SessionPrune,
     SessionRename,
 )
+from hermes_state import is_malformed_db_error, is_transient_sqlite_error
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -49,6 +51,39 @@ _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
+
+
+def _resolve_session_id(db, session_id: str) -> Optional[str]:
+    """Resolve *session_id*, distinguishing "absent" from "unreadable".
+
+    A corrupt ``state.db`` does not raise on every read. The exact-match
+    lookup goes through the ``sessions`` primary-key index, so a damaged
+    index simply *misses* and returns None — indistinguishable from a
+    session that was never there. Only the prefix fallback scans the base
+    b-tree and raises ``database disk image is malformed``.
+
+    Both outcomes used to end at ``404 Session not found``: one silently, one
+    as an unhandled 500 that the Desktop surfaced as "session unavailable".
+    Reporting a corrupt store as an empty one cost a day of looking at
+    session logic during the 2026-08-31 incident, so classify it here and say
+    what is actually wrong.
+    """
+    try:
+        return db.resolve_session_id(session_id)
+    except sqlite3.DatabaseError as exc:
+        if not is_malformed_db_error(exc):
+            raise
+        _log.error(
+            "state.db is corrupt while resolving session %s: %s", session_id, exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Session store is corrupt (database disk image is malformed). "
+                "Sessions cannot be read until it is repaired — run "
+                "`hermes doctor` for diagnosis."
+            ),
+        ) from exc
 
 
 @list_router.get("/api/sessions")
@@ -162,6 +197,22 @@ def get_sessions(
             db.close()
     except HTTPException:
         raise
+    except sqlite3.OperationalError as exc:
+        _log.exception("GET /api/sessions failed")
+        # 503, not 500: the store is busy, not gone. The desktop keeps the
+        # sidebar it already has instead of reading a 500 as an authoritative
+        # empty list. Retrying the OPEN here is deliberately not done — the
+        # bounded retry lives in SessionDB's read-only constructor, so every
+        # read-only opener gets it, not just this route.
+        transient = is_transient_sqlite_error(exc)
+        raise HTTPException(
+            status_code=503 if transient else 500,
+            detail=(
+                "Session store is busy (disk I/O or lock). Retry; the list was not cleared."
+                if transient
+                else "Internal server error"
+            ),
+        ) from exc
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -562,7 +613,7 @@ async def get_session_stats(profile: Optional[str] = None):
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_session_id(db, session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -622,7 +673,7 @@ async def get_session_messages(
     def _read():
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
-            sid = db.resolve_session_id(session_id)
+            sid = _resolve_session_id(db, session_id)
             if not sid:
                 return None
             sid = db.resolve_resume_session_id(sid)
@@ -697,7 +748,7 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
             # leaves transient empty rows (reaped by empty-session hygiene) that
             # race the sidebar snapshot, which is exactly when this fired. Mirrors
             # the bulk-delete endpoint, which already treats ghost ids as success.
-            sid = db.resolve_session_id(session_id)
+            sid = _resolve_session_id(db, session_id)
             if not sid:
                 return {"ok": True, "already_absent": True}
             db.delete_session(sid)
@@ -767,7 +818,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     """
     db = _open_session_db_for_profile(body.profile, read_only=False)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_session_id(db, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         if (
@@ -815,7 +866,7 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
     def _prepare_export():
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
-            sid = db.resolve_session_id(session_id)
+            sid = _resolve_session_id(db, session_id)
             return (sid, db.get_session(sid)) if sid else None
         finally:
             db.close()

@@ -127,9 +127,14 @@ def _stop_child(child: subprocess.Popen[str], release_file: Path) -> None:
     child.communicate()
 
 
-def test_unlimited_session_lease_remains_noop_without_liveness_tracking(
+def test_unlimited_session_lease_is_real_even_without_a_cap(
     tmp_path: Path,
 ) -> None:
+    """No cap configured must still fence the session (#94595).
+
+    The old contract returned a disabled no-op lease here, which meant two
+    processes could run one stored session concurrently by default.
+    """
     home = tmp_path / "untracked-home"
 
     lease, message = try_acquire_active_session(
@@ -140,7 +145,10 @@ def test_unlimited_session_lease_remains_noop_without_liveness_tracking(
     )
 
     assert lease is not None and message is None
-    assert lease.enabled is False
+    assert lease.enabled is True
+    entries = active_session_registry_snapshot(registry_home=home)
+    assert [entry["session_id"] for entry in entries] == ["untracked-session"]
+    lease.release()
     assert active_session_registry_snapshot(registry_home=home) == []
 
 
@@ -187,7 +195,11 @@ def test_desktop_claim_fails_closed_when_registry_setup_fails(
 
     assert desktop_lease is None
     assert desktop_message == server._SESSION_OWNERSHIP_UNAVAILABLE
-    assert (tui_lease, tui_message) == (None, None)
+    # Every surface fails closed now (#94595): a claim that errored has not
+    # proven the session is unowned, and proceeding leaseless reopens the
+    # double-writer hole.
+    assert tui_lease is None
+    assert tui_message == server._SESSION_OWNERSHIP_UNAVAILABLE
 
 
 def test_server_release_retries_liveness_lease_before_dropping_reference(
@@ -363,19 +375,26 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
         )
         assert set(reasons) == server._AUTOMATIC_SESSION_END_REASONS
 
-        for index, reason in enumerate(reasons):
-            local_lease, message = server._claim_active_session_slot(
-                session_id,
-                live_session_id=f"local-runtime-{index}",
-                surface="desktop",
-                profile_home=profile_home,
-            )
-            assert local_lease is not None and message is None
-            assert (
-                len(active_session_registry_snapshot(registry_home=profile_home)) == 2
-            )
+        # With the per-session fence (#94595) this backend can no longer claim
+        # a second lease on a session another backend owns — the exact
+        # double-writer state the fence exists to prevent.
+        refused_lease, refusal = server._claim_active_session_slot(
+            session_id,
+            live_session_id="local-runtime",
+            surface="desktop",
+            profile_home=profile_home,
+        )
+        assert refused_lease is None
+        assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+        assert (
+            len(active_session_registry_snapshot(registry_home=profile_home)) == 1
+        )
 
-            server._finalize_session(_session(local_lease), end_reason=reason)
+        # A LEASELESS local record of that session (a viewer / never-ran-a-turn
+        # tab) must still preserve the sibling's session on every automatic
+        # cleanup reason: the lifecycle guard consults the registry directly.
+        for reason in reasons:
+            server._finalize_session(_session(None), end_reason=reason)
 
             assert ended == []
             remaining = active_session_registry_snapshot(registry_home=profile_home)
@@ -383,14 +402,7 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
             assert remaining[0]["session_id"] == session_id
 
         # Explicit user close retains force/end semantics even with a sibling.
-        explicit_lease, message = server._claim_active_session_slot(
-            session_id,
-            live_session_id="explicit-runtime",
-            surface="desktop",
-            profile_home=profile_home,
-        )
-        assert explicit_lease is not None and message is None
-        server._finalize_session(_session(explicit_lease), end_reason="tui_close")
+        server._finalize_session(_session(None), end_reason="tui_close")
         assert ended == [(session_id, "tui_close")]
         ended.clear()
 

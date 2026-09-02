@@ -489,34 +489,83 @@ def _iter_custom_providers(config: Optional[dict] = None):
         yield _normalize_custom_pool_name(name), entry
 
 
-def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
-    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
+def _custom_entry_name_aliases(norm_name: str, entry: Dict[str, Any]) -> set:
+    aliases = {norm_name}
+    provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+    if provider_key:
+        aliases.add(provider_key)
+    return aliases
 
-    When provider_name is given, prefer matching by name first (solving the case where
-    multiple custom providers share the same base_url but have different API keys).
-    Falls back to base_url matching when no name match is found.
 
-    Returns None if no match is found.
+def _requested_custom_name_aliases(provider_name: str) -> set:
+    normalized = _normalize_custom_pool_name(provider_name)
+    aliases = {normalized} if normalized else set()
+    if normalized.startswith(CUSTOM_POOL_PREFIX):
+        suffix = _normalize_custom_pool_name(normalized[len(CUSTOM_POOL_PREFIX):])
+        if suffix:
+            aliases.add(suffix)
+    return aliases
+
+
+def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[str]:
+    """Durable ``providers.<key>`` slug first, then legacy ``custom:<name>``."""
+    keys: List[str] = []
+    seen = set()
+
+    def _add(key: str) -> None:
+        normalized = str(key or "").strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            keys.append(normalized)
+
+    provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+    if provider_key:
+        _add(provider_key)
+    if norm_name:
+        _add(f"{CUSTOM_POOL_PREFIX}{norm_name}")
+    return keys
+
+
+def custom_provider_pool_key_candidates(
+    base_url: Optional[str],
+    provider_name: Optional[str] = None,
+) -> List[str]:
+    """Return pool keys to try for a custom endpoint.
+
+    ``hermes auth add <key>`` stores new-style ``providers.<key>`` credentials
+    under the durable config slug (``b-ai``). Older rows and legacy
+    ``custom_providers:`` entries still live under ``custom:<display-name>``.
+    Try the slug first, then the legacy namespace, so a populated pool is not
+    skipped in favour of the ``no-key-required`` placeholder.
     """
     if not base_url:
-        return None
+        return []
     normalized_url = base_url.strip().rstrip("/")
+    requested_aliases = (
+        _requested_custom_name_aliases(provider_name) if provider_name else set()
+    )
 
-    # When a provider name is given, try to match by name first.
-    # This fixes the P1 bug where two custom providers sharing the same
-    # base_url always resolve to the first one's credentials.
-    if provider_name:
-        normalized_name = _normalize_custom_pool_name(provider_name)
+    if requested_aliases:
         for norm_name, entry in _iter_custom_providers():
-            if norm_name == normalized_name:
-                return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
+                return _pool_keys_for_custom_entry(norm_name, entry)
 
-    # Fall back to base_url matching (original behavior)
     for norm_name, entry in _iter_custom_providers():
         entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
         if entry_url and entry_url == normalized_url:
-            return f"{CUSTOM_POOL_PREFIX}{norm_name}"
-    return None
+            return _pool_keys_for_custom_entry(norm_name, entry)
+    return []
+
+
+def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
+    """Look up the matching custom provider and return its preferred pool key.
+
+    Prefers the durable ``providers.<key>`` slug when present, otherwise
+    ``custom:<normalized-name>``. When provider_name is given, match by name
+    first so two custom providers sharing a base_url keep separate keys.
+    """
+    candidates = custom_provider_pool_key_candidates(base_url, provider_name)
+    return candidates[0] if candidates else None
 
 
 def list_custom_pool_providers() -> List[str]:
@@ -557,6 +606,36 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def _keyed_custom_pool_matches(
+    pool_provider: str,
+    provider_norm: str,
+    base_url: Optional[str],
+) -> bool:
+    """Match a durable ``providers.<key>`` pool against runtime identities."""
+    runtime_url = str(base_url or "").strip().rstrip("/")
+    if not runtime_url:
+        return False
+    try:
+        for normalized_name, entry in _iter_custom_providers():
+            provider_key = _normalize_custom_pool_name(
+                str(entry.get("provider_key") or "")
+            )
+            if provider_key != pool_provider:
+                continue
+            aliases = _custom_entry_name_aliases(normalized_name, entry)
+            aliases.add(f"{CUSTOM_POOL_PREFIX}{normalized_name}")
+            if provider_key:
+                aliases.add(f"{CUSTOM_POOL_PREFIX}{provider_key}")
+            configured_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            if provider_norm == "custom":
+                return runtime_url == configured_url
+            runtime_aliases = _requested_custom_name_aliases(provider_norm)
+            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+    except Exception:
+        return False
+    return False
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
@@ -567,10 +646,12 @@ def credential_pool_matches_provider(
 
     Named custom endpoints may use three identities: the live agent can retain
     the configured name/provider key, newer runtime paths normalize it to
-    ``custom``, and the pool is keyed ``custom:<name>``. Accept those aliases
-    only when the runtime endpoint belongs to the same configured custom
-    provider. Empty identities fail closed. Legacy pool adapters without a
-    ``provider`` attribute remain compatible; production pools are scoped.
+    ``custom``, and the pool may be keyed either as the durable
+    ``providers.<key>`` slug or as legacy ``custom:<name>``. Accept those
+    aliases only when the runtime endpoint belongs to the same configured
+    custom provider. Empty identities fail closed. Legacy pool adapters
+    without a ``provider`` attribute remain compatible; production pools
+    are scoped.
     """
     raw_pool_provider = getattr(pool_or_provider, "provider", None)
     if raw_pool_provider is None:
@@ -586,13 +667,18 @@ def credential_pool_matches_provider(
     if not pool_provider or not provider_norm:
         return False
     if not pool_provider.startswith(CUSTOM_POOL_PREFIX):
-        return pool_provider == provider_norm
+        if pool_provider == provider_norm:
+            return True
+        return _keyed_custom_pool_matches(pool_provider, provider_norm, base_url)
     if provider_norm == "custom":
         try:
             matched_pool = get_custom_provider_pool_key(base_url or "")
+            if str(matched_pool or "").strip().lower() == pool_provider:
+                return True
+            candidates = custom_provider_pool_key_candidates(base_url or "")
         except Exception:
             return False
-        return str(matched_pool or "").strip().lower() == pool_provider
+        return pool_provider in {str(key).strip().lower() for key in candidates}
 
     runtime_url = str(base_url or "").strip().rstrip("/")
     if not runtime_url:
@@ -625,9 +711,10 @@ def credential_pool_matches_provider(
 def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -> str:
     """Resolve the credential-pool key for a runtime provider identity.
 
-    Named custom runtimes retain their configured alias while their pool is
-    stored under ``custom:<name>``. Return that scoped key only when the
-    canonical provider/endpoint boundary accepts it; otherwise preserve the
+    Named custom runtimes retain their configured alias while their pool may
+    be stored under the durable ``providers.<key>`` slug or legacy
+    ``custom:<name>``. Return that scoped key only when the canonical
+    provider/endpoint boundary accepts it; otherwise preserve the
     normalized runtime identity so callers fail closed.
     """
     provider_norm = str(provider or "").strip().lower()
@@ -644,18 +731,19 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
             ):
                 return str(candidate).strip().lower()
         else:
-            # Named and exact custom runtimes are keyed by provider identity,
-            # while auth storage remains keyed by display name. Search the
-            # configured candidates by identity before considering endpoint;
-            # this prevents a sibling sharing the URL from lending its pool.
-            for normalized_name, _entry in _iter_custom_providers():
-                candidate = f"{CUSTOM_POOL_PREFIX}{normalized_name}"
-                if credential_pool_matches_provider(
-                    candidate,
-                    provider_norm,
-                    base_url=base_url,
-                ):
-                    return candidate
+            # Named and exact custom runtimes are keyed by provider identity.
+            # Auth storage prefers the durable providers.<key> slug, with
+            # legacy custom:<display-name> as fallback. Search configured
+            # candidates by identity before considering endpoint so a sibling
+            # sharing the URL cannot lend its pool.
+            for normalized_name, entry in _iter_custom_providers():
+                for candidate in _pool_keys_for_custom_entry(normalized_name, entry):
+                    if credential_pool_matches_provider(
+                        candidate,
+                        provider_norm,
+                        base_url=base_url,
+                    ):
+                        return candidate
     except Exception:
         pass
     return provider_norm
@@ -3265,6 +3353,35 @@ def get_env_prefer_dotenv(key: str) -> str:
     return raw or scoped_value
 
 
+# Providers we've already warned about env-key → pool ingestion for, once per
+# process. See _warn_env_ingestion_once (#81952 expected-behavior #3).
+_ENV_INGESTION_WARNED: Set[str] = set()
+
+
+def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
+    """WARN (once per process per provider) when an env credential is newly
+    ingested into a paid provider's pool.
+
+    Auto-ingesting OPENROUTER_API_KEY is what ARMS silent OpenRouter spend —
+    every downstream auto-detect (resolve_provider pool probe, aux fallback)
+    keys off the pool having credentials. Ingestion itself stays allowed (the
+    user exported the key = arguable intent, per #81952), but it must never be
+    silent.
+    """
+    if provider in _ENV_INGESTION_WARNED:
+        return
+    _ENV_INGESTION_WARNED.add(provider)
+    logger.warning(
+        "Ingested %s from environment into the %s credential pool — this "
+        "enables %s spend. Remove the key or run "
+        "hermes auth remove %s <n> to suppress.",
+        env_var,
+        provider,
+        "OpenRouter" if provider == "openrouter" else provider,
+        provider,
+    )
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -3335,7 +3452,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             if _is_source_suppressed(provider, source):
                 return changed, active_sources
             active_sources.add(source)
-            changed |= _upsert_entry(
+            ingested = _upsert_entry(
                 entries,
                 provider,
                 source,
@@ -3346,6 +3463,9 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                     base_url=OPENROUTER_BASE_URL,
                 ),
             )
+            changed |= ingested
+            if ingested:
+                _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -3476,9 +3596,18 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     model_api_key = v.strip()
                     break
             if model_provider == "custom" and model_base_url and model_api_key:
-                # Check if this model's base_url matches our custom provider
-                matched_key = get_custom_provider_pool_key(model_base_url)
-                if matched_key == pool_key:
+                # Check if this model's base_url matches our custom provider.
+                # The pool may be keyed under either the durable
+                # ``providers.<key>`` slug or the legacy ``custom:<name>``
+                # namespace, so accept the match against any candidate —
+                # comparing against the single preferred key silently skips
+                # seeding when the pool holds the other identity (verified
+                # regression from PR #100413 review).
+                matched_keys = {
+                    str(key).strip().lower()
+                    for key in custom_provider_pool_key_candidates(model_base_url)
+                }
+                if pool_key in matched_keys:
                     source = "model_config"
                     if not _is_suppressed(pool_key, source):
                         active_sources.add(source)

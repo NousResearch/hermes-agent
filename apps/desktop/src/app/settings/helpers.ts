@@ -97,6 +97,43 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   return cur
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/**
+ * Structural diff between two config snapshots: an object holding only the
+ * branches of `next` that changed relative to `base`. Plain-object values are
+ * compared key by key so editing one field doesn't drag its untouched
+ * siblings back into the result; arrays and scalars are compared as whole
+ * values.
+ *
+ * The autosave path sends this instead of the full draft so a field the user
+ * never touched — one an agent may have changed via `hermes config set`
+ * while Settings was open with a stale snapshot — is never resent with its
+ * now-stale value. `PUT /api/config` deep-merges onto disk, so an omitted
+ * key keeps whatever is currently there.
+ */
+export function diffConfig(base: HermesConfigRecord, next: HermesConfigRecord): HermesConfigRecord {
+  const patch: HermesConfigRecord = {}
+
+  for (const key of Object.keys(next)) {
+    const baseValue = base[key]
+    const nextValue = next[key]
+
+    if (isPlainObject(baseValue) && isPlainObject(nextValue)) {
+      const nested = diffConfig(baseValue, nextValue)
+
+      if (Object.keys(nested).length > 0) {
+        patch[key] = nested
+      }
+    } else if (JSON.stringify(baseValue) !== JSON.stringify(nextValue)) {
+      patch[key] = nextValue
+    }
+  }
+
+  return patch
+}
+
 /**
  * True when an edit clears the entire "Enabled Toolsets" list — i.e. the
  * previous config had a non-empty toolsets array and the next one is an

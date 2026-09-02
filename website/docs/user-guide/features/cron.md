@@ -187,8 +187,8 @@ When `workdir` is set:
 - The path must be an absolute directory that exists — relative paths and missing directories are rejected at create / update time
 - Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
 
-:::note Serialization
-Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
+:::note Isolation
+Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
 ## Editing jobs
@@ -378,6 +378,32 @@ written.
 
 Recording is always on and costs nothing to ignore — no ping is ever
 suppressed until you explicitly `ack`.
+
+### Fleet health check: `hermes cron doctor`
+
+`hermes cron doctor` is a read-only health check over every active job. It
+prints grouped, per-job issues and exits `1` when anything actionable is
+found (`0` when healthy), so it works from a terminal, a watchdog script, or
+a CI-style smoke check:
+
+```bash
+hermes cron doctor
+```
+
+Checks per active job:
+
+- last run failed (`last_status` not ok, with the recorded error),
+- last delivery failed (the output was produced but never reached you),
+- `next_run_at` missing, or parked in the past beyond a 15-minute ticker
+  grace window — the "job is silently not firing" signal (scheduler dead,
+  gateway down, or a wedged fire-claim),
+- script missing, not a file, or resolving outside `HERMES_HOME/scripts`,
+- `no_agent` job with no script,
+- configured `workdir` that no longer exists.
+
+Doctor never mutates jobs or state — it only reports. Pair it with
+`hermes cron incidents` (durable failure records) and `hermes cron runs`
+(attempt ledger) when digging into a flagged job.
 
 ## Delivery options
 

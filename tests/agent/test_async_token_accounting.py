@@ -277,18 +277,22 @@ class TestReaderFlush:
         assert _totals(db, "s-cc")["input_tokens"] == 4
 
 
-    def test_enqueue_after_close_raises_at_call_site(self, tmp_path):
-        """After close() the synchronous fallback surfaces the failure to the
-        caller (whose try/except logs it) — the pre-queue contract — instead
-        of silently dropping the delta."""
+    def test_enqueue_after_close_lands_via_reopen(self, tmp_path):
+        """After close() the synchronous fallback used to surface an opaque
+        AttributeError to the caller and drop the delta. Since the #94736
+        self-heal, a write that reaches the store after a teardown close()
+        reopens the connection and LANDS instead — strictly better than the
+        old raise-and-lose contract: no delta is dropped, and the recovery
+        is loud (WARNING at the persistence boundary)."""
         db = SessionDB(db_path=tmp_path / "closed.db")
         db.create_session("s-closed", "test")
         db.queue_token_counts("s-closed", input_tokens=1, api_call_count=1)
         db.close()
 
-        with pytest.raises(Exception):
-            db.queue_token_counts("s-closed", input_tokens=2, api_call_count=1)
+        db.queue_token_counts("s-closed", input_tokens=2, api_call_count=1)
         assert not db._token_queue  # not parked on a dead queue either
+        assert _totals(db, "s-closed")["input_tokens"] == 1 + 2
+        db.close()
 
 
 # =========================================================================

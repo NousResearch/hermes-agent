@@ -613,11 +613,76 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_skill_create_dir() -> Optional[Path]:
+    """Return the configured ``skills.create_dir``, or ``None`` when unset.
+
+    When set, agent-created skills (``skill_manage`` action=create) land in
+    this directory instead of the profile-local ``~/.hermes/skills/``, and
+    every user-facing instruction string that names the creation path renders
+    this directory instead of the default.
+
+    The entry is expanded (``~`` and ``${VAR}``); relative paths resolve
+    against HERMES_HOME.  A value that resolves to the local skills dir is
+    treated as unset (that is already the default behaviour).  The directory
+    does NOT need to exist yet — skill creation mkdirs it on first write.
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return None
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+    raw = skills_cfg.get("create_dir")
+    if not raw or not isinstance(raw, (str, os.PathLike)):
+        return None
+    entry = str(raw).strip()
+    if not entry:
+        return None
+
+    from hermes_constants import get_hermes_home
+
+    expanded = os.path.expanduser(os.path.expandvars(entry))
+    p = Path(expanded)
+    if not p.is_absolute():
+        p = get_hermes_home() / p
+    try:
+        resolved = p.resolve()
+    except OSError:
+        resolved = p
+    try:
+        if resolved == get_skills_dir().resolve():
+            return None
+    except OSError:
+        pass
+    return resolved
+
+
+def display_skill_create_dir() -> str:
+    """User-facing display string for where new skills are created.
+
+    Renders the configured ``skills.create_dir`` (with ``~/`` shorthand when
+    under the user's home) or the default ``<home>/skills/`` path.  Used by
+    instruction text (tool schema descriptions, prompts, docs strings) so a
+    configured creation dir changes every instruction that names the path.
+    """
+    from hermes_constants import display_hermes_home
+
+    create_dir = get_skill_create_dir()
+    if create_dir is None:
+        return f"{display_hermes_home()}/skills/"
+    try:
+        return "~/" + create_dir.relative_to(Path.home()).as_posix() + "/"
+    except ValueError:
+        return create_dir.as_posix() + "/"
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    yet — callers handle that).  When ``skills.create_dir`` is configured, it
+    follows immediately after the local dir (so agent-created skills are
+    discovered, trusted, and modifiable).  External dirs follow in config order.
 
     NOTE: trusted project-local dirs (``./.hermes/skills`` at the git root) are
     NOT part of this list — they have *higher* precedence than the local dir,
@@ -626,7 +691,12 @@ def get_all_skills_dirs() -> List[Path]:
     precedence-ordered list.
     """
     dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
+    create_dir = get_skill_create_dir()
+    if create_dir is not None and create_dir.is_dir():
+        dirs.append(create_dir)
+    for d in get_external_skills_dirs():
+        if d not in dirs:
+            dirs.append(d)
     return dirs
 
 
@@ -810,8 +880,7 @@ def get_scan_ordered_skills_dirs() -> List[Path]:
     priority over profile-local and external ones.
     """
     dirs = list(get_project_skills_dirs())
-    dirs.append(get_skills_dir())
-    dirs.extend(get_external_skills_dirs())
+    dirs.extend(get_all_skills_dirs())
     return dirs
 
 

@@ -1100,9 +1100,9 @@ def session_search(
     owned_dbs: List[Any] = []
     if db is None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
-            db = SessionDB()
+            db = get_shared_session_db()
             owned_dbs.append(db)
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
@@ -1128,7 +1128,8 @@ def session_search(
     finally:
         for owned_db in reversed(owned_dbs):
             try:
-                owned_db.close()
+                from hermes_state import release_or_close
+                release_or_close(owned_db)
             except Exception:
                 logging.debug("Failed to close session_search SessionDB", exc_info=True)
 

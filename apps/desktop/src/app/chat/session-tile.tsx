@@ -41,7 +41,9 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
+  $cronSessions,
   $gatewayState,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -55,8 +57,7 @@ import {
   closeSessionTile,
   patchSessionTile,
   type SessionTile,
-  sessionTileDelegate,
-  sessionTileOwnerRoute
+  sessionTileDelegate
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -68,6 +69,7 @@ import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
+import { tileOwnerRoute } from './session-tile-owner'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
@@ -157,7 +159,21 @@ function TileChat({
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
-  const ownerRoute = sessionTileOwnerRoute(storedSessionId)
+
+  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
+  // Recomputed when the tile store or any owner-bearing session list changes,
+  // NOT on every render: this component re-renders per streamed token, and the
+  // lookup spreads three arrays before scanning them.
+  const tiles = useStore($sessionTiles)
+  const sessionRows = useStore($sessions)
+  const cronRows = useStore($cronSessions)
+  const messagingRows = useStore($messagingSessions)
+
+  const ownerRoute = useMemo(() => {
+    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+
+    return tileOwnerRoute(tiles, rows, storedSessionId)
+  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>
@@ -165,7 +181,13 @@ function TileChat({
     [ownerRoute, requestGateway]
   )
 
-  const { selectModel } = useModelControls({ queryClient, requestGateway: requestTileGateway })
+  const { selectModel } = useModelControls({
+    cacheOwnerConnectionId: ownerRoute?.connectionId || undefined,
+    cacheProfile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
+    queryClient,
+    requestGateway: requestTileGateway
+  })
+
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
@@ -233,11 +255,20 @@ function TileChat({
       gatewayOpen ? (
         <ModelMenuPanel
           onSelectModel={selectModel}
+          ownerConnectionId={ownerRoute?.connectionId || undefined}
           profile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
           requestGateway={requestTileGateway}
         />
       ) : null,
-    [activeGatewayProfile, gatewayOpen, ownerRoute?.profile, ownerRoute?.targetProfile, requestTileGateway, selectModel]
+    [
+      activeGatewayProfile,
+      gatewayOpen,
+      ownerRoute?.connectionId,
+      ownerRoute?.profile,
+      ownerRoute?.targetProfile,
+      requestTileGateway,
+      selectModel
+    ]
   )
 
   return (
@@ -246,6 +277,8 @@ function TileChat({
         <ChatView
           gateway={gateway}
           modelMenuContent={modelMenuContent}
+          modelOptionsOwnerConnectionId={ownerRoute?.connectionId || undefined}
+          modelOptionsProfile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
           onAddContextRef={addContextRefAttachment}
           onAddUrl={onAddUrl}
           onAttachDroppedItems={composer.attachDroppedItems}
@@ -268,6 +301,7 @@ function TileChat({
           onThreadMessagesChange={actions.handleThreadMessagesChange}
           onToggleSelectedPin={noop}
           onTranscribeAudio={tileTranscribeAudio}
+          requestModelOptionsForOwner={requestTileGateway}
         />
       </ComposerScopeProvider>
     </SessionViewProvider>

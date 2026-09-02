@@ -905,9 +905,18 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+                version = result.stdout.decode().strip().lstrip("v")
+                major = int(version.split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
                 return False  # broken, not outdated — the runnable probe handles it
+            # A pre-release tree counts as outdated however high its major:
+            # nodejs.org publishes a headers tarball only for final releases, so
+            # node-gyp cannot build node-pty against one. Without this, an
+            # install that adopted such a tree stays broken forever — the heal
+            # only fires below the target major, and a pre-release is above it.
+            # Mirrors node_satisfies_build() in scripts/install.sh.
+            if "-" in version:
+                return True
             return major < _HERMES_NODE_TARGET_MAJOR
     return False
 
@@ -1851,3 +1860,19 @@ def partial_update_hint(exc: BaseException) -> list[str]:
         "    hermes update",
         "If that also fails, reinstall: https://hermes-agent.nousresearch.com",
     ]
+
+
+def emit_partial_update_hint(exc: BaseException, *, file=None) -> bool:
+    """Print recovery guidance for a half-updated tree.
+
+    Returns True when guidance was written (caller should then exit), False
+    when *exc* is not a first-party ``ImportError`` (caller should re-raise).
+    """
+    lines = partial_update_hint(exc)
+    if not lines:
+        return False
+    out = sys.stderr if file is None else file
+    print(f"Error: {exc}", file=out)
+    for line in lines:
+        print(line, file=out)
+    return True

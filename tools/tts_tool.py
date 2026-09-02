@@ -2893,10 +2893,182 @@ def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], A
     return value
 
 
+# ===========================================================================
+# Local-engine lifecycle: warm-up / release driven by TTS-output toggles
+# ===========================================================================
+#
+# Local engines (Piper, KittenTTS) load their model lazily on the first
+# synthesis call, so the first spoken reply after a user turns on "read
+# replies aloud" / a voice conversation pays the whole load (plus a voice
+# download on a fresh install) as dead air before the first word. And once
+# loaded, the model stays resident for the process lifetime even after every
+# TTS-output toggle is off again.
+#
+# The toggles ARE the intent signal. Every surface that flips speech output
+# on holds a *lease* here (warming the configured engine as a side effect);
+# flipping it off releases the lease, and when the last lease is gone the
+# local model caches are dropped. Lease-counting instead of a bare
+# on/off keeps one surface's "off" from unloading a model another surface
+# (TUI /voice tts, desktop read-aloud, desktop conversation) still needs —
+# they share this process's caches.
+#
+# Cloud providers have no resident model; warming them is a no-op beyond
+# making sure the lazily-installed SDK is importable (edge-tts), which is
+# also first-use latency users see as silence.
+
+# Provider name → local model cache it populates. The single registry both
+# warm_tts_provider() and the release path consult — a new local engine adds
+# one row here (at its cache declaration) plus a loader in
+# _local_tts_warmers() and gets warm/release for free.
+_LOCAL_TTS_MODEL_CACHES: Dict[str, Dict[str, Any]] = {}
+
+
+def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
+    # Resolved lazily: the loader functions are defined later in this module.
+    return {
+        "piper": lambda cfg: _load_piper_voice_for_config(cfg)[0],
+        "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0],
+    }
+
+
+def _lazy_sdk_feature_for_provider(provider: str) -> Optional[str]:
+    """tools.lazy_deps feature key for providers whose SDK installs on first use."""
+    return {
+        "edge": "tts.edge",
+        "elevenlabs": "tts.elevenlabs",
+        "mistral": "tts.mistral",
+    }.get(provider)
+
+
+_tts_lease_lock = threading.Lock()
+_tts_leases: set = set()
+
+
+def warm_tts_provider(
+    tts_config: Optional[Dict[str, Any]] = None,
+    provider: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Pre-load the configured TTS provider so the next synthesis starts hot.
+
+    * Local engines (Piper, KittenTTS): resolve the configured voice/model
+      exactly as synthesis would (including first-use voice download) and
+      load it into the same LRU cache slot synthesis reads.
+    * Lazily-installed cloud SDKs (edge-tts, ElevenLabs, Mistral): make sure
+      the SDK is importable, installing it if lazy installs are allowed.
+    * Everything else: nothing to warm — reported as ``action: "noop"``.
+
+    Never raises; the result dict carries ``warmed`` / ``action`` / ``error``
+    so callers on a toggle path can log and move on. Blocking — callers on a
+    UI thread should run it in the background.
+    """
+    if tts_config is None:
+        tts_config = _load_tts_config()
+    name = (provider or _get_provider(tts_config) or "").lower().strip()
+    result: Dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
+
+    warmer = _local_tts_warmers().get(name)
+    if warmer is not None:
+        cache = _LOCAL_TTS_MODEL_CACHES.get(name)
+        before = len(cache) if cache is not None else 0
+        started = time.monotonic()
+        try:
+            warmer(tts_config)
+        except Exception as exc:  # engine missing, download failed, bad voice…
+            logger.warning("[TTS] warm-up for %s failed: %s", name, exc)
+            result.update(action="error", error=str(exc))
+            return result
+        after = len(cache) if cache is not None else 0
+        result.update(
+            warmed=True,
+            action="loaded" if after > before else "cached",
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+        logger.info("[TTS] warm-up %s: %s in %dms", name, result["action"], result["elapsed_ms"])
+        return result
+
+    feature = _lazy_sdk_feature_for_provider(name)
+    if feature is not None:
+        try:
+            from tools.lazy_deps import ensure, is_available
+
+            if is_available(feature):
+                result.update(warmed=True, action="cached")
+            else:
+                ensure(feature, prompt=False)
+                result.update(warmed=True, action="installed")
+        except Exception as exc:
+            logger.debug("[TTS] SDK warm-up for %s skipped: %s", name, exc)
+            result.update(action="error", error=str(exc))
+    return result
+
+
+def release_tts_provider(provider: Optional[str] = None) -> Dict[str, Any]:
+    """Drop resident local TTS models so their memory is returned.
+
+    With ``provider`` given, only that engine's cache is cleared; otherwise
+    every local engine cache is. Cloud providers hold nothing to release.
+    Returns ``{"released": <number of model instances dropped>}``. The next
+    synthesis simply reloads (or a warm-up does it ahead of time).
+    """
+    name = (provider or "").lower().strip()
+    released = 0
+    for cache_name, cache in _LOCAL_TTS_MODEL_CACHES.items():
+        if name and cache_name != name:
+            continue
+        released += len(cache)
+        cache.clear()
+    if released:
+        logger.info("[TTS] released %d resident local model(s)", released)
+    return {"released": released}
+
+
+def acquire_tts_lease(lease: str, tts_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Register ``lease`` as a live TTS-output consumer and warm the provider.
+
+    ``lease`` names the surface/toggle (e.g. ``"desktop:read-aloud"``,
+    ``"tui:voice-tts"``). Re-acquiring an existing lease is idempotent (still
+    re-warms — cheap on a cache hit, and heals a cache cleared elsewhere).
+    """
+    with _tts_lease_lock:
+        _tts_leases.add(lease)
+        holders = len(_tts_leases)
+    result = warm_tts_provider(tts_config)
+    result["leases"] = holders
+    return result
+
+
+def release_tts_lease(lease: str) -> Dict[str, Any]:
+    """Drop ``lease``; when it was the last one, unload resident local models.
+
+    Releasing a lease that was never acquired is a no-op (still reports the
+    live holder count) so surfaces can call it unconditionally on their
+    "off" path.
+    """
+    with _tts_lease_lock:
+        _tts_leases.discard(lease)
+        holders = len(_tts_leases)
+        result: Dict[str, Any] = {"leases": holders, "released": 0}
+        if holders == 0:
+            result["released"] = release_tts_provider()["released"]
+    return result
+
+
+def tts_lease_holders() -> List[str]:
+    """Snapshot of live lease names (diagnostics / tests)."""
+    with _tts_lease_lock:
+        return sorted(_tts_leases)
+
+
+def _reset_tts_leases_for_tests() -> None:
+    with _tts_lease_lock:
+        _tts_leases.clear()
+
+
 # Module-level cache for Piper voice instances. Voices are keyed on their
 # absolute .onnx model path so switching voices doesn't invalidate older
 # cached voices.
 _piper_voice_cache: Dict[str, Any] = {}
+_LOCAL_TTS_MODEL_CACHES["piper"] = _piper_voice_cache
 
 
 def _check_piper_available() -> bool:
@@ -2973,15 +3145,16 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
     return str(cached)
 
 
-def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using the local Piper engine.
+def _load_piper_voice_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+    """Resolve + load (or fetch from cache) the Piper voice ``tts_config`` selects.
 
-    Loads the voice model once per process (cached by absolute path) and
-    writes a WAV file. Caller is responsible for converting to MP3/Opus
-    via ffmpeg when a different output format is required.
+    Shared by synthesis and :func:`warm_tts_provider` so a warm-up populates
+    exactly the cache slot the next synthesis call will hit — same voice
+    resolution, same download-on-first-use, same cache key.
+
+    Returns ``(voice, piper_config)``.
     """
     PiperVoice = _import_piper()
-    import wave
 
     piper_config = tts_config.get("piper") or {} if isinstance(tts_config, dict) else {}
     voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
@@ -2990,15 +3163,6 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     use_cuda = bool(piper_config.get("use_cuda", False))
 
     model_path = _resolve_piper_voice_path(voice_name, download_dir)
-
-    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
-    # to 0 (Piper's own default). Booleans are rejected outright — True/False
-    # would silently coerce to 1/0 and hide a config mistake.
-    _raw_speaker = piper_config.get("speaker_id", 0)
-    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
-        speaker_id = 0
-    else:
-        speaker_id = _raw_speaker
 
     # speaker_id is applied per-call via syn_config.speaker_id — the same
     # PiperVoice instance serves all speakers, so it stays out of the cache
@@ -3012,6 +3176,28 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         return v
 
     voice = _tts_cache_get_or_load(_piper_voice_cache, cache_key, _load_piper_voice)
+    return voice, piper_config
+
+
+def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Piper engine.
+
+    Loads the voice model once per process (cached by absolute path) and
+    writes a WAV file. Caller is responsible for converting to MP3/Opus
+    via ffmpeg when a different output format is required.
+    """
+    import wave
+
+    voice, piper_config = _load_piper_voice_for_config(tts_config)
+
+    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
+    # to 0 (Piper's own default). Booleans are rejected outright — True/False
+    # would silently coerce to 1/0 and hide a config mistake.
+    _raw_speaker = piper_config.get("speaker_id", 0)
+    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
+        speaker_id = 0
+    else:
+        speaker_id = _raw_speaker
 
     # Optional synthesis knobs — only pass a SynthesisConfig when at least
     # one advanced knob is configured, so we don't depend on a newer Piper
@@ -3079,6 +3265,28 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 # Module-level cache for KittenTTS model instance
 _kittentts_model_cache: Dict[str, Any] = {}
+_LOCAL_TTS_MODEL_CACHES["kittentts"] = _kittentts_model_cache
+
+
+def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+    """Load (or fetch from cache) the KittenTTS model ``tts_config`` selects.
+
+    Shared by synthesis and :func:`warm_tts_provider` — same model name,
+    same cache key. Returns ``(model, kittentts_config)``.
+    """
+    KittenTTS = _import_kittentts()
+    kt_config = tts_config.get("kittentts", {}) if isinstance(tts_config, dict) else {}
+    kt_config = kt_config or {}
+    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+
+    def _load_kittentts_model():
+        logger.info("[KittenTTS] Loading model: %s", model_name)
+        m = KittenTTS(model_name)
+        logger.info("[KittenTTS] Model loaded successfully")
+        return m
+
+    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
+    return model, kt_config
 
 
 def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -3095,21 +3303,10 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     Returns:
         Path to the saved audio file.
     """
-    KittenTTS = _import_kittentts()
-    kt_config = tts_config.get("kittentts", {})
-    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+    model, kt_config = _load_kittentts_model_for_config(tts_config)
     voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
     speed = kt_config.get("speed", 1.0)
     clean_text = kt_config.get("clean_text", True)
-
-    # Use cached model instance if available
-    def _load_kittentts_model():
-        logger.info("[KittenTTS] Loading model: %s", model_name)
-        m = KittenTTS(model_name)
-        logger.info("[KittenTTS] Model loaded successfully")
-        return m
-
-    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
 
     # Generate audio (returns numpy array at 24kHz)
     audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)

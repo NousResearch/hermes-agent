@@ -1625,7 +1625,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
         return
 
     try:
-        from gateway.status import _pid_exists, terminate_pid as _terminate_pid
+        from gateway.status import (
+            _pid_exists,
+            get_process_start_time,
+            terminate_pid as _terminate_pid,
+        )
     except Exception:
         return
 
@@ -1645,7 +1649,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     for pid in pids:
         if _pid_exists(pid):
             try:
-                _terminate_pid(pid, force=True)
+                _terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
@@ -2007,6 +2015,11 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # the same way taskkill /T does.
         from gateway.status import terminate_pid as _terminate_pid
         from gateway.status import _pid_exists
+        expected_start_time = data.get("start_time")
+        if expected_start_time is None:
+            from gateway.status import get_process_start_time
+
+            expected_start_time = get_process_start_time(pid)
         _terminate_pid(pid)  # graceful first
         # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
         # is NOT a no-op — use the handle-based existence check.
@@ -2017,7 +2030,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 return
         # Force kill
         try:
-            _terminate_pid(pid, force=True)
+            _terminate_pid(pid, force=True, expected_start_time=expected_start_time)
         except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
@@ -2101,6 +2114,88 @@ def get_active_profile_name() -> str:
 # ---------------------------------------------------------------------------
 # Export / Import
 # ---------------------------------------------------------------------------
+
+def _inside_git_checkout(path: Path) -> bool:
+    """Return True when *path* lies inside a Git checkout.
+
+    Walks the path's OWN resolved ancestry for a ``.git`` marker (a directory
+    for normal clones, a file for worktrees/submodules).  Anchoring on the
+    candidate path — not on ``Path.cwd()`` — keeps the safety proof valid when
+    ``HERMES_HOME`` points inside a checkout but the process runs from
+    somewhere else entirely (cron, a service manager, an absolute-path
+    invocation).  On resolution failure we conservatively report True so the
+    caller falls through to a provably safe candidate.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        # RuntimeError: symlink loops on Python <= 3.12; fail closed either way.
+        return True
+    return any(
+        (candidate / ".git").exists() for candidate in (resolved, *resolved.parents)
+    )
+
+
+def _profile_export_directory() -> Path:
+    """Choose an export directory that cannot become source-tree input."""
+    import tempfile
+
+    export_dir = _get_default_hermes_home() / "profile-exports"
+    if not _inside_git_checkout(export_dir):
+        return export_dir
+
+    # A custom deployment may point HERMES_HOME at its source checkout.  Do
+    # not put the automatic archive under that tree; use a sibling store and
+    # fall back to the OS temp directory only for the unusual case where the
+    # user's home itself is a checkout (e.g. a dotfiles repo).
+    # Per-uid temp name: a fixed /tmp/hermes-profile-exports is a predictable
+    # shared path another local user could pre-create (or symlink) before us.
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+    candidates = (
+        Path.home() / ".hermes-profile-exports",
+        Path(tempfile.gettempdir()) / f"hermes-profile-exports{uid_suffix}",
+    )
+    for candidate in candidates:
+        if not _inside_git_checkout(candidate):
+            return candidate
+    # Fail closed: writing a secret-bearing archive into a source tree is the
+    # incident this helper exists to prevent (#92457). A warning on stderr
+    # would not stop a scripted export from recreating it.
+    raise ValueError(
+        "No safe automatic export destination: every candidate directory is "
+        "inside a Git checkout. Provide an explicit output path outside the "
+        "checkout (CLI: -o /path/outside/repo/profile.tar.gz)."
+    )
+
+
+def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Path:
+    """Return a managed destination for an export with no explicit output.
+
+    Keep automatic exports outside the current working directory and outside
+    every named profile.  The CLI is commonly run from a source checkout; its
+    old ``<name>.tar.gz`` default therefore made a profile snapshot look like
+    a repository artifact and allowed it to be committed accidentally.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    export_dir = _profile_export_directory()
+    export_dir.mkdir(parents=True, exist_ok=True)
+    # exist_ok=True would silently accept a directory (or symlink) another
+    # local user pre-created at a predictable path; refuse to write a
+    # secret-bearing archive anywhere we don't own.
+    if export_dir.is_symlink():
+        raise ValueError(
+            f"Export directory {export_dir} is a symlink; refusing to write "
+            "a profile archive through it. Provide an explicit output path."
+        )
+    if hasattr(os, "getuid") and export_dir.stat().st_uid != os.getuid():
+        raise ValueError(
+            f"Export directory {export_dir} is owned by another user; "
+            "refusing to write a profile archive there. Provide an explicit "
+            "output path."
+        )
+    stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
+    return export_dir / f"{canon}-{stamp}.tar.gz"
 
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.

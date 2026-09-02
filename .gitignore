@@ -99,11 +99,12 @@ apps/desktop/src/**/*.d.ts
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
 
-# Repo-root build/debug artifacts that must never be committed
+# Build/debug artifacts that must never be committed
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-/default.tar.gz
+*.tar.gz
+*.tgz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
@@ -213,3 +214,6 @@ native/fts5_cjk/*.so
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
 .skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/

@@ -58,8 +58,25 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
-        _reap_orphaned_browser_sessions()
+        with patch(
+            "tools.browser_tool._socket_dir_idle_seconds",
+            return_value=10_000,
+        ):
+            _reap_orphaned_browser_sessions()
         assert not d.exists()
+
+    def test_fresh_dir_without_pid_file_survives_creator_race(self, fake_tmpdir):
+        """A concurrent reaper must not delete a session still starting."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_starting1234")
+        with patch(
+            "tools.browser_tool._socket_dir_idle_seconds",
+            return_value=0.0,
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
 
 
     def test_alive_legacy_daemon_is_reaped(self, fake_tmpdir):
@@ -79,16 +96,39 @@ class TestReapOrphanedBrowserSessions:
 
         terminate_calls = []
 
-        def mock_terminate(pid):
+        def mock_terminate(pid, expected_start=None):
             terminate_calls.append(pid)
 
         with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in terminate_calls
         assert not d.exists()
+
+    def test_unfingerprintable_daemon_is_refused(self, fake_tmpdir):
+        """No start-time fingerprint -> the kill is refused (fail closed).
+
+        The reaper reads the PID from a world-writable temp dir; a PID whose
+        identity cannot be pinned could be recycled between the verify and the
+        tree-kill, so it must be left alone (and the socket dir kept for a
+        later sweep).
+        """
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        _make_socket_dir(fake_tmpdir, "h_perm7654321", pid=12345)
+        terminate_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.status.get_process_start_time", return_value=None), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
+            _reap_orphaned_browser_sessions()
+
+        assert terminate_calls == []
 
 
     def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
@@ -446,9 +486,10 @@ class TestLeakedDaemonWithLiveOwner:
         kill_calls = []
 
         with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
-                   side_effect=kill_calls.append):
+                   side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in kill_calls

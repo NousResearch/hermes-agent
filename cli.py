@@ -82,6 +82,7 @@ try:
         install_cmd_backspace_alias,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
+        install_keypress_data_normalization,
         install_modify_other_keys_aliases,
         install_shift_enter_alias,
     )
@@ -89,8 +90,9 @@ try:
     install_ctrl_enter_alias()
     install_cmd_backspace_alias()
     install_modify_other_keys_aliases()
+    install_keypress_data_normalization()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_ignored_terminal_sequences
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_keypress_data_normalization, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -2392,6 +2394,85 @@ def _worktree_branch_pr_merged(
         return False
 
 
+def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Dict[str, str]]:
+    """Return ``{branch_name: sha}`` for every branch on origin, or None.
+
+    One ``git ls-remote --heads origin`` call answers "is this branch pushed?"
+    for EVERY worktree in the sweep, so callers pay a single bounded network
+    round-trip instead of per-tree probes. Needed because managed installs
+    fetch with a single-branch refspec (``+refs/heads/main:...``), so
+    ``refs/remotes/origin/<branch>`` never exists for pushed PR branches and
+    ``git log HEAD --not --remotes`` misreports them as unpushed forever —
+    the dominant reason open-PR worktrees accumulate (Aug 2026: 24 of 33
+    preserved trees on a loaded box were pushed branches with open PRs).
+
+    Fails SAFE toward None (offline, no remote, timeout): callers must treat
+    None as "cannot verify — preserve".
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            return None
+        heads: Dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                heads[parts[1][len("refs/heads/"):].strip()] = parts[0].strip()
+        return heads
+    except Exception:
+        return None
+
+
+def _worktree_branch_pushed_exact(
+    worktree_path: str,
+    remote_heads: Optional[Dict[str, str]],
+    timeout: int = 10,
+) -> bool:
+    """Return whether the worktree's branch head is EXACTLY what origin holds.
+
+    True means the working tree contains nothing origin doesn't already have:
+    the checkout is redundant — the work lives on the remote (typically as an
+    open PR) and in the local branch ref. Reaping the TREE while keeping the
+    BRANCH loses nothing and is one ``git worktree add`` away from undone.
+
+    Exact-match is deliberately the only True case: a local head that is
+    ahead of (or diverged from) the pushed branch has commits origin lacks,
+    and without remote-tracking refs we cannot cheaply prove ancestry — so
+    anything but equality fails SAFE toward preserve.
+    """
+    import subprocess
+
+    if not remote_heads:
+        return False
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if head.returncode != 0:
+            return False
+        branch = head.stdout.strip()
+        if not branch or branch == "HEAD":
+            return False
+        remote_sha = remote_heads.get(branch)
+        if not remote_sha:
+            return False
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if local.returncode != 0:
+            return False
+        return local.stdout.strip() == remote_sha
+    except Exception:
+        return False
+
+
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
     """Classify a worktree's git lock as live, dead, or absent.
 
@@ -2638,7 +2719,16 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     - unpushed commits — never removed, UNLESS every local-only commit is
       patch-equivalent to a commit already on upstream (``git cherry``): the
       squash-merged-PR case, which is the dominant ``.worktrees/`` leak since
-      those commits stay unreachable from ``refs/remotes/*`` forever.
+      those commits stay unreachable from ``refs/remotes/*`` forever;
+    - pushed-branch tier: when the tree's branch head EXACTLY matches what
+      origin holds (one ``git ls-remote`` per sweep, lazily), the checkout is
+      redundant — typically an open-PR lane. The TREE is reaped but its
+      BRANCH ref is kept (and shielded from the orphaned-branch pass), so
+      the lane is one ``git worktree add`` away from restored. Needed because
+      managed installs fetch with a single-branch refspec, leaving pushed PR
+      branches with no ``refs/remotes/*`` entry — they read as "unpushed"
+      forever and were the dominant survivor class (Aug 2026: 24 of 33
+      preserved trees, ~18GB).
 
     Lock handling (orthogonal to age): ``hermes -w`` locks each worktree with
     reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
@@ -2735,6 +2825,22 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     cache_size_before = len(merge_cache)
     cache_lock = threading.Lock()
 
+    # Lazy, once-per-sweep ls-remote: answers "is this branch pushed as-is?"
+    # for every tree. Only paid when some tree actually reaches the
+    # pushed-tier check (the TUI path runs this pruner synchronously, so an
+    # unconditional network call would tax every launch; offline it costs
+    # one bounded timeout at most, and None degrades verdicts to preserve).
+    _remote_heads_memo: dict = {}
+    _remote_heads_lock = threading.Lock()
+
+    def _get_remote_heads():
+        with _remote_heads_lock:
+            if "heads" not in _remote_heads_memo:
+                _remote_heads_memo["heads"] = _fetch_remote_branch_heads(
+                    repo_root, timeout=10
+                )
+            return _remote_heads_memo["heads"]
+
     def _classify(item):
         entry, mtime, force = item
         # Never delete real work, regardless of age or tier. Uncommitted
@@ -2743,6 +2849,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # actually cause .worktrees/ bloat) are ever reaped.
         if _worktree_is_dirty(str(entry), timeout=5):
             return (entry, mtime, force, "dirty", None)
+        keep_branch = False
         if _worktree_has_unpushed_commits(str(entry), timeout=5):
             # Squash-merge escape hatch: commits unreachable from any remote
             # ref but patch-equivalent to upstream commits are merged work,
@@ -2763,7 +2870,17 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             with cache_lock:
                 merge_cache.update(snapshot)
             if not merged:
-                return (entry, mtime, force, "unpushed", None)
+                # Pushed-branch tier: single-branch fetch refspecs (the
+                # managed-install default) leave pushed PR branches with no
+                # refs/remotes/* entry, so they read as "unpushed" forever
+                # even though every byte is on origin. When the local head
+                # EXACTLY matches the remote branch, the checkout is
+                # redundant: reap the tree, keep the branch ref so the lane
+                # is one `git worktree add` from restored.
+                if _worktree_branch_pushed_exact(str(entry), _get_remote_heads(), timeout=10):
+                    keep_branch = True
+                else:
+                    return (entry, mtime, force, "unpushed", None)
 
         # Respect git-native session locks. A lock owned by a still-running
         # hermes process means the worktree is actively in use — never touch
@@ -2773,7 +2890,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)
         if lock_state == "live":
             return (entry, mtime, force, "locked-live", None)
-        return (entry, mtime, force, "reap", lock_state)
+        return (entry, mtime, force,
+                "reap-keep-branch" if keep_branch else "reap", lock_state)
 
     # Bounded pool: enough to hide git's per-process startup latency without
     # spawning dozens of concurrent git processes on a small machine.
@@ -2795,6 +2913,9 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         _save_worktree_merge_cache(merge_cache)
 
     # ── Phase 3: mutate serially (unlock / remove / branch -D) ──────────────
+    # Branch refs deliberately preserved by the pushed tier — must survive
+    # the orphaned-branch pass even though their worktree is now gone.
+    kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
         if verdict == "dirty":
             if mtime <= stale_work_cutoff:
@@ -2837,7 +2958,14 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
                     entry.name, remove_result.stderr.strip(),
                 )
                 continue
-            if branch:
+            if branch and verdict == "reap-keep-branch":
+                # Pushed-tier trees keep their branch ref: the branch IS the
+                # work (an open PR's local anchor) — only the checkout was
+                # redundant. Also shield it from the orphaned-branch pass
+                # below, which would otherwise delete hermes/*- and pr-*
+                # named refs the moment their worktree is gone.
+                kept_branches.add(branch)
+            elif branch:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=repo_root,
@@ -2853,7 +2981,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             len(preserved_stale), ", ".join(sorted(preserved_stale)),
         )
 
-    _prune_orphaned_branches(repo_root)
+    _prune_orphaned_branches(repo_root, protect=kept_branches)
 
     # Escalation notice: the startup pass is deliberately conservative, so
     # installs accumulate preserved trees it can never reclaim. Once the
@@ -2875,12 +3003,17 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         pass
 
 
-def _prune_orphaned_branches(repo_root: str) -> None:
+def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:
     """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
 
     These are auto-generated by ``hermes -w`` sessions and PR review
     workflows respectively.  Once their worktree is gone they serve no
     purpose and just accumulate.
+
+    ``protect``: branch names to never delete this pass — the pushed-tier
+    reap above removes a tree while deliberately keeping its branch (an open
+    PR's local anchor), and some of those carry ``hermes/hermes-*`` names
+    this sweep would otherwise collect immediately.
     """
     import subprocess
 
@@ -2924,6 +3057,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     orphaned = [
         b for b in all_branches
         if b not in active_branches
+        and b not in (protect or ())
         and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
     ]
 
@@ -5230,6 +5364,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # clobber an explicit override with the session's stored model.
         self._explicit_model_override = bool(model)
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        _startup_provider_override = ""
+        _startup_base_url_override = ""
+        _startup_api_key_override = ""
+        if self.model:
+            from hermes_cli.model_switch import resolve_startup_model_route
+
+            _startup_route = resolve_startup_model_route(
+                self.model,
+                explicit_provider=provider or "",
+                current_provider=(
+                    provider
+                    or _nested_provider
+                    or CLI_CONFIG["model"].get("provider")
+                    or os.getenv("HERMES_INFERENCE_PROVIDER")
+                    or ""
+                ),
+                user_providers=CLI_CONFIG.get("providers"),
+                custom_providers=CLI_CONFIG.get("custom_providers"),
+            )
+            if _startup_route is not None:
+                self.model = _startup_route.model
+                _startup_provider_override = _startup_route.provider
+                _startup_base_url_override = _startup_route.base_url
+                _startup_api_key_override = _startup_route.api_key
         # A ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do
         # this before provider resolution so ``-Q -m moa:<preset>`` routes
@@ -5266,13 +5424,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
 
-        self._explicit_api_key = api_key
+        # An explicit --api-key wins; otherwise a URL-bearing startup alias
+        # carries its own credential for the alias host (#28660).
+        self._explicit_api_key = api_key or _startup_api_key_override or None
         self._explicit_base_url = base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             _moa_provider_override
             or provider
+            or _startup_provider_override
             or _nested_provider
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
@@ -5306,6 +5467,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
+            or _startup_base_url_override
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
@@ -5699,6 +5861,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 session_id=self.session_id,
                 surface=surface,
                 config=self.config,
+                # Writer identity for re-entrancy (#94595): a re-claim by this
+                # same process for this same session replaces its own entry
+                # instead of fencing itself out.
+                metadata={"live_session_id": str(self.session_id)},
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
@@ -6501,6 +6667,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
+            # Durable-transcript view: on reasoning models a long tool loop
+            # replays the current turn's thinking + scaffolding on every
+            # request, so the LAST request's prompt_tokens can exceed the
+            # durable transcript by hundreds of K — all of which evaporates
+            # at the turn boundary. Rendering that raw figure makes the bar
+            # sawtooth (e.g. 850K mid-turn -> 600K next turn) and reads as a
+            # broken compaction. Anchor the display on the turn's FIRST
+            # response (minimal replay) plus a delta estimate of messages
+            # appended since, excluding stale thinking. Display-only: the
+            # compression trigger keeps using real last-request usage.
+            try:
+                from agent.model_metadata import anchored_context_tokens
+
+                _msgs = getattr(agent, "_session_messages", None)
+                _anchored = anchored_context_tokens(
+                    _msgs if isinstance(_msgs, list) else [],
+                    getattr(agent, "_turn_base_usage_anchor", None),
+                    charge_stale_thinking=False,
+                )
+                if _anchored is not None and _anchored > 0:
+                    context_tokens = _anchored
+            except Exception:
+                pass
             context_length = getattr(compressor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0
@@ -15576,6 +15765,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
+        if self._voice_tts:
+            # Speech output is on from the start — warm the engine now so the
+            # first spoken reply doesn't pay the model load as dead air.
+            self._tts_lease_async(True)
         # Use the startup-pinned cache so the advertised shortcut always
         # matches the live prompt_toolkit binding — reading live config
         # here would drift after a mid-session config edit (Copilot
@@ -15633,6 +15826,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+
+        # Speech output is off with the mode — release the TTS engine lease so
+        # a resident local model (piper/kittentts) is freed once nothing else
+        # in this process still needs it.
+        self._tts_lease_async(False)
 
         # Shut down the persistent audio stream in background
         if recorder is not None:
@@ -15881,6 +16079,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not owned:
             _cprint(f"  {_DIM}Enable with /wake on{_RST}")
 
+    def _tts_lease_async(self, active: bool) -> None:
+        """Acquire/release this CLI's TTS engine lease in the background.
+
+        The /voice tts toggle (and voice-mode on/off with speech output set)
+        is the "TTS is about to be needed / no longer needed" signal:
+        acquiring pre-loads the configured provider so the first reply starts
+        hot; releasing lets the last-holder path unload resident local models.
+        Never blocks the toggle and never fails it.
+        """
+
+        def _run():
+            try:
+                from tools.tts_tool import acquire_tts_lease, release_tts_lease
+
+                if active:
+                    acquire_tts_lease("cli:voice-tts")
+                else:
+                    release_tts_lease("cli:voice-tts")
+            except Exception as e:
+                logger.debug("voice: tts lease active=%s failed: %s", active, e)
+
+        threading.Thread(target=_run, name="tts-lease-cli", daemon=True).start()
+
     def _toggle_voice_tts(self):
         """Toggle TTS output for voice mode."""
         if not self._voice_mode:
@@ -15895,6 +16116,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+
+        # Toggle = warm-up / release signal for the TTS engine (see
+        # tools.tts_tool.acquire_tts_lease).
+        self._tts_lease_async(self._voice_tts)
 
         _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
 
@@ -21566,6 +21791,13 @@ def main(
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
+        # Startup-liveness watchdog (OOF-298): this legacy entry point must
+        # be covered too — arm before importing the gateway graph.
+        try:
+            from hermes_startup_watchdog import arm_startup_watchdog
+            arm_startup_watchdog()
+        except Exception:
+            pass
         from gateway.run import start_gateway
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())
@@ -21688,22 +21920,31 @@ def main(
     parsed_skills = _parse_skills_argument(skills)
 
     # Create CLI instance
-    cli = HermesCLI(
-        model=model,
-        toolsets=toolsets_list,
-        provider=provider,
-        reasoning=reasoning,
-        api_key=api_key,
-        base_url=base_url,
-        max_turns=max_turns,
-        run_budget=run_budget,
-        verbose=verbose,
-        compact=compact,
-        resume=resume,
-        checkpoints=checkpoints,
-        pass_session_id=pass_session_id,
-        ignore_rules=ignore_rules,
-    )
+    try:
+        cli = HermesCLI(
+            model=model,
+            toolsets=toolsets_list,
+            provider=provider,
+            reasoning=reasoning,
+            api_key=api_key,
+            base_url=base_url,
+            max_turns=max_turns,
+            run_budget=run_budget,
+            verbose=verbose,
+            compact=compact,
+            resume=resume,
+            checkpoints=checkpoints,
+            pass_session_id=pass_session_id,
+            ignore_rules=ignore_rules,
+        )
+    except ImportError as e:
+        # Direct `python cli.py` / `python -m cli` bypasses cmd_chat's
+        # ImportError handler. Same mixed-tree class as #96900.
+        from hermes_constants import emit_partial_update_hint
+
+        if emit_partial_update_hint(e):
+            sys.exit(1)
+        raise
 
     if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the

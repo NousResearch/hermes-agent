@@ -513,7 +513,7 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
 
-    # Web tools (Exa, Parallel, Firecrawl, or Tavily)
+    # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
     if subscription_features.web.managed_by_nous:
         tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
     elif subscription_features.web.available:
@@ -522,7 +522,7 @@ def _print_setup_summary(config: dict, hermes_home):
             label = f"Web Search & Extract ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL"))
+        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
@@ -2428,10 +2428,10 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 def setup_telemetry(config: dict):
-    """Configure the local, privacy-safe shared-metrics subscriber."""
+    """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
     print_info("Shared metrics contain only bounded counters and histograms.")
-    print_info("Packages stay under this Hermes profile and are not uploaded.")
+    print_info("Collection is local. Sending them to Nous is a separate opt-in.")
 
     telemetry = config.get("telemetry")
     if not isinstance(telemetry, dict):
@@ -2447,10 +2447,67 @@ def setup_telemetry(config: dict):
         "Enable local shared metrics?",
         default=current,
     )
-    if shared_metrics["enabled"]:
-        print_success("Local shared metrics enabled.")
-    else:
+    if not shared_metrics["enabled"]:
         print_info("Local shared metrics disabled.")
+        # Sending cannot outlive collection: leaving send=true here would be a
+        # configuration that logs an error on every run and never transmits.
+        if shared_metrics.get("send") is True:
+            shared_metrics["send"] = False
+            print_info("Sending shared metrics disabled as well.")
+        # Turning collection off is also a withdrawal of send consent, and it
+        # has to close the window like any other. Recorded unconditionally:
+        # the send key may already be false in config while the consent window
+        # is still open, and that window must not survive to be reopened.
+        _record_send_consent_change(enabled=False)
+        return
+
+    print_success("Local shared metrics enabled.")
+    print_info("")
+    print_info("Sending uploads each daily package to the Nous telemetry")
+    print_info("service. Packages carry your profile-scoped install ID, a")
+    print_info("stable random UUID that identifies this profile across days")
+    print_info("(it contains no personal information and is reset by deleting")
+    print_info("the shared-metrics directory). Only packages whose entire")
+    print_info("collection period falls inside a recorded consent window are")
+    print_info("ever sent — data from before you opt in, or from any gap")
+    print_info("while sending was off, stays on this machine. Sending can be")
+    print_info("turned off again at any time.")
+    shared_metrics["send"] = prompt_yes_no(
+        "Send shared metrics to Nous?",
+        default=shared_metrics.get("send") is True,
+    )
+    if shared_metrics["send"]:
+        _record_send_consent_change(enabled=True)
+        print_success("Sending shared metrics enabled.")
+    else:
+        _record_send_consent_change(enabled=False)
+        print_info("Sending shared metrics disabled (collection stays local).")
+
+
+def _record_send_consent_change(*, enabled: bool) -> None:
+    """Reconcile consent windows at the moment the user decides.
+
+    Same single writer as the relay and the sender — reconciliation derives
+    the window state from the observation, so wizard, relay, and mid-pass
+    callers cannot disagree. The relay's once-per-process reconcile would
+    catch this on the next hook fire anyway; running it here just makes the
+    wizard's effect immediate.
+    """
+    try:
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_cli.observability.shared_metrics_sender import (
+            reconcile_send_consent,
+        )
+        from hermes_cli.sqlite_util import write_txn
+
+        store = SharedMetricsStore()
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, enabled)
+    except Exception:
+        # Never block the wizard on telemetry bookkeeping. The relay runs the
+        # same reconciliation on the next lifecycle hook.
+        logger.debug("Unable to record shared-metrics consent change", exc_info=True)
 
 
 # =============================================================================

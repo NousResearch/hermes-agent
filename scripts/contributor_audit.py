@@ -57,6 +57,10 @@ IGNORED_PATTERNS = [
     re.compile(r"^TRON$", re.IGNORECASE),                 # AgentMail agent
     re.compile(r"^Happy$", re.IGNORECASE),                # happy.engineering AI agent
     re.compile(r"^Orca$", re.IGNORECASE),                 # Stably AI agent
+    # v0.21.0 audit additions:
+    re.compile(r"^Junie$", re.IGNORECASE),                # JetBrains Junie AI agent
+    re.compile(r"^GPT-[\d.]+\s*Codex$", re.IGNORECASE),   # OpenAI Codex model trailer
+    re.compile(r"^cursoragent$", re.IGNORECASE),          # Cursor AI GitHub account
 ]
 
 IGNORED_EMAILS = {
@@ -75,6 +79,9 @@ IGNORED_EMAILS = {
     "tron-agent@agentmail.to",      # TRON (AgentMail agent)
     "yesreply@happy.engineering",   # Happy (AI coding agent)
     "help@stably.ai",               # Orca (Stably AI agent)
+    # v0.21.0 audit additions — AI-agent co-author trailers:
+    "junie@jetbrains.com",          # JetBrains Junie
+    "noreply@openai.com",           # GPT-x Codex model trailer
 }
 
 

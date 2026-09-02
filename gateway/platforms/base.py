@@ -1594,7 +1594,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     """
     candidates: List[str] = []
     try:
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
     except Exception:
         return ["default"]
     # Explicit trusted-profiles opt-in: one shared container identity.
@@ -2461,6 +2461,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Per-attachment text-inlining contract. None/absent preserves the legacy
+    # assumption that text/* adapters already injected content into ``text``.
+    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -2845,10 +2848,22 @@ def merge_pending_message_event(
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
         incoming_has_media = bool(event.media_urls)
+        incoming_inline_flags: List[Optional[bool]] = []
+        if incoming_has_media:
+            existing_inline_flags = list(getattr(existing, "media_text_inlined", []) or [])
+            existing_inline_flags.extend(
+                [None] * max(0, len(existing.media_urls) - len(existing_inline_flags))
+            )
+            incoming_inline_flags = list(getattr(event, "media_text_inlined", []) or [])
+            incoming_inline_flags.extend(
+                [None] * max(0, len(event.media_urls) - len(incoming_inline_flags))
+            )
+            existing.media_text_inlined = existing_inline_flags
 
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
@@ -2858,6 +2873,7 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -3907,11 +3923,26 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        Only the literal booleans are propagated. A callback that returns
+        anything else is treated as "unknown" rather than coerced with
+        ``bool()``: callers that gate a credentialed side effect on an
+        explicit ``is True`` must not have a truthy non-boolean (a status
+        string, a sentinel object) silently promoted to an authorization.
         """
         if not user_id or self._authorization_check is None:
             return None
         try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
+            result = self._authorization_check(user_id, chat_type, chat_id)
+            if result is True:
+                return True
+            if result is False:
+                return False
+            logger.warning(
+                "[%s] Authorization check returned %s for user %s; treating as unknown",
+                self.name, type(result).__name__, user_id,
+            )
+            return None
         except Exception:
             logger.warning(
                 "[%s] Authorization check raised for user %s; treating as unknown",

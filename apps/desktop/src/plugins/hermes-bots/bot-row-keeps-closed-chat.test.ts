@@ -24,6 +24,7 @@ const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
 }))
 
 vi.mock('./canonical-chat', () => ({
+  CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,
@@ -76,7 +77,7 @@ describe('a row click returns to the tabs the bot already has open', () => {
     try {
       await expect(openRosterBot(bot)).resolves.toBe(true)
 
-      expect(focus).toHaveBeenCalledWith('bot:alpha')
+      expect(focus).toHaveBeenCalledWith('bot:alpha', expect.any(Function))
       expect(openBotCanonicalChat).not.toHaveBeenCalled()
       // Open tabs need no source activation either — the bot is already live.
       expect(prepareBotSource).not.toHaveBeenCalled()
@@ -124,6 +125,105 @@ describe('the canonical chat still opens when it is what was asked for', () => {
       await expect(openRosterBot(bot, { canonical: true })).resolves.toBe(true)
 
       expect(focus).not.toHaveBeenCalled()
+      expect($openBotChat.get()?.openedRegistryId).toBe('bot-chat')
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('the fronted-tab shortcut reconciles with the canonical registry (#90102)', () => {
+  // The stuck shape: a persisted "Bot Chat" tile names a session the
+  // registry no longer resolves to (superseded pointer-era row, re-minted
+  // canonical chat, stale finished session). The roster click must judge
+  // that tile against the server-resolved canonical_session and fall
+  // through to the authoritative registry open instead of fronting it.
+  const staleBot = {
+    connectionId: 'local',
+    name: 'alpha',
+    canonical_session: { id: 'bot-chat', resolved_id: 'bot-chat-tip' }
+  } as RosterRow
+
+  /** The probe openRosterBot hands the focus verb, captured. */
+  function captureProbe() {
+    let probe: ((tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean) | undefined
+
+    const focus = vi.fn((_key: string, isStaleTile?: typeof probe) => {
+      probe = isStaleTile
+
+      return null
+    })
+
+    return { focus, probe: () => probe }
+  }
+
+  it('classifies a canonical-titled tile at a foreign id as stale', async () => {
+    const { focus, probe } = captureProbe()
+    const restore = withFocusApi(focus as unknown as () => null | string)
+
+    try {
+      await openRosterBot(staleBot)
+
+      const isStale = probe()!
+      expect(isStale({ storedSessionId: 'old-finished-session', workspaceTabTitle: 'Bot Chat' })).toBe(true)
+    } finally {
+      restore()
+    }
+  })
+
+  it('keeps the tile that matches the registry row or its lineage tip', async () => {
+    const { focus, probe } = captureProbe()
+    const restore = withFocusApi(focus as unknown as () => null | string)
+
+    try {
+      await openRosterBot(staleBot)
+
+      const isStale = probe()!
+      expect(isStale({ storedSessionId: 'bot-chat', workspaceTabTitle: 'Bot Chat' })).toBe(false)
+      expect(isStale({ storedSessionId: 'bot-chat-tip', workspaceTabTitle: 'Bot Chat' })).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('never judges side-chat tabs — only canonical-titled tiles carry registry identity', async () => {
+    const { focus, probe } = captureProbe()
+    const restore = withFocusApi(focus as unknown as () => null | string)
+
+    try {
+      await openRosterBot(staleBot)
+
+      const isStale = probe()!
+      expect(isStale({ storedSessionId: 'scratch-thread', workspaceTabTitle: 'Group: writers' })).toBe(false)
+      expect(isStale({ storedSessionId: 'scratch-thread' })).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('an older gateway without canonical_session cannot judge — every tile survives', async () => {
+    const { focus, probe } = captureProbe()
+    const restore = withFocusApi(focus as unknown as () => null | string)
+
+    try {
+      await openRosterBot(bot) // no canonical_session on this row
+
+      const isStale = probe()!
+      expect(isStale({ storedSessionId: 'anything', workspaceTabTitle: 'Bot Chat' })).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('falls through to the authoritative canonical open when the stale tile was the only tab', async () => {
+    // The store discards the stale tile and reports null; the click must
+    // then resolve the registry — the backend-truth path — not give up.
+    const restore = withFocusApi(() => null)
+
+    try {
+      await expect(openRosterBot(staleBot)).resolves.toBe(true)
+
+      expect(openBotCanonicalChat).toHaveBeenCalled()
       expect($openBotChat.get()?.openedRegistryId).toBe('bot-chat')
     } finally {
       restore()

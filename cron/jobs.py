@@ -2450,6 +2450,9 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        # Live-adapter targets whose last send was acked with no message_id /
+        # raw_response (accepted, but UNVERIFIED — surfaced by cron list/doctor).
+        "last_delivery_unverified": None,
         "failure_streak": 0,
         # Delivery configuration
         "deliver": deliver,

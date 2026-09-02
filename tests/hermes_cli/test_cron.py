@@ -129,6 +129,44 @@ class TestCronCommandLifecycle:
         assert jobs[0]["name"] == "Skill combo"
 
 
+class TestUnverifiedDeliveryVisibility:
+    """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare
+    ``SendResult(success=True)``) is accepted as delivered, but the UNVERIFIED
+    state must be visible in ``hermes cron list`` and ``hermes cron doctor``,
+    not only in a WARNING log line."""
+
+    def _seed(self):
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="slack:C0123456")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "ok"
+        jobs[0]["last_delivery_unverified"] = ["slack:C0123456"]
+        save_jobs(jobs)
+        return job
+
+    def test_list_shows_unverified_delivery(self, tmp_cron_dir, capsys):
+        job = self._seed()
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "Delivery UNVERIFIED" in out
+        assert "slack:C0123456" in out
+        assert "without message_id/raw_response" in out
+
+    def test_list_is_quiet_when_delivery_was_verified(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="slack:C0123456")
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        assert "UNVERIFIED" not in capsys.readouterr().out
+
+    def test_doctor_reports_unverified_delivery(self, tmp_cron_dir, capsys):
+        job = self._seed()
+        rc = cron_command(Namespace(cron_command="doctor"))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert job["id"] in out
+        assert "last delivery unverified" in out
+        assert "slack:C0123456" in out
+
+
 class TestCronDoctor:
     def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")

@@ -125,10 +125,18 @@ def _adapters(relay=False):
     return {Platform.TELEGRAM: adapter}
 
 
-def _run(job, content, send_result, relay=False, standalone_result=None):
+RECORDED_VERIFICATION = []
+
+
+def _record_verification(job, unverified_targets):
+    RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
+
+
+def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None):
     """Drive ``_deliver_result`` over the live lane with a stubbed router.
 
-    Returns ``(error, router_calls, standalone_calls)``.
+    Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
+    the ``cron:`` section handed to the scheduler (default: unwrapped output).
     """
     loop = MagicMock()
     loop.is_running.return_value = True
@@ -143,6 +151,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None):
 
     router_calls = []
     standalone_calls = []
+    RECORDED_VERIFICATION.clear()
 
     router = MagicMock()
 
@@ -158,7 +167,8 @@ def _run(job, content, send_result, relay=False, standalone_result=None):
 
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
          patch("cron.scheduler.load_config",
-               return_value={"cron": {"wrap_response": False}}), \
+               return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
+         patch("cron.scheduler._record_delivery_verification", side_effect=_record_verification), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -299,6 +309,94 @@ class TestLiveDeliveryIsAFinalNotification:
         assert len(router_calls) == 1
         assert len(sent) == 1
         assert sent[0]["metadata"]["notify"] is True
+
+
+class TestNotifyIsConfigurable:
+    """``cron.delivery.notify`` (config.yaml) gates the notify marker.
+
+    The current behaviour (push notification) stays the default; only an
+    explicit ``false`` restores silent deliveries. The knob rides both the
+    text route and the media route so the two never disagree.
+    """
+
+    def test_default_is_notify(self):
+        _, router_calls, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1))
+        assert router_calls[0]["metadata"]["notify"] is True
+
+    def test_explicit_false_disables_notify_on_text_route(self):
+        _, router_calls, _ = _run(
+            _job(thread_id="99"), "Nightly report.", _SendResult(message_id=1),
+            cron_cfg={"delivery": {"notify": False}},
+        )
+        metadata = router_calls[0]["metadata"]
+        assert metadata["notify"] is False
+        assert metadata["thread_id"] == "99"  # routing untouched
+
+    def test_explicit_false_disables_notify_on_media_route(self, tmp_path):
+        media = tmp_path / "report.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        sent = []
+
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+            sent.append(metadata)
+            return []
+
+        with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
+             patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+                   side_effect=lambda files: files):
+            _run(
+                _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
+                cron_cfg={"delivery": {"notify": False}},
+            )
+        assert sent[0]["notify"] is False
+
+    @pytest.mark.parametrize("cron_cfg", [
+        {"delivery": None},            # `delivery:` with no body parses to null
+        {"delivery": "yes"},           # malformed scalar
+        {"delivery": {"notify": None}},  # `notify:` with no value
+    ])
+    def test_malformed_section_keeps_the_default(self, cron_cfg):
+        _, router_calls, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1), cron_cfg=cron_cfg)
+        assert router_calls[0]["metadata"]["notify"] is True
+
+    def test_default_config_ships_notify_true(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["cron"]["delivery"]["notify"] is True
+
+
+class TestUnverifiedDeliveryIsRecordedOnTheJob:
+    """An evidence-free ack is accepted, but the state must reach the job
+    record (and from there ``hermes cron list`` / ``cron doctor``), not only a
+    WARNING log line."""
+
+    def test_evidence_free_ack_records_the_target(self):
+        error, _, _ = _run(_job(), "Nightly report.", _SendResult())
+        assert error is None
+        assert RECORDED_VERIFICATION == [("92e639af907f", [f"telegram:{CHAT_ID}"])]
+
+    def test_positive_evidence_clears_the_marker(self):
+        error, _, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1234))
+        assert error is None
+        assert RECORDED_VERIFICATION == [("92e639af907f", [])]
+
+    def test_recorder_skips_the_write_when_nothing_changed(self):
+        with patch("cron.jobs.update_job") as update_job:
+            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, [])
+            update_job.assert_not_called()
+            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, ["slack:C1"])
+            update_job.assert_called_once_with("j1", {"last_delivery_unverified": ["slack:C1"]})
+
+    def test_recorder_clears_a_stale_marker(self):
+        with patch("cron.jobs.update_job") as update_job:
+            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": ["slack:C1"]}, [])
+            update_job.assert_called_once_with("j1", {"last_delivery_unverified": None})
+
+    def test_tool_listing_exposes_the_field(self):
+        from tools.cronjob_tools import _format_job
+
+        assert _format_job({"id": "j1", "name": "n", "prompt": "p",
+                            "last_delivery_unverified": ["slack:C1"]})["last_delivery_unverified"] == ["slack:C1"]
 
 
 def test_scheduler_module_exposes_the_confirmation_helper():

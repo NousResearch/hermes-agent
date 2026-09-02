@@ -292,6 +292,17 @@ def cron_list(show_all: bool = False):
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
 
+        # A live adapter acked the last send but returned no message_id /
+        # raw_response (Slack/Matrix/Mattermost shape): accepted as delivered,
+        # but say so here rather than only in a WARNING log line.
+        unverified = job.get("last_delivery_unverified")
+        if unverified:
+            targets = ", ".join(str(t) for t in unverified) if isinstance(unverified, list) else str(unverified)
+            print(
+                f"    {color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} "
+                f"adapter acked {targets} without message_id/raw_response"
+            )
+
         fire_err = job.get("last_fire_error")
         if isinstance(fire_err, dict) and fire_err.get("detail"):
             print(
@@ -704,6 +715,11 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     delivery_err = str(job.get("last_delivery_error") or "").strip()
     if delivery_err:
         issues.append(f"last delivery failed: {delivery_err}")
+
+    unverified = job.get("last_delivery_unverified")
+    if unverified:
+        targets = ", ".join(str(t) for t in unverified) if isinstance(unverified, list) else str(unverified)
+        issues.append(f"last delivery unverified (adapter acked without evidence): {targets}")
 
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()

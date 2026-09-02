@@ -2984,7 +2984,7 @@ def _send_media_via_adapter(
     return errors
 
 
-def _confirm_adapter_delivery(send_result, job_id: str = "?") -> bool:
+def _confirm_adapter_delivery(send_result, job_id: str = "?", unverified: Optional[list] = None) -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery.
 
     A live adapter that returns ``None`` (e.g. a swallowed exception, a busy
@@ -3038,6 +3038,8 @@ def _confirm_adapter_delivery(send_result, job_id: str = "?") -> bool:
             "UNVERIFIED",
             job_id,
         )
+        if unverified is not None:
+            unverified.append(True)
     return True
 
 
@@ -3097,6 +3099,48 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
+    """Resolve ``cron.delivery.notify`` (config.yaml). Default True.
+
+    Only an explicit boolean ``False`` (or a YAML ``false``/``off`` that parses
+    to it) disables the push notification; a missing/malformed section keeps
+    the default so a typo can never silently make cron briefs silent.
+    """
+    try:
+        cron_cfg = (cfg or {}).get("cron")
+        if not isinstance(cron_cfg, dict):
+            return True
+        delivery_cfg = cron_cfg.get("delivery")
+        if not isinstance(delivery_cfg, dict):
+            return True
+        return delivery_cfg.get("notify", True) is not False
+    except Exception:
+        return True
+
+
+def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
+    """Persist the UNVERIFIED-delivery marker on the job record.
+
+    ``last_delivery_unverified`` is a list of ``platform:chat_id`` targets
+    whose live adapter acked the send with no message_id/raw_response, or
+    ``None`` once a run delivered with positive evidence (or to no live
+    target). Skips the write when nothing changed so the common verified
+    path costs no jobs.json save. Never raises — status bookkeeping must not
+    fail a delivery.
+    """
+    new_value = list(unverified_targets) or None
+    if (job.get("last_delivery_unverified") or None) == new_value:
+        return
+    try:
+        from cron.jobs import update_job
+
+        update_job(job["id"], {"last_delivery_unverified": new_value})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "Job '%s': could not record delivery verification: %s", job.get("id"), exc,
+        )
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -3143,6 +3187,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+
+    # cron.delivery.notify (default True): mark live-adapter cron sends as
+    # FINAL notifications so the platform pushes them (Telegram's "important"
+    # mode otherwise sends with disable_notification=True). Configurable so
+    # operators who prefer silent briefs can opt back out.
+    notify_delivery = _cron_delivery_notify_enabled(user_cfg)
+    # Set when a live adapter acked a send with NO delivery evidence (no
+    # message_id / raw_response — the Slack/Matrix/Mattermost bare
+    # SendResult(success=True) shape). Persisted on the job as
+    # ``last_delivery_unverified`` so `hermes cron list` shows the state
+    # instead of it living only in a WARNING log line.
+    unverified_targets: list = []
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -3519,13 +3575,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {
                     "direct_messages_topic_id": str(thread_id),
                     "job_id": job["id"],
-                    "notify": True,
+                    "notify": notify_delivery,
                 }
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
                 media_metadata = {
                     "direct_messages_topic_id": str(thread_id),
-                    "notify": True,
+                    "notify": notify_delivery,
                 }
             else:
                 # Forum-style topic (private chat / supergroup) or non-topic
@@ -3537,10 +3593,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # anchor, so the metadata key bypasses that check and lets the
                 # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"], "notify": True}
+                route_metadata = {"job_id": job["id"], "notify": notify_delivery}
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
-                media_metadata = {"notify": True}
+                media_metadata = {"notify": notify_delivery}
                 if thread_id:
                     media_metadata["thread_id"] = thread_id
 
@@ -3688,7 +3744,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             else:
                                 send_raw_response = getattr(send_result, "raw_response", None)
                                 delivered_message_id = getattr(send_result, "message_id", None)
-                            send_success = _confirm_adapter_delivery(send_result, job["id"])
+                            _evidence_gap: list = []
+                            send_success = _confirm_adapter_delivery(
+                                send_result, job["id"], _evidence_gap,
+                            )
+                            if send_success and _evidence_gap:
+                                unverified_targets.append(f"{platform_name}:{chat_id}")
 
                             if not send_success:
                                 if isinstance(send_result, dict):
@@ -4003,6 +4064,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if policy_drop_errors:
         # Filter-time drops apply to every target; report them once.
         delivery_errors.extend(policy_drop_errors)
+    _record_delivery_verification(job, unverified_targets)
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None

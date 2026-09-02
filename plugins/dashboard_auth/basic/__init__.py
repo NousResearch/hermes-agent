@@ -66,6 +66,7 @@ import os
 import secrets
 import time
 from typing import Any, Optional
+from pathlib import Path
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
@@ -361,26 +362,8 @@ def _resolve(env_name: str, cfg_section: dict, cfg_key: str) -> str:
     return str(cfg_section.get(cfg_key, "") or "").strip()
 
 
-def _resolve_secret(cfg_section: dict) -> bytes:
-    """Resolve the token-signing secret.
-
-    Accepts base64 or hex or raw text from config/env. When unset,
-    generates a random per-process secret (sessions then don't survive a
-    restart or span multiple workers — logged at INFO).
-    """
-    raw = _resolve(
-        "HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section, "secret"
-    )
-    if not raw:
-        logger.info(
-            "dashboard-auth-basic: no 'secret' configured; generating a "
-            "random per-process signing key. Sessions will not survive a "
-            "restart or span multiple workers. Set dashboard.basic_auth."
-            "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
-            "sessions."
-        )
-        return secrets.token_bytes(32)
-    # Try base64, then hex, then fall back to the raw UTF-8 bytes.
+def _decode_secret(raw: str) -> bytes:
+    """Decode a configured secret: try base64, then hex, then raw UTF-8."""
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
             decoded = decoder(raw)
@@ -389,6 +372,91 @@ def _resolve_secret(cfg_section: dict) -> bytes:
         except (ValueError, TypeError):
             pass
     return raw.encode("utf-8")
+
+
+def _persisted_secret_path() -> Optional[str]:
+    """Stable on-disk location for an auto-generated signing secret.
+
+    Lives under HERMES_HOME (the shared data dir) so a dashboard restart —
+    or multiple worker processes sharing one home — keeps the SAME signing
+    key and sessions survive. Returns None when the home cannot be resolved
+    (caller then falls back to a per-process random secret).
+    """
+    try:
+        from hermes_cli.sessions_cmd import get_hermes_home
+
+        home = get_hermes_home()
+        if not home:
+            return None
+        return str(Path(home) / "dashboard-auth" / "basic-secret")
+    except Exception:  # noqa: BLE001 — resolution must never break auth
+        return None
+
+
+def _load_or_create_persisted_secret() -> Optional[bytes]:
+    """Return the persisted auto-generated secret, creating it if absent.
+
+    Atomic write (temp file + rename) so a concurrent first-boot can't
+    observe a half-written key. Returns None only if the path is
+    unavailable or the write fails — the caller then uses a per-process key.
+    """
+    path = _persisted_secret_path()
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        if p.exists():
+            data = p.read_bytes()
+            if len(data) >= 16:
+                return data
+        parent = p.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        secret = secrets.token_bytes(32)
+        tmp = p.with_name(f"{p.name}.tmp-{os.getpid()}")
+        tmp.write_bytes(secret)
+        os.replace(tmp, p)
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass  # best-effort; Windows ignores POSIX modes
+        return secret
+    except OSError as exc:  # noqa: BLE001 — surface, don't fail auth
+        logger.warning(
+            "dashboard-auth-basic: could not persist auto-generated signing "
+            "secret to %s (%s); sessions will not survive a restart. Set "
+            "dashboard.basic_auth.secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) "
+            "for stable sessions.",
+            path,
+            exc,
+        )
+        return None
+
+
+def _resolve_secret(cfg_section: dict) -> bytes:
+    """Resolve the token-signing secret.
+
+    Precedence: env/config explicit secret → persisted auto-generated secret
+    (stable across restarts) → random per-process secret. An explicit secret
+    (base64 / hex / raw text) is accepted from config/env. When unset, the
+    auto-generated secret is persisted to ``$HERMES_HOME/dashboard-auth/
+    basic-secret`` so a restart reuses the same key and sessions survive.
+    """
+    raw = _resolve(
+        "HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section, "secret"
+    )
+    if raw:
+        return _decode_secret(raw)
+    persisted = _load_or_create_persisted_secret()
+    if persisted is not None:
+        return persisted
+    logger.info(
+        "dashboard-auth-basic: no 'secret' configured; generating a "
+        "random per-process signing key. Sessions will not survive a "
+        "restart or span multiple workers. Set dashboard.basic_auth."
+        "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
+        "sessions."
+    )
+    return secrets.token_bytes(32)
 
 
 def register(ctx) -> None:

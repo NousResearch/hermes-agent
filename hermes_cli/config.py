@@ -2414,6 +2414,44 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
             ))
 
+    # ── timezone: an IANA zone name the runtime can actually load ────────
+    # hermes_time._get_zoneinfo() swallows an invalid name (one WARNING in the
+    # gateway log) and then runs the agent clock AND every cron schedule on
+    # server-local time. Surface it here, where doctor and the startup check
+    # show it. Silent when the interpreter has no tz database at all (bare
+    # Windows without ``tzdata``): nothing can be judged there.
+    if "timezone" in config:
+        tz = config.get("timezone")
+        tz_hint = (
+            "Use an IANA zone name such as America/New_York or Asia/Tokyo "
+            "(see `timedatectl list-timezones`). With an invalid value the agent "
+            "clock and cron schedules silently fall back to server-local time. "
+            "HERMES_TIMEZONE overrides this key when set."
+        )
+        if tz is not None and not isinstance(tz, str):
+            issues.append(ConfigIssue(
+                "error",
+                f"timezone must be an IANA zone name string, got {tz!r}",
+                tz_hint,
+            ))
+        elif isinstance(tz, str) and tz.strip():
+            tz_name = tz.strip()
+            try:
+                import zoneinfo
+                zoneinfo.ZoneInfo("UTC")  # is a tz database available at all?
+                has_tzdb = True
+            except Exception:
+                has_tzdb = False
+            if has_tzdb:
+                try:
+                    zoneinfo.ZoneInfo(tz_name)
+                except Exception:
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"timezone {tz_name!r} is not a valid IANA zone name",
+                        tz_hint,
+                    ))
+
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
     if cp is not None:

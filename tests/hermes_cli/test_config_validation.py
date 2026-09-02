@@ -1,6 +1,8 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
 
+import pytest
+
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     _EXTRA_KNOWN_ROOT_KEYS,
@@ -109,6 +111,59 @@ class TestVoiceSubmitModeValidation:
             and "draft" in issue.hint
             for issue in issues
         )
+
+
+def _tz_issues(config):
+    return [i for i in validate_config_structure(config) if "timezone" in i.message]
+
+
+def _has_tz_database() -> bool:
+    try:
+        import zoneinfo
+        zoneinfo.ZoneInfo("UTC")
+        return True
+    except Exception:
+        return False
+
+
+class TestTimezoneValidation:
+    """An invalid ``timezone`` silently puts the agent clock and every cron
+    schedule on server-local time (hermes_time._get_zoneinfo falls back with
+    one log warning). validate_config_structure must report it."""
+
+    def test_valid_zone_passes(self):
+        assert _tz_issues({"timezone": "Asia/Tokyo", "model": {"provider": "nous"}}) == []
+
+    def test_missing_or_blank_is_not_reported(self):
+        assert _tz_issues({"model": {"provider": "nous"}}) == []
+        assert _tz_issues({"timezone": "", "model": {"provider": "nous"}}) == []
+        assert _tz_issues({"timezone": "   ", "model": {"provider": "nous"}}) == []
+        assert _tz_issues({"timezone": None, "model": {"provider": "nous"}}) == []
+
+    @pytest.mark.skipif(not _has_tz_database(), reason="no tz database in this interpreter")
+    def test_invalid_zone_is_reported(self):
+        [issue] = _tz_issues({"timezone": "Asia/Tokio", "model": {"provider": "nous"}})
+        assert issue.severity == "error"
+        assert "Asia/Tokio" in issue.message
+        assert "IANA" in issue.hint
+        assert "HERMES_TIMEZONE" in issue.hint
+
+    def test_non_string_is_reported(self):
+        [issue] = _tz_issues({"timezone": 9, "model": {"provider": "nous"}})
+        assert issue.severity == "error"
+        assert "string" in issue.message
+
+    def test_silent_without_a_tz_database(self, monkeypatch):
+        # Bare Windows without tzdata: ZoneInfo cannot load anything, including
+        # UTC. A valid name must not be flagged just because it cannot be checked.
+        import zoneinfo
+
+        def no_db(_key):
+            raise zoneinfo.ZoneInfoNotFoundError("no tz database")
+
+        monkeypatch.setattr(zoneinfo, "ZoneInfo", no_db)
+        assert _tz_issues({"timezone": "Asia/Tokyo", "model": {"provider": "nous"}}) == []
+        assert _tz_issues({"timezone": "Asia/Tokio", "model": {"provider": "nous"}}) == []
 
 
 class TestUnknownTopLevelKeys:

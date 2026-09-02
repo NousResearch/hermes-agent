@@ -269,6 +269,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -7503,6 +7504,16 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
     const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
     win.loadURL(loginUrl).catch(error => {
+      // Electron can reject the original load with ERR_ABORTED when the OAuth
+      // callback redirects while setting the HttpOnly session cookie. The
+      // navigation abort is expected; keep polling the cookie jar instead of
+      // failing a successful Cloud cascade before the cookie settles.
+      if (isExpectedOauthNavigationAbort(error)) {
+        void checkCookie()
+
+        return
+      }
+
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })

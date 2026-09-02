@@ -3,18 +3,20 @@ slots:
   model_id: minimax/minimax-m3-free
   provider_account: xkiro/free
   class: perm
-  status: approved
+  status: retired
   approved_at: '2026-09-02T00:00:00Z'
   expires_at: null
   usage_limit: null
   allowed_profiles: null
   replacement_slot: null
-  disabled: false
+  disabled: true
   hermes:
     provider: custom:xkiro-free
     model: minimax/minimax-m3:free
     base_url: https://api.xkiro.com/v1
     reasoning_effort: medium
+  retire_reason: 'capability violation: xkiro does not carry minimax; the free variant is no longer offered by any provider
+    (verified 2026-09-02)'
 - slot: slot-mini-m3free-2
   model_id: minimax/minimax-m3-free
   provider_account: nous/free
@@ -51,18 +53,19 @@ slots:
   model_id: minimax-m3
   provider_account: xkiro/free
   class: perm
-  status: approved
+  status: retired
   approved_at: '2026-09-02T00:00:00Z'
   expires_at: null
   usage_limit: null
   allowed_profiles: null
-  replacement_slot: null
-  disabled: false
+  replacement_slot: slot-mini-m3-4
+  disabled: true
   hermes:
     provider: custom:xkiro-free
     model: minimax/minimax-m3
     base_url: https://api.xkiro.com/v1
     reasoning_effort: medium
+  retire_reason: 'capability violation: provider does not carry this model (verified 2026-09-02 via live provider probes)'
 - slot: slot-mini-m3-2
   model_id: minimax-m3
   provider_account: nous/free
@@ -451,18 +454,19 @@ slots:
   model_id: qwen3.8-27b
   provider_account: ollama-cloud/2
   class: perm
-  status: approved
+  status: retired
   approved_at: '2026-08-30T00:00:00Z'
   expires_at: null
   usage_limit: null
   allowed_profiles: null
-  replacement_slot: null
-  disabled: false
+  replacement_slot: slot-qwen27b-3
+  disabled: true
   hermes:
     provider: ollama-cloud
     model: qwen3.8-27b
     base_url: https://ollama.com/v1
     reasoning_effort: medium
+  retire_reason: 'capability violation: provider does not carry this model (verified 2026-09-02 via live provider probes)'
 - slot: slot-qwen27b-2
   model_id: qwen3.8-27b
   provider_account: commandcode/2
@@ -502,7 +506,7 @@ slots:
   status: paused
   approved_at: null
   expires_at: null
-  usage_limit: "one-time $20 \u2014 human-initiated use only"
+  usage_limit: one-time $20 — human-initiated use only
   allowed_profiles: null
   replacement_slot: null
   disabled: true
@@ -551,3 +555,62 @@ pool_requirements:
 env_bypass:
   ollama-cloud:
   - OLLAMA_API_KEY
+model_capability_matrix:
+  _comment: Verified 2026-09-02 via live provider probes (ollama /api/tags, xkiro & b.ai /models, codex backend). The generator
+    HARD-ERRORS on any slot whose hermes.model is not listed for its hermes.provider. Update only with fresh probe evidence.
+  custom:xkiro-free:
+  - deepseek/deepseek-v4-flash
+  - deepseek/deepseek-v4-pro
+  - z-ai/glm-5.3
+  - z-ai/glm-5.3-flash
+  - moonshotai/kimi-k3
+  custom:xkiro-pro:
+  - deepseek/deepseek-v4-flash
+  - deepseek/deepseek-v4-pro
+  - z-ai/glm-5.3
+  - z-ai/glm-5.3-flash
+  - moonshotai/kimi-k3
+  custom:bai:
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3
+  - glm-5.3-flash
+  - kimi-k3
+  - minimax-m3
+  - qwen3.8-27b
+  openai-codex:
+  - gpt-5.6-sol
+  - gpt-5.6-luna
+  custom:turbohaul-local:
+  - qwen3.8-27b
+  ollama-cloud:
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3-flash
+  - glm-5.3
+  - glm-5.2
+  - minimax-m3
+  - kimi-k3
+  - kimi-k2.6
+  - kimi-k2.7-code
+  - gemma4:31b
+  - nemotron-3-ultra
+  - nemotron-3-super
+  - qwen3.5:397b
+  - gpt-oss:20b
+  - gpt-oss:120b
+  - minimax-m2.7
+  - mistral-large-3:675b
+  nous: []
+  nvidia:
+  - nvidia/nemotron-3-super-120b-a12b
+  gemini:
+  - gemini-2.5-flash
+  opencode-zen: []
+model_routing_constraints:
+  codex_isolation:
+    rule: gpt-5.6-* models may ONLY be served by provider openai-codex. No other provider may ever carry a gpt-5.6 slot, gated
+      or perm. Sahil's standing directive 2026-09-02.
+    model_pattern: gpt-5.6-*
+    allowed_providers:
+    - openai-codex

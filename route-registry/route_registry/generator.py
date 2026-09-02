@@ -191,10 +191,8 @@ def validate_registry(reg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             errors.append(f"slot {sid}: approved slot missing approved_at")
         # same-model invariants: ≤5 routes per model, unique provider_account per slot set
         seen_models.setdefault(s["model_id"], []).append(sid)
-        # replacement must point at a real slot with same model_id
-        rep = s.get("replacement_slot")
-        if rep is not None and rep not in by_id:
-            errors.append(f"slot {sid}: replacement_slot '{rep}' not in registry")
+        # replacement-slot checks moved after the ID loop (forward refs were
+        # false-positived when the replacement appears later in the file)
 
     for model_id, sids in seen_models.items():
         if model_id is None:
@@ -205,14 +203,83 @@ def validate_registry(reg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if len(accounts) != len(set(accounts)):
             errors.append(f"model {model_id}: duplicate provider_account across ordinals")
 
-    # replacement slot must serve same exact model (checked after all IDs known)
+    # replacement slot checks (after all IDs known): must exist AND serve same model
     for s in slots:
         rep = s.get("replacement_slot")
         if rep:
-            target = by_id.get(rep)
-            if by_id[s["slot"]]["model_id"] != (by_id[rep]["model_id"] if rep in by_id else None):
+            if rep not in by_id:
+                errors.append(f"slot {s['slot']}: replacement_slot '{rep}' not in registry")
+            elif by_id[s["slot"]]["model_id"] != by_id[rep]["model_id"]:
                 errors.append(
                     f"slot {s['slot']}: replacement_slot {rep} serves different model_id"
+                )
+
+    # ---- provider-capability validation (added 2026-09-02) ----
+    # The registry is the single source of truth for what each provider can
+    # serve. A slot whose hermes.model is not listed under its hermes.provider
+    # in model_capability_matrix is a routing lie: the runtime would burn a
+    # fallback hop on a guaranteed 404. Hard-error on ANY such slot (enabled or
+    # not) so stale candidates get pruned instead of silently rotting.
+    matrix = reg.get("model_capability_matrix")
+    if not isinstance(matrix, dict) or not matrix:
+        raise ValidationError(
+            "registry missing model_capability_matrix — provider capability "
+            "truth is mandatory (Sahil directive 2026-09-02 after the "
+            "minimax@xkiro incident)"
+        )
+    constraints = reg.get("model_routing_constraints") or {}
+    codex_rule = (constraints.get("codex_isolation") or {})
+    codex_pattern = str(codex_rule.get("model_pattern") or "")
+    codex_allowed = set(codex_rule.get("allowed_providers") or [])
+
+    def _capability_violation(sid: str, provider: Any, model: Any) -> str | None:
+        if provider is None or model is None:
+            return None  # unprovisioned slots carry hermes: null; handled elsewhere
+        allowed = matrix.get(str(provider))
+        if allowed is None:
+            return f"slot {sid}: provider {provider!r} not in model_capability_matrix"
+        if model not in allowed:
+            return (
+                f"slot {sid}: model {model!r} is NOT served by provider "
+                f"{provider!r} (capability matrix) — retire or repoint this slot"
+            )
+        return None
+
+    for s in slots:
+        sid = s["slot"]
+        h = s.get("hermes") or {}
+        viol = _capability_violation(sid, h.get("provider"), h.get("model"))
+        if viol and not s["disabled"]:
+            # Enabled slots must be capability-true — an enabled impossible slot
+            # is a guaranteed-404 fallback hop (the minimax@xkiro incident).
+            errors.append(viol)
+        # Disabled slots with capability violations are tolerated as historical
+        # record: they can never emit (fail-closed exclusion), but a NEW enabled
+        # slot with a violation always hard-errors.
+        # codex isolation: a hard, permanent rule — gpt-5.6-* only on openai-codex
+        model_str = str(h.get("model") or "")
+        model_id_str = str(s.get("model_id") or "")
+        if codex_pattern and codex_allowed:
+            prefix = codex_pattern.replace("*", "")
+            for candidate in (model_str, model_id_str):
+                if candidate.startswith(prefix) and h.get("provider") not in codex_allowed:
+                    errors.append(
+                        f"slot {sid}: CODEX ISOLATION VIOLATION — {candidate!r} may "
+                        f"only be served by {sorted(codex_allowed)} (Sahil directive), "
+                        f"got provider {h.get('provider')!r}"
+                    )
+                    break
+    # matrix entries themselves must be clean: codex pattern may never list a
+    # non-codex provider (registry-level check — runs even with zero slots)
+    if codex_pattern and codex_allowed:
+        prefix = codex_pattern.replace("*", "")
+        for prov, models in matrix.items():
+            if prov.startswith("_"):
+                continue
+            if any(str(m).startswith(prefix) for m in (models or [])) and prov not in codex_allowed:
+                errors.append(
+                    f"model_capability_matrix[{prov!r}] lists a codex-isolated model "
+                    f"but is not in allowed_providers {sorted(codex_allowed)}"
                 )
 
     if errors:

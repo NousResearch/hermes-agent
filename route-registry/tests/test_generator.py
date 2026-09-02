@@ -261,6 +261,11 @@ class TestRegistry:
     def test_perm_slots_approved_with_timestamp(self, by_id):
         for s in by_id.values():
             if s["class"] == "perm":
+                if s["status"] == "retired":
+                    # retired slots are capability-violations kept as historical
+                    # record (2026-09-02): they must sit disabled, never emit
+                    assert s["disabled"] is True, f"{s['slot']} retired but enabled"
+                    continue
                 assert s["status"] == "approved"
                 assert s["approved_at"], f"{s['slot']} missing approved_at"
                 assert s["disabled"] is False
@@ -928,3 +933,143 @@ class TestCLI:
         relative to session start (read-only invariant)."""
         live = yaml.safe_load((LIVE_HERMES_HOME / "profiles" / "denji" / "config.yaml").read_text())
         assert live["model"]["default"] == "glm-5.3-flash"  # untouched live state
+
+# ------------------------------------------------------- capability matrix (2026-09-02)
+
+class TestCapabilityMatrix:
+    """Sahil directive 2026-09-02 after the minimax@xkiro incident: the registry
+    must hard-error on any ENABLED slot whose provider does not carry its model,
+    and must enforce permanent codex isolation (gpt-5.6-* on openai-codex only)."""
+
+    def _write_registry(self, tmp_path, slots, matrix=None, constraints=None):
+        reg = {
+            "slots": slots,
+            "codex_fallback": {
+                "sol": {"provider": "openai-codex", "model": "gpt-5.6-sol",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "reasoning_effort": "xhigh"},
+                "luna": {"provider": "openai-codex", "model": "gpt-5.6-luna",
+                         "base_url": "https://chatgpt.com/backend-api/codex",
+                         "reasoning_effort": "xhigh"},
+            },
+            "local_final": {"provider": "custom:turbohaul-local", "model": "qwen3.8-27b",
+                            "base_url": "http://127.0.0.1:11410/v1",
+                            "reasoning_effort": "medium"},
+            "model_capability_matrix": matrix or {
+                "custom:xkiro-free": ["deepseek/deepseek-v4-flash"],
+                "openai-codex": ["gpt-5.6-sol", "gpt-5.6-luna"],
+                "custom:bai": ["minimax-m3"],
+            },
+            "model_routing_constraints": constraints or {
+                "codex_isolation": {"model_pattern": "gpt-5.6-*",
+                                    "allowed_providers": ["openai-codex"]},
+            },
+        }
+        p = tmp_path / "route-slots.yaml"
+        p.write_text(yaml.safe_dump(reg, sort_keys=False))
+        return p
+
+    @staticmethod
+    def _slot(sid="s1", model="minimax-m3", provider="custom:bai",
+              klass="perm", status="approved", disabled=False, approved_at="2026-09-02T00:00:00Z"):
+        return {
+            "slot": sid, "model_id": model, "provider_account": "acct/1",
+            "class": klass, "status": status, "approved_at": approved_at,
+            "expires_at": None, "usage_limit": None, "allowed_profiles": None,
+            "replacement_slot": None, "disabled": disabled,
+            "hermes": {"provider": provider, "model": model,
+                       "base_url": "https://example.invalid/v1",
+                       "reasoning_effort": "medium"},
+        }
+
+    def test_enabled_impossible_slot_hard_errors(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot(model="minimax-m3", provider="custom:xkiro-free")])
+        with pytest.raises(generator.ValidationError, match="NOT served by provider"):
+            generator.validate_registry(generator.load_registry(reg))
+
+    def test_disabled_impossible_slot_tolerated(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot(model="minimax-m3", provider="custom:xkiro-free", disabled=True, status="retired")])
+        by_id = generator.validate_registry(generator.load_registry(reg))
+        assert by_id["s1"]["disabled"] is True
+
+    def test_enabled_possible_slot_passes(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot()])
+        by_id = generator.validate_registry(generator.load_registry(reg))
+        assert "s1" in by_id
+
+    def test_unknown_provider_hard_errors(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot(provider="custom:brand-new-provider")])
+        with pytest.raises(generator.ValidationError, match="not in model_capability_matrix"):
+            generator.validate_registry(generator.load_registry(reg))
+
+    def test_missing_matrix_hard_errors(self, tmp_path):
+        reg = {
+            "slots": [self._slot()],
+            "codex_fallback": {}, "local_final": {},
+        }
+        p = tmp_path / "route-slots.yaml"
+        p.write_text(yaml.safe_dump(reg, sort_keys=False))
+        with pytest.raises(generator.ValidationError, match="model_capability_matrix"):
+            generator.validate_registry(generator.load_registry(p))
+
+    def test_codex_isolation_blocks_foreign_provider_slot(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot(model="gpt-5.6-sol", provider="custom:bai")])
+        with pytest.raises(generator.ValidationError, match="CODEX ISOLATION"):
+            generator.validate_registry(generator.load_registry(reg))
+
+    def test_codex_slot_on_openai_codex_passes(self, tmp_path):
+        reg = self._write_registry(tmp_path, [self._slot(model="gpt-5.6-sol", provider="openai-codex")])
+        by_id = generator.validate_registry(generator.load_registry(reg))
+        assert "s1" in by_id
+
+    def test_codex_isolation_checked_even_when_matrix_lies(self, tmp_path):
+        """If someone adds gpt-5.6 to bai's matrix row, the matrix itself is
+        rejected — the isolation rule outranks the matrix."""
+        matrix = {
+            "custom:bai": ["minimax-m3", "gpt-5.6-sol"],  # poisoned row
+            "openai-codex": ["gpt-5.6-sol", "gpt-5.6-luna"],
+        }
+        reg = self._write_registry(tmp_path, [], matrix=matrix)
+        with pytest.raises(generator.ValidationError, match="codex-isolated"):
+            generator.validate_registry(generator.load_registry(reg))
+
+    def test_live_registry_passes_full_validation(self, registry):
+        """The shipped registry must itself validate under the new rules."""
+        by_id = generator.validate_registry(registry)
+        assert len(by_id) >= 30
+
+    def test_no_enabled_slot_violates_matrix(self, registry):
+        """Adversarial sweep: every ENABLED slot in the shipped registry must be
+        capability-true (this is the regression test for 2026-09-02)."""
+        matrix = registry["model_capability_matrix"]
+        for s in registry["slots"]:
+            if s.get("disabled"):
+                continue
+            h = s.get("hermes") or {}
+            allowed = matrix.get(str(h.get("provider")))
+            assert allowed is not None, f"{s['slot']}: unknown provider {h.get('provider')}"
+            assert h.get("model") in allowed, f"{s['slot']}: {h.get('model')}@{h.get('provider')} impossible"
+
+    def test_no_enabled_slot_violates_codex_isolation(self, registry):
+        for s in registry["slots"]:
+            if s.get("disabled"):
+                continue
+            h = s.get("hermes") or {}
+            model = str(h.get("model") or "")
+            if model.startswith("gpt-5.6"):
+                assert h.get("provider") == "openai-codex", f"{s['slot']} breaks codex isolation"
+
+    def test_replacement_slot_forward_reference(self, tmp_path):
+        """Replacement targets appearing LATER in the file must resolve (the
+        pre-patch validator false-positived on forward references)."""
+        slots = [
+            self._slot(sid="early", model="minimax-m3", provider="custom:bai",
+                       disabled=True, status="retired"),
+        ]
+        slots[0]["replacement_slot"] = "late"
+        slots[0]["provider_account"] = "acct/old"
+        slots.append(self._slot(sid="late", model="minimax-m3", provider="custom:bai"))
+        slots[1]["provider_account"] = "acct/new"
+        reg = self._write_registry(tmp_path, slots)
+        by_id = generator.validate_registry(generator.load_registry(reg))
+        assert by_id["early"]["replacement_slot"] == "late"

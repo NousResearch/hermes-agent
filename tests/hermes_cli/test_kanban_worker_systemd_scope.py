@@ -1456,9 +1456,11 @@ def test_queued_stop_cas_wins_registration_self_aborts(
     """R, marker wins: the worker's first heartbeat lands AFTER the
     drain's re-check but BEFORE the signal — the exact window a plain
     read cannot close. The stop-pending CAS has already committed by
-    then, so the registration self-aborts (no half-registered row), the
-    stop proceeds on the unregistered-launch verdict, and the run row
-    carries the marker."""
+    then, so the registration self-aborts (no half-registered row) and
+    the stop proceeds on the unregistered-launch verdict. The marker
+    served its purpose for exactly the signal window: once the stop
+    CONFIRMS (pass 8, AC) the service clears it, so a later re-adoption
+    of the run can register again."""
     import threading
 
     monkeypatch.setattr(kb, "_scope_stop_inline", False)
@@ -1510,7 +1512,10 @@ def test_queued_stop_cas_wins_registration_self_aborts(
     marked = conn.execute(
         "SELECT stop_pending FROM task_runs WHERE id = ?", (run_id,)
     ).fetchone()["stop_pending"]
-    assert marked == 1
+    # Pass 8 (AC): the fake stop reported verified, so the confirmed
+    # stop retired the marker it had just set — the signal window is
+    # over, and the run row must not carry the marker past it.
+    assert marked == 0
     kb.reset_scope_stop_service_for_tests()
 
 

@@ -1368,6 +1368,95 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_surfaces_worker_final_output(kanban_home):
+    """Regression for #88603: a worker that recognized an impossible
+    instruction and explained why in its final response must have that
+    explanation surface on the board, not a bare canned diagnostic.
+
+    Quiet-mode workers print only their final response before exiting,
+    redirected to the per-task log file. On a clean-exit protocol
+    violation, ``detect_crashed_workers`` must fold that text into both
+    the failure error and the reap event payload.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="handoff", assignee="worker")
+        diagnosis = (
+            "the board protocol requires reassigning this card to "
+            "orchestrator, but the native kanban_* tools available here "
+            "have no reassignment operation."
+        )
+        log_path = kb.worker_log_path(tid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(diagnosis + "\n\nsession_id: abc123\n")
+
+        _drive_protocol_violation(conn, tid, 991100)
+
+        task = kb.get_task(conn, tid)
+        assert diagnosis in (task.last_failure_error or "")
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "protocol_violation"]
+        assert len(events) == 1
+        assert (events[0].payload or {}).get("worker_output") == diagnosis
+    finally:
+        conn.close()
+
+
+def test_protocol_violation_surfaces_worker_final_output_non_current_board(kanban_home):
+    """Regression for the #88603 review finding: the fix must not silently
+    no-op on every board except whichever one ``get_current_board()``
+    resolves to.
+
+    Mirrors ``gateway.kanban_watchers._tick_once_for_board``, which calls
+    ``dispatch_once(conn, board=slug, ...)`` from a worker thread with no
+    ``board`` pinned via env var or current-board file — the ambient
+    "current" board stays "default" throughout. Without threading
+    ``board`` into ``detect_crashed_workers`` -> ``_worker_final_output``
+    -> ``read_worker_log``, the worker's log (written under the
+    non-default board's own log directory) is invisible and the diagnosis
+    silently falls back to the canned message.
+    """
+    import hermes_cli.kanban_db as _kb
+    assert _kb.get_current_board() == "default"
+
+    board = "other-board"
+    conn = kb.connect(board=board)
+    try:
+        tid = kb.create_task(conn, title="handoff", assignee="worker", board=board)
+        diagnosis = (
+            "the board protocol requires reassigning this card to "
+            "orchestrator, but the native kanban_* tools available here "
+            "have no reassignment operation."
+        )
+        log_path = kb.worker_log_path(tid, board=board)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(diagnosis + "\n\nsession_id: abc123\n")
+
+        # Still "default" here — matches the gateway's real thread-pool
+        # execution model where board resolution is only ever explicit.
+        assert _kb.get_current_board() == "default"
+
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        assert claimed is not None
+        fake_pid = 991200
+        _kb._set_worker_pid(conn, tid, fake_pid)
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            _kb.detect_crashed_workers(conn, board=board)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert diagnosis in (task.last_failure_error or "")
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "protocol_violation"]
+        assert len(events) == 1
+        assert (events[0].payload or {}).get("worker_output") == diagnosis
+    finally:
+        conn.close()
 
 
 

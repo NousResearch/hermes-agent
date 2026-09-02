@@ -416,6 +416,85 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_schema_exposes_optional_max_retries():
+    from tools import kanban_tools as kt
+
+    parameters = kt.KANBAN_CREATE_SCHEMA["parameters"]
+    max_retries = parameters["properties"]["max_retries"]
+    assert max_retries["type"] == "integer"
+    assert max_retries["minimum"] == 1
+    assert "max_retries" not in parameters["required"]
+
+
+def test_create_persists_max_retries(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "bounded child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "max_retries": 3,
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child.max_retries == 3
+    finally:
+        conn.close()
+
+
+def test_create_omitted_max_retries_preserves_fallback(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "fallback child",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child.max_retries is None
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("value", [0, -1, "3", 1.5, True])
+def test_create_rejects_invalid_max_retries_without_row(worker_env, value):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    finally:
+        conn.close()
+
+    out = kt._handle_create({
+        "title": "invalid child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "max_retries": value,
+    })
+    result = json.loads(out)
+    assert result["error"] == "max_retries must be an integer >= 1"
+
+    conn = kb.connect()
+    try:
+        after = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    finally:
+        conn.close()
+    assert after == before
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

@@ -53,7 +53,30 @@ from pathlib import Path
 
 import pytest
 
+from gateway import kanban_watchers as _kw  # noqa: F401 — see the fixture below
 from hermes_cli import kanban_db as kb
+
+
+@pytest.fixture(autouse=True)
+def _stable_module_identity():
+    """K: keep every import in this pytest process agreeing on ONE
+    kanban_db object — this file's ``kb``.
+
+    Other test modules (isolated-home fixtures in the kanban CLI tests)
+    purge ``hermes_cli.*`` from sys.modules and re-import it. Importing
+    ``gateway.kanban_watchers`` at module level (above) pins its ``_kb``
+    to the same copy as ``kb``; this autouse guard repairs sys.modules if
+    a purge still left a different copy in place, so body-level imports
+    inside tests (and any future str-path monkeypatch) cannot bind to a
+    second module object whose attributes our patches never reach. It
+    also resets the scope-stop service state around every test — the
+    pending queue is process-global and must not bleed between tests.
+    """
+    if sys.modules.get("hermes_cli.kanban_db") is not kb:
+        sys.modules["hermes_cli.kanban_db"] = kb
+    kb.reset_scope_stop_service_for_tests()
+    yield
+    kb.reset_scope_stop_service_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +373,30 @@ sys.stderr.write("systemctl-test: unsupported " + repr(argv) + "\\n")
 sys.exit(1)
 '''
 
+# Child "worker" programs (K: no blind sleeps). Each child stands in for
+# a worker or a leaked descendant: it stays alive until the test's
+# shim-state root disappears (tmp_path teardown) or a 120 s cap expires —
+# so a child the teardown kill misses exits by itself instead of idling
+# for the full two minutes. Falls back to the plain cap when the env var
+# is absent (a bare child spawned outside the shims).
+_CHILD_WAIT_PROGRAM = (
+    "import os, time\n"
+    "deadline = time.monotonic() + 120\n"
+    "root = os.environ.get('HERMES_KANBAN_TEST_SHIM_STATE')\n"
+    "while time.monotonic() < deadline and (root is None"
+    " or os.path.exists(root)):\n"
+    "    time.sleep(0.05)\n"
+)
+_STUBBORN_CHILD_WAIT_PROGRAM = (
+    "import os, signal, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "deadline = time.monotonic() + 120\n"
+    "root = os.environ.get('HERMES_KANBAN_TEST_SHIM_STATE')\n"
+    "while time.monotonic() < deadline and (root is None"
+    " or os.path.exists(root)):\n"
+    "    time.sleep(0.05)\n"
+)
+
 
 class Shims:
     """Handle on the fake systemd user session."""
@@ -438,7 +485,7 @@ class Shims:
     def sleeper(self) -> int:
         """A disposable child standing in for a worker / descendant."""
         p = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
+            [sys.executable, "-c", _CHILD_WAIT_PROGRAM],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._extra_pids.append(p.pid)
@@ -447,9 +494,7 @@ class Shims:
     def stubborn_sleeper(self) -> int:
         """A child that ignores SIGTERM — a leaked dev server."""
         p = subprocess.Popen(
-            [sys.executable, "-c",
-             "import signal, time; signal.signal(signal.SIGTERM,"
-             " signal.SIG_IGN); time.sleep(120)"],
+            [sys.executable, "-c", _STUBBORN_CHILD_WAIT_PROGRAM],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._extra_pids.append(p.pid)
@@ -504,11 +549,12 @@ def shims(tmp_path, monkeypatch):
         "tools.process_registry._systemd_run_user_scope_available",
         lambda: True,
     )
-    # A real subprocess worker: python sleeps, the trailing worker argv
-    # (which follows the -c program) is inert sys.argv baggage.
+    # A real subprocess worker: python waits on the shim-state file
+    # (dies with the test's tmp dir / teardown kill); the trailing worker
+    # argv (which follows the -c program) is inert sys.argv baggage.
     monkeypatch.setattr(
         kb, "_resolve_hermes_argv",
-        lambda: [sys.executable, "-c", "import time; time.sleep(120)"],
+        lambda: [sys.executable, "-c", _CHILD_WAIT_PROGRAM],
     )
     # Shrink the post-SIGKILL verify loop so wedged-stop tests stay fast.
     monkeypatch.setattr(
@@ -2692,8 +2738,11 @@ def test_shutdown_waits_for_cleanup_before_releasing_lock(
     # before the graceful-exit path runs — the budget only starts once
     # the cleanup does.
     assert cleanup_started.wait(timeout=15.0)
-    time.sleep(0.15)  # inside the budget, cleanup still running
-    assert not released.is_set()
+    # Inside the budget, cleanup still running: bounded negative poll —
+    # a correct watcher never releases here, so the poll simply runs
+    # out; a buggy one (releasing without waiting) trips it. No blind
+    # wall-clock sleep (item K).
+    assert not shims.wait_for(released.is_set, timeout=0.5)
     gate.set()
     assert released.wait(timeout=5.0)
     assert released_before_gate == [True]  # released only AFTER cleanup

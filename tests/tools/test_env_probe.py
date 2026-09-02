@@ -113,7 +113,7 @@ class TestSkipsRemoteBackends:
         monkeypatch.setattr(env_probe, "_has_pip_module", fail)
         monkeypatch.setattr(env_probe, "_detect_pep668", fail)
         monkeypatch.setattr(env_probe, "_pip_python_version", fail)
-        assert env_probe._build_probe_line() == ""
+        assert env_probe.get_environment_probe_line() == ""
 
 
 class TestCaching:

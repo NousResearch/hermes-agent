@@ -448,10 +448,10 @@ def test_gateway_production_provider_requires_typed_witness(monkeypatch, tmp_pat
     import tools.approval as approval
 
     session_key = "gateway:production-test"
-    monkeypatch.setattr(approval, "get_current_session_key", lambda default="": session_key)
+    monkeypatch.setattr(approval, "get_current_session_key", lambda default="": "ambient:wrong-session")
     notified = []
     approval.register_gateway_notify(session_key, notified.append)
-    provider = GatewayProductionApprovalWitnessProvider(worktree_root=tmp_path)
+    provider = GatewayProductionApprovalWitnessProvider(worktree_root=tmp_path, session_key=session_key)
     call = {
         "tool": "write_file",
         "args": {"path": str(tmp_path / "allowed.txt"), "content": "exact"},

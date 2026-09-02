@@ -779,8 +779,9 @@ class GatewayProductionApprovalWitnessProvider:
     witness to this exact queue entry. No choice-only approval is upgraded.
     """
 
-    def __init__(self, *, worktree_root: str | Path) -> None:
+    def __init__(self, *, worktree_root: str | Path, session_key: str) -> None:
         self._worktree_root = Path(worktree_root)
+        self._session_key = session_key
 
     def issue_witness(
         self,
@@ -798,7 +799,12 @@ class GatewayProductionApprovalWitnessProvider:
         try:
             import tools.approval as approval
 
-            session_key = approval.get_current_session_key(default="")
+            # The production canary has already admitted one exact configured
+            # session. Route the approval through that durable session's
+            # registered callback instead of a thread-local ambient key: after
+            # Desktop resume/compaction the worker context may be unset even
+            # though the exact session callback remains live.
+            session_key = self._session_key
             with approval._lock:
                 notify_cb = approval._gateway_notify_cbs.get(session_key)
             if not session_key or notify_cb is None:
@@ -851,9 +857,11 @@ class DaemonPermitReceiptAdapter:
         if not isinstance(bridge, Mapping):
             return None
         provider = None
+        configured_session = bridge.get("canary_session_id")
         if bridge.get("mode") == cls._PRODUCTION_MODE:
             provider = GatewayProductionApprovalWitnessProvider(
-                worktree_root=bridge.get("worktree_root", "/home/sikmindz/work/ares-production-permit-20260830")
+                worktree_root=bridge.get("worktree_root", "/home/sikmindz/work/ares-production-permit-20260830"),
+                session_key=configured_session if isinstance(configured_session, str) else "",
             )
         return cls(bridge, approval_witness_provider=provider)
 

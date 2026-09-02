@@ -354,7 +354,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -772,20 +772,18 @@ END;
 # matching.  The trigram tokenizer creates overlapping 3-byte sequences so
 # substring queries work natively for any script (CJK, Thai, etc.).
 #
-# The trigram index is the most expensive index in state.db (~2.6x the size
-# of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
-# while being almost entirely machine noise (base64 payloads, file dumps,
-# delegation transcripts).  The index therefore reads through
-# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
-# fully stored in ``messages`` and fully searchable via the standard
-# ``messages_fts`` index; they just don't get trigram (CJK substring)
-# treatment.  ``search_messages`` routes CJK queries that filter on
-# ``role='tool'`` to the LIKE fallback for the same reason.
+# The trigram index is the most expensive index in state.db, and tool output
+# plus cron transcripts are overwhelmingly machine-generated text. The index
+# therefore reads through ``messages_fts_trigram_src``, a view that excludes
+# both classes. They stay fully stored in ``messages`` and searchable via the
+# standard ``messages_fts`` index; they just don't get trigram treatment.
+# ``search_messages`` routes explicit tool/cron CJK searches to LIKE.
 FTS_TRIGRAM_SQL = """
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
-    SELECT id, role, content, tool_name, tool_calls
-    FROM messages
-    WHERE role <> 'tool';
+    SELECT m.id, m.role, m.content, m.tool_name, m.tool_calls
+    FROM messages AS m
+    JOIN sessions AS s ON s.id = m.session_id
+    WHERE m.role <> 'tool' AND s.source <> 'cron';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
@@ -798,6 +796,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
 WHEN new.role <> 'tool'
+   AND EXISTS (SELECT 1 FROM sessions
+               WHERE id = new.session_id AND source <> 'cron')
    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -809,6 +809,8 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
 WHEN old.role <> 'tool'
+   AND EXISTS (SELECT 1 FROM sessions
+               WHERE id = old.session_id AND source <> 'cron')
    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -831,10 +833,14 @@ WHEN (old.content IS NOT new.content
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
     SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
-    WHERE old.role <> 'tool';
+    WHERE old.role <> 'tool'
+      AND EXISTS (SELECT 1 FROM sessions
+                  WHERE id = old.session_id AND source <> 'cron');
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
     SELECT new.id, new.content, new.tool_name, new.tool_calls
-    WHERE new.role <> 'tool';
+    WHERE new.role <> 'tool'
+      AND EXISTS (SELECT 1 FROM sessions
+                  WHERE id = new.session_id AND source <> 'cron');
 END;
 """
 

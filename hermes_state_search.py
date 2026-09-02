@@ -167,8 +167,9 @@ class SessionSearchMixin:
                     conn.execute(
                         "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
                         "SELECT m.id, m.content, m.tool_name, m.tool_calls "
-                        "FROM messages m "
+                        "FROM messages m JOIN sessions s ON s.id = m.session_id "
                         "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                        "AND s.source <> 'cron' "
                         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
                         (lo, hi),
                     )
@@ -325,8 +326,10 @@ class SessionSearchMixin:
                 conn.execute(
                     "INSERT INTO messages_fts_trigram"
                     "(rowid, content, tool_name, tool_calls) "
-                    "SELECT id, content, tool_name, tool_calls FROM messages "
-                    "WHERE id > ? AND id <= ? AND role <> 'tool'",
+                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    "FROM messages m JOIN sessions s ON s.id = m.session_id "
+                    "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                    "AND s.source <> 'cron'",
                     (progress, upper),
                 )
             # Publish progress in the same transaction as the rows it
@@ -1905,6 +1908,7 @@ class SessionSearchMixin:
             # query explicitly filtering on role='tool' must therefore use
             # the LIKE fallback, which scans the base table directly.
             _wants_tool_rows = bool(role_filter) and "tool" in role_filter
+            _wants_cron_rows = bool(source_filter) and "cron" in source_filter
 
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ──────
             # When the bigram index is available it serves EVERY CJK query
@@ -1919,6 +1923,7 @@ class SessionSearchMixin:
             if (
                 self._fts_cjk_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
                 and not self._has_lone_cjk_run(raw_query)
             ):
                 tokens = raw_query.split()
@@ -1992,6 +1997,7 @@ class SessionSearchMixin:
                 and not _any_short_cjk
                 and self._trigram_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
             ):
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean

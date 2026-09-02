@@ -27,6 +27,15 @@ import {
   validateSshTarget
 } from './ssh-connection'
 
+/**
+ * ControlMaster multiplexing does not exist in Win32 OpenSSH, so
+ * `SshConnection` deliberately runs mux-less there (see the `_mux` default in
+ * ssh-connection.ts). These cases assert the POSIX mux contract — socket
+ * paths, `-O` control commands, control-dir permissions — none of which the
+ * Windows path even attempts. They stay green on CI (Linux) and macOS.
+ */
+const posixMuxOnly = process.platform === 'win32' ? test.skip : test
+
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
   const out = redactSecrets(line)
@@ -80,7 +89,7 @@ test('redactSecrets leaves legitimate ssh target logging untouched', () => {
   )
 })
 
-test('controlSocketPath is stable, short, and host-distinct', () => {
+posixMuxOnly('controlSocketPath is stable, short, and host-distinct', () => {
   const a = controlSocketPath('me', 'box1', 22, '/tmp/d')
   const a2 = controlSocketPath('me', 'box1', 22, '/tmp/d')
   const b = controlSocketPath('me', 'box2', 22, '/tmp/d')
@@ -264,7 +273,7 @@ function scriptedSpawn(scripts) {
   return fn
 }
 
-test('open() establishes the master when not already alive', async () => {
+posixMuxOnly('open() establishes the master when not already alive', async () => {
   // `-O check` fails first (not alive) → master opens (code 0). Track which
   // ssh ops ran rather than re-probing with the same always-failing check.
   const ops: string[] = []
@@ -302,7 +311,7 @@ test('open() abort kills an in-flight SSH child instead of waiting for timeout',
   assert.equal(child._killed, true)
 })
 
-test('open() is a no-op when the master is already alive and execs verify', async () => {
+posixMuxOnly('open() is a no-op when the master is already alive and execs verify', async () => {
   const ops: string[] = []
 
   const spawnFn = scriptedSpawn(args => {
@@ -316,7 +325,7 @@ test('open() is a no-op when the master is already alive and execs verify', asyn
   assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
 })
 
-test('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
+posixMuxOnly('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
   // The macOS mode-switch wedge: ControlPersist master answers -O check but
   // every exec through it hangs. open() must verify, evict (-O exit), and
   // establish a fresh master instead of trusting the corpse.
@@ -356,7 +365,7 @@ test('open() evicts a wedged master (check passes, exec hangs) and dials fresh',
   )
 })
 
-test('close() removes the control socket when -O exit fails', async () => {
+posixMuxOnly('close() removes the control socket when -O exit fails', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-close-${process.pid}-${Date.now()}`)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
 
@@ -380,7 +389,7 @@ test('close() removes the control socket when -O exit fails', async () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('open() creates the control-socket directory if it does not exist', async () => {
+posixMuxOnly('open() creates the control-socket directory if it does not exist', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-test-${process.pid}-${Date.now()}`)
   assert.ok(!fs.existsSync(dir), 'precondition: control dir absent')
   const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
@@ -449,7 +458,7 @@ test('exec() treats a hung ssh as a timeout (half-open connection)', async () =>
   )
 })
 
-test('forward() issues -O forward with a loopback-bound -L spec', async () => {
+posixMuxOnly('forward() issues -O forward with a loopback-bound -L spec', async () => {
   const spawnFn = scriptedSpawn([{ code: 0 }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.forward(5000, 6000)
@@ -459,7 +468,7 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
   assert.ok(args.includes('127.0.0.1:5000:127.0.0.1:6000'))
 })
 
-test('lifecycle logging passes through redaction', async () => {
+posixMuxOnly('lifecycle logging passes through redaction', async () => {
   const logs: string[] = []
   const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
 
@@ -920,7 +929,7 @@ test('runSsh delivers stdinData to the child and does not log it', async () => {
   assert.equal(stdinWritten, 'secret-token-value', 'stdinData must be written to child.stdin')
 })
 
-test('open() rejects a control-dir that is a symlink', async () => {
+posixMuxOnly('open() rejects a control-dir that is a symlink', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
   const real = path.join(tmp, 'real')
   const link = path.join(tmp, 'link')
@@ -998,7 +1007,7 @@ test('control socket identity separates installation scope and key identity', ()
   )
 })
 
-test('closing one scope addresses only that scope control master', async () => {
+posixMuxOnly('closing one scope addresses only that scope control master', async () => {
   const firstSpawn = scriptedSpawn({ code: 0 })
   const secondSpawn = scriptedSpawn({ code: 0 })
 
@@ -1031,7 +1040,7 @@ test('closing one scope addresses only that scope control master', async () => {
   assert.equal(second._opened, true)
 })
 
-test('failed ControlMaster close disowns the master instead of retrying it', async () => {
+posixMuxOnly('failed ControlMaster close disowns the master instead of retrying it', async () => {
   // Old contract kept _opened=true for a retry — which left wedged ControlPersist
   // masters trusted and reattachable (the macOS mode-switch livelock). New
   // contract: a master that refuses -O exit is disowned — socket dropped,

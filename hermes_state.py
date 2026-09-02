@@ -3726,11 +3726,13 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 # database.journal_mode setting is the restore target.
                 before_mode = _probe_journal_mode_for_repair(db_path)
                 result = _repair_state_db_schema_locked(
-                    db_path, backup=backup, report=report
+                    db_path,
+                    backup=backup,
+                    report=report,
+                    journal_mode_before=before_mode,
                 )
                 if result.get("repaired"):
                     result["journal_mode_before"] = before_mode
-                    _restore_journal_mode_after_repair(db_path, before_mode)
             # Environmental aborts happen before a strategy gets to mutate the
             # isolated snapshot. They are retriable operating conditions, not
             # proof that the damaged database exhausted a repair strategy.
@@ -3766,7 +3768,9 @@ def _probe_journal_mode_for_repair(db_path: Path) -> Optional[str]:
         return None
 
 
-def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]) -> None:
+def _restore_journal_mode_after_repair(
+    db_path: Path, before_mode: Optional[str], *, conn=None
+) -> None:
     """Re-apply the journal mode after schema surgery (#89674).
 
     A repaired/rebuilt SQLite file comes back in the default journal mode
@@ -3791,12 +3795,15 @@ def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]
     Best-effort by design: the repair itself already succeeded, so failures
     to re-apply are logged at WARNING, never raised.
     """
+    owned_conn = conn is None
     try:
-        conn = _connect_repair_durable(db_path)
+        if owned_conn:
+            conn = _connect_repair_durable(db_path)
         try:
             after = apply_wal_with_fallback(conn, db_label=db_path.name)
         finally:
-            conn.close()
+            if owned_conn:
+                conn.close()
         if before_mode and after != before_mode:
             logger.warning(
                 "state.db repair changed journal_mode %r -> %r "
@@ -3814,7 +3821,11 @@ def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]
 
 
 def _repair_state_db_schema_locked(
-    db_path: Path, *, backup: bool, report: Dict[str, Any]
+    db_path: Path,
+    *,
+    backup: bool,
+    report: Dict[str, Any],
+    journal_mode_before: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Repair strategies for :func:`repair_state_db_schema`.
 
@@ -3955,6 +3966,11 @@ def _repair_state_db_schema_locked(
                         "state.db repaired via '%s' and promoted transactionally: %s",
                         report.get("strategy"),
                         db_path,
+                    )
+                    _restore_journal_mode_after_repair(
+                        db_path,
+                        journal_mode_before,
+                        conn=live_guard,
                     )
             if not report.get("repaired"):
                 # Logged HERE, not inside the strategies: they run against the

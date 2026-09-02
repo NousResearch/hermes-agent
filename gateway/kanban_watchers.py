@@ -1800,15 +1800,21 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(_tick_once)
                     any_spawned = False
                     for slug, res in (results or []):
-                        if res is not None and getattr(res, "spawned", None):
-                            any_spawned = True
+                        # Log when something actually happened — including
+                        # adoptions, which occur on the first tick after a
+                        # gateway restart when nothing spawns yet.
+                        _adopted = getattr(res, "adopted", None) if res is not None else None
+                        if res is not None and (getattr(res, "spawned", None) or _adopted):
+                            if getattr(res, "spawned", None):
+                                any_spawned = True
                             # Quiet by default — only log when something actually
                             # happened, so an idle gateway stays silent.
                             logger.info(
-                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "kanban dispatcher [%s]: spawned=%d adopted=%d reclaimed=%d "
                                 "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
                                 slug,
                                 len(res.spawned),
+                                len(_adopted) if _adopted else 0,
                                 res.reclaimed,
                                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,

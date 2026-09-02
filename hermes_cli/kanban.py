@@ -81,6 +81,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "worker_scope": t.worker_scope,
     }
 
 
@@ -1839,6 +1840,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "error": r.error,
                     "metadata": r.metadata,
                     "worker_pid": r.worker_pid,
+                    "worker_scope": r.worker_scope,
                     "started_at": r.started_at,
                     "ended_at": r.ended_at,
                 }
@@ -1851,6 +1853,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     print(f"  status:    {task.status}")
     print(f"  assignee:  {task.assignee or '-'}")
+    if task.status == "running" and task.worker_scope:
+        # Worker isolation is active for this run — surface the transient
+        # systemd unit so operators can `systemctl --user status <unit>`
+        # / journalctl it directly.
+        print(f"  scope:     {task.worker_scope}")
     if task.tenant:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
@@ -3123,7 +3130,8 @@ def _cmd_runs(args: argparse.Namespace) -> int:
                 "outcome": r.outcome, "started_at": r.started_at,
                 "ended_at": r.ended_at, "summary": r.summary,
                 "error": r.error, "metadata": r.metadata,
-                "worker_pid": r.worker_pid, "step_key": r.step_key,
+                "worker_pid": r.worker_pid, "worker_scope": r.worker_scope,
+                "step_key": r.step_key,
             } for r in runs
         ], indent=2, ensure_ascii=False))
         return 0
@@ -3143,6 +3151,10 @@ def _cmd_runs(args: argparse.Namespace) -> int:
             el = f"{elapsed / 3600:.1f}h"
         outcome = r.outcome or ("(running)" if not r.ended_at else r.status)
         print(f"{i:3d}  {outcome:12s}  {(r.profile or '-'):16s}  {el:>8s}  {_fmt_ts(r.started_at)}")
+        if r.worker_scope and not r.ended_at:
+            # Active run in its own systemd scope — one line, directly
+            # addressable by `systemctl --user status`.
+            print(f"     scope: {r.worker_scope}")
         if r.summary:
             # Indent and truncate long summaries to keep the table readable.
             summary = r.summary.splitlines()[0][:100]

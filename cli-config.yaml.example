@@ -324,7 +324,7 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
-# Kanban Review Dispatch
+# Kanban Review Dispatch & Worker Isolation
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker
 # is spawned with the bundled sdlc-review skill and can approve, request changes
@@ -332,6 +332,27 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Worker isolation: run each kanban worker in its own transient systemd
+  # user scope (hermes-kanban-<task_id>.scope) instead of inside the
+  # gateway's cgroup/process group. Workers then cannot OOM-throttle or be
+  # killed with the gateway, their memory is bounded per worker
+  # (MemoryMax + MemorySwapMax), and a gateway restart re-adopts the
+  # still-running worker instead of marking its run crashed.
+  #   auto          scope when systemd-run --user --scope works on this
+  #                 host (Linux with a user systemd session), otherwise
+  #                 fall back to the classic unisolated spawn (macOS,
+  #                 containers). Default.
+  #   systemd-scope same, but log a warning when the scope cannot be
+  #                 created instead of silently falling back.
+  #   none          never isolate — workers spawn and are killed exactly
+  #                 as before this feature existed. Rollback setting.
+  worker_isolation: auto
+  # Per-worker cgroup memory ceiling in MiB when isolation is active
+  # (MemoryMax; MemorySwapMax is set to the same value). Default: the
+  # tighter of the gateway's own cgroup limit and half the host RAM,
+  # floored at 64 and capped at 4096. Explicit values are clamped to
+  # those same bounds.
+  # worker_memory_max_mb: 2048
 
 # =============================================================================
 # Terminal Tool Configuration

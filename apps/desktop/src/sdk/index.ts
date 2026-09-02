@@ -79,6 +79,7 @@ import {
   $gatewayState,
   $messages,
   $selectedStoredSessionId,
+  $sessionResumeSettlement,
   $sessions,
   getSessionOwnerHints,
   rememberedSessionProfile,
@@ -394,6 +395,7 @@ function waitForFocusedSessionHydration({
   isCurrent,
   profile,
   requireActiveProfile,
+  resumeRequest,
   storedSessionId,
   timeoutMs
 }: {
@@ -402,6 +404,7 @@ function waitForFocusedSessionHydration({
   isCurrent?: () => boolean
   profile: string
   requireActiveProfile: boolean
+  resumeRequest?: null | { sequence: number; sessionId: string }
   storedSessionId: string
   timeoutMs: number
 }): Promise<void> {
@@ -454,6 +457,12 @@ function waitForFocusedSessionHydration({
 
       const runtimeReady = mainMatches ? Boolean($activeSessionId.get()) : tileMatches ? Boolean(tileRuntimeId) : false
 
+      const settlement = $sessionResumeSettlement.get()
+
+      const freshResumeSettled =
+        !resumeRequest ||
+        (settlement?.sessionId === resumeRequest.sessionId && settlement.sequence >= resumeRequest.sequence)
+
       const historyPainted = mainMatches
         ? Boolean($messages.get().length)
         : tileMatches
@@ -472,7 +481,7 @@ function waitForFocusedSessionHydration({
       // immediately. Only an expected-EMPTY chat still waits for the runtime
       // — with no transcript to paint, a bound runtime is the only proof the
       // surface is real rather than a stuck loader.
-      const hydrated = expectHistory ? historyPainted : runtimeReady
+      const hydrated = (expectHistory ? historyPainted : runtimeReady) && freshResumeSettled
 
       if ((mainMatches || tileMatches) && hydrated) {
         if (profileMatches) {
@@ -509,6 +518,7 @@ function waitForFocusedSessionHydration({
     unbinds.push($selectedStoredSessionId.listen(check))
     unbinds.push($activeSessionId.listen(check))
     unbinds.push($messages.listen(check))
+    unbinds.push($sessionResumeSettlement.listen(check))
     unbinds.push($focusedStoredSessionId.listen(check))
     unbinds.push($focusedRuntimeId.listen(check))
     unbinds.push($focusedSessionState.listen(check))
@@ -1022,6 +1032,8 @@ export const host = {
           // an already-mounted tile would paint the idle snapshot and never
           // pull messages that arrived while the panel WS was down (#96183).
           // Refresh the tile transcript in place instead.
+          let resumeRequest: null | { sequence: number; sessionId: string } = null
+
           if (options.awaitHydration && (options.forceResume || !surfaceHealthy)) {
             const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
             const tileDelegate = existingTile ? sessionTileDelegate() : null
@@ -1030,10 +1042,10 @@ export const host = {
               try {
                 await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
               } catch {
-                requestSessionResume(storedSessionId, ownerRoute || undefined)
+                resumeRequest = requestSessionResume(storedSessionId, ownerRoute || undefined)
               }
             } else {
-              requestSessionResume(storedSessionId, ownerRoute || undefined)
+              resumeRequest = requestSessionResume(storedSessionId, ownerRoute || undefined)
             }
           }
 
@@ -1043,6 +1055,10 @@ export const host = {
               generation,
               isCurrent: openingStillCurrent,
               profile: targetProfile,
+              // A forced refresh must outlive a merely non-empty warm cache.
+              // Its receipt is published only after resumeSession finishes
+              // reconciling the persisted display transcript.
+              resumeRequest: options.forceResume ? resumeRequest : null,
               // A background dial never moves $activeGatewayProfile, so gating
               // hydration on it would wait for something that is not coming.
               requireActiveProfile: ownerRoute ? false : plan.requireActiveProfileForHydration,

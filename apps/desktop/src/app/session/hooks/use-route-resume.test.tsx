@@ -1,8 +1,12 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
+import {
+  $resumeExhaustedSessionId,
+  $sessionResumeSettlement,
+  setResumeExhaustedSessionId
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
@@ -46,6 +50,7 @@ function RouteResumeHarness({
 describe('useRouteResume', () => {
   afterEach(() => {
     cleanup()
+    $sessionResumeSettlement.set(null)
     vi.restoreAllMocks()
   })
 
@@ -138,6 +143,51 @@ describe('useRouteResume', () => {
     rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
 
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('publishes the explicit resume settlement only after its authoritative refresh completes', async () => {
+    let finishResume: (() => void) | undefined
+
+    const resumeSession = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          finishResume = resolve
+        })
+    )
+
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef,
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: true,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef: { current: new Map<string, string>() },
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft: vi.fn()
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} />)
+
+    rerender(
+      <RouteResumeHarness
+        {...props}
+        sessionResumeRequest={{ sequence: 41, sessionId: 'session-1' }}
+      />
+    )
+
+    expect($sessionResumeSettlement.get()).toBeNull()
+
+    await act(async () => finishResume?.())
+
+    expect($sessionResumeSettlement.get()).toMatchObject({ sequence: 41, sessionId: 'session-1' })
   })
 
   it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {

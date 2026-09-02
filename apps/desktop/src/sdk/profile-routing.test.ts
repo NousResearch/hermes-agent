@@ -19,6 +19,7 @@ vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() 
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
+  let resumeSequence = 0
 
   type LineageRow = { _lineage_root_id?: null | string; id: string }
 
@@ -32,12 +33,17 @@ vi.mock('@/store/session', async () => {
     $messages: atom([]),
     $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),
+    $sessionResumeSettlement: atom(null),
     $sessions: atom([]),
     $unreadFinishedSessionIds: atom([]),
     lineageAliases: (storedId: string) => [storedId],
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
-    requestSessionResume: vi.fn(),
+    requestSessionResume: vi.fn((sessionId: string, ownerRoute?: unknown) => ({
+      ...(ownerRoute ? { ownerRoute } : {}),
+      sequence: ++resumeSequence,
+      sessionId
+    })),
     sessionMatchesStoredId: (session: LineageRow, storedSessionId: string) =>
       session.id === storedSessionId || session._lineage_root_id === storedSessionId,
     sessionPinId: (session: LineageRow) => session._lineage_root_id ?? session.id,
@@ -164,6 +170,7 @@ const {
   $activeSessionId,
   $messages,
   $selectedStoredSessionId,
+  $sessionResumeSettlement,
   requestSessionResume,
   setSessionOwnerHint,
   setResumeExhaustedSessionId
@@ -196,6 +203,7 @@ afterEach(() => {
   setMockAtom($activeSessionId, null)
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
+  setMockAtom($sessionResumeSettlement, null)
   $profiles.set([profile('cached-only')])
   setWorkspaceScope('sessions')
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -956,7 +964,7 @@ describe('profile-aware plugin session opens', () => {
     expect(requestSessionResume).not.toHaveBeenCalled()
   })
 
-  it('forces a resume on an explicit bot switch even when a cached transcript looks healthy (#93604)', async () => {
+  it('keeps a forced Bot Chat wake covered until the fresh resume settles (#93604)', async () => {
     // Bot-switch shape from the field: the previous visit left a non-empty
     // snapshot in the session-states cache, so the surface passes every
     // health check while painting STALE messages. The heuristic alone skips
@@ -966,18 +974,30 @@ describe('profile-aware plugin session opens', () => {
     setMockAtom($activeSessionId, 'runtime-stale-snapshot')
     setMockAtom($messages, [{ id: 'stale-history', parts: [], role: 'assistant' }] as never)
 
+    let resolved = false
+
     const opening = host.openSession('bot-chat', {
       profile: 'hyoseob',
       awaitHydration: true,
       expectHistory: true,
       forceResume: true,
       hydrationTimeoutMs: 1_000
+    }).then(() => {
+      resolved = true
     })
 
     await Promise.resolve()
     expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', undefined)
+    expect(resolved).toBe(false)
+    expect($gatewaySwapTarget.get()).toBe('hyoseob')
+
+    const resumeRequest = vi.mocked(requestSessionResume).mock.results.at(-1)?.value
+
+    expect(resumeRequest).toBeTruthy()
+    setMockAtom($sessionResumeSettlement, resumeRequest)
 
     await opening
+    expect(resolved).toBe(true)
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 

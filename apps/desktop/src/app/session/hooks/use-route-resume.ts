@@ -1,7 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
-import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
+import { markSessionResumeSettled, type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
@@ -183,10 +183,19 @@ export function useRouteResume({
         const ownerRoute =
           sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
 
-        if (ownerRoute) {
-          void resumeSession(routedSessionId, true, ownerRoute)
-        } else {
-          void resumeSession(routedSessionId, true)
+        const resume = ownerRoute
+          ? resumeSession(routedSessionId, true, ownerRoute)
+          : resumeSession(routedSessionId, true)
+
+        if (explicitlyRequested && sessionResumeRequest) {
+          // The caller that issued this exact sequence may be holding an
+          // opaque wake cover over a warm cached transcript. Publish a receipt
+          // only after resumeSession's authoritative REST refresh (or its
+          // terminal fallback) has fully settled.
+          void resume.then(
+            () => markSessionResumeSettled(sessionResumeRequest),
+            () => markSessionResumeSettled(sessionResumeRequest)
+          )
         }
       }
 

@@ -876,6 +876,12 @@ export interface SessionResumeRequest {
 }
 let sessionResumeRequestSequence = 0
 export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
+// Receipt for the latest explicit resume request whose full async refresh has
+// settled. A non-empty cached transcript is not this receipt: warm activation
+// can paint it immediately, then replace it with the persisted display
+// transcript seconds later. Bot Chat wake UI uses this edge to stay covered
+// through that authoritative refresh instead of exposing the intermediate DOM.
+export const $sessionResumeSettlement = atom<SessionResumeRequest | null>(null)
 // ── Exact session owner hints ───────────────────────────────────────────────
 // The (connectionId, profile[, targetProfile, mode]) route a session was
 // created / resumed / opened on, keyed by stored id. Bounded LRU and
@@ -1277,11 +1283,14 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
+export const requestSessionResume = (
+  sessionId: string,
+  ownerRoute?: SessionOwnerRoute
+): null | SessionResumeRequest => {
   const id = sessionId.trim()
 
   if (!id) {
-    return
+    return null
   }
 
   // A chat on its way out must never be re-selected. The push path
@@ -1291,18 +1300,33 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   // not found" for a chat the user deliberately removed. Filtering at the
   // producer means no consumer has to re-derive "is this id doomed".
   if (isSessionRemovalPending(id)) {
-    return
+    return null
   }
 
   if (ownerRoute) {
     setSessionOwnerHint(id, ownerRoute)
   }
 
-  $sessionResumeRequest.set({
+  const request: SessionResumeRequest = {
     ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id
-  })
+  }
+
+  $sessionResumeRequest.set(request)
+
+  return request
+}
+
+export const markSessionResumeSettled = (request: SessionResumeRequest) => {
+  const current = $sessionResumeSettlement.get()
+
+  if (!current || request.sequence > current.sequence) {
+    $sessionResumeSettlement.set({
+      ...request,
+      ...(request.ownerRoute ? { ownerRoute: { ...request.ownerRoute } } : {})
+    })
+  }
 }
 
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)

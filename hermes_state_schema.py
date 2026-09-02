@@ -426,6 +426,15 @@ class SessionSchemaMixin:
         """
         if self._db_has_legacy_inline_fts(cursor):
             return True
+        if self._db_has_trigram_tool_calls_projection(cursor):
+            # The existing vtable still declares the FTS_STORAGE_VERSION 1
+            # ``tool_calls`` column. Replacing the view underneath it would
+            # make the 'rebuild' read ``T.tool_calls`` from a view that no
+            # longer has it. Changing vtable columns is the opt-in
+            # ``hermes sessions optimize-storage`` path (it recreates the
+            # vtable from FTS_TRIGRAM_SQL, cron-filtered view included), so
+            # leave this install to that path instead of half-migrating it.
+            return True
         trigram_exists = self._fts_table_probe(cursor, "messages_fts_trigram")
         if trigram_exists is not True:
             # Let the normal ensure path create/backfill a missing optional

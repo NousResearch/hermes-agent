@@ -28,22 +28,37 @@ def _trigram_rowids(db: SessionDB) -> set[int]:
     }
 
 
-def _install_pre_v27_trigram(db: SessionDB) -> None:
+def _install_pre_v27_trigram(db: SessionDB, *, with_tool_calls: bool = False) -> None:
+    """Recreate the pre-cron-exclusion external-content trigram boundary.
+
+    ``with_tool_calls=True`` reproduces the FTS_STORAGE_VERSION 1 vtable
+    (``tool_calls`` projected) that installs upgraded before #88217 carry;
+    the default is the v2 column set with only the view/trigger predicates
+    behind, which is what the in-place v29 migration handles.
+    """
+    cols = "content, tool_name" + (", tool_calls" if with_tool_calls else "")
+    vals = "new.content, new.tool_name" + (", new.tool_calls" if with_tool_calls else "")
     db._conn.executescript(
-        """
+        f"""
         DROP TRIGGER messages_fts_trigram_insert;
         DROP TRIGGER messages_fts_trigram_delete;
         DROP TRIGGER messages_fts_trigram_update;
+        DROP TABLE messages_fts_trigram;
         DROP VIEW messages_fts_trigram_src;
         CREATE VIEW messages_fts_trigram_src AS
             SELECT id, role, content, tool_name, tool_calls
             FROM messages WHERE role <> 'tool';
+        CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+            {cols},
+            content='messages_fts_trigram_src',
+            content_rowid='id',
+            tokenize='trigram'
+        );
         CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages
         WHEN new.role <> 'tool'
         BEGIN
-            INSERT INTO messages_fts_trigram(
-                rowid, content, tool_name, tool_calls
-            ) VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+            INSERT INTO messages_fts_trigram(rowid, {cols})
+            VALUES (new.id, {vals});
         END;
         """
     )
@@ -157,6 +172,42 @@ def test_install_already_at_v28_still_gets_the_cron_exclusion_migration(tmp_path
         assert _trigram_rowids(migrated) == {cli_id}, (
             "a v28 database kept cron rows in the trigram index: the migration gate did not fire"
         )
+    finally:
+        migrated.close()
+
+
+def test_v1_tool_calls_layout_is_left_for_optimize_storage(tmp_path):
+    """A FTS_STORAGE_VERSION 1 trigram vtable (``tool_calls`` projected) must
+    survive the v29 startup migration untouched and be finished by the opt-in
+    ``optimize_fts_storage`` path — not half-migrated into a view/vtable
+    column mismatch (which used to fail the rebuild with
+    ``no such column: T.tool_calls``)."""
+    db_path = tmp_path / "state.db"
+    old = SessionDB(db_path=db_path)
+    if not old._trigram_available:
+        old.close()
+        pytest.skip("trigram tokenizer unavailable in this SQLite build")
+    _install_pre_v27_trigram(old, with_tool_calls=True)
+    old.create_session("cli", source="cli")
+    old.create_session("cron", source="cron")
+    cli_id = old.append_message("cli", role="user", content="交互迁移内容")
+    cron_id = old.append_message("cron", role="user", content="定时迁移内容")
+    assert _trigram_rowids(old) == {cli_id, cron_id}
+    old._conn.execute("UPDATE schema_version SET version = 28")
+    old._conn.commit()
+    old.close()
+
+    migrated = SessionDB(db_path=db_path)  # must not raise
+    try:
+        # Startup left the v1 layout alone (cron row still there) …
+        assert _trigram_rowids(migrated) == {cli_id, cron_id}
+        assert migrated.fts_optimize_available() is True
+        # … and the opt-in path completes the transition: v2 columns,
+        # cron-filtered view, cron row purged.
+        migrated.optimize_fts_storage()
+        cols = [r[1] for r in migrated._conn.execute("PRAGMA table_info(messages_fts_trigram)")]
+        assert "tool_calls" not in cols
+        assert _trigram_rowids(migrated) == {cli_id}
     finally:
         migrated.close()
 

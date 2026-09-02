@@ -25,6 +25,7 @@ export function ChatSwapOverlay({ botMode = false, profile }: { botMode?: boolea
         botMode && profile ? 'bg-(--ui-chat-surface-background)' : '',
         profile ? 'opacity-100' : 'opacity-0'
       )}
+      data-glass-opaque={botMode && profile ? '' : undefined}
       data-slot="chat-swap-overlay"
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">

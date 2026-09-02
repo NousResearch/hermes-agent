@@ -50,6 +50,7 @@ describe('ChatSwapOverlay', () => {
     const overlay = container.querySelector('[data-slot="chat-swap-overlay"]')
 
     expect(overlay?.className).toContain('bg-(--ui-chat-surface-background)')
+    expect(overlay?.hasAttribute('data-glass-opaque')).toBe(true)
     expect(screen.queryByText(/persephone/i)).toBeNull()
     expect(screen.getByText(/Bot Chat/i)).toBeTruthy()
   })

@@ -8391,6 +8391,13 @@ def _init_session(
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent,
+            # ``sid`` is the live runtime identity carried on gateway events
+            # and required by every session-scoped RPC.  Keep it inside the
+            # record as well: production_permit.respond verifies that the
+            # renderer's response targets exactly the live session that owns
+            # the pending approval.  Omitting it made every otherwise-valid
+            # production response fail the identity check.
+            "session_id": sid,
             "session_key": key,
             "history": history,
             "history_lock": threading.Lock(),
@@ -9780,6 +9787,7 @@ def _lazy_resume_info(
 
 
 def _deferred_session_record(
+    sid: str,
     session_key: str,
     *,
     cols: int,
@@ -9823,6 +9831,9 @@ def _deferred_session_record(
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
+        # Match _init_session: deferred/resumed sessions must retain the
+        # runtime identity that session-scoped approval responses carry.
+        "session_id": sid,
         "session_key": session_key,
         "show_reasoning": _load_show_reasoning(),
         "slash_worker": None,

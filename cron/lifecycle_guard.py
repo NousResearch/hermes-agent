@@ -298,9 +298,10 @@ _MAX_REFERENCED_SCRIPT_DEPTH = 8
 # bound one whole walk and are charged BEFORE any text reaches shlex.
 # Exhaustion fails closed (an unscanned script could hide a lifecycle command)
 # and is logged at WARNING so an operator can tell it from a real block. Sizes
-# sit well above any legitimate wrapper graph; remote reads are a backend
-# roundtrip each, so they get a far tighter cap than local paths.
-_MAX_LIFECYCLE_SCAN_BYTES = 4 * _MAX_REFERENCED_SCRIPT_BYTES
+# sit well above any legitimate wrapper graph (a 200-script wrapper is ~5 KB)
+# while keeping the worst text still admitted to a few seconds of lexing;
+# remote reads are a backend roundtrip each, so they get a far tighter cap.
+_MAX_LIFECYCLE_SCAN_BYTES = _MAX_REFERENCED_SCRIPT_BYTES  # 1 MiB across the walk
 _MAX_LIFECYCLE_SCAN_LINES = 16384
 _MAX_LIFECYCLE_SCAN_LINE_BYTES = 64 * 1024
 _MAX_LIFECYCLE_SCAN_PATHS = 1024
@@ -378,8 +379,12 @@ def lifecycle_scan_root_within_budget(text: str) -> bool:
     """Whether *text* may safely enter an optional tokenizer pass.
 
     Used by ``tools/terminal_tool.py`` to gate its launchctl-specific pre-scan
-    (which tokenizes with shlex). ``False`` is not a verdict: callers must
-    still run the full guard, which fails closed for an over-budget root.
+    (which tokenizes with shlex). This is a FRESH budget, independent of the
+    one the full guard builds for its own walk: the pre-scan may pass while
+    the guard's walk later exhausts, and the outcome is still fail-closed —
+    only the friendlier launchctl diagnostic is lost. ``False`` is not a
+    verdict: callers must still run the full guard, which fails closed for
+    an over-budget root.
     """
     try:
         return _LifecycleScanBudget().charge_text(text)

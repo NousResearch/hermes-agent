@@ -1431,11 +1431,6 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     return result
 
 
-# Floor for a plausible unix-epoch timestamp (2001-09-09). Salvage rows
-# uniformly below it were mis-mapped, not merely unlucky (#101409).
-_PLAUSIBLE_TIMESTAMP_FLOOR = 1_000_000_000.0
-
-
 def _lost_and_found_plausibility_errors(
     conn: sqlite3.Connection,
 ) -> list[str]:
@@ -1447,47 +1442,35 @@ def _lost_and_found_plausibility_errors(
     from the destination template's declared order, so positional cell
     mapping lands counters/strings where ``started_at``/``timestamp``
     belong — and the NOT NULL substitutes turn gaps into 0.0. When every
-    row violates the epoch floor, the mapping was wrong.
+    mapped row violates the epoch floor, the mapping was wrong.
+
+    Stub rows written by ``stub_missing_parent_sessions`` legitimately carry
+    ``started_at = 0.0`` when no timestamped message survived, so they are
+    excluded from the denominator.
     """
+    from hermes_cli.session_lost_and_found import _EPOCH_LOW
 
     errors: list[str] = []
-
-    (session_total,) = conn.execute(
-        "SELECT COUNT(*) FROM sessions"
-    ).fetchone()
-    if session_total:
+    checks = (
+        ("sessions", "started_at", "WHERE COALESCE(title, '') NOT LIKE '[best-effort recovered%'"),
+        ("messages", "timestamp", ""),
+    )
+    for table, column, mapped_filter in checks:
+        (total,) = conn.execute(f"SELECT COUNT(*) FROM {table} {mapped_filter}").fetchone()
+        if not total:
+            continue
         (implausible,) = conn.execute(
-            "SELECT COUNT(*) FROM sessions "
-            "WHERE started_at IS NULL OR started_at < ?",
-            (_PLAUSIBLE_TIMESTAMP_FLOOR,),
+            f"SELECT COUNT(*) FROM {table} {mapped_filter} "
+            f"{'AND' if mapped_filter else 'WHERE'} ({column} IS NULL OR {column} < ?)",
+            (_EPOCH_LOW,),
         ).fetchone()
-        if implausible == session_total:
+        if implausible == total:
             errors.append(
-                f"sessions.started_at is implausible in all "
-                f"{session_total} salvaged row(s) (NULL or before 2001-09): "
-                "the source's physical column order did not match the "
-                "destination template, so cells were mapped onto the "
-                "wrong columns"
+                f"{table}.{column} is implausible in all {total} salvaged row(s) "
+                "(NULL or before 2001-09): the source's physical column order "
+                "did not match the destination template, so cells were mapped "
+                "onto the wrong columns"
             )
-
-    (message_total,) = conn.execute(
-        "SELECT COUNT(*) FROM messages"
-    ).fetchone()
-    if message_total:
-        (implausible,) = conn.execute(
-            "SELECT COUNT(*) FROM messages "
-            "WHERE timestamp IS NULL OR timestamp < ?",
-            (_PLAUSIBLE_TIMESTAMP_FLOOR,),
-        ).fetchone()
-        if implausible == message_total:
-            errors.append(
-                f"messages.timestamp is implausible in all "
-                f"{message_total} salvaged row(s) (NULL or before 2001-09): "
-                "the source's physical column order did not match the "
-                "destination template, so cells were mapped onto the "
-                "wrong columns"
-            )
-
     return errors
 
 

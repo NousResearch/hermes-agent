@@ -119,6 +119,17 @@ Examples:
 
 After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
+> **Caveat — an explicit `platform_toolsets` acts as an allowlist.** Auto-injection only reaches a platform that has *not* pinned its toolsets. Each MCP server registers its tools into a dedicated `mcp-<server>` toolset (e.g. server `github` → toolset `mcp-github`; the model calls the tools as `mcp_github_*`). If you configure `platform_toolsets` for a platform, that list becomes an allowlist and the `mcp-*` toolsets are **not** added automatically — you must list them explicitly:
+>
+> ```yaml
+> platform_toolsets:
+>   whatsapp:
+>     - hermes-whatsapp   # the platform's built-in tools
+>     - mcp-github        # add each mcp-<server> you want exposed on this platform
+> ```
+>
+> This is easy to miss because `hermes tools --summary` merges base and per-profile config, so a profile that omits the `mcp-*` entries can *display* as enabled while its running sessions lack the tools. Symptom: MCP tools work in the CLI (or one profile) but not on a messaging platform (or another profile). Fix: add the `mcp-<server>` toolsets to that platform/profile's `platform_toolsets`.
+
 ### Connection Lifecycle
 
 - Each server runs as a long-lived asyncio Task in a background daemon thread

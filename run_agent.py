@@ -2021,6 +2021,13 @@ class AIAgent:
             if not enabled:
                 return
 
+        # Structural clone at the single chokepoint every review path
+        # (automatic, /refine, idle-queue deferral) goes through. The fork
+        # sanitizes its transcript in place; a shallow copy would alias the
+        # nested tool_calls/content containers of the live history (#100795).
+        from agent.turn_finalizer import _clone_background_review_messages
+        messages_snapshot = _clone_background_review_messages(messages_snapshot)
+
         kwargs = dict(
             messages_snapshot=messages_snapshot,
             review_memory=review_memory,

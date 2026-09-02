@@ -819,14 +819,10 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         try:
-            # The review fork sanitizes and repairs its private transcript in
-            # place.  A shallow list copy would leave the message dicts (and
-            # nested tool-call/content containers) shared with the live
-            # foreground transcript, allowing the review to mutate the
-            # representation that was just persisted and break prefix-cache
-            # parity on the next turn.
+            # _spawn_background_review clones the snapshot structurally so
+            # the fork's in-place sanitizers can't reach the live transcript.
             agent._spawn_background_review(
-                messages_snapshot=_clone_background_review_messages(messages),
+                messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )

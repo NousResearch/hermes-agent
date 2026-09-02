@@ -1410,6 +1410,101 @@ def _cron_next_run_matches_expr(
         return True
 
 
+# Classification results for a due cron instant that is NOT an occurrence of
+# the job's current expression (see _classify_stale_cron_next_run).
+STALE_CRON_MATCH = "match"
+STALE_CRON_TIMEZONE_MIGRATION = "timezone_migration"
+STALE_CRON_EXPR_EDIT = "expr_edit"
+
+
+def _classify_stale_cron_next_run(
+    schedule: Dict[str, Any],
+    raw_next_run_dt: datetime,
+    next_run_dt: datetime,
+) -> str:
+    """Explain WHY a stored ``next_run_at`` misses the current cron lattice.
+
+    ``_cron_next_run_matches_expr`` answers "does the stored instant occur in
+    the current expression?" but not "why not?", and the two answers call for
+    opposite actions:
+
+    * ``expr_edit`` — a direct ``jobs.json`` edit changed ``schedule.expr``
+      while leaving ``next_run_at`` computed under the old one (#93049). The
+      stored instant is a time the current expression *excludes*, so it must
+      be re-anchored WITHOUT firing.
+    * ``timezone_migration`` — the expression never changed; only the stored
+      value's *offset representation* did. Upgrading from a UTC-scheduling
+      build to one that honours the profile timezone leaves legacy rows like
+      ``2026-09-02T04:00:00+00:00`` for ``0 4 * * *``; normalizing to
+      Europe/Brussels turns that into ``06:00+02``, which the expression
+      excludes. Treating it as a stale edit re-anchored to tomorrow and
+      silently skipped a due occurrence that had never fired.
+
+    The discriminator is whether *normalization itself* moved the wall clock.
+    Cron expressions describe local wall-clock intent, so a stored instant
+    whose OWN wall clock is a legal occurrence, and which only left the
+    lattice because ``_ensure_aware`` converted it into a different offset, is
+    a representation migration — not a schedule edit. When the offsets agree
+    (the common case, including every value this build wrote) the wall clock
+    is unchanged, so a genuine ``expr`` edit can never be misread as a
+    migration.
+    """
+    if _cron_next_run_matches_expr(schedule, next_run_dt):
+        return STALE_CRON_MATCH
+    wall_clock_shifted = (
+        raw_next_run_dt.replace(tzinfo=None) != next_run_dt.replace(tzinfo=None)
+    )
+    if wall_clock_shifted and _cron_next_run_matches_expr(schedule, raw_next_run_dt):
+        return STALE_CRON_TIMEZONE_MIGRATION
+    return STALE_CRON_EXPR_EDIT
+
+
+# Durable, probe-visible counter for offset-representation migrations caught
+# on the fire path. Distinct from `catch_up_occurrences` (which counts runs
+# skipped past their grace window) because this one means "an upgrade rewrote
+# how next_run_at is represented" — an operator seeing it climb after a deploy
+# is seeing the migration drain, and seeing it climb steadily afterwards is
+# seeing a timezone that keeps changing under the store.
+_timezone_migration_catchups: int = 0
+_TIMEZONE_MIGRATION_CATCHUP_HISTORY = 20
+_timezone_migration_catchups_recent: list = []
+
+
+def _record_timezone_migration_catchup(
+    job: Dict[str, Any],
+    raw_next_run_dt: datetime,
+    next_run_dt: datetime,
+) -> None:
+    """Persist a countable signal for one offset-migration catch-up fire."""
+    global _timezone_migration_catchups
+    entry = {
+        "job_id": job.get("id"),
+        "name": job.get("name") or job.get("id"),
+        "expr": (job.get("schedule") or {}).get("expr"),
+        "stored_next_run_at": raw_next_run_dt.isoformat(),
+        "normalized_next_run_at": next_run_dt.isoformat(),
+        "fired_at": _hermes_now().isoformat(),
+    }
+    _timezone_migration_catchups += 1
+    _timezone_migration_catchups_recent.append(entry)
+    del _timezone_migration_catchups_recent[:-_TIMEZONE_MIGRATION_CATCHUP_HISTORY]
+    try:
+        path = _current_cron_store().cron_dir / "timezone_migration_catchups.jsonl"
+        _ensure_cron_dir(path.parent)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:  # never let telemetry break a tick
+        logger.debug("Could not append timezone-migration-catchup record: %s", exc)
+
+
+def get_timezone_migration_catchup_stats() -> Dict[str, Any]:
+    """Probe-visible snapshot of offset-migration catch-up fires."""
+    return {
+        "timezone_migration_catchups": _timezone_migration_catchups,
+        "recent": list(_timezone_migration_catchups_recent),
+    }
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -4046,9 +4141,18 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # so re-anchor before either can fire. Recomputation uses the
                 # current expression, so this converges — it cannot defer
                 # forever.
-                if not manual_run and kind == "cron" and not _cron_next_run_matches_expr(
-                    schedule, next_run_dt
-                ):
+                #
+                # Not every mismatch is an edit, though: an offset-representation
+                # migration (UTC-scheduling build -> profile-timezone build)
+                # moves a legacy instant off the lattice without the expression
+                # ever changing, and re-anchoring THAT silently swallowed a due
+                # occurrence. Classify first, and only the edit case skips.
+                stale_class = (
+                    _classify_stale_cron_next_run(schedule, raw_next_run_dt, next_run_dt)
+                    if not manual_run and kind == "cron"
+                    else STALE_CRON_MATCH
+                )
+                if stale_class == STALE_CRON_EXPR_EDIT:
                     new_next = compute_next_run(schedule, now.isoformat())
                     logger.info(
                         "Job '%s' next_run_at %s does not match its current "
@@ -4066,6 +4170,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 needs_save = True
                                 break
                     continue
+                if stale_class == STALE_CRON_TIMEZONE_MIGRATION:
+                    # Fall through to the normal due path: the occurrence is
+                    # real and overdue, so it fires ONCE here and the usual
+                    # advance/mark_job_run re-anchor writes the value back in
+                    # the current offset. At-most-once is preserved because
+                    # nothing re-reads the legacy instant after that.
+                    logger.warning(
+                        "cron.timezone_migration.catch_up job='%s' id=%s expr=%r "
+                        "stored=%s normalized=%s — stored next_run_at carries a "
+                        "pre-migration UTC offset (%s, now %s) and is a legal "
+                        "occurrence at its own wall clock; firing the due run "
+                        "instead of re-anchoring past it.",
+                        job.get("name", job.get("id", "?")),
+                        job.get("id"),
+                        schedule.get("expr"),
+                        next_run,
+                        next_run_dt.isoformat(),
+                        raw_next_run_dt.utcoffset(),
+                        now.utcoffset(),
+                    )
+                    _record_timezone_migration_catchup(job, raw_next_run_dt, next_run_dt)
 
                 # For recurring jobs, check if the scheduled time is stale
                 # (gateway was down and missed the window). Fast-forward to

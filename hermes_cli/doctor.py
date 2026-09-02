@@ -3282,7 +3282,7 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     _section("Memory Provider")
-    _active_memory_provider = _doctor_memory_config().get("provider", "")
+    _active_memory_provider = _memory_config.get("provider", "")
 
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")

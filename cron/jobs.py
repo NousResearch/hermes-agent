@@ -1248,7 +1248,8 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 # ``next_run_at`` to now so the next tick re-dispatches it, exactly like the
 # operator's force-run / mech_red_guard's ``cron resume`` but built-in.
 _persisted_error_recoveries: int = 0
-_PERSISTED_ERROR_RECOVERY_HISTORY = 20
+# Bounded in-memory history kept by every probe-visible fire-path counter.
+_TELEMETRY_RECENT_HISTORY = 20
 _persisted_error_recoveries_recent: list = []
 
 
@@ -1351,26 +1352,38 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
 _cron_cadence_cache: Dict[str, Optional[float]] = {}
 
 
+def _append_telemetry_record(filename: str, entry: Dict[str, Any], recent: list) -> None:
+    """Keep ``entry`` in the bounded in-memory ``recent`` list and append it to
+    ``<cron_dir>/<filename>`` (best effort — telemetry must never break a tick).
+
+    Shared by the probe-visible fire-path counters (persisted-error recovery,
+    timezone-migration catch-up); each keeps its own module-level int counter
+    because tests reset those by name.
+    """
+    recent.append(entry)
+    del recent[:-_TELEMETRY_RECENT_HISTORY]
+    try:
+        path = _current_cron_store().cron_dir / filename
+        _ensure_cron_dir(path.parent)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        logger.debug("Could not append %s record: %s", filename, exc)
+
+
 def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str) -> None:
     """Persist a countable, probe-visible signal for one stale-error re-arm."""
     global _persisted_error_recoveries
-    now = _hermes_now()
     entry = {
         "job_id": job.get("id"),
         "name": job.get("name") or job.get("id"),
         "previous_next_run_at": previous_next_run,
-        "rearmed_at": now.isoformat(),
+        "rearmed_at": _hermes_now().isoformat(),
     }
     _persisted_error_recoveries += 1
-    _persisted_error_recoveries_recent.append(entry)
-    del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
-    try:
-        path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
-        _ensure_cron_dir(path.parent)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except Exception as exc:  # never let telemetry break a tick
-        logger.debug("Could not append persisted-error-recovery record: %s", exc)
+    _append_telemetry_record(
+        "persisted_error_recoveries.jsonl", entry, _persisted_error_recoveries_recent
+    )
 
 
 def get_persisted_error_recovery_stats() -> Dict[str, Any]:
@@ -1460,13 +1473,13 @@ def _classify_stale_cron_next_run(
 
 
 # Durable, probe-visible counter for offset-representation migrations caught
-# on the fire path. Distinct from `catch_up_occurrences` (which counts runs
-# skipped past their grace window) because this one means "an upgrade rewrote
-# how next_run_at is represented" — an operator seeing it climb after a deploy
-# is seeing the migration drain, and seeing it climb steadily afterwards is
-# seeing a timezone that keeps changing under the store.
+# on the fire path. Kept separate from `catch_up_occurrences` (runs skipped
+# past their grace window — a migrated row that is ALSO past grace increments
+# both) because this one means "an upgrade rewrote how next_run_at is
+# represented" — an operator seeing it climb after a deploy is seeing the
+# migration drain, and seeing it climb steadily afterwards is seeing a
+# timezone that keeps changing under the store.
 _timezone_migration_catchups: int = 0
-_TIMEZONE_MIGRATION_CATCHUP_HISTORY = 20
 _timezone_migration_catchups_recent: list = []
 
 
@@ -1486,15 +1499,9 @@ def _record_timezone_migration_catchup(
         "fired_at": _hermes_now().isoformat(),
     }
     _timezone_migration_catchups += 1
-    _timezone_migration_catchups_recent.append(entry)
-    del _timezone_migration_catchups_recent[:-_TIMEZONE_MIGRATION_CATCHUP_HISTORY]
-    try:
-        path = _current_cron_store().cron_dir / "timezone_migration_catchups.jsonl"
-        _ensure_cron_dir(path.parent)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except Exception as exc:  # never let telemetry break a tick
-        logger.debug("Could not append timezone-migration-catchup record: %s", exc)
+    _append_telemetry_record(
+        "timezone_migration_catchups.jsonl", entry, _timezone_migration_catchups_recent
+    )
 
 
 def get_timezone_migration_catchup_stats() -> Dict[str, Any]:

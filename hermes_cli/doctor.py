@@ -557,6 +557,13 @@ def _prompt_caching_section(issues: list[str]) -> None:
     Offline by construction: resolve the same destination the agent will use and
     ask the real policy. No HTTP, so this stays out of the threaded
     connectivity probes.
+
+    Scope: this resolves the *persisted* configuration, so it answers "what
+    will this config do on a clean run" — the right question for a pre-flight
+    check. It is not a statement about a session already running under an
+    exported override. ``ANTHROPIC_BASE_URL`` is the practical case: its mere
+    presence flips the resolved wire, so a live agent can be on a different
+    route than the one reported here.
     """
     _section("Prompt Caching")
     try:

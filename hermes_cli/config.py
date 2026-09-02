@@ -4682,6 +4682,38 @@ def _env_line_defines_key(
     ) == _env_var_policy_name(key, is_windows=is_windows)
 
 
+def _publish_env_value(key: str, value: Optional[str]) -> None:
+    """Publish a just-persisted ``.env`` change to the live process.
+
+    ``save_env_value`` / ``remove_env_value`` already target the right file
+    (``get_env_path()`` honors the profile-home override), but the in-process
+    mirror historically went straight to ``os.environ``. Under a multiplexed
+    gateway a routed profile's write (e.g. a ``/pair`` grant mirrored into
+    ``DISCORD_ALLOWED_USERS``) would then land in the SHARED process env and
+    be visible to every other profile (#88441, #77490). In that case update
+    the installed scope mapping instead so same-turn reads see the change,
+    and leave ``os.environ`` alone. Every other caller keeps the legacy
+    ``os.environ`` publish.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope() if is_multiplex_active() else None
+    except Exception:
+        scope = None
+    if scope is not None:
+        if isinstance(scope, dict):
+            if value is None:
+                scope.pop(key, None)
+            else:
+                scope[key] = value
+        return
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -4770,7 +4802,7 @@ def save_env_value(key: str, value: str):
             pass
         raise
 
-    os.environ[key] = value
+    _publish_env_value(key, value)
     invalidate_env_cache()
 
 
@@ -4817,7 +4849,7 @@ def remove_env_value(key: str) -> bool:
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
     if not env_path.exists():
-        os.environ.pop(key, None)
+        _publish_env_value(key, None)
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
@@ -4861,7 +4893,7 @@ def remove_env_value(key: str) -> bool:
                 pass
             raise
 
-    os.environ.pop(key, None)
+    _publish_env_value(key, None)
     invalidate_env_cache()
     return found
 

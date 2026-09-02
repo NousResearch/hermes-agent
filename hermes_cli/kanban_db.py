@@ -3124,6 +3124,50 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+_write_txn_tls = threading.local()
+# Scope-stop intents collected while a write transaction is open, flushed
+# ONLY at the outermost commit and discarded on any rollback (Gate B pass
+# 4, finding O). A stop queued mid-transaction must never outlive that
+# transaction's rollback: the DB mutations vanish with the ROLLBACK, but a
+# queued kill would still land, leaving a running row whose worker is dead.
+# Shape: one intent list per nesting level (savepoint); a savepoint RELEASE
+# folds its intents into the parent level, a ROLLBACK TO discards them, the
+# outermost COMMIT flushes whatever survives, the outermost ROLLBACK
+# discards everything. ``request_worker_scope_stop`` consults the
+# thread-local stack, so no call-site plumbing is needed.
+
+
+def _push_scope_stop_level() -> None:
+    levels = getattr(_write_txn_tls, "levels", None)
+    if levels is None:
+        _write_txn_tls.levels = levels = []
+    levels.append([])
+
+
+def _pop_scope_stop_level(*, commit: bool) -> list:
+    """Close the innermost intent level.
+
+    ``commit=True`` folds its intents into the parent level — or, at the
+    outermost level, returns them for the caller to flush after the
+    COMMIT. ``commit=False`` discards them (this level is rolling back).
+    """
+    levels = getattr(_write_txn_tls, "levels", None) or []
+    level = levels.pop() if levels else []
+    if not commit:
+        return []
+    if levels:
+        levels[-1].extend(level)
+        return []
+    return level
+
+
+def _flush_deferred_scope_stops(intents: list) -> None:
+    for unit, task_id, skip_if_registered in intents:
+        request_worker_scope_stop(
+            unit, task_id=task_id, skip_if_registered=skip_if_registered,
+        )
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """Context manager for an IMMEDIATE write transaction.
@@ -3143,6 +3187,13 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     recomputation, failure-counter clears) would fire while the outer
     transaction can still roll back.
 
+    One side effect IS sanctioned inside the transaction: a worker
+    scope-stop requested mid-transaction is collected as a commit-
+    conditional intent (see ``_write_txn_tls``) and only reaches the
+    verified-stop queue when the OUTERMOST transaction commits. A
+    rollback discards it, so a demotion that never happened can never
+    leave its worker killed.
+
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
@@ -3157,10 +3208,12 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 "the outer transaction commits)."
             )
         savepoint = f"hermes_nested_{secrets.token_hex(8)}"
+        _push_scope_stop_level()
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
             yield conn
         except Exception:
+            _pop_scope_stop_level(commit=False)
             try:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 conn.execute(f"RELEASE {savepoint}")
@@ -3168,13 +3221,16 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 pass
             raise
         else:
+            _pop_scope_stop_level(commit=True)
             conn.execute(f"RELEASE {savepoint}")
         return
 
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    _push_scope_stop_level()
     try:
         yield conn
     except Exception:
+        _pop_scope_stop_level(commit=False)
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
@@ -3189,14 +3245,18 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         except Exception:
             # COMMIT exhausted retries with the txn still open; roll back so the
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
+            _pop_scope_stop_level(commit=False)
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
                 pass
             raise
+        intents = _pop_scope_stop_level(commit=True)
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
+        # Only after a healthy COMMIT do deferred stops reach the queue.
+        _flush_deferred_scope_stops(intents)
 
 
 # ---------------------------------------------------------------------------
@@ -9159,6 +9219,12 @@ def request_worker_scope_stop(
     re-checks the task row and stands down when the worker has
     registered in the meantime. Only the unregistered-launch sweep sets
     it — a completed task's scope must be reaped regardless.
+
+    Called inside an open :func:`write_txn`, the request becomes
+    commit-conditional (finding O): it is collected as an intent and
+    queued only after the OUTERMOST transaction commits, discarded on
+    rollback — the queue entry is process state, not a DB row, so
+    without this a rolled-back demotion would still kill its worker.
     """
     if not unit_name:
         return False
@@ -9182,6 +9248,17 @@ def request_worker_scope_stop(
             "kanban: scope %s state unknown (task %s) — queueing a "
             "verified stop attempt", unit_name, task_id,
         )
+    levels = getattr(_write_txn_tls, "levels", None)
+    if levels:
+        # Commit-conditional (Gate B pass 4, finding O): called inside an
+        # open write transaction — collect the intent on the innermost
+        # savepoint level instead of queueing now. It only reaches the
+        # queue if the OUTERMOST transaction commits; any rollback
+        # discards it, so a demotion that was rolled back can never
+        # leave its worker killed. Same return contract as queueing:
+        # not confirmed, the caller keeps its hold and retries next tick.
+        levels[-1].append((unit_name, task_id, skip_if_registered))
+        return False
     with _scope_stop_lock:
         _scope_stop_pending[unit_name] = _ScopeStopRequest(
             unit=unit_name,

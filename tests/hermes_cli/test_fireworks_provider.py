@@ -19,6 +19,9 @@ import pytest
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    # doctor parses ~/.hermes/.env to tell a real key from a commented-out
+    # sample; this stub only has to mirror the API surface, not parse.
+    fake_dotenv.dotenv_values = lambda *args, **kwargs: {}
     sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import resolve_api_key_provider_credentials

@@ -655,7 +655,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, TranscriptReadError, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -4160,6 +4160,12 @@ class BasePlatformAdapter(ABC):
             if callable(peek):
                 session_id = peek(session_key)
             transcript = store.load_transcript(session_id or session_key)
+        except TranscriptReadError:
+            logger.warning(
+                "Transcript read failed for session %s; media dedup runs "
+                "with no history this turn (#100788)", session_key,
+            )
+            return None
         except Exception:
             return None
         if not transcript:

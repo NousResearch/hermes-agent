@@ -96,7 +96,7 @@ from gateway.platforms.yuanbao_proto import (
     encode_get_group_member_list,
     next_seq_no,
 )
-from gateway.session import build_session_key
+from gateway.session import TranscriptReadError, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -1144,6 +1144,14 @@ class RecallGuardMiddleware(InboundMiddleware):
                 await asyncio.sleep(0.5)
                 try:
                     transcript = store.load_transcript(sid)
+                except TranscriptReadError as exc:
+                    # No readable rows means nothing to redact; polling on
+                    # would just re-log the same failure (#100788).
+                    logger.warning(
+                        "[%s] Recall redact: transcript unreadable for "
+                        "session %s: %s", adapter.name, sid, exc,
+                    )
+                    return
                 except Exception:
                     continue
                 for entry in transcript:
@@ -1183,6 +1191,11 @@ class RecallGuardMiddleware(InboundMiddleware):
         # match) is the canonical path again.
         try:
             transcript = store.load_transcript(sid)
+        except TranscriptReadError as exc:
+            # Not an empty transcript — the rows are unreadable, so recall has
+            # nothing to match against (#100788).
+            logger.warning("[%s] Recall: transcript unreadable: %s", adapter.name, exc)
+            return
         except Exception as exc:
             logger.warning("[%s] Recall: failed to load transcript: %s", adapter.name, exc)
             return
@@ -2145,6 +2158,13 @@ class QuoteContextMiddleware(InboundMiddleware):
                         if kind in _RESOLVABLE_MEDIA_KINDS:
                             media_refs.append((rid, kind, filename.strip()))
                 break
+        except TranscriptReadError as exc:
+            # Quote resolution degrades to "no refs" rather than pretending
+            # the quoted message was never seen (#100788).
+            logger.warning(
+                "[%s] quote transcript lookup: transcript unreadable: %s",
+                getattr(adapter, "name", "yuanbao"), exc,
+            )
         except Exception as exc:
             logger.warning(
                 "[%s] quote transcript lookup failed: %s",
@@ -2747,6 +2767,14 @@ class MediaResolveMiddleware(InboundMiddleware):
         try:
             session_entry = store.get_or_create_session(source)
             history = store.load_transcript(session_entry.session_id)
+        except TranscriptReadError as exc:
+            # Hydrate nothing rather than silently acting as if the session
+            # had no observed media (#100788).
+            logger.warning(
+                "[%s] Observed-media hydration: transcript unreadable: %s",
+                adapter.name, exc,
+            )
+            return [], []
         except Exception as exc:
             logger.warning(
                 "[%s] Observed-media hydration setup failed: %s",

@@ -294,6 +294,12 @@ the gateway rejects that ingress and logs the route and target. It does not run
 the default profile. Traffic that matches no route keeps the historical
 default-profile behavior.
 
+Cron jobs owned by a routed profile deliver through the shared bot too, but
+only to targets an enabled route with a `chat_id`/`thread_id` maps to that
+profile — a routed profile's job targeting an unrouted chat (or a chat routed
+to another profile) is never sent through the shared bot. Guild-only routes do
+not qualify a cron target; add a `chat_id` route for the delivery channel.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

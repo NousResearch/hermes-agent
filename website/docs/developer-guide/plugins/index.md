@@ -29,6 +29,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
 | An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
+| A **realtime speech-to-speech provider** (Gemini Live, xAI, a self-hosted duplex model, …) | [Register a realtime voice provider](#register-a-realtime-voice-provider) — `ctx.register_realtime_voice_provider(provider)`; driven by `hermes realtime --provider <name>` |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
 | **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
@@ -511,6 +512,7 @@ def register(ctx):
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.register_realtime_voice_provider(provider)` registers a realtime speech-to-speech backend — see [Register a realtime voice provider](#register-a-realtime-voice-provider) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
@@ -643,6 +645,120 @@ Four files, clear separation:
 - **Registration** connects everything
 
 ## What else can plugins do?
+
+### Register a realtime voice provider
+
+A realtime voice provider is a long-lived, bidirectional speech-to-speech session:
+audio in, audio out, interruptions, and tool calls on one channel. Hermes ships one
+(the bundled OpenAI Realtime backend in `plugins/realtime_voice/openai/`) and drives
+any registered provider from `hermes realtime --provider <name>` — see
+[Realtime Voice](/user-guide/features/realtime-voice).
+
+The split is fixed by the contract in `agent/realtime_voice_provider.py`:
+
+- **The provider owns** its SDK, credentials, wire protocol, audio formats, turn
+  detection, and transport lifecycle. It translates native events into the frozen
+  typed events (`SessionReady`, `InputSpeechStarted`, `InputTranscript`,
+  `ResponseStarted`, `OutputAudio`, `OutputTranscript`, `ToolCall`,
+  `ToolCallCancelled`, `ResponseCompleted`, `SessionFailure`, `SessionClosed`, …).
+- **Hermes owns** tool execution, approvals, history, and memory. The orchestrator
+  (`agent/realtime_voice_orchestrator.py`) runs every `ToolCall` on its own cancellable
+  task under a per-call timeout, answers each `call_id` exactly once through
+  `submit_tool_results()`, fences the audio tail of a cancelled response, and turns a
+  barge-in into cancel + truncate (or a local drop when the provider cannot truncate).
+
+Capabilities are declared, never guessed. Advertise only what the wire can do; the
+orchestrator checks `session.supports(...)` before calling an optional operation, and
+the base class refuses a session that advertises a capability without overriding its
+hook.
+
+```python
+# ~/.hermes/plugins/my-realtime/__init__.py
+import os
+
+from agent.realtime_voice_provider import (
+    PCM16_24K,
+    RealtimeAudioFormat,
+    RealtimeCapability,
+    RealtimeVoiceProvider,
+    RealtimeVoiceSession,
+    RealtimeVoiceSetup,
+    SessionClosed,
+    SessionReady,
+)
+
+
+class MySession(RealtimeVoiceSession):
+    def __init__(self, socket):
+        super().__init__(
+            {RealtimeCapability.TOOL_CALLING, RealtimeCapability.RESPONSE_CANCELLATION},
+            input_audio=RealtimeAudioFormat(sample_rate_hz=16_000),  # what send_audio expects
+            output_audio=PCM16_24K,                                   # what OutputAudio carries
+        )
+        self._socket = socket
+
+    async def send_audio(self, audio: bytes) -> None:
+        await self._socket.send_pcm(audio)
+
+    async def _submit_tool_results(self, results, continue_response) -> None:
+        await self._socket.send_tool_outputs([(r.call_id, r.output) for r in results])
+
+    async def _cancel_response(self, response_id) -> None:
+        await self._socket.cancel()
+
+    def _events(self):
+        async def stream():
+            yield SessionReady(session_id=self._socket.id)
+            async for frame in self._socket:
+                event = translate(frame)   # your wire -> contract events
+                if event is not None:
+                    yield event
+            yield SessionClosed(reason="end of stream")
+        return stream()
+
+    async def _close(self) -> None:
+        await self._socket.close()
+
+
+class MyProvider(RealtimeVoiceProvider):
+    capabilities = frozenset({RealtimeCapability.TOOL_CALLING, RealtimeCapability.RESPONSE_CANCELLATION})
+
+    @property
+    def name(self) -> str:
+        return "my-realtime"          # what --provider matches
+
+    def is_available(self) -> bool:
+        return bool(os.environ.get("MY_REALTIME_KEY"))
+
+    async def open_session(self, setup: RealtimeVoiceSetup) -> RealtimeVoiceSession:
+        socket = await connect(model=setup.model, voice=setup.voice,
+                               instructions=setup.instructions, tools=setup.tools)
+        return MySession(socket)
+
+
+def register(ctx):
+    ctx.register_realtime_voice_provider(MyProvider())
+```
+
+Rules the orchestrator relies on:
+
+- `ToolCall.arguments` is the raw JSON text from the wire; Hermes parses it and answers
+  a malformed payload with an error result so the turn completes.
+- A `SessionFailure` with `terminal=False` is a warning (one bad frame must never end a
+  call); `terminal=True` or `SessionClosed` ends the stream.
+- Emit `ToolCallCancelled` when your provider retracts calls (Gemini Live's
+  `toolCallCancellation`); Hermes will never submit results for those ids.
+- Providers may redeliver events after a reconnect; Hermes deduplicates tool work by
+  `call_id`.
+- The API key stays inside the provider. Never put it in `provider_data` or logs.
+
+Registration is profile-scoped and reversible: unloading the plugin restores whatever
+was registered under that name before, and a provider targeting a different
+`api_version` than the host is ignored with a warning.
+
+**How to test a provider without audio hardware:** drive it with the orchestrator and a
+scripted fake socket, the way `tests/plugins/realtime_voice/test_openai_provider.py` does —
+feed frames in, assert the commands your session writes out.
 
 ### Ship data files
 

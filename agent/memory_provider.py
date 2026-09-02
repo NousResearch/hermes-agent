@@ -126,6 +126,45 @@ class _FrozenDict(dict):
         raise TypeError("frozen observation payload")
 
 
+class _FreezeBudget(list):
+    """Node budget carrying the bounded JSON byte count for one payload."""
+
+    def __init__(self, nodes: int) -> None:
+        super().__init__([nodes])
+        self.encoded_bytes = 0
+
+
+def _account_encoded_bytes(budget: List[int], size: int) -> None:
+    """Charge compact UTF-8 JSON bytes without materializing the payload."""
+    if not isinstance(budget, _FreezeBudget):
+        return
+    encoded_bytes = budget.encoded_bytes + size
+    if encoded_bytes > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation payload is too large")
+    budget.encoded_bytes = encoded_bytes
+
+
+def _encoded_json_scalar_size(value: Any) -> int:
+    """Return the exact compact UTF-8 JSON size of one accepted scalar.
+
+    A very large builtin int can make ``json.dumps`` allocate a very large
+    decimal string.  Reject values whose bit length proves that they cannot
+    fit before asking the encoder to render them.  Values below that bound
+    are still tiny compared with the old unbounded container materialization.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        # Since 2**4 > 10, a B-bit integer has more than (B - 1) / 4
+        # decimal digits. Keep the equality boundary for the exact encoder.
+        if abs(value).bit_length() > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
+            raise ValueError("observation payload is too large")
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return len(encoded)
+
+
 @dataclass(frozen=True)
 class MemoryObservation:
     """One bounded, provider-authored observation attached to a prefetch.
@@ -161,24 +200,32 @@ class MemoryPrefetchResult:
     """
 
     context: str = ""
-    observations: tuple[MemoryObservation, ...] = ()
+    observations: list[MemoryObservation] | tuple[MemoryObservation, ...] = ()
 
     def __post_init__(self) -> None:
-        # A provider may conveniently pass a list. Keep every supplied item
-        # here so constructing this public value never silently loses data;
-        # MemoryManager is the authoritative trust boundary that warns and
-        # truncates before an operation result or observer event is emitted.
+        # A provider may conveniently pass a list. Exact builtin lists are
+        # bounded to the inspected-candidate cap plus one look-ahead item;
+        # MemoryManager remains the authoritative trust boundary that warns
+        # and applies the operation-level bounds before emitting observations.
         # Reject arbitrary iterables instead of consuming a potentially
-        # unbounded generator at the trust boundary.
+        # unbounded generator at this public boundary.
         raw_observations = self.observations
         if raw_observations is None:
             raw_observations = ()
         if not isinstance(raw_observations, (list, tuple)):
             raise TypeError("observations must be a list or tuple")
-        # Preserve tuple instances (including tuple subclasses) so the
-        # manager can enforce its operation budget while traversing them. A
-        # list is copied in full here intentionally: construction of this
-        # public value must not silently truncate provider data.
+        # Exact builtin lists are bounded before copying so a provider cannot
+        # force a full duplicate of a huge candidate list at this public
+        # boundary. Keep one look-ahead item for the manager's deterministic
+        # truncation warning. List subclasses are rejected rather than calling
+        # an overridden iterator; tuple instances (including tuple subclasses)
+        # retain their existing lazy traversal contract.
+        if type(raw_observations) is list:
+            raw_observations = raw_observations[
+                : MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
+            ]
+        elif not isinstance(raw_observations, tuple):
+            raise TypeError("observations must be a list or tuple")
         object.__setattr__(
             self,
             "observations",
@@ -229,18 +276,24 @@ def _freeze_json_value(
     if value is None or isinstance(value, (bool, int, str)):
         if isinstance(value, str) and len(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload string is too long")
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("observation payload contains a non-finite number")
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
         return value
     if isinstance(value, dict):
         if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
             raise ValueError("observation payload object has too many keys")
+        _account_encoded_bytes(budget, 2)  # ``{}``
         frozen = {}
-        for key, child in value.items():
+        for index, (key, child) in enumerate(value.items()):
             if not isinstance(key, str) or len(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
                 raise ValueError("observation payload object keys must be bounded strings")
+            if index:
+                _account_encoded_bytes(budget, 1)  # ``,``
+            _account_encoded_bytes(budget, _encoded_json_scalar_size(key) + 1)  # key + ``:``
             frozen[key] = _freeze_json_value(
                 child,
                 depth=depth + 1,
@@ -251,15 +304,20 @@ def _freeze_json_value(
     if isinstance(value, list):
         if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
             raise ValueError("observation payload array has too many items")
-        return tuple(
-            _freeze_json_value(
-                child,
-                depth=depth + 1,
-                budget=budget,
-                operation_budget=operation_budget,
+        _account_encoded_bytes(budget, 2)  # ``[]``
+        frozen = []
+        for index, child in enumerate(value):
+            if index:
+                _account_encoded_bytes(budget, 1)  # ``,``
+            frozen.append(
+                _freeze_json_value(
+                    child,
+                    depth=depth + 1,
+                    budget=budget,
+                    operation_budget=operation_budget,
+                )
             )
-            for child in value
-        )
+        return tuple(frozen)
     raise TypeError("observation payload must contain only JSON-safe values")
 
 
@@ -290,7 +348,12 @@ def _freeze_memory_observation_payload(
     the two counters are additive, not substitutive, so a caller cannot
     accidentally raise the per-payload cap by supplying an operation budget.
     """
-    frozen = _freeze_json_value(payload, operation_budget=operation_budget)
+    budget = _FreezeBudget(MAX_MEMORY_OBSERVATION_NODES)
+    frozen = _freeze_json_value(
+        payload,
+        budget=budget,
+        operation_budget=operation_budget,
+    )
     encoded = json.dumps(
         _thaw_json_value(frozen), ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")

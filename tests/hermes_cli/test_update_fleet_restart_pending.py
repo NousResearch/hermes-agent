@@ -334,6 +334,70 @@ def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
     assert "pre-update code" in out
 
 
+def test_clean_update_escalates_surviving_serve_as_unaccounted(
+    monkeypatch, tmp_path, capsys
+):
+    """#100479 end to end: the plan inventoried a gateway (restarted through
+    ``hermes-gateway.service``) and an unmanaged ``serve`` on the same
+    default profile. The serve survives the update as the SAME process, so
+    the update must (1) warn, (2) reconcile it as ``unaccounted`` instead of
+    borrowing the gateway's restart, and (3) exit 1 with a ``partial``
+    receipt — not print a clean success."""
+    from hermes_cli.update_inventory import (
+        RuntimeRecord, UpdatePlan, _restart_mechanism,
+    )
+    import hermes_cli.update_inventory as ui
+
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+
+    plan = UpdatePlan()
+    plan.runtimes = [
+        RuntimeRecord(kind="gateway", profile="default", pid=4444,
+                      supervisor="systemd",
+                      restart_via=_restart_mechanism("systemd", "default")),
+        RuntimeRecord(kind="serve", profile="default", pid=5555,
+                      supervisor="manual-serve",
+                      restart_via=_restart_mechanism("manual-serve", "default"),
+                      detail={"create_time": 1000.0}),
+    ]
+    monkeypatch.setattr(ui, "collect_runtime_inventory", lambda: plan)
+    # The restart phase's own bookkeeping says the gateway unit restarted
+    # (systemd branch is stubbed off in _patch_update_deps, so feed it here).
+    real_match = ui.match_runtime_outcomes
+
+    def _match(p, **kw):
+        kw["restarted_services"] = list(kw.get("restarted_services") or []) + [
+            "hermes-gateway.service"
+        ]
+        return real_match(p, **kw)
+
+    monkeypatch.setattr(ui, "match_runtime_outcomes", _match)
+    # Real survivor probe semantics against a fake ledger: pid 5555 is still
+    # the same incarnation the plan recorded.
+    import hermes_cli.process_identity as pi
+
+    monkeypatch.setattr(
+        pi, "ledger_entries",
+        lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(args)
+    assert excinfo.value.code == 1
+
+    out = capsys.readouterr().out
+    assert "pid 5555" in out and "pre-update code" in out
+    assert "Planned runtimes the restart phase never touched" in out
+    assert "serve [default] pid 5555" in out
+
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["outcome"] == "partial"
+    by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
+    assert by_pid == {4444: "restarted", 5555: "unaccounted"}
+
+
 def test_interrupt_between_pull_and_restart_leaves_marker(
     monkeypatch, tmp_path
 ):

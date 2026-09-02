@@ -10815,7 +10815,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
         # Check if any pre-update serve/dashboard runtimes survived on
-        # pre-update code generations (#100479).
+        # pre-update code generations (#100479). This is the SUCCESS-path
+        # twin of the abort-recovery probe above: the restart phase only
+        # restarts units, so an sshd-spawned `serve --isolated` or a manual
+        # `hermes serve` (no unit) is left running its pre-update
+        # sys.modules graph — and its cron ticker keeps firing agent jobs
+        # that ImportError on every symbol added in the pulled range. Runs
+        # AFTER the dashboard cleanup so a manual dashboard that cleanup
+        # killed and respawned is (correctly) not a survivor. The rows also
+        # feed the plan-vs-execution reconciliation below, so a survivor is
+        # escalated (exit 1) instead of merely printed. ``None`` means the
+        # probe itself failed; the reconciliation then stays fail-closed.
+        _stale_serve_rows: "list | None" = None
         try:
             _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
             if _stale_serve_rows:
@@ -10932,6 +10943,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     externally_supervised_profiles=externally_supervised_profiles,
                     killed_pids=killed_pids,
                     failed_units=failed_or_stale_units,
+                    # Serve/dashboard runtimes reconcile by incarnation
+                    # liveness, not by the gateway's unit names (#100479).
+                    stale_serve_pids=(
+                        {row.get("pid") for row in _stale_serve_rows}
+                        if _stale_serve_rows is not None
+                        else None
+                    ),
                 )
                 if report_unaccounted_runtimes(_runtime_outcomes):
                     gateway_fleet_restart_incomplete = True

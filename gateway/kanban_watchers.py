@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from contextvars import Context
 from pathlib import Path
@@ -1689,6 +1690,68 @@ class GatewayKanbanWatchersMixin:
             """Re-resolve (enabled, per_tick) from current config each tick."""
             return _resolve_auto_decompose_settings(_load_config)
 
+        def _stop_scoped_workers_on_shutdown() -> None:
+            """Honour ``kanban.worker_isolation_stop_on_shutdown`` (default
+            false).
+
+            Default behaviour: scoped workers live in their own transient
+            user systemd scopes, so they SURVIVE a gateway restart and the
+            next gateway re-adopts them (claim rewritten, run continues).
+            When the knob is true, a graceful shutdown instead stops every
+            scoped worker this host still claims — verified teardown of
+            the whole cgroup, not a pid kill — before the gateway exits.
+
+            Runs on a daemon thread with a bounded join so a wedged
+            ``systemctl`` cannot hang gateway shutdown; anything the budget
+            doesn't cover is left for the next gateway's adoption sweep.
+            """
+            try:
+                cfg = _load_config()
+                kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+                if not kanban_cfg.get("worker_isolation_stop_on_shutdown", False):
+                    return
+            except Exception:
+                logger.exception("kanban shutdown: cannot load config; leaving scoped workers for re-adoption")
+                return
+
+            def _run() -> None:
+                try:
+                    boards = _kb.list_boards(include_archived=False)
+                except Exception:
+                    boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                for b in boards:
+                    slug = b.get("slug") or _kb.DEFAULT_BOARD
+                    conn = None
+                    try:
+                        conn = _kb.connect(board=slug)
+                        stopped = _kb.stop_all_scoped_workers(conn)
+                    except Exception:
+                        logger.exception("kanban shutdown [%s]: scoped-worker stop failed", slug)
+                        continue
+                    finally:
+                        if conn is not None:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                    if stopped:
+                        logger.info(
+                            "kanban shutdown [%s]: stopped %d scoped worker(s): %s",
+                            slug, len(stopped), ", ".join(stopped),
+                        )
+
+            worker = threading.Thread(
+                target=_run, name="kanban-scope-shutdown", daemon=True,
+            )
+            worker.start()
+            worker.join(timeout=15.0)
+            if worker.is_alive():
+                logger.warning(
+                    "kanban shutdown: scoped-worker stop exceeded 15s budget; "
+                    "abandoning — the next gateway's adoption sweep will "
+                    "re-adopt or reclaim whatever remains",
+                )
+
         def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
@@ -1840,6 +1903,7 @@ class GatewayKanbanWatchersMixin:
                         last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                _stop_scoped_workers_on_shutdown()
                 self._release_kanban_dispatcher_lock()
                 raise
             except Exception:
@@ -1852,4 +1916,8 @@ class GatewayKanbanWatchersMixin:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
 
+        # Graceful exit (self._running flipped by gateway stop): honour
+        # the shutdown policy BEFORE releasing the dispatcher lock so no
+        # other gateway can start adopting workers mid-stop.
+        _stop_scoped_workers_on_shutdown()
         self._release_kanban_dispatcher_lock()

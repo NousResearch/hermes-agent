@@ -10,8 +10,11 @@ Discord / Slack routed through ``_enable_from_env`` and honored the
 against a temp HERMES_HOME — real YAML I/O, no mocks of the code under test.
 """
 
+import logging
+
 import pytest
 
+from gateway import config as gateway_config
 from gateway.config import Platform, load_gateway_config
 
 
@@ -119,3 +122,78 @@ def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monke
     assert cfg.extra.get("account_id") == "acct_12345"
     # marker never leaks out of config load
     assert "_enabled_explicit" not in cfg.extra
+
+
+@pytest.fixture()
+def _fresh_warn_dedup(monkeypatch):
+    """The explicit-disable notice is one-time per process; start each test clean."""
+    monkeypatch.setattr(gateway_config, "_EXPLICIT_DISABLE_WARNED", set())
+
+
+@pytest.mark.usefixtures("_fresh_warn_dedup")
+@pytest.mark.parametrize("platform", sorted(CRED_ENV))
+def test_explicit_disable_with_env_credentials_warns_once(platform, tmp_path, monkeypatch, caplog):
+    """Users who relied on 'creds in .env = platform on' must be told why it went
+    dark: one WARNING naming the platform, the winning config key, and the env
+    credential(s) — emitted once per process, not on every config reload."""
+    hermes_home = _isolate(monkeypatch, tmp_path, CRED_ENV[platform])
+    (hermes_home / "config.yaml").write_text(
+        f"platforms:\n  {platform}:\n    enabled: false\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+        load_gateway_config()
+        load_gateway_config()  # reload: must not repeat
+
+    hits = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and f"platforms.{platform}.enabled: false" in r.getMessage()
+    ]
+    assert len(hits) == 1, [r.getMessage() for r in caplog.records]
+    msg = hits[0].getMessage()
+    assert f"Platform '{platform}'" in msg
+    for env_name in CRED_ENV[platform]:
+        assert env_name in msg
+    assert f"platforms.{platform}.enabled: true" in msg  # the remedy
+
+
+@pytest.mark.usefixtures("_fresh_warn_dedup")
+def test_no_warning_when_yaml_has_no_opinion_or_is_enabled(tmp_path, monkeypatch, caplog):
+    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["weixin"], **CRED_ENV["homeassistant"]})
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n  homeassistant:\n    enabled: true\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+        config = load_gateway_config()
+
+    assert config.platforms[Platform.WEIXIN].enabled is True
+    assert config.platforms[Platform.HOMEASSISTANT].enabled is True
+    assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
+
+
+@pytest.mark.usefixtures("_fresh_warn_dedup")
+def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, caplog):
+    """The notice is about credentials being IGNORED; a plain disable is silent."""
+    hermes_home = _isolate(monkeypatch, tmp_path, {})
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+        config = load_gateway_config()
+
+    assert config.platforms[Platform.WEIXIN].enabled is False
+    assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
+
+
+def test_every_env_enable_branch_is_named_for_the_warning():
+    """Each platform routed through ``_enable_from_env`` needs a credential
+    entry so the WARNING can name what is being ignored."""
+    import inspect, re
+
+    src = inspect.getsource(gateway_config._apply_env_overrides)
+    routed = {Platform[name] for name in re.findall(r"_enable_from_env\(Platform\.([A-Z_]+)\)", src)}
+    routed.add(Platform.SLACK)  # Slack has its own inline copy of the logic
+    missing = {p.value for p in routed} - {p.value for p in gateway_config._ENV_ENABLE_CREDENTIALS}
+    assert not missing, f"platforms without a credential entry for the explicit-disable warning: {missing}"

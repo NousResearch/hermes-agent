@@ -1980,6 +1980,64 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                 pconfig.enabled = False
 
 
+# Platforms for which the "explicitly disabled in config.yaml, but credentials
+# are present in the environment" WARNING has already been emitted in this
+# process. The gateway reloads its config on every turn (and other surfaces
+# call load_gateway_config() repeatedly), so the notice is one-time per
+# platform per process — loud once at startup, never a per-turn drumbeat.
+_EXPLICIT_DISABLE_WARNED: set = set()
+
+
+# Env var(s) whose presence drives each platform's env-enable branch, for the
+# explicit-disable WARNING below. Kept next to the branches that read them.
+_ENV_ENABLE_CREDENTIALS: dict = {
+    Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
+    Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
+    Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
+    Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
+    Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
+    Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
+    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
+    Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+    Platform.SMS: ("TWILIO_ACCOUNT_SID",),
+    Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+    Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+    Platform.WECOM: ("WECOM_BOT_ID", "WECOM_SECRET"),
+    Platform.WECOM_CALLBACK: ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
+    Platform.WEIXIN: ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"),
+    Platform.BLUEBUBBLES: ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
+    Platform.QQBOT: ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
+    Platform.YUANBAO: ("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"),
+    Platform.RELAY: ("GATEWAY_RELAY_URL",),
+}
+
+
+def _warn_explicit_disable_beats_env(platform: Platform) -> None:
+    """One-time WARNING: ``platforms.<x>.enabled: false`` wins over env creds.
+
+    Until #48820 the credential-presence branches force-enabled twelve
+    platforms regardless of an explicit ``enabled: false`` in config.yaml, so
+    users who relied on "creds in .env = platform on" would see it go dark
+    after the fix with no explanation. Name the platform, the config key that
+    is winning, and the env var(s) that used to override it.
+    """
+    if platform in _EXPLICIT_DISABLE_WARNED:
+        return
+    _EXPLICIT_DISABLE_WARNED.add(platform)
+    names = _ENV_ENABLE_CREDENTIALS.get(platform) or ()
+    present = [n for n in names if (os.environ.get(n) or "").strip()]
+    creds = ", ".join(present or names) or "its credentials"
+    logger.warning(
+        "Platform '%s' is explicitly disabled by platforms.%s.enabled: false in "
+        "config.yaml, so the credentials found in the environment (%s) will NOT "
+        "start its adapter. Environment credentials no longer override an "
+        "explicit disable. Remove the key or set platforms.%s.enabled: true to "
+        "turn it back on.",
+        platform.value, platform.value, creds, platform.value,
+    )
+
+
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     getenv = _getenv_str
@@ -1998,8 +2056,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # flag is cleared once for all platforms in the final cleanup at the
         # end of _apply_env_overrides.
         enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
-        if not platform_config.enabled and not enabled_was_explicit:
-            platform_config.enabled = True
+        if not platform_config.enabled:
+            if enabled_was_explicit:
+                # Credentials are present (that is why we are here) but the
+                # user said no in config.yaml. Say so once (#48820).
+                _warn_explicit_disable_beats_env(platform)
+            else:
+                platform_config.enabled = True
         return platform_config
     
     # Telegram
@@ -2150,6 +2213,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # turn an env-token setup into a disabled platform. Only an
                 # explicit slack.enabled/platforms.slack.enabled false should.
                 slack_config.enabled = True
+            elif not slack_config.enabled:
+                _warn_explicit_disable_beats_env(Platform.SLACK)
         # If yaml config exists, respect its enabled flag (don't override
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.

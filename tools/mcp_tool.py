@@ -1210,6 +1210,20 @@ def _update_death_supervisor(verb: str, pgids) -> None:
             # ``_supervised_pgids``. Nothing is lost in between because that
             # set, not the pipe, is the record of what needs reaping.
             _death_supervisor = None
+            return
+
+        if not _supervised_pgids:
+            # Nothing left to reap: release the supervisor instead of keeping
+            # a ~15 MB process and a pipe resident for the life of a gateway
+            # that once connected a stdio server. Closing our write end is
+            # the same EOF signal parent death sends; with an empty set the
+            # supervisor reaps nothing and exits. The next register respawns
+            # and replays from ``_supervised_pgids`` as it already does.
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            _death_supervisor = None
 
 
 # ---------------------------------------------------------------------------
@@ -3440,9 +3454,17 @@ class MCPServerTask:
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
-                        except (AttributeError, ProcessLookupError, OSError):
+                        except ProcessLookupError:
+                            # The child raced and already exited. The MCP SDK
+                            # spawns stdio servers with start_new_session=True,
+                            # so the child was its own group leader (pgid ==
+                            # pid); keep that group covered rather than drop
+                            # it -- any descendant it left behind still has
+                            # to be reaped, and the prune forgets the group
+                            # once nothing in it is alive.
+                            new_pgids[_pid] = _pid
+                        except (AttributeError, OSError):
                             # AttributeError: Windows (os.getpgid is POSIX-only)
-                            # ProcessLookupError: child raced and already exited
                             pass
                     with _lock:
                         for _pid in new_pids:

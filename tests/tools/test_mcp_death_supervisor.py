@@ -350,11 +350,25 @@ class _FakeSupervisor:
         self.stdin = io.StringIO()
         self.pid = 4242
         self._exited = exited
+        self._sent = ""
+        self.closed = False
+        _real_close = self.stdin.close
+
+        def _close():
+            # Mirror a real pipe: capture what was written before the write
+            # end goes away, so tests can still assert on the control stream.
+            self._sent = self.stdin.getvalue()
+            self.closed = True
+            _real_close()
+
+        self.stdin.close = _close
 
     def poll(self):
         return 1 if self._exited else None
 
     def lines(self):
+        if self.closed:
+            return self._sent.splitlines()
         return self.stdin.getvalue().splitlines()
 
 
@@ -403,6 +417,55 @@ def test_unregister_is_forwarded(monkeypatch, all_groups_alive):
 
     assert fake.lines() == ["register 111", "unregister 111"]
     assert mcp_tool._supervised_pgids == set()
+
+
+def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_groups_alive):
+    """An empty registration set must not keep a supervisor resident.
+
+    A gateway that once connected a stdio server would otherwise carry a
+    ~15 MB process and a live pipe for the rest of its life. Closing our
+    write end is the same EOF the supervisor treats as parent death; with
+    nothing registered it exits without reaping. The next register starts a
+    fresh one, exactly like the dead-supervisor replay path.
+    """
+    spawned = []
+
+    def _spawn():
+        fake = _FakeSupervisor()
+        spawned.append(fake)
+        return fake
+
+    monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", _spawn)
+
+    mcp_tool._update_death_supervisor("register", [111, 222])
+    mcp_tool._update_death_supervisor("unregister", [111])
+    assert not spawned[0].closed, "released the supervisor while a group was still registered"
+
+    mcp_tool._update_death_supervisor("unregister", [222])
+    assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
+    assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
+    assert mcp_tool._death_supervisor is None
+
+    mcp_tool._update_death_supervisor("register", [333])
+    assert len(spawned) == 2 and spawned[1].lines() == ["register 333"]
+
+
+def test_supervisor_survives_the_real_eof_release():
+    """End to end: closing the control pipe with nothing registered exits cleanly."""
+    if os.name != "posix":
+        pytest.skip("POSIX-only supervisor")
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        mcp_tool._update_death_supervisor("register", [os.getpgid(child.pid)])
+        proc = mcp_tool._death_supervisor
+        assert proc is not None and proc.poll() is None
+        mcp_tool._update_death_supervisor("unregister", [os.getpgid(child.pid)])
+        assert mcp_tool._death_supervisor is None
+        assert proc.wait(timeout=10) == 0, "supervisor did not exit on the release EOF"
+        assert child.poll() is None, "release reaped a group that had been unregistered"
+    finally:
+        _kill(child.pid)
+        child.wait(timeout=10)
 
 
 def test_unregister_alone_does_not_start_a_supervisor(monkeypatch):

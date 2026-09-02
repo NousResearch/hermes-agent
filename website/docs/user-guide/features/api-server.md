@@ -477,8 +477,9 @@ When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the
 run going silent while a child works. The `subagent.complete` payload carries
-the child's status, summary, duration, token/cost figures, and a
-`child_session_id` for correlation; free-text fields pass forced secret
+the child's status, summary, duration, token/cost figures, a
+`child_session_id` for correlation, and the `delegation_id` of the batch it
+belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fields pass forced secret
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for

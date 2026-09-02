@@ -225,6 +225,7 @@ def _make_run_event_callback(
                 "task_index",
                 "subagent_id",
                 "child_session_id",
+                "delegation_id",
                 "parent_id",
                 "depth",
                 "model",

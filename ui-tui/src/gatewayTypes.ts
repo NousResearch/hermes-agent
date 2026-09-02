@@ -543,6 +543,9 @@ export interface RollbackRestoreResponse {
 export interface SubagentEventPayload {
   api_calls?: number
   cost_usd?: number
+  /** Batch (delegation) id this subagent belongs to — distinguishes
+   *  interleaved `[n/N]` progress from concurrent or nested fan-outs. */
+  delegation_id?: string
   depth?: number
   duration_seconds?: number
   files_read?: string[]

@@ -8194,6 +8194,8 @@ def _on_tool_progress(
             payload["parent_id"] = str(_kwargs["parent_id"])
         if _kwargs.get("child_session_id"):
             payload["child_session_id"] = str(_kwargs["child_session_id"])
+        if _kwargs.get("delegation_id"):
+            payload["delegation_id"] = str(_kwargs["delegation_id"])
         if _kwargs.get("depth") is not None:
             payload["depth"] = int(_kwargs["depth"])
         if _kwargs.get("model"):

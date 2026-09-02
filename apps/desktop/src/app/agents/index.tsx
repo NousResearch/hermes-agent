@@ -143,8 +143,21 @@ const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>
 interface RootGroup {
   id: string
   delegationIndex: number
+  /** Short batch tag (`deleg_6a664903` → `6a66`) when the backend sent one. */
+  batchTag?: string
   nodes: SubagentNode[]
   taskCount: number
+}
+
+/** `deleg_6a664903` → `6a66`; mirrors tools.delegate_tool.format_batch_tag. */
+export const batchTagOf = (delegationId: string | undefined): string | undefined => {
+  if (!delegationId) {
+    return undefined
+  }
+
+  const short = delegationId.split('_').at(-1)?.slice(0, 4)
+
+  return short || undefined
 }
 
 function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
@@ -152,10 +165,34 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   let n = 0
 
   for (const node of roots) {
+    // Exact grouping when the backend tags workers with their batch id —
+    // concurrent or nested fan-outs of the same shape must not merge.
+    if (node.delegationId) {
+      const byId = groups.find(g => g.id === `delegation:${node.delegationId}`)
+
+      if (byId) {
+        byId.nodes.push(node)
+
+        continue
+      }
+
+      n += 1
+      groups.push({
+        id: `delegation:${node.delegationId}`,
+        delegationIndex: n,
+        batchTag: batchTagOf(node.delegationId),
+        nodes: [node],
+        taskCount: node.taskCount
+      })
+
+      continue
+    }
+
+    // Older backends (no delegation_id): heuristic grouping by shape + time.
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
-    const sameShape = prev && node.taskCount > 1 && prev.taskCount === node.taskCount
+    const sameShape = prev && !prev.batchTag && node.taskCount > 1 && prev.taskCount === node.taskCount
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
     if (prev && sameShape && closeInTime && uniqueStep) {
@@ -248,7 +285,8 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
   return (
     <section className="grid min-w-0 gap-3">
       <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
-        {group.delegationIndex > 0 ? t.agents.delegation(group.delegationIndex) : ''}{' '}
+        {group.delegationIndex > 0 ? t.agents.delegation(group.delegationIndex) : ''}
+        {group.batchTag ? <span className="ml-1 font-mono text-muted-foreground/60">[{group.batchTag}]</span> : null}{' '}
         <span className="text-muted-foreground/50">·</span> {t.agents.workers(group.nodes.length)}
         {activeWorkers > 0 ? <span className="text-primary/85"> · {t.agents.workersActive(activeWorkers)}</span> : null}
       </p>

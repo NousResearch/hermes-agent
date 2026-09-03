@@ -194,12 +194,10 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
     unpacked = install / "apps" / "desktop" / "release" / "linux-unpacked"
     unpacked.mkdir(parents=True)
     stamp = hermes_home / "relaunch.stamp"
-    pid_file = hermes_home / "relaunch.pid"
     target = unpacked / "hermes-desktop"
     target.write_text(
         "#!/bin/sh\n"
         "printf launched > \"$HERMES_TEST_RELAUNCH_STAMP\"\n"
-        "echo $$ > \"$HERMES_TEST_RELAUNCH_PID\"\n"
         "while [ ! -f \"$HERMES_TEST_RELAUNCH_DONE\" ]; do sleep 0.2; done\n",
         encoding="utf-8",
     )
@@ -218,7 +216,6 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
             ],
             env_extra={
                 "HERMES_TEST_RELAUNCH_STAMP": str(stamp),
-                "HERMES_TEST_RELAUNCH_PID": str(pid_file),
                 "HERMES_TEST_RELAUNCH_DONE": str(done),
             },
         )
@@ -235,9 +232,6 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
         assert stamp.exists(), "Linux relaunch was not attempted after client-only success"
         assert stamp.read_text(encoding="utf-8") == "launched"
     finally:
+        # Cooperative stop only — the dummy was setsid-detached by posix.sh,
+        # so os.kill would trip the live-system guard.
         done.write_text("1", encoding="utf-8")
-        if pid_file.exists():
-            try:
-                os.kill(int(pid_file.read_text().strip()), 15)
-            except (OSError, ValueError):
-                pass

@@ -8,7 +8,12 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -1074,18 +1079,24 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
 
-          // Transient remote failure (dropped SSH/HTTP registered connection,
-          // mint timeout): self-heal with bounded, jittered retries instead of
-          // parking on "Desktop boot failed" until the user re-enters the same
-          // connection details (#82679). Main already cleared the failed cached
-          // descriptor, so the next getConnection() rebuilds the connection —
-          // exactly what manual re-entry forced. Exhausted retries, local
-          // failures, and confirmed reauth rejections end in the real recovery
-          // affordance (the boot-failure overlay), never an infinite spinner.
-          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable()) && !cancelled) {
+          // Transient remote failures AND the renderer's own startup deadline
+          // self-heal with bounded, jittered retries instead of parking on
+          // "Desktop boot failed". The latter matters on Windows: orphan-process
+          // cleanup can keep main's shared getConnection() attempt alive past
+          // this renderer deadline even though the backend subsequently becomes
+          // ready. A retry joins that still-live main-process attempt and clears
+          // the overlay automatically. Other local failures and confirmed reauth
+          // rejections still end in the real recovery affordance immediately.
+          const retryable = isTimeoutError(err) || (await bootFailureIsRetryable())
+
+          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && retryable && !cancelled) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
-            resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
+            resumeDesktopBootForRetry(
+              translateNow(
+                isTimeoutError(err) ? 'boot.steps.startingDesktopConnection' : 'boot.steps.retryingRemoteBackend'
+              )
+            )
             clearBootRetryTimer()
             bootRetryTimer = setTimeout(() => {
               bootRetryTimer = null

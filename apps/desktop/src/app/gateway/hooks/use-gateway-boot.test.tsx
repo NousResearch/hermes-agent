@@ -1205,14 +1205,32 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($connection.get()).toBeNull()
   })
 
-  it('a getConnection() that hangs on INITIAL boot rejects on its own after the reconnect-attempt timeout, not only when main eventually gives up (#93454)', async () => {
+  it('a late local backend self-heals after the renderer startup deadline instead of leaving a stale failure overlay', async () => {
     // boot()'s getConnection() had no bound of its own — only main's own
-    // eventual timeout (e.g. waitForHermes, ~45s) ever settled it. A wedge
-    // that main never resolves (not even a rejection) must not hang
-    // "Starting Hermes…" forever; the renderer needs to own its own bound
-    // here too, same as attemptReconnect() and softSwitch().
+    // eventual timeout ever settled it. The renderer owns a 45s bound, but a
+    // Windows orphan-process sweep can keep main's shared startup attempt alive
+    // a little longer and then succeed. Before this fix the renderer published
+    // a terminal error and ignored that late success, leaving the user on a
+    // stale "Hermes couldn't start" screen while the backend was healthy.
     const desktop = fakeDesktop()
-    desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    let connectionReady = false
+
+    desktop.getConnection = vi.fn(
+      () =>
+        new Promise(resolve => {
+          const settle = () => {
+            if (connectionReady) {
+              resolve(primaryConn)
+
+              return
+            }
+
+            setTimeout(settle, 100)
+          }
+
+          settle()
+        })
+    )
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
     render(<Harness />)
@@ -1220,14 +1238,23 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the shared backend-boot budget (45s) — the
-    // stalled await must reject on its own so boot()'s catch runs instead of
-    // waiting indefinitely on main.
+    // Cross the renderer's deadline while main's startup remains live. The
+    // boot overlay stays in a retrying state instead of becoming terminal.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000)
     })
 
-    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().error).toBeNull()
+
+    // The backend becomes ready moments later. The bounded retry joins it and
+    // completes boot without a click on Retry or Repair install.
+    connectionReady = true
+    await advanceBackoff()
+
+    expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(1)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
   })
 
   it('softSwitch(): a getConnection() that hangs on a connection-apply switch does not latch $gatewaySwitching forever (#93454)', async () => {

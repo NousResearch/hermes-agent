@@ -273,10 +273,11 @@ class CellAuthority:
     a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, session_id: str = ""):
         import contextvars
 
         self.task_id = task_id
+        self.session_id = session_id
         self.ctx = contextvars.copy_context()
         self.active = True
         self._approval_cb = None
@@ -323,7 +324,10 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return handle_function_call(
+                tool_name, tool_args,
+                task_id=self.task_id, session_id=self.session_id,
+            )
         finally:
             if previous is not None and self._callback_setters is not None:
                 set_approval, set_sudo = self._callback_setters
@@ -810,6 +814,7 @@ def execute_in_session_kernel(
     max_tool_calls: int,
     reset: bool,
     is_interrupted,
+    session_id: str = "",
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel.
 
@@ -894,7 +899,7 @@ def _run_cell(
     # snapshot a per-call RPC thread would have received — and installed
     # atomically on the kernel so the serving thread dispatches this cell's
     # tool calls under this cell's approval/session/turn identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(task_id, session_id=session_id)
 
     with kernel.lock:
         try:

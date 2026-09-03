@@ -24,6 +24,7 @@ import os
 import json
 import re
 import asyncio
+from copy import deepcopy
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
@@ -382,14 +383,15 @@ def get_tool_definitions(
             # consistent state even on a cache hit.
             global _last_resolved_tool_names
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-            # Return a shallow copy of the list but share the dict references —
-            # schemas are treated as read-only by all known callers.
-            return list(cached)
+            # Give every caller its own schema tree. The outer list copy alone
+            # does not protect cached nested function/parameter dictionaries
+            # from a caller that customizes a schema before sending it.
+            return deepcopy(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
     if quiet_mode and cache_key is not None:
-        # Cache the freshly-computed list, but hand callers a shallow copy so
+        # Cache the freshly-computed list, but hand callers a deep copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
         # schemas to self.tools) don't poison the cache. Without this, a
         # long-lived Gateway process accumulates duplicate tool names across
@@ -408,7 +410,7 @@ def get_tool_definitions(
                     _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
                 _tool_defs_cache[cache_key] = result
                 cached = result
-        return list(cached)
+        return deepcopy(cached)
     if quiet_mode:
         return list(result)
     return result

@@ -1266,3 +1266,137 @@ class TestMaxSizeMbRetention:
         assert ledger.verify_chain() == [], (
             "Chain must be valid even when floor exception prevents pruning."
         )
+
+
+# ── verify_chain single-snapshot regression ─────────────────────────────────────
+
+class TestVerifyChainSingleSnapshot:
+    """verify_chain must read prune_boundary_prev_hash and receipt rows inside
+    one _connect_readonly connection *and* one BEGIN transaction so both
+    SELECTs share the same WAL read-point.
+
+    Two deterministic behavioral checks (no timing sleeps, no source reading,
+    no implementation-shape assertions beyond the public observable contract):
+
+    1. connection-count seam — _connect_readonly is called exactly once per
+       verify_chain invocation on a populated, pruned ledger.
+
+    2. between-SELECT mutation seam — a side-effect injected via execute()
+       wrapping fires right after the meta SELECT completes (i.e. after BEGIN
+       has pinned the WAL snapshot) and corrupts prune_boundary_prev_hash.
+       Because both SELECTs share the same BEGIN snapshot the mutation is
+       invisible to the receipts SELECT, so verify_chain still returns [].
+       The test asserts that outcome deterministically, with no timing
+       dependencies.
+    """
+
+    def _pruned_ledger(self, tmp_path, monkeypatch):
+        """Return (ledger, db_path) with a pruned boundary row in meta."""
+        import agent.action_receipts as ar
+
+        db = tmp_path / "r.db"
+        # max_rows=2 so the third record prunes, writing prune_boundary_prev_hash.
+        monkeypatch.setattr(ar, "_load_config", lambda: _cfg(max_rows=2))
+        ledger = ar.ActionReceiptLedger(db_path=db)
+        for i in range(3):
+            ledger.record_receipt(tool_name=f"tool{i}", args={"i": i})
+        return ledger, db
+
+    def test_verify_chain_opens_one_connection(self, tmp_path, monkeypatch):
+        """_connect_readonly is called exactly once per verify_chain call."""
+        import agent.action_receipts as ar
+
+        ledger, _ = self._pruned_ledger(tmp_path, monkeypatch)
+
+        call_count = [0]
+        _real_connect_readonly = ar.ActionReceiptLedger._connect_readonly
+
+        def _counting_connect_readonly(self_inner):
+            call_count[0] += 1
+            return _real_connect_readonly(self_inner)
+
+        monkeypatch.setattr(
+            ar.ActionReceiptLedger, "_connect_readonly", _counting_connect_readonly
+        )
+
+        result = ledger.verify_chain()
+
+        assert result == [], f"verify_chain reported defects: {result}"
+        assert call_count[0] == 1, (
+            f"verify_chain opened {call_count[0]} read-only connections; "
+            "expected exactly 1 (single-snapshot contract)"
+        )
+
+    def test_verify_chain_unaffected_by_between_select_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        """A boundary mutation committed between the meta SELECT and the receipts
+        SELECT must be invisible — the BEGIN transaction has already pinned the
+        WAL read-point before the meta SELECT ran, so the receipts SELECT sees
+        the same snapshot.
+
+        The injection seam wraps conn.execute() on the single connection returned
+        by _connect_readonly.  The first prune_boundary_prev_hash SELECT returns
+        the correct value; then the mutation fires via a separate writer that
+        corrupts the boundary; then the receipts SELECT proceeds.  Under a proper
+        BEGIN snapshot the mutation is outside the read horizon and verify_chain
+        returns no defects.
+        """
+        import sqlite3
+        import agent.action_receipts as ar
+
+        ledger, db = self._pruned_ledger(tmp_path, monkeypatch)
+
+        # Confirm the baseline chain is intact before instrumentation.
+        assert ledger.verify_chain() == []
+
+        _real_connect_readonly = ar.ActionReceiptLedger._connect_readonly
+
+        def _instrumenting_connect_readonly(self_inner):
+            conn = _real_connect_readonly(self_inner)
+            # Wrap execute() so we can inject a mutation between specific SELECTs.
+            mutation_fired = [False]
+            original_execute = conn.execute
+
+            def _execute_with_injection(sql, *args, **kwargs):
+                result = original_execute(sql, *args, **kwargs)
+                # After the meta row has been fetched, commit a corruption via
+                # a *separate* writer connection.  This fires after BEGIN has
+                # pinned our snapshot, so the receipts SELECT that follows
+                # should remain unaffected.
+                if (
+                    not mutation_fired[0]
+                    and "prune_boundary_prev_hash" in sql
+                    and sql.strip().upper().startswith("SELECT")
+                ):
+                    mutation_fired[0] = True
+                    try:
+                        writer = sqlite3.connect(str(db))
+                        writer.execute(
+                            "UPDATE meta SET value='deadbeef_injected' "
+                            "WHERE key='prune_boundary_prev_hash'"
+                        )
+                        writer.commit()
+                        writer.close()
+                    except Exception:
+                        pass
+                return result
+
+            conn.execute = _execute_with_injection
+            return conn
+
+        monkeypatch.setattr(
+            ar.ActionReceiptLedger, "_connect_readonly", _instrumenting_connect_readonly
+        )
+
+        result = ledger.verify_chain()
+
+        # The BEGIN snapshot pins both SELECTs to the same WAL point.  The
+        # mutation was committed after BEGIN but is outside the read horizon,
+        # so verify_chain sees the original correct boundary and returns no
+        # defects.
+        assert result == [], (
+            "verify_chain reported defects after a between-SELECT boundary "
+            "mutation; this indicates the receipts SELECT saw a different "
+            "snapshot than the meta SELECT"
+        )

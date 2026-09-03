@@ -854,29 +854,42 @@ class ActionReceiptLedger:
         prune. If that entry is absent or mismatched, the broken link is still
         reported as a defect.
 
+        Both ``prune_boundary_prev_hash`` and the receipt rows are read within
+        the *same* ``_connect_readonly`` connection so they come from a single
+        WAL snapshot; there is no gap between a boundary read and a row read
+        that a concurrent writer could slip into.
+
         This does **not** prove originality. An actor who rewrites the entire
         file — or truncates the tail — can produce a chain that passes
         verification. The chain is a corruption/partial-tamper detector, not
         cryptographic proof of custody.
         """
         problems: list[str] = []
-        # Load the prune-boundary predecessor hash written by _apply_retention.
-        prune_boundary_prev: Optional[str] = None
-        if self.db_path.exists():
-            try:
-                conn = self._connect_readonly()
-                try:
-                    row = conn.execute(
-                        "SELECT value FROM meta WHERE key='prune_boundary_prev_hash'"
-                    ).fetchone()
-                    if row is not None:
-                        prune_boundary_prev = row[0] or None
-                finally:
-                    conn.close()
-            except Exception:
-                pass
+        if not self.db_path.exists():
+            return problems
 
-        rows = self.read_all()
+        # Both meta and receipt rows are fetched inside one BEGIN transaction
+        # on a single connection so they share the same WAL read-point — no
+        # concurrent writer can slip between the two SELECTs.
+        try:
+            conn = self._connect_readonly()
+            try:
+                conn.execute("BEGIN")
+                meta_row = conn.execute(
+                    "SELECT value FROM meta WHERE key='prune_boundary_prev_hash'"
+                ).fetchone()
+                prune_boundary_prev: Optional[str] = (
+                    meta_row[0] or None if meta_row is not None else None
+                )
+                raw_rows = conn.execute(
+                    "SELECT * FROM action_receipts ORDER BY id ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            return problems
+
+        rows = [dict(r) for r in raw_rows]
         previous: Optional[str] = None
         is_first = True
         for row in rows:

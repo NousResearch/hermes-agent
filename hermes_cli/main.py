@@ -13804,6 +13804,13 @@ def main():
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
+    # credentials command — masked opaque credential entry for agents
+    # =========================================================================
+    from hermes_cli.credential_commands import build_credentials_parser
+
+    build_credentials_parser(subparsers)
+
+    # =========================================================================
     # egress command — iron-proxy outbound credential-injection firewall
     # =========================================================================
     # NOTE: this is the OUTBOUND egress firewall (ironsh/iron-proxy).

@@ -172,6 +172,12 @@ TOOLSETS = {
         "tools": ["terminal", "process_manage"],
         "includes": []
     },
+
+    "credentials": {
+        "description": "Opaque credential request/revoke/list tools; values entered via masked CLI and resolved only at execution time",
+        "tools": ["credential"],
+        "includes": []
+    },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

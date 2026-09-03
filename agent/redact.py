@@ -879,6 +879,11 @@ def redact_sensitive_text(
         text = str(text)
     if not text:
         return text
+    try:
+        from agent.credential_store import redact_registered_secrets
+        text = redact_registered_secrets(text)
+    except Exception:
+        pass
     if not (force or _REDACT_ENABLED):
         return text
 

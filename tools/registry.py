@@ -1132,6 +1132,28 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _redact_handler_result(result):
+        try:
+            from agent.redact import redact_sensitive_text
+        except Exception:
+            return result
+        if isinstance(result, str):
+            return redact_sensitive_text(result, force=True, redact_url_credentials=True)
+        if isinstance(result, dict) and result.get("_multimodal") is True:
+            redacted = dict(result)
+            content = []
+            for item in result.get("content", []):
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    item = dict(item)
+                    item["text"] = redact_sensitive_text(
+                        item["text"], force=True, redact_url_credentials=True
+                    )
+                content.append(item)
+            redacted["content"] = content
+            return redacted
+        return result
+
+    @staticmethod
     def _normalize_handler_result(name: str, result):
         """Enforce the result shapes supported by the agent tool pipeline.
 
@@ -1140,6 +1162,7 @@ class ToolRegistry:
         other value as a string error keeps logging, hooks, budgeting, and
         persistence from receiving values they cannot safely slice or size.
         """
+        result = ToolRegistry._redact_handler_result(result)
         if isinstance(result, str):
             return _bound_json_error_result(result)
         if (

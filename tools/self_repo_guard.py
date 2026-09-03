@@ -570,12 +570,22 @@ def _read_git_alias(executable: str, target: Path, alias: str) -> str | None:
             [executable, "-C", str(target), "config", "--get", f"alias.{alias}"],
             capture_output=True,
             text=True,
+            # An alias body is user-authored text and git hands it back as
+            # UTF-8. Decoding it with the process codepage instead means a
+            # body carrying one unmappable byte — a commit message with an
+            # emoji or CJK — kills subprocess's reader thread, so ``stdout``
+            # arrives as None and the guard loses the alias it was about to
+            # expand and inspect.
+            encoding="utf-8",
+            errors="replace",
             timeout=1,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    value = result.stdout.strip()
+    # Belt: ``stdout`` is only ever None on a capture failure, and this guard
+    # must return a verdict rather than raise into its unwrapped call site.
+    value = (result.stdout or "").strip()
     return value if result.returncode == 0 and value else None
 
 

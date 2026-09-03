@@ -2,9 +2,10 @@
 
 Salvaged from PR #71077 (@webtecnica) with two correctness fixes:
 the prune boundary is the last USER message (a Codex turn spans multiple
-assistant messages whose reasoning items must replay together), and native
-compaction checkpoints (type="compaction") are exempt because they carry
-already-pruned history, not per-turn reasoning.
+assistant messages whose reasoning items must replay together), and the
+newest native compaction checkpoint (type="compaction") is exempt because
+it carries already-pruned history, not per-turn reasoning.  Checkpoints a
+newer carrier shadows are pruned: the wire builder discards them anyway.
 """
 
 from agent.context_compressor import (
@@ -164,3 +165,81 @@ class TestInterimMergePreservesCheckpoints:
         assert merge_interim_reasoning_items(None, None) == []
         assert merge_interim_reasoning_items(None, [_reasoning("r")]) == [_reasoning("r")]
         assert merge_interim_reasoning_items([_compaction()], None) == [_compaction()]
+
+
+class TestShadowedCheckpointsArePruned:
+    """A checkpoint that a newer carrier shadows can never reach a request:
+    ``native_compaction.prune_pre_checkpoint_items`` rebuilds every wire
+    around the newest checkpoint run and drops each earlier one.  Retaining
+    the shadowed copies charged them in full against the tail budget and
+    persisted ~120 KB of unreachable ciphertext per assistant row.
+    """
+
+    @staticmethod
+    def _checkpoint(tag):
+        return {"type": "compaction", "encrypted_content": f"ckpt-{tag}"}
+
+    def _transcript(self, turns):
+        messages = []
+        for t in range(turns):
+            messages.append({"role": "user", "content": f"u{t}"})
+            messages.append({
+                "role": "assistant",
+                "content": f"a{t}",
+                "codex_reasoning_items": [
+                    _reasoning(f"rs_{t}"),
+                    self._checkpoint(t),
+                ],
+            })
+        messages.append({"role": "user", "content": "now"})
+        return messages
+
+    def test_only_the_newest_carrier_keeps_its_checkpoint(self):
+        messages = self._transcript(4)
+        _prune_stale_reasoning_replay(messages)
+        surviving = [
+            (i, item)
+            for i, msg in enumerate(messages)
+            for item in (msg.get("codex_reasoning_items") or [])
+            if item.get("type") == "compaction"
+        ]
+        assert surviving == [(7, self._checkpoint(3))]
+
+    def test_newest_carrier_inside_the_active_turn_shadows_every_stale_one(self):
+        messages = self._transcript(2)
+        # Active turn (after the last user message) mints its own checkpoint.
+        messages.append({
+            "role": "assistant",
+            "content": "live",
+            "codex_reasoning_items": [self._checkpoint("live")],
+        })
+        _prune_stale_reasoning_replay(messages)
+        assert "codex_reasoning_items" not in messages[1]
+        assert "codex_reasoning_items" not in messages[3]
+        assert messages[-1]["codex_reasoning_items"] == [self._checkpoint("live")]
+
+    def test_retained_checkpoints_match_what_the_wire_builder_keeps(self):
+        """The invariant behind the prune: after it runs, the transcript holds
+        exactly the checkpoints ``prune_pre_checkpoint_items`` would have kept."""
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        messages = self._transcript(5)
+        _prune_stale_reasoning_replay(messages)
+
+        items = []
+        for msg in messages:
+            items.extend(dict(i) for i in (msg.get("codex_reasoning_items") or []))
+            if msg["role"] == "user":
+                items.append({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": msg["content"]}],
+                })
+        wire = [i for i in prune_pre_checkpoint_items(items) if i.get("type") == "compaction"]
+        retained = [
+            item
+            for msg in messages
+            for item in (msg.get("codex_reasoning_items") or [])
+            if item.get("type") == "compaction"
+        ]
+        assert retained == wire

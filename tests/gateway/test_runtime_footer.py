@@ -34,12 +34,86 @@ def test_model_short_drops_vendor_prefix(model, expected):
     assert _model_short(model) == expected
 
 
+def _set_home(monkeypatch, path):
+    """Redirect the home directory on both platforms.
+
+    ``ntpath.expanduser`` ignores ``$HOME`` -- it reads ``USERPROFILE``, then
+    ``HOMEDRIVE``+``HOMEPATH``. Setting only ``HOME`` leaves the real profile
+    in place on Windows, so the assertions below would compare against the
+    developer's actual home directory instead of the tmp_path fixture.
+    """
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+    drive, tail = os.path.splitdrive(str(path))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail or str(path))
+
+
+_OUTSIDE_CWD = os.path.abspath(os.path.join(os.sep, "var", "data"))
+
+
 def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     sub = tmp_path / "projects" / "hermes"
     sub.mkdir(parents=True)
     result = _home_relative_cwd(str(sub))
-    assert result == "~/projects/hermes"
+    # os.sep, not "/", so the expectation matches the platform's own joining.
+    assert result == "~" + os.sep + os.path.join("projects", "hermes")
+
+
+def test_home_relative_cwd_collapse_is_case_insensitive_on_windows(
+    tmp_path, monkeypatch
+):
+    r"""The home collapse must survive a case-differing cwd on Windows.
+
+    ``abspath`` normalizes separators but not case, so a case-sensitive prefix
+    test silently no-ops for a cwd like ``c:\users\me\src`` against a home of
+    ``C:\Users\me``. The footer would then publish the absolute path --
+    including the OS account name -- to whatever chat surface the reply
+    reaches, defeating the redaction this function exists to perform.
+    """
+    if os.path.normcase("A") != os.path.normcase("a"):
+        pytest.skip("case-insensitive filesystem semantics only (Windows)")
+
+    _set_home(monkeypatch, tmp_path)
+    sub = tmp_path / "projects" / "hermes"
+    sub.mkdir(parents=True)
+
+    result = _home_relative_cwd(str(sub).lower())
+
+    assert result.startswith("~"), (
+        f"home collapse no-opped for a case-differing cwd: {result!r}"
+    )
+    # The OS account name must not survive into the rendered footer.
+    account = os.path.basename(str(tmp_path))
+    assert account.lower() not in result.lower()
+
+
+def test_home_relative_cwd_collapses_home_with_redundant_components(
+    tmp_path, monkeypatch
+):
+    r"""The home collapse must survive a HOME value with redundant components.
+
+    ``expanduser("~")`` returns whatever HOME/USERPROFILE literally contains
+    -- unlike ``cwd``, it is never passed through ``abspath``. A home of
+    ``.../decoy/..`` names the same directory as a plain path once resolved,
+    but the un-normalized string never prefix-matches a normalized
+    descendant cwd, so the redaction no-ops and the footer publishes the
+    absolute path -- including the OS account name -- regardless of the
+    case fix this file already applies.
+    """
+    redundant_home = tmp_path / "decoy" / ".."
+    _set_home(monkeypatch, redundant_home)
+    sub = tmp_path / "projects" / "hermes"
+    sub.mkdir(parents=True)
+
+    result = _home_relative_cwd(str(sub))
+
+    assert result.startswith("~"), (
+        f"home collapse no-opped for a home with redundant components: {result!r}"
+    )
+    account = os.path.basename(str(tmp_path))
+    assert account not in result
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +121,7 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
     (tmp_path / "projects" / "hermes").mkdir(parents=True)
     out = format_runtime_footer(
@@ -57,21 +131,22 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "gpt-5.4 · 68% · ~" + os.sep + os.path.join("projects", "hermes")
 
 
 def test_format_footer_skips_missing_context_length():
+    cwd = os.path.abspath(os.path.join(os.sep, "tmp", "wd"))
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=500,
         context_length=None,
-        cwd="/tmp/wd",
+        cwd=cwd,
         fields=("model", "context_pct", "cwd"),
     )
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
+    assert cwd in out
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +288,7 @@ def test_format_footer_latency_zero_renders_sub_second():
 
 
 def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=68_000,
@@ -275,10 +350,10 @@ def test_resolve_footer_config_default_fields_exclude_latency():
 @pytest.mark.parametrize(
     "model,tokens,window,cwd,expected",
     [
-        ("openai/gpt-5.4", 50_247, 1_000_000, "/var/data", "gpt-5.4 · 5% · /var/data"),
-        ("claude-opus-4-8", 68_000, 100_000, "/var/data", "claude-opus-4-8 · 68% · /var/data"),
-        ("m", 0, None, "/var/data", "m · /var/data"),
-        ("", 10, 100, "/var/data", "10% · /var/data"),
+        ("openai/gpt-5.4", 50_247, 1_000_000, _OUTSIDE_CWD, f"gpt-5.4 · 5% · {_OUTSIDE_CWD}"),
+        ("claude-opus-4-8", 68_000, 100_000, _OUTSIDE_CWD, f"claude-opus-4-8 · 68% · {_OUTSIDE_CWD}"),
+        ("m", 0, None, _OUTSIDE_CWD, f"m · {_OUTSIDE_CWD}"),
+        ("", 10, 100, _OUTSIDE_CWD, f"10% · {_OUTSIDE_CWD}"),
         ("m", 10, 100, "", "m · 10%"),
     ],
 )
@@ -311,9 +386,9 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
         model="openai/gpt-5.4",
         context_tokens=50_247,
         context_length=1_000_000,
-        cwd="/var/data",
+        cwd=_OUTSIDE_CWD,
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert baseline == f"gpt-5.4 · 5% · {_OUTSIDE_CWD}"
     assert with_timing == baseline

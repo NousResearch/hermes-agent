@@ -10313,6 +10313,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     marker = read_turn_marker(home, session_key)
     if marker is None:
         return None
+    if not marker.get("auto_continue", True):
+        return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
@@ -12635,14 +12637,20 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
             from tools.bot_failure_reasons import classify_agent_error
 
             reason = classify_agent_error(error)
-        complete_delivery(
-            profile_home,
-            delivery_id,
-            status=status,
-            reply=str(terminal.get("text") or "") if status == "settled" else "",
-            error=error,
-            reason=reason,
-        )
+        try:
+            complete_delivery(
+                profile_home,
+                delivery_id,
+                status=status,
+                reply=str(terminal.get("text") or "") if status == "settled" else "",
+                error=error,
+                reason=reason,
+            )
+        except Exception:
+            logger.warning(
+                "bot DM terminal receipt could not be persisted; sender will time out",
+                exc_info=True,
+            )
 
     rid = f"__bot_dm__{delivery_id}"
     _emit("message.start", sid)
@@ -12656,13 +12664,19 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     if not started:
         with session["history_lock"]:
             session["running"] = False
-        complete_delivery(
-            profile_home,
-            delivery_id,
-            status="failed",
-            error="live session owner could not start the delivery turn",
-            reason="unknown",
-        )
+        try:
+            complete_delivery(
+                profile_home,
+                delivery_id,
+                status="failed",
+                error="live session owner could not start the delivery turn",
+                reason="unknown",
+            )
+        except Exception:
+            logger.warning(
+                "bot DM failed-start receipt could not be persisted; sender will time out",
+                exc_info=True,
+            )
     return started
 
 
@@ -13367,7 +13381,13 @@ def _run_prompt_submit(
             # race where Stop lands first and therefore clears no file yet.
             with session["history_lock"]:
                 session["_active_turn_marker_key"] = marker_key
-            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            record_turn_start(
+                marker_home,
+                marker_key,
+                marker_text,
+                attempts=marker_attempt,
+                auto_continue=terminal_callback is None,
+            )
             with session["history_lock"]:
                 marker_cancelled = bool(session.get("_turn_cancel_requested"))
             if marker_cancelled:

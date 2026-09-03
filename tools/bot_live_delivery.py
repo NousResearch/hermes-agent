@@ -64,7 +64,8 @@ def _paths(profile_home: Path | str, session_id: str) -> tuple[Path, Path, Path]
     pending = base / "pending"
     claimed = base / "claimed"
     replies = base / "replies"
-    for directory in (pending, claimed, replies):
+    expired = base / "expired"
+    for directory in (pending, claimed, replies, expired):
         directory.mkdir(parents=True, exist_ok=True)
     return pending, claimed, replies
 
@@ -106,6 +107,7 @@ def deliver_to_live_owner(
     pending = pending_dir / f"{delivery_id}.json"
     claimed = claimed_dir / pending.name
     reply_path = replies_dir / pending.name
+    expired_path = pending_dir.parent / "expired" / pending.name
     created = time.time()
     owner_deadline = created + max(0.0, float(owner_wait_seconds))
     _atomic_json(
@@ -135,7 +137,12 @@ def deliver_to_live_owner(
         try:
             os.replace(pending, cancelled)
         except FileNotFoundError:
-            pass
+            if expired_path.exists():
+                return {
+                    "status": "not_delivered",
+                    "reason": "target_busy",
+                    "delivery_id": delivery_id,
+                }
         else:
             cancelled.unlink(missing_ok=True)
             return {
@@ -185,6 +192,7 @@ def claim_pending_delivery(
 ) -> dict[str, Any] | None:
     """Atomically claim the oldest unexpired request for one live session."""
     pending_dir, claimed_dir, _replies_dir = _paths(profile_home, session_id)
+    expired_dir = pending_dir.parent / "expired"
     now = time.time()
     candidates: list[tuple[float, str, Path, dict[str, Any]]] = []
     for pending in pending_dir.glob("*.json"):
@@ -199,8 +207,14 @@ def claim_pending_delivery(
             pending.unlink(missing_ok=True)
             continue
         delivery_id = str(payload.get("id") or "")
-        if delivery_id != pending.stem or owner_deadline <= now:
+        if delivery_id != pending.stem:
             pending.unlink(missing_ok=True)
+            continue
+        if owner_deadline <= now:
+            try:
+                os.replace(pending, expired_dir / pending.name)
+            except FileNotFoundError:
+                pass
             continue
         candidates.append((created_at, delivery_id, pending, payload))
 

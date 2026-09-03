@@ -41,6 +41,7 @@ the same wake shape every Bot Mode agent already knows.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -533,6 +534,39 @@ def _unlink_dm_file(path: str) -> None:
         pass
 
 
+def _delivery_id_from_payload(path: str) -> str:
+    return hashlib.sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:32]
+
+
+def _delivery_receipt_path(path: str) -> Path:
+    return Path(f"{path}.receipt.json")
+
+
+def _read_delivery_receipt(path: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_delivery_receipt_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_delivery_receipt(
+    path: str, argv: list[str], *, stdin_file: bool, reason: str, error: str
+) -> dict[str, Any]:
+    receipt = {
+        "status": "not_delivered" if reason == "target_busy" else "ambiguous",
+        "reason": reason or "unknown",
+        "error": error,
+        "delivery_id": _delivery_id_from_payload(path),
+        "payload_file": path,
+        "retry_command": _delivery_command(argv, path, stdin_file=stdin_file),
+    }
+    _delivery_receipt_path(path).write_text(
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+    )
+    return receipt
+
+
 def _delivery_lock(argv: list[str], *, stdin_file: bool):
     """Per-profile turn lock context for a LOCAL teammate delivery (#93091).
 
@@ -563,7 +597,7 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
 
 
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
-    """Run one DM transport and remove its plaintext file after consumption.
+    """Run one DM transport and remove its plaintext file only after delivery.
 
     The turn execution window (not the enqueue) holds the target profile's
     cross-process lock, so two deliveries into one profile queue instead of
@@ -577,11 +611,22 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     failures never retry. Peer transports (stdin mode) retry on their own
     gateway's deliver path, not here.
 
+    Failed deliveries retain the payload and a durable typed receipt so a
+    re-run reports the original outcome instead of sending the DM twice.
+
     When the target's canonical Bot Chat already has a Desktop/TUI owner
     (#101060), the one-shot CLI would be fenced out by the single-owner
     lease. Hand the message to that owner via ``tools.bot_live_delivery``
     instead so the DM lands as a normal turn in the open chat.
     """
+    cached_receipt = _read_delivery_receipt(dm_file)
+    if cached_receipt is not None:
+        print(json.dumps(cached_receipt, ensure_ascii=False))
+        return 0 if cached_receipt.get("status") == "delivered" else 1
+
+    delivered = False
+    failure_reason = "unknown"
+    failure_error = ""
     try:
         if not stdin_file and len(argv) >= 3 and argv[1] == "-p":
             from tools.bot_live_delivery import (
@@ -608,8 +653,10 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 )
                 if outcome.get("status") == "delivered":
                     print(str(outcome.get("reply") or ""))
+                    delivered = True
                     return 0
-                print(json.dumps(outcome, ensure_ascii=False))
+                failure_reason = str(outcome.get("reason") or "unknown")
+                failure_error = str(outcome.get("error") or "")
                 return 1
 
         with _delivery_lock(argv, stdin_file=stdin_file):
@@ -617,7 +664,9 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 # Keep the file open until the transport exits; cleanup occurs
                 # after subprocess.run returns, not merely after stdin reaches EOF.
                 with open(dm_file, "r", encoding="utf-8") as stream:
-                    return subprocess.run(argv, stdin=stream, check=False).returncode
+                    returncode = subprocess.run(argv, stdin=stream, check=False).returncode
+                    delivered = returncode == 0
+                    return returncode
             proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
@@ -648,11 +697,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 # surface (Desktop). The turn never ran, so tell the sender
                 # plainly instead of leaking a raw lease error + exit code.
                 who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
-                print(json.dumps({
-                    "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                             "surface right now, so your message was NOT delivered. Try again later.",
-                    "reason": "target_busy",
-                }))
+                failure_reason = "target_busy"
+                failure_error = (
+                    f"Delivery failed: @{who}'s Bot Chat is open on another surface "
+                    "right now, so your message was NOT delivered. Try again later."
+                )
                 return 1
             if proc.stdout:
                 sys.stdout.write(proc.stdout)
@@ -660,9 +709,32 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
             if proc.stderr:
                 sys.stderr.write(proc.stderr)
                 sys.stderr.flush()
+            delivered = proc.returncode == 0
+            if not delivered:
+                from tools.bot_failure_reasons import classify_agent_error
+
+                failure_error = (proc.stderr or proc.stdout or "").strip()[-500:]
+                failure_reason = classify_agent_error(failure_error)
             return proc.returncode
+    except Exception as exc:
+        failure_error = str(exc)
+        raise
     finally:
-        _unlink_dm_file(dm_file)
+        if delivered:
+            _unlink_dm_file(dm_file)
+            _delivery_receipt_path(dm_file).unlink(missing_ok=True)
+        else:
+            try:
+                receipt = _write_delivery_receipt(
+                    dm_file,
+                    argv,
+                    stdin_file=stdin_file,
+                    reason=failure_reason,
+                    error=failure_error,
+                )
+                print(json.dumps(receipt, ensure_ascii=False))
+            except Exception:
+                logger.warning("failed to retain undelivered DM payload", exc_info=True)
 
 
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str:

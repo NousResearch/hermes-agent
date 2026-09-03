@@ -95,7 +95,12 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
 
 
 def record_turn_start(
-    home: Path | str, session_key: str, prompt: str, *, attempts: int = 0
+    home: Path | str,
+    session_key: str,
+    prompt: str,
+    *,
+    attempts: int = 0,
+    auto_continue: bool = True,
 ) -> None:
     """Persist the marker for a turn that is about to run.
 
@@ -108,6 +113,7 @@ def record_turn_start(
     now = time.time()
     entry = {
         "attempts": max(0, int(attempts)),
+        "auto_continue": bool(auto_continue),
         "prompt": prompt[:_MAX_PROMPT_CHARS],
         "started_at": now,
     }
@@ -156,4 +162,9 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         attempts = max(0, int(entry.get("attempts") or 0))
     except (TypeError, ValueError):
         return None
-    return {"attempts": attempts, "prompt": prompt, "started_at": started_at}
+    return {
+        "attempts": attempts,
+        "auto_continue": bool(entry.get("auto_continue", True)),
+        "prompt": prompt,
+        "started_at": started_at,
+    }

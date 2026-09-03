@@ -109,6 +109,44 @@ def test_live_owner_busy_timeout_is_definitively_not_delivered(tmp_path):
     assert bot_live_delivery.claim_pending_delivery(tmp_path, "canonical") is None
 
 
+def test_expired_pending_claim_makes_sender_result_not_delivered(tmp_path):
+    result = {}
+
+    def sender():
+        result.update(
+            bot_live_delivery.deliver_to_live_owner(
+                tmp_path,
+                "canonical",
+                "expired before owner could claim",
+                owner_wait_seconds=0.05,
+                receipt_wait_seconds=1,
+                poll_seconds=0.001,
+            )
+        )
+
+    thread = threading.Thread(target=sender)
+    thread.start()
+    pending_dir, _claimed_dir, _replies_dir = bot_live_delivery._paths(
+        tmp_path, "canonical"
+    )
+    deadline = time.monotonic() + 1
+    pending = next(pending_dir.glob("*.json"), None)
+    while pending is None and time.monotonic() < deadline:
+        time.sleep(0.001)
+        pending = next(pending_dir.glob("*.json"), None)
+    assert pending is not None
+    payload = bot_live_delivery._read_json(pending)
+    assert payload is not None
+    payload["owner_deadline"] = time.time() - 1
+    bot_live_delivery._atomic_json(pending, payload)
+
+    assert bot_live_delivery.claim_pending_delivery(tmp_path, "canonical") is None
+    thread.join(timeout=2)
+
+    assert result["status"] == "not_delivered"
+    assert result["reason"] == "target_busy"
+
+
 def test_claimed_delivery_timeout_is_transport_ambiguous(tmp_path):
     result = {}
 

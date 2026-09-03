@@ -390,7 +390,7 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file)
     assert not dm_file.exists()
 
 
-def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch):
+def test_delivery_runner_retains_payload_when_child_launch_raises(tmp_path, monkeypatch):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -400,10 +400,10 @@ def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(RuntimeError, match="child launch failed"):
         bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
-    assert not dm_file.exists()
+    assert dm_file.exists()
 
 
-def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
+def test_delivery_runner_preserves_child_failure_and_payload(tmp_path):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     child = tmp_path / "fail.py"
@@ -419,7 +419,38 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     )
 
     assert returncode == 7
-    assert not dm_file.exists()
+    assert dm_file.exists()
+
+
+def test_non_delivered_payload_is_retained_and_replay_returns_cached_receipt(
+    tmp_path, monkeypatch, capsys
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+
+    def failed_transport(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout="",
+            stderr="Session abc already has a live owner (desktop, pid 1).",
+        )
+
+    monkeypatch.setattr(subprocess, "run", failed_transport)
+
+    assert bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False) == 1
+    first = json.loads(capsys.readouterr().out)
+    assert dm_file.exists()
+    assert first["reason"] == "target_busy"
+    assert first["payload_file"] == str(dm_file)
+    assert first["retry_command"]
+
+    assert bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False) == 1
+    second = json.loads(capsys.readouterr().out)
+    assert second == first
+    assert len(calls) == 1
 
 
 def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
@@ -562,7 +593,7 @@ def test_delivery_main_runs_valid_cli_and_unlinks(tmp_path, mode):
     assert not dm_file.exists()
 
 
-def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkeypatch):
+def test_delivery_main_maps_launch_exception_to_one_and_retains_payload(tmp_path, monkeypatch):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -576,7 +607,7 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
         )
         == 1
     )
-    assert not dm_file.exists()
+    assert dm_file.exists()
 
 
 @pytest.mark.parametrize("stdin_file", [False, True])

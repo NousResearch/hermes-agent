@@ -852,6 +852,30 @@ def check_command_security(command: str) -> dict:
             findings = []
             summary = ""
 
+    # Suppress verdicts whose ONLY non-tld-suppressed finding is
+    # ``analysis_incomplete``.  This finding means tirith's per-lookup
+    # threat-intelligence deadline (OSV / ecosyste.ms / deps.dev) expired
+    # before all lookups finished — the scan ran out of time, not that
+    # something dangerous was found.  Blocking a benign command because
+    # the verification was *incomplete* is a false positive, not a true
+    # positive: the cron job or A2A turn is blocked for the wrong reason
+    # (#97949).  Down-grade to "allow" so the command proceeds.
+    #
+    # Any other finding alongside ``analysis_incomplete`` (a real HIGH or
+    # CRITICAL) preserves the original verdict — we only soften the case
+    # where incomplete analysis is the entire evidence.
+    if action in ("block", "warn") and findings:
+        non_incomplete = [f for f in findings if not _is_analysis_incomplete_finding(f)]
+        if not non_incomplete:
+            logger.debug(
+                "tirith verdict %r downgraded to allow: sole finding is "
+                "analysis_incomplete (threat-intel deadline expired)",
+                action,
+            )
+            action = "allow"
+            findings = []
+            summary = ""
+
     return {"action": action, "findings": findings, "summary": summary}
 
 
@@ -868,5 +892,24 @@ def _is_app_tld_finding(finding: dict) -> bool:
     for field in ("value", "tld", "detail", "description", "message"):
         val = finding.get(field)
         if val is not None and ".app" in str(val).lower():
+            return True
+    return False
+
+
+def _is_analysis_incomplete_finding(finding: dict) -> bool:
+    """Return True when *finding* represents an ``analysis_incomplete`` result.
+
+    tirith emits this when its per-lookup threat-intelligence deadline (OSV /
+    ecosyste.ms / deps.dev) expires before all package lookups finish.  It
+    signals that the scan ran out of time, not that anything dangerous was
+    found.  Matching is intentionally broad: any finding whose rule_id or
+    type field contains "analysis_incomplete" (case-insensitive) is treated
+    as the timeout sentinel rather than a true positive.
+    """
+    if not isinstance(finding, dict):
+        return False
+    for field in ("rule_id", "type", "id", "name"):
+        val = str(finding.get(field) or "").lower()
+        if "analysis_incomplete" in val:
             return True
     return False

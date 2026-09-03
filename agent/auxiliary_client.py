@@ -6059,6 +6059,13 @@ def _try_main_agent_model_fallback(
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
+    if task == "vision" and not _main_model_supports_vision(main_provider, main_model):
+        logger.info(
+            "Auxiliary vision: skipping text-only main agent model fallback (%s)",
+            main_provider,
+        )
+        return None, None, ""
+
     # Identity + scope semantics owned by agent.backend_identity (#72468):
     # model-scoped failures skip only the exact deployment that failed;
     # provider-wide failures (no failed_model) skip the credential surface.

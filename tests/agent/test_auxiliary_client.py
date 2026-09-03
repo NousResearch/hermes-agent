@@ -1978,6 +1978,45 @@ class TestTryMainAgentModelFallback:
         assert model == "anthropic/claude-sonnet-4"
         assert label == "main-agent(openrouter)"
 
+    def test_vision_skips_known_text_only_main_model(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="zai"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            client, model, label = _try_main_agent_model_fallback(
+                "zai",
+                task="vision",
+                failed_model="glm-5.3-flash",
+            )
+
+        assert client is None and model is None and label == ""
+        mock_resolve.assert_not_called()
+
+    def test_vision_keeps_vision_capable_main_model_fallback(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        sentinel = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch(
+                 "agent.auxiliary_client._read_main_model",
+                 return_value="anthropic/claude-sonnet-4",
+             ), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch(
+                 "agent.auxiliary_client.resolve_provider_client",
+                 return_value=(sentinel, "anthropic/claude-sonnet-4"),
+             ):
+            client, model, label = _try_main_agent_model_fallback(
+                "zai",
+                task="vision",
+                failed_model="glm-5.3-flash",
+            )
+
+        assert client is sentinel
+        assert model == "anthropic/claude-sonnet-4"
+        assert label == "main-agent(openrouter)"
+
 
 
 

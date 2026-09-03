@@ -8530,6 +8530,143 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and server_name in _parallel_safe_servers)
 
 
+async def _mcp_runtime_status_snapshot() -> Dict[str, dict]:
+    """Project loop-owned lifecycle fields on the dedicated MCP loop."""
+    with _lock:
+        servers = dict(_servers)
+        connecting = set(_server_connecting)
+        connect_errors = set(_server_connect_errors)
+
+    snapshot: Dict[str, dict] = {}
+    for name, server in servers.items():
+        ready_event = getattr(server, "_ready", None)
+        is_ready = bool(
+            ready_event is not None
+            and callable(getattr(ready_event, "is_set", None))
+            and ready_event.is_set()
+        )
+        registered_names = getattr(server, "_registered_tool_names", None)
+        snapshot[name] = {
+            "present": True,
+            "live": getattr(server, "session", None) is not None and is_ready,
+            "ready": is_ready,
+            "reconnecting": bool(getattr(server, "_reconnecting", False)),
+            "error": getattr(server, "_error", None) is not None,
+            "parked": bool(getattr(server, "_was_parked", False)),
+            "tool_count": (
+                len(registered_names)
+                if isinstance(registered_names, (list, tuple, set))
+                else 0
+            ),
+        }
+    for name in connecting | connect_errors:
+        runtime = snapshot.setdefault(
+            name,
+            {
+                "present": False,
+                "live": False,
+                "ready": False,
+                "reconnecting": False,
+                "error": False,
+                "parked": False,
+            },
+        )
+        runtime["connecting"] = name in connecting
+        runtime["connect_error"] = name in connect_errors
+    return snapshot
+
+
+def _mcp_connection_state(enabled: bool, runtime: dict) -> str:
+    """Resolve one MCP server's closed public state by explicit precedence."""
+    if not enabled:
+        return "disabled"
+    if runtime.get("live"):
+        return "connected"
+    if (
+        runtime.get("parked")
+        or runtime.get("connect_error")
+        or runtime.get("error")
+    ):
+        return "failed"
+    if (
+        runtime.get("connecting")
+        or runtime.get("reconnecting")
+        or runtime.get("present")
+    ):
+        return "connecting"
+    return "unknown"
+
+
+def get_mcp_connection_status() -> List[dict]:
+    """Return a deterministic, non-sensitive MCP runtime status snapshot.
+
+    Config is read in the caller's profile scope. Mutable server lifecycle
+    fields are projected on the dedicated MCP loop that owns their writers;
+    the module lock is used only for the global map copies it actually guards.
+    This projection intentionally exposes only closed state values and safe
+    transport classes. It never includes connection configuration or raw
+    exception text.
+    """
+    configured = _load_mcp_config()
+    if not configured:
+        return []
+
+    with _lock:
+        loop = _mcp_loop
+        loop_thread = _mcp_thread
+        if loop is None or not loop.is_running():
+            connecting = set(_server_connecting)
+            connect_errors = set(_server_connect_errors)
+            runtime_snapshot = {
+                name: {
+                    "present": False,
+                    "live": False,
+                    "ready": False,
+                    "reconnecting": False,
+                    "error": False,
+                    "parked": False,
+                    "connecting": name in connecting,
+                    "connect_error": name in connect_errors,
+                }
+                for name in connecting | connect_errors
+            }
+        else:
+            runtime_snapshot = None
+    if runtime_snapshot is None:
+        if threading.current_thread() is loop_thread:
+            raise RuntimeError(
+                "MCP connection status cannot be read synchronously from the MCP event loop"
+            )
+        runtime_snapshot = _run_on_mcp_loop(_mcp_runtime_status_snapshot)
+
+    result: List[dict] = []
+    for raw_name, cfg in configured.items():
+        name = str(raw_name)
+        runtime = runtime_snapshot.get(raw_name, {})
+        entry: Dict[str, Any] = {"name": name}
+        transport = None
+        if isinstance(cfg, dict):
+            if "url" in cfg:
+                transport = "sse" if cfg.get("transport") == "sse" else "streamable_http"
+            elif "command" in cfg:
+                transport = "stdio"
+        if transport is not None:
+            entry["transport"] = transport
+
+        enabled = isinstance(cfg, dict) and _parse_boolish(
+            cfg.get("enabled", True), default=True
+        )
+        state = _mcp_connection_state(enabled, runtime)
+        entry["state"] = state
+        if state == "connected":
+            entry["tool_count"] = int(runtime.get("tool_count", 0))
+        elif state == "failed":
+            entry["error_code"] = "connection_failed"
+        result.append(entry)
+
+    return sorted(result, key=lambda entry: entry["name"])
+
+
 def get_mcp_status() -> List[dict]:
     """Return status of all configured MCP servers for banner display.
 

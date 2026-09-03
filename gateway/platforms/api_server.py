@@ -2220,6 +2220,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("GET", "/v1/mcp/servers", self._handle_mcp_servers),
             # Authenticated browser-control surface: POST registration
             # mints a short-lived ticket; the controller then opens the WS with
             # that ticket. Both are gated on browser.extension_control.enabled
@@ -3480,6 +3481,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "mcp_server_status": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -3527,6 +3529,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+                "mcp_servers": {"method": "GET", "path": "/v1/mcp/servers"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
@@ -3546,6 +3549,49 @@ class APIServerAdapter(BasePlatformAdapter):
                 },
             },
         })
+
+    async def _handle_mcp_servers(self, request: "web.Request") -> "web.Response":
+        """GET /v1/mcp/servers — report MCP runtime connection state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        # MCP runtime ownership is process-global and keyed by bare server
+        # name. A multiplex gateway can run same-named servers for several
+        # profile scopes, so no request profile can be joined to that runtime
+        # state safely. Fail closed on both bare and /p/<profile> routes until
+        # runtime ownership itself is profile-keyed.
+        runner_config = getattr(getattr(self, "gateway_runner", None), "config", None)
+        if getattr(runner_config, "multiplex_profiles", False):
+            return web.json_response(
+                _openai_error(
+                    "MCP runtime status is unavailable while profile multiplexing is enabled",
+                    err_type="service_unavailable_error",
+                    code="mcp_status_profile_isolation_unavailable",
+                ),
+                status=503,
+            )
+
+        from tools.mcp_tool import get_mcp_connection_status
+
+        try:
+            servers = await asyncio.to_thread(get_mcp_connection_status)
+        except Exception as exc:
+            logger.warning(
+                "MCP runtime status snapshot failed: %s",
+                type(exc).__name__,
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Unable to read MCP runtime status",
+                        "type": "server_error",
+                        "code": "mcp_status_unavailable",
+                    }
+                },
+                status=500,
+            )
+        return web.json_response({"object": "list", "data": servers})
 
     # ------------------------------------------------------------------
     # Browser-extension control (authenticated local/VPS API)

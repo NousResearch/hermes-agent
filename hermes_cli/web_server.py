@@ -841,6 +841,26 @@ def _dashboard_public_hosts() -> frozenset[str]:
     return frozenset({hostname.lower()})
 
 
+def _server_trusted_public_hosts(
+    host: str, *, headless: bool
+) -> frozenset[str]:
+    """Return the public hosts that apply to this server instance.
+
+    The Desktop app owns a headless loopback ``serve`` process and connects to
+    it directly with the per-process session token. A separately configured
+    public dashboard may still use ``dashboard.public_url`` and its auth gate,
+    but that declaration must not turn the Desktop-only loopback server into a
+    cookie-authenticated reverse-proxy endpoint.
+    """
+    if (
+        headless
+        and os.getenv("HERMES_DESKTOP") == "1"
+        and host in _LOOPBACK_HOST_VALUES
+    ):
+        return frozenset()
+    return _dashboard_public_hosts()
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -19829,7 +19849,9 @@ def start_server(
     # request middleware never reloads config. Any non-loopback public hostname
     # engages the auth gate even when the backend itself remains on loopback;
     # otherwise the SPA's local session token would become remotely reachable.
-    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    app.state.trusted_public_hosts = _server_trusted_public_hosts(
+        host, headless=headless
+    )
     # Stash the auth-gate flag on app.state so middleware / SPA-token injection /
     # WS-auth paths can branch on it consistently. It also decides whether to
     # refuse startup, log the gate-on banner, and enable uvicorn proxy_headers.

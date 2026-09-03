@@ -249,3 +249,71 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+# ── Plugin platform "configured" verdict (#102183) ─────────────────────────
+#
+# check_fn is a passive dependency probe that reads True for every bundled
+# plugin (their deps ship with Hermes); consulting it for the "configured"
+# label made `hermes status` claim platforms the user never opted into.
+
+
+def test_plugin_platform_configured_prefers_is_connected_over_dep_probe():
+    from hermes_cli.status import _plugin_platform_configured
+
+    entry = SimpleNamespace(
+        check_fn=lambda: True,
+        is_connected=lambda cfg: False,
+    )
+    assert _plugin_platform_configured(entry) is False
+
+
+def test_plugin_platform_configured_reports_true_when_is_connected_true():
+    from hermes_cli.status import _plugin_platform_configured
+
+    def _is_connected(cfg):
+        # Bundled hooks read env/auth state directly; the synthetic probe
+        # config only needs `enabled` so hooks that gate on it proceed.
+        assert cfg.enabled is True
+        return True
+
+    entry = SimpleNamespace(check_fn=lambda: True, is_connected=_is_connected)
+    assert _plugin_platform_configured(entry) is True
+
+
+def test_plugin_platform_configured_falls_back_to_check_fn_without_hook():
+    from hermes_cli.status import _plugin_platform_configured
+
+    entry = SimpleNamespace(check_fn=lambda: True, is_connected=None)
+    assert _plugin_platform_configured(entry) is True
+
+
+def test_show_status_plugin_platforms_label_follows_is_connected(monkeypatch, capsys, tmp_path):
+    """A bundled plugin platform whose deps are installed but that the user
+    never configured must print 'not configured (plugin)' — not the
+    dependency probe's True (#102183)."""
+    from gateway.platform_registry import platform_registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _boom(cfg):
+        raise RuntimeError("probe failed")
+
+    entries = [
+        SimpleNamespace(label="A2A", check_fn=lambda: True, is_connected=lambda cfg: False),
+        SimpleNamespace(label="IRC", check_fn=lambda: True, is_connected=None),
+        SimpleNamespace(label="Mattermost", check_fn=lambda: True, is_connected=_boom),
+    ]
+    monkeypatch.setattr(platform_registry, "plugin_entries", lambda: entries)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    plugin_lines = {}
+    for ln in output.splitlines():
+        if "(plugin)" in ln:
+            plugin_lines[ln.split()[0]] = ln
+    assert "not configured (plugin)" in plugin_lines["A2A"]
+    assert "configured (plugin)" in plugin_lines["IRC"]
+    assert "not configured" not in plugin_lines["IRC"]
+    assert "not configured (plugin)" in plugin_lines["Mattermost"]

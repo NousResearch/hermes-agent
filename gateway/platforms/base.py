@@ -3339,6 +3339,9 @@ class BasePlatformAdapter(ABC):
         #   fire if chat in _auto_tts_enabled_chats
         #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
         self._auto_tts_default: bool = False
+        # Global reply scope for ``voice.auto_tts``. ``all`` preserves the
+        # historical behavior; ``voice_only`` limits synthesis to voice input.
+        self._auto_tts_mode: str = "all"
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
         # Per-turn streaming-TTS completion flag (#60671).  When the gateway

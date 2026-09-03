@@ -2414,6 +2414,23 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
             ))
 
+    # ── voice.auto_tts_mode: all | voice_only ────────────────────────────
+    if isinstance(voice_cfg, dict) and "auto_tts_mode" in voice_cfg:
+        auto_tts_mode = voice_cfg.get("auto_tts_mode")
+        normalized_auto_tts_mode = (
+            auto_tts_mode.strip().lower()
+            if isinstance(auto_tts_mode, str)
+            else None
+        )
+        if normalized_auto_tts_mode not in {"all", "voice_only"}:
+            issues.append(ConfigIssue(
+                "error",
+                "voice.auto_tts_mode must be 'all' or 'voice_only', "
+                f"got {auto_tts_mode!r}",
+                "Set voice.auto_tts_mode to all (audio with every reply) or "
+                "voice_only (audio only after voice input)",
+            ))
+
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
     if cp is not None:

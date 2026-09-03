@@ -2022,6 +2022,7 @@ DEFAULT_CONFIG = {
         "submit_mode": "direct",       # TUI: direct submits immediately; draft leaves an editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
+        "auto_tts_mode": "all",       # all (legacy) | voice_only (reply with audio only to voice input)
         # Desktop remote clients call the profile's STT/TTS providers
         # DIRECTLY (config + key fetched over the authenticated REST channel
         # at voice-session start) instead of relaying audio through the

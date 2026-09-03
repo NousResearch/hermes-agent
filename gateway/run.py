@@ -8322,8 +8322,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live platform adapter.
 
-        Populates three fields from config + ``self._voice_mode``:
+        Populates four fields from config + ``self._voice_mode``:
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
+          - ``_auto_tts_mode``: global scope from ``voice.auto_tts_mode``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
         """
@@ -8341,13 +8342,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from hermes_cli.config import load_config as _load_full_config
             _full_cfg = _load_full_config()
-            _auto_tts_default = bool(
-                (_full_cfg.get("voice") or {}).get("auto_tts", False)
-            )
+            _voice_cfg = _full_cfg.get("voice") or {}
+            _auto_tts_default = bool(_voice_cfg.get("auto_tts", False))
+            _auto_tts_mode = str(
+                _voice_cfg.get("auto_tts_mode", "all")
+            ).strip().lower()
+            if _auto_tts_mode not in {"all", "voice_only"}:
+                logger.warning(
+                    "Invalid voice.auto_tts_mode=%r; falling back to 'all'",
+                    _auto_tts_mode,
+                )
+                _auto_tts_mode = "all"
         except Exception:
             _auto_tts_default = False
+            _auto_tts_mode = "all"
         if hasattr(adapter, "_auto_tts_default"):
             adapter._auto_tts_default = _auto_tts_default
+        if hasattr(adapter, "_auto_tts_mode"):
+            adapter._auto_tts_mode = _auto_tts_mode
 
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
         if isinstance(disabled_chats, set):
@@ -25089,9 +25101,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         adapter = self._adapter_for_source(event.source)
         adapter_auto_tts = False
+        adapter_auto_tts_mode = "all"
         if adapter and hasattr(adapter, "_should_auto_tts_for_chat"):
             try:
                 adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+                adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
             except Exception:
                 adapter_auto_tts = False
 
@@ -25101,7 +25115,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # ``voice.auto_tts`` is synced into the adapter on gateway startup.
             # It is the fallback only when the chat has no explicit mode;
             # otherwise the chat-level all/voice_only/off choice takes precedence.
-            or (voice_mode is None and adapter_auto_tts)
+            or (
+                voice_mode is None
+                and adapter_auto_tts
+                and (adapter_auto_tts_mode == "all" or is_voice_input)
+            )
         )
         if not should:
             logger.debug(

@@ -2236,7 +2236,8 @@ The final prompt is sent to the configured STT provider alongside the audio file
 voice:
   record_key: "ctrl+b"         # Push-to-talk key inside the CLI
   max_recording_seconds: 120    # Hard stop for long recordings
-  auto_tts: false               # Enable spoken replies automatically when /voice on
+  auto_tts: false               # Enable automatic spoken replies in gateway chats
+  auto_tts_mode: "all"          # "all" (legacy default) | "voice_only"
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
   beep_volume: 0.3              # Beep amplitude (0.0-1.0); raise it on quiet systems / headphones
   silence_threshold: 200        # RMS threshold for speech detection
@@ -2244,6 +2245,13 @@ voice:
 ```
 
 Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+
+For gateway chats with no explicit per-chat `/voice` mode, `voice.auto_tts_mode`
+controls which replies receive audio when `voice.auto_tts` is enabled. The
+default, `all`, preserves the existing behavior: replies to both text and voice
+input include audio. Set it to `voice_only` to include audio only when the
+triggering message is voice input. Explicit `/voice off`, `/voice on`, and
+`/voice tts` choices still override the global default for that chat.
 
 ## Streaming
 

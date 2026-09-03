@@ -111,6 +111,27 @@ class TestVoiceSubmitModeValidation:
         )
 
 
+class TestVoiceAutoTtsModeValidation:
+    def test_default_preserves_existing_all_replies_behavior(self):
+        assert DEFAULT_CONFIG["voice"]["auto_tts_mode"] == "all"
+
+    def test_all_and_voice_only_are_valid(self):
+        for mode in ("all", "voice_only"):
+            issues = validate_config_structure({"voice": {"auto_tts_mode": mode}})
+            assert not any("voice.auto_tts_mode" in issue.message for issue in issues)
+
+    def test_invalid_mode_is_reported(self):
+        issues = validate_config_structure({"voice": {"auto_tts_mode": "sometimes"}})
+
+        assert any(
+            issue.severity == "error"
+            and "voice.auto_tts_mode" in issue.message
+            and "all" in issue.hint
+            and "voice_only" in issue.hint
+            for issue in issues
+        )
+
+
 class TestUnknownTopLevelKeys:
     """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 

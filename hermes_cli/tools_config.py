@@ -2411,6 +2411,44 @@ def _run_post_setup(post_setup_key: str):
         else:
             _print_info("    xAI will remain inactive until credentials are configured.")
 
+    elif post_setup_key == "openai_codex":
+        # Credential bootstrap for picker entries that talk to
+        # ChatGPT/Codex OAuth (image gen today). Mirrors the xai_grok
+        # pattern: the picker rows declare empty env_vars, so the full
+        # auth UX is driven here instead of an env-var prompt.
+        try:
+            from hermes_cli.auth import get_codex_auth_status
+            logged_in = bool(get_codex_auth_status().get("logged_in"))
+        except Exception:
+            logged_in = False
+
+        if logged_in:
+            _print_success(
+                "    Image generation will use your OpenAI Codex (ChatGPT) OAuth credentials"
+            )
+            return
+
+        _print_info("    OpenAI (Codex auth) needs credentials. Starting login...")
+        try:
+            import argparse
+
+            from hermes_cli.auth import PROVIDER_REGISTRY, _login_openai_codex
+
+            # Same call shape as _model_flow_openai_codex: the login helper
+            # ignores the args namespace, and SystemExit covers a cancelled
+            # device-code flow. Login must never abort the picker write that
+            # follows — the selection stays valid and re-runs later via
+            # `hermes auth add openai-codex`.
+            _login_openai_codex(argparse.Namespace(), PROVIDER_REGISTRY["openai-codex"])
+        except SystemExit:
+            _print_warning(
+                "    Login cancelled — run later: hermes auth add openai-codex"
+            )
+        except Exception as exc:
+            _print_warning(
+                f"    Login failed: {exc} — run later: hermes auth add openai-codex"
+            )
+
 
 def valid_post_setup_keys() -> Set[str]:
     """Return the set of post-setup keys declared by any visible provider.

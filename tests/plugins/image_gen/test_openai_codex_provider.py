@@ -68,6 +68,20 @@ class TestMetadata:
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
 
+    def test_setup_schema_declares_codex_oauth_post_setup(self, provider):
+        # Empty env_vars means the picker writes the selection without any
+        # credential prompt — the schema must declare the shared Codex OAuth
+        # bootstrap so `hermes setup` starts the login flow (#102144).
+        schema = provider.get_setup_schema()
+        assert schema["post_setup"] == "openai_codex"
+
+    def test_setup_hint_names_valid_auth_command(self, provider):
+        # `hermes auth codex` is not a real command; the valid spelling is
+        # `hermes auth add openai-codex` (#102144).
+        hint = provider.get_setup_schema().get("post_setup_hint", "")
+        assert "hermes auth add openai-codex" in hint
+        assert "hermes auth codex" not in hint
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -100,6 +114,9 @@ class TestGenerate:
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
+        # The recovery command in the error must be one that actually exists.
+        assert "hermes auth add openai-codex" in result["error"]
+        assert "hermes auth codex" not in result["error"]
 
 
     def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):

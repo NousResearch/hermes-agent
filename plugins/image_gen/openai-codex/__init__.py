@@ -557,8 +557,13 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             "badge": "free",
             "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
             "env_vars": [],
+            # Empty env_vars means the picker writes the selection without
+            # prompting for credentials — declare the shared Codex OAuth
+            # bootstrap so setup actually starts the device-code login
+            # instead of leaving the backend unauthenticated (#102144).
+            "post_setup": "openai_codex",
             "post_setup_hint": (
-                "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
+                "Sign in with `hermes auth add openai-codex` (or `hermes setup` → Codex) "
                 "if you haven't already. No API key needed."
             ),
         }
@@ -594,7 +599,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             return error_response(
                 error=(
                     "No Codex/ChatGPT OAuth credentials available. Run "
-                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
+                    "`hermes auth add openai-codex` (or `hermes setup` → Codex) to sign in."
                 ),
                 error_type="auth_required",
                 provider="openai-codex",
@@ -619,7 +624,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             return error_response(
                 error=(
                     "No Codex/ChatGPT OAuth credentials available. Run "
-                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
+                    "`hermes auth add openai-codex` (or `hermes setup` → Codex) to sign in."
                 ),
                 error_type="auth_required",
                 provider="openai-codex",

@@ -38,12 +38,91 @@ needs to replace the import + call site:
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Iterator
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
 # When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
 _UNSET: Any = object()
+
+
+@dataclass(frozen=True)
+class RunBinding:
+    """Immutable server-owned identity for one live conversation turn.
+
+    This is deliberately process-local state.  It is captured by the gateway
+    from the authenticated session and the live checkout, then inherited by
+    tools in that turn.  Model text and RPC parameters are never an authority
+    source for these fields.
+    """
+
+    cwd: str
+    repo_root: str
+    worktree_root: str
+    git_common_dir: str
+    branch: str
+    ref: str
+    head: str
+    session_key: str
+    ui_session_id: str
+    profile: str
+    owner_generation: str = ""
+    transport_generation: str = ""
+
+    @property
+    def short_head(self) -> str:
+        return self.head[:12]
+
+    def display(self) -> str:
+        repo = self.repo_root or self.worktree_root or self.cwd
+        return f"repo={repo} branch={self.branch or self.ref or 'HEAD'} sha={self.short_head}"
+
+    def differences(self, other: "RunBinding") -> tuple[str, ...]:
+        """Return changed identity fields in stable, user-readable order."""
+        fields = (
+            "cwd", "repo_root", "worktree_root", "git_common_dir", "branch",
+            "ref", "head", "session_key", "ui_session_id", "profile",
+            "owner_generation", "transport_generation",
+        )
+        return tuple(name for name in fields if getattr(self, name) != getattr(other, name))
+
+    def matches(self, other: "RunBinding") -> bool:
+        return isinstance(other, RunBinding) and not self.differences(other)
+
+
+@dataclass(frozen=True)
+class GatewayRunAuthority:
+    """Live, process-local owner captured by the ordinary gateway turn.
+
+    The objects are intentionally not serializable.  ``validate`` is supplied
+    by the gateway runner so a delegate can re-check its live session registry
+    immediately before constructing a child rather than trusting copied
+    ContextVars.
+    """
+
+    validator: Any
+    session_key: str
+    cwd: str
+    profile: str
+    record: Any
+    transport: Any
+    owner_generation: str
+    transport_generation: str
+
+    def validate(self) -> bool:
+        return bool(self.validator(self))
+
+
+_CURRENT_RUN_BINDING: ContextVar[RunBinding | None] = ContextVar(
+    "HERMES_CURRENT_RUN_BINDING", default=None
+)
+_CURRENT_GATEWAY_RUN_AUTHORITY: ContextVar[GatewayRunAuthority | None] = ContextVar(
+    "HERMES_CURRENT_GATEWAY_RUN_AUTHORITY", default=None
+)
+_CURRENT_DELEGATION_STATUS: ContextVar[str | None] = ContextVar(
+    "HERMES_CURRENT_DELEGATION_STATUS", default=None
+)
 
 # Process-level flag: has any code in this process bound a session via
 # set_session_vars()? Concurrent multi-session hosts (the messaging gateway, the
@@ -204,6 +283,44 @@ def set_current_session_id(session_id: str) -> None:
     os.environ["HERMES_SESSION_ID"] = session_id
 
 
+def set_run_binding(binding: RunBinding) -> object:
+    """Bind the server-derived run identity to the current turn context."""
+    if not isinstance(binding, RunBinding):
+        raise TypeError("binding must be a RunBinding")
+    return _CURRENT_RUN_BINDING.set(binding)
+
+
+def reset_run_binding(token: object) -> None:
+    """Restore the run identity that preceded this turn."""
+    _CURRENT_RUN_BINDING.reset(token)
+
+
+def current_run_binding() -> RunBinding | None:
+    """Return the immutable identity captured for this turn, if any."""
+    return _CURRENT_RUN_BINDING.get()
+
+
+def set_gateway_run_authority(authority: GatewayRunAuthority) -> object:
+    if not isinstance(authority, GatewayRunAuthority):
+        raise TypeError("authority must be a GatewayRunAuthority")
+    return _CURRENT_GATEWAY_RUN_AUTHORITY.set(authority)
+
+
+def current_gateway_run_authority() -> GatewayRunAuthority | None:
+    return _CURRENT_GATEWAY_RUN_AUTHORITY.get()
+
+
+def set_delegation_status(status: str | None) -> object:
+    """Publish the server-owned terminal status for the current turn."""
+    if status not in (None, "completed", "failed"):
+        raise ValueError("delegation status must be completed, failed, or None")
+    return _CURRENT_DELEGATION_STATUS.set(status)
+
+
+def current_delegation_status() -> str | None:
+    return _CURRENT_DELEGATION_STATUS.get()
+
+
 @contextmanager
 def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
     """Bind a task-local session id and restore the prior value on exit.
@@ -334,6 +451,9 @@ def clear_session_vars(tokens: list) -> None:
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _CURRENT_RUN_BINDING.set(None)
+    _CURRENT_GATEWAY_RUN_AUTHORITY.set(None)
+    _CURRENT_DELEGATION_STATUS.set(None)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -382,6 +502,9 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _CURRENT_RUN_BINDING.set(None)
+    _CURRENT_GATEWAY_RUN_AUTHORITY.set(None)
+    _CURRENT_DELEGATION_STATUS.set(None)
     try:
         from agent.runtime_cwd import clear_session_cwd
 

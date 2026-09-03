@@ -63,6 +63,61 @@ def branch(cwd: str) -> str:
     return run_git(cwd, "branch", "--show-current") or run_git(cwd, "rev-parse", "--short", "HEAD")
 
 
+def capture_run_binding(
+    cwd: str,
+    *,
+    session_key: str = "",
+    ui_session_id: str = "",
+    profile: str = "",
+    owner_generation: str = "",
+    transport_generation: str = "",
+):
+    """Capture immutable checkout and live-session identity for one turn.
+
+    The gateway is the authority for the session fields.  Git is probed here
+    at the moment of capture and again immediately before delegation; no
+    model-supplied path, branch, or SHA is accepted.
+    """
+    from gateway.session_context import RunBinding
+
+    try:
+        canonical_cwd = os.path.realpath(os.path.abspath(os.path.expanduser(cwd)))
+    except (TypeError, ValueError):
+        canonical_cwd = ""
+    if not canonical_cwd or not os.path.isdir(canonical_cwd):
+        raise ValueError("Unable to bind this conversation: working directory is unavailable.")
+
+    worktree = run_git(canonical_cwd, "rev-parse", "--show-toplevel")
+    head = run_git(canonical_cwd, "rev-parse", "HEAD")
+    common_dir = run_git(
+        canonical_cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
+    if not worktree or not head or not common_dir:
+        raise ValueError(
+            "Unable to bind this conversation: the selected working directory is not a complete Git worktree."
+        )
+    worktree = os.path.realpath(worktree)
+    common_dir = os.path.realpath(common_dir)
+    repo = os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" else common_repo_root(canonical_cwd)
+    repo = os.path.realpath(repo or worktree)
+    ref = run_git(canonical_cwd, "symbolic-ref", "--quiet", "HEAD") or "HEAD"
+    current_branch = run_git(canonical_cwd, "branch", "--show-current")
+    return RunBinding(
+        cwd=canonical_cwd,
+        repo_root=repo,
+        worktree_root=worktree,
+        git_common_dir=common_dir,
+        branch=current_branch or "HEAD",
+        ref=ref,
+        head=head.strip(),
+        session_key=str(session_key or ""),
+        ui_session_id=str(ui_session_id or ""),
+        profile=str(profile or ""),
+        owner_generation=str(owner_generation or ""),
+        transport_generation=str(transport_generation or ""),
+    )
+
+
 class _RootCache:
     """Thread-safe, single-flight cache of git-root probes. Positive results are
     cached for the process lifetime; negative ("not a repo") results are cached

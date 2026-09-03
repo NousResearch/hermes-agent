@@ -131,6 +131,8 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
 def create_subagent_worktree(
     parent_cwd: Optional[str],
     subagent_id: Optional[str] = None,
+    *,
+    base_commit: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
     """Create an isolated worktree for one child agent.
 
@@ -157,10 +159,15 @@ def create_subagent_worktree(
     _ensure_gitignore_entry(repo_root)
 
     try:
-        base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
-        base_commit = base.stdout.strip() if base.returncode == 0 else ""
+        if base_commit:
+            base = _run_git(["rev-parse", "--verify", f"{base_commit}^{{commit}}"], cwd=repo_root)
+        else:
+            base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
+        resolved_base_commit = base.stdout.strip() if base.returncode == 0 else ""
+        if not resolved_base_commit:
+            return None
         result = _run_git(
-            ["worktree", "add", str(wt_path), "-b", branch, "HEAD"],
+            ["worktree", "add", str(wt_path), "-b", branch, resolved_base_commit],
             cwd=repo_root,
         )
     except Exception as exc:
@@ -179,7 +186,7 @@ def create_subagent_worktree(
         "path": str(wt_path),
         "branch": branch,
         "repo_root": repo_root,
-        "base_commit": base_commit,
+        "base_commit": resolved_base_commit,
     }
 
 

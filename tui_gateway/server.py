@@ -4806,6 +4806,7 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        profile = _current_profile_name()
         browser_control_principal = ""
         browser_control_transport_family = ""
         # Derive the live conversation id so terminal/execute_code subprocesses
@@ -4822,6 +4823,9 @@ def _set_session_context(
             for sess in list(_sessions.values()):
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
+                    profile_home = sess.get("profile_home")
+                    if profile_home:
+                        profile = Path(str(profile_home)).name
                     session_id = (
                         getattr(sess.get("agent"), "session_id", None) or session_key
                     )
@@ -4843,6 +4847,7 @@ def _set_session_context(
             browser_control_transport_family=browser_control_transport_family,
             cwd=resolved,
             ui_session_id=ui_session_id,
+            profile=profile,
             cron_session="",
         )
     except Exception:
@@ -8331,6 +8336,15 @@ def _on_tool_progress(
             payload["tool_count"] = int(_kwargs["tool_count"])
         if _kwargs.get("toolsets"):
             payload["toolsets"] = [str(t) for t in _kwargs["toolsets"]]
+        run_binding = _kwargs.get("run_binding")
+        if isinstance(run_binding, dict):
+            compact_binding = {
+                key: str(run_binding[key])
+                for key in ("repo", "branch", "sha")
+                if run_binding.get(key)
+            }
+            if compact_binding:
+                payload["run_binding"] = compact_binding
         # Per-branch rollups emitted on subagent.complete (features 1+2+4).
         for int_key in (
             "input_tokens",
@@ -14118,6 +14132,13 @@ def _run_prompt_submit(
                 from tools.terminal_scope import reset_terminal_scope
 
                 reset_terminal_scope(_terminal_scope_token)
+            if run_binding_token is not None:
+                try:
+                    from gateway.session_context import reset_run_binding
+
+                    reset_run_binding(run_binding_token)
+                except Exception:
+                    pass
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

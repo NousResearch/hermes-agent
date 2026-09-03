@@ -77,6 +77,28 @@ def test_no_live_child_session_no_mirror(server, emits):
     assert server._child_mirrors == {}
 
 
+def test_parent_progress_preserves_compact_run_binding(server, emits):
+    _relay(
+        server,
+        "subagent.tool",
+        tool_name="terminal",
+        preview="pwd",
+        child_session_id="child-1",
+        run_binding={
+            "repo": "/workspace/hermes",
+            "branch": "main",
+            "sha": "0123456789ab",
+        },
+    )
+
+    parent = next(payload for event, sid, payload in emits if sid == "parent-sid")
+    assert parent["run_binding"] == {
+        "repo": "/workspace/hermes",
+        "branch": "main",
+        "sha": "0123456789ab",
+    }
+
+
 def test_live_child_session_gets_native_stream(server, emits):
     # A window resumed the child session: live sid differs from the stored key.
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
@@ -236,5 +258,4 @@ def test_text_mirrors_as_message_delta(server, emits):
         ("message.delta", {"text": "Here is "}),
         ("message.delta", {"text": "the answer."}),
     ]
-
 

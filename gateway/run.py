@@ -3209,6 +3209,18 @@ logger = logging.getLogger(__name__)
 # must not wait on, and the caller clamps this to the watchdog leash anyway.
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
 
+def _format_delegation_binding_line(binding, delegation_status):
+    """Render server-owned delegation identity and terminal status once."""
+    if not isinstance(binding, dict):
+        return None
+    return (
+        "🔀 delegation "
+        f"{'completed' if delegation_status == 'completed' else 'failed'} · "
+        f"repo={binding.get('repo') or ''} "
+        f"branch={binding.get('branch') or 'HEAD'} "
+        f"sha={binding.get('sha') or ''}"
+    )
+
 
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
@@ -4848,6 +4860,29 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Delegation identity is server-derived metadata, not model text. Keep
+        # the compact repo/branch/SHA on the same gateway progress rail so a
+        # messaging user can tell which checkout the child is using.
+        _run_binding = kwargs.get("run_binding")
+        if (
+            _run_binding
+            and event_type in {"subagent.start", "subagent.complete"}
+            and ctx.progress_queue is not None
+            and ctx._run_still_current()
+        ):
+            try:
+                from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES
+            except Exception:
+                SUBAGENT_FAILURE_STATUSES = frozenset()
+            _repo = str(_run_binding.get("repo") or "")
+            _branch = str(_run_binding.get("branch") or "HEAD")
+            _sha = str(_run_binding.get("sha") or "")
+            _label = "delegation started" if event_type == "subagent.start" else "delegation complete"
+            if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
+                _label = "delegation failed"
+            ctx.progress_queue.put(
+                f"🔀 {_label} · repo={_repo} branch={_branch} sha={_sha}"
+            )
         # Failed subagent → one clean user-facing notice. Handled FIRST,
         # before every progress-queue gate: platforms that keep
         # tool_progress off (Telegram, Slack, ...) must still hear about a
@@ -7149,6 +7184,24 @@ class TurnRunner:
                     result.get("messages", []),
                     history_offset=len(agent_history),
                 )
+            try:
+                from gateway.session_context import (
+                    current_delegation_status,
+                    current_run_binding,
+                )
+
+                _binding = current_run_binding()
+                if _binding is not None:
+                    result["run_binding"] = {
+                        "repo": _binding.repo_root,
+                        "branch": _binding.branch or _binding.ref,
+                        "sha": _binding.short_head,
+                    }
+                _delegation_status = current_delegation_status()
+                if _delegation_status is not None:
+                    result["delegation_status"] = _delegation_status
+            except Exception:
+                logger.debug("Could not attach run binding to gateway result", exc_info=True)
 
         ctx.result_holder[0] = result
 
@@ -7346,6 +7399,8 @@ class TurnRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
+                "run_binding": result.get("run_binding"),
+                "delegation_status": result.get("delegation_status"),
             }
 
         # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -7435,6 +7490,8 @@ class TurnRunner:
             # self-persisted (it didn't — see codex_runtime.py).  Default
             # True preserves the skip-db behaviour for the standard runtime.
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
+            "run_binding": ctx.result_holder[0].get("run_binding") if ctx.result_holder[0] else None,
+            "delegation_status": ctx.result_holder[0].get("delegation_status") if ctx.result_holder[0] else None,
         }
 
 
@@ -23768,6 +23825,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
+            # ``run_binding`` is returned by the server-owned gateway turn,
+            # not by the model. Attach it to the existing final reply so
+            # messaging surfaces still show the selected checkout when their
+            # optional tool-progress queue is disabled.
+            _binding_meta = agent_result.get("run_binding")
+            _binding_line = (
+                _format_delegation_binding_line(
+                    _binding_meta, agent_result.get("delegation_status")
+                )
+                if not _intentional_silence else None
+            )
+            if _binding_line:
+                if response and not agent_result.get("already_sent"):
+                    response = f"{response}\n\n{_binding_line}"
+                elif not response and not agent_result.get("already_sent"):
+                    response = _binding_line
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             # Skip when streaming TTS already delivered audio for this turn (#60671).
@@ -23793,8 +23867,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
+            if agent_result.get("already_sent"):
+                if response and not agent_result.get("failed"):
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
@@ -23815,6 +23889,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                if _binding_line:
+                    await self._send_delegation_binding_line(
+                        source, event, _binding_line
+                    )
                 # This branch returns None so the adapter does not send the
                 # body twice. /loop and /goal hooks in _handle_message read
                 # the return value, so stash the delivered text on the event
@@ -25349,6 +25427,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    async def _send_delegation_binding_line(self, source, event, line):
+        """Send the one trailing binding line for an already-streamed turn."""
+        try:
+            adapter = self._adapter_for_source(source)
+            if adapter:
+                await adapter.send(
+                    source.chat_id,
+                    line,
+                    metadata=self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    ),
+                )
+        except Exception as exc:
+            logger.debug("trailing binding send failed: %s", exc)
 
     async def _deliver_queued_first_response(
         self,
@@ -27568,7 +27661,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
-        from gateway.session_context import set_session_vars
+        from gateway.session_context import (
+            GatewayRunAuthority,
+            set_gateway_run_authority,
+            set_session_vars,
+        )
         # Propagate the adapter's async-delivery capability so async tools
         # (terminal notify_on_complete / watch_patterns, delegate_task
         # background=True) know whether this channel can wake a later turn.
@@ -27578,8 +27675,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # don't blow up — they simply default to supported.
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
+        try:
+            _adapter = self._adapter_for_source(context.source) or _adapter
+        except Exception:
+            pass
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        return set_session_vars(
+        try:
+            from agent.runtime_cwd import resolve_agent_cwd
+            from tools.terminal_tool import get_session_cwd
+
+            _cwd = get_session_cwd(context.session_key) or str(resolve_agent_cwd())
+        except Exception:
+            _cwd = os.environ.get("TERMINAL_CWD", "") or os.getcwd()
+
+        _store = getattr(self, "session_store", None)
+        _record = None
+        if _store is not None and context.session_key:
+            try:
+                with _store._lock:
+                    _store._ensure_loaded_locked()
+                    _record = _store._entries.get(context.session_key)
+            except Exception:
+                logger.debug("gateway run authority capture failed", exc_info=True)
+
+        def _authority_is_current(authority: GatewayRunAuthority) -> bool:
+            if _store is None or _record is None:
+                return False
+            try:
+                with _store._lock:
+                    _store._ensure_loaded_locked()
+                    live_record = _store._entries.get(authority.session_key)
+                if live_record is not authority.record:
+                    return False
+                try:
+                    live_adapter = self._adapter_for_source(context.source)
+                except Exception:
+                    live_adapter = _adapter
+                return live_adapter is authority.transport
+            except Exception:
+                logger.debug("gateway run authority validation failed", exc_info=True)
+                return False
+
+        _tokens = set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_type=(
@@ -27594,9 +27731,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=_cwd,
             async_delivery=_async_delivery,
             cron_session="",
         )
+        if _record is not None:
+            set_gateway_run_authority(
+                GatewayRunAuthority(
+                    validator=_authority_is_current,
+                    session_key=context.session_key,
+                    cwd=_cwd,
+                    profile=getattr(context.source, "profile", "") or "",
+                    record=_record,
+                    transport=_adapter,
+                    owner_generation=str(id(_record)),
+                    transport_generation=str(id(_adapter)),
+                )
+            )
+        return _tokens
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

@@ -94,6 +94,21 @@ class SubagentWorktreeTests(unittest.TestCase):
         (Path(info["path"]) / "child.txt").write_text("x", encoding="utf-8")
         self.assertFalse((repo / "child.txt").exists())
 
+    def test_create_can_start_from_bound_commit(self):
+        repo = _make_repo(self.tmp)
+        bound_head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        (repo / "later.txt").write_text("later\n", encoding="utf-8")
+        _git(["add", "later.txt"], repo)
+        _git(["commit", "-q", "-m", "later"], repo)
+
+        info = sw.create_subagent_worktree(
+            str(repo), "bound1", base_commit=bound_head
+        )
+        self.assertIsNotNone(info)
+        assert info is not None
+        self.assertEqual(info["base_commit"], bound_head)
+        self.assertFalse((Path(info["path"]) / "later.txt").exists())
+
     def test_create_unborn_head_returns_none(self):
         repo = self.tmp / "empty"
         repo.mkdir()

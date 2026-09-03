@@ -148,6 +148,80 @@ def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeyp
     )
 
 
+def _unhydrated_entry(cred_id: str = "cred-borrowed", priority: int = 1) -> dict:
+    """A metadata-only row: a borrowed credential that never got hydrated.
+
+    Borrowed credentials persist without their token and are refilled from the
+    live source on load; a stale duplicate can stay empty. Selection skips
+    these outright rather than leasing an empty key (#63620).
+    """
+    return {
+        "id": cred_id,
+        "label": cred_id,
+        "auth_type": "api_key",
+        "priority": priority,
+        "source": "manual",
+        "access_token": "",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+
+
+def test_unhydrated_row_does_not_defeat_sole_cooldown(tmp_path, monkeypatch):
+    """An empty api-key row is not something to rotate to.
+
+    Selection already skips these, so a pool holding one live key plus a stale
+    metadata-only row has exactly one usable credential. Counting the empty row
+    made it read as multi-key, and the only key that could serve a request was
+    benched for the full hour on a transient 429.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=90, cred_id="cred-1"), _unhydrated_entry()],
+    )
+    entry = pool.select()
+    assert entry is not None, "the only usable key stayed benched past its 60s cooldown"
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_unhydrated_row_does_not_stretch_next_available_at(tmp_path, monkeypatch):
+    """The same pool must report the short window, not an hour.
+
+    `next_available_at` gates the fallback restore, so an inflated wait keeps
+    the agent on a fallback provider long after the real key has recovered.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=10, cred_id="cred-1"), _unhydrated_entry()],
+    )
+    next_at = pool.next_available_at()
+    assert next_at is not None
+    remaining = next_at - time.time()
+    assert remaining < 300, (
+        f"next_available_at returned {remaining:.0f}s — should be seconds, not hours"
+    )
+
+
+def test_two_live_keys_plus_unhydrated_row_keeps_full_bench(tmp_path, monkeypatch):
+    """Only unusable rows are discounted — two real keys still mean rotation.
+
+    Pins the boundary: the count drops empty rows, not genuine alternatives.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(429, age_seconds=90, cred_id="cred-1", priority=0),
+            _entry(429, age_seconds=90, cred_id="cred-2", priority=1),
+            _unhydrated_entry(priority=2),
+        ],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
 def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     """With more than one non-DEAD entry there IS something to rotate to, so the
     short cooldown must not kick in — both recently-throttled keys stay benched."""

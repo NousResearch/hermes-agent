@@ -68,6 +68,18 @@ FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
 
+# Guard fix 6 (bounded drain owner): when the reader loop idle-escapes after
+# the direct child exits but a descendant still owns the pipe's write end
+# (issue #68915 orphan-escape without EOF), a daemon drain thread keeps the
+# read end open for at most this many seconds to capture the descendant's
+# late output into ``session.output_buffer`` — instead of releasing the
+# handle immediately and SIGPIPE-ing the descendant (PR #75162 review claim).
+# The window is a HARD bound: after it elapses (or true EOF arrives earlier)
+# the handle closes regardless, so a descendant that holds the pipe forever
+# can never park the drain owner indefinitely (Fix 1's FD-hygiene intent:
+# bounded release, never indefinite).
+_ORPHAN_DRAIN_WINDOW_S = 5.0
+
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
 # Any match arriving inside that cooldown window is dropped and counted as a strike.
@@ -437,6 +449,22 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    # Bounded drain owner (guard fix 6): when the reader loop idle-escapes
+    # without EOF (an orphaned descendant still owns the pipe's write end —
+    # issue #68915), a daemon drain thread keeps the read end open for at
+    # most _ORPHAN_DRAIN_WINDOW_S to capture the descendant's late output.
+    # FD-budget honesty: while _drain_owner_active is True the session's pipe
+    # FD is STILL held — the descriptor charge is returned only when the
+    # drain owner actually closes the handle (_finish_drain_owner), NOT at
+    # _move_to_finished(). A finished session with an active drain owner
+    # still counts against the FD budget until the owner finishes.
+    _drain_owner_active: bool = field(default=False, repr=False)
+    _drain_deadline: float = field(default=0.0, repr=False)  # time.monotonic() deadline; 0 = none
+    # True once _reader_loop observed a true pipe EOF (all writers closed).
+    # Lets non-reader paths (poll/wait reconcile, kill) distinguish a
+    # genuinely dead pipe — safe to close immediately — from one still held
+    # open by an orphaned descendant, which must be deferred to a drain owner.
+    _reader_saw_eof: bool = field(default=False, repr=False)
 
 
 class ProcessRegistry:
@@ -1414,6 +1442,12 @@ class ProcessRegistry:
         lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
+        # Guard fix 6: set when the idle-escape path fires (3 x 0.2s select
+        # cycles with no data after the direct child exited) — i.e. we stopped
+        # draining WITHOUT seeing EOF. That means a descendant still owns the
+        # pipe's write end and may write LATER; the handle must not be closed
+        # at _move_to_finished() or that write EPIPE/SIGPIPEs the descendant.
+        orphan_escape = False
         # Incremental decoder: raw pipe reads can split a multibyte UTF-8
         # character across two read1() chunks. A stateless per-chunk
         # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
@@ -1468,6 +1502,7 @@ class ProcessRegistry:
                     if ready:
                         raw = raw_read(4096)
                         if not raw:
+                            session._reader_saw_eof = True  # true EOF — all writers closed
                             break  # true EOF — all writers closed
                         chunk = decoder.decode(raw)
                         if chunk:
@@ -1481,12 +1516,14 @@ class ProcessRegistry:
                         # grandchild (issue #68915).
                         idle_after_exit += 1
                         if idle_after_exit >= 3:
+                            orphan_escape = True  # guard fix 6: stop WITHOUT EOF
                             break
             else:
                 while True:
                     if raw_read is not None:
                         raw = raw_read(4096)
                         if not raw:
+                            session._reader_saw_eof = True
                             break
                         chunk = decoder.decode(raw)
                         if not chunk:
@@ -1496,6 +1533,7 @@ class ProcessRegistry:
                         # interface. This may be less "live", but keeps compatibility.
                         chunk = stdout.read(4096)
                         if not chunk:
+                            session._reader_saw_eof = True
                             break
 
                     _append_chunk(chunk)
@@ -1520,6 +1558,17 @@ class ProcessRegistry:
             if session.completion_reason != "killed":
                 session.exit_code = session.process.returncode
                 session.completion_reason = "exited"
+            if orphan_escape:
+                # Guard fix 6: idle-escaped WITHOUT EOF — an orphaned
+                # descendant still owns the pipe's write end and may write
+                # later. Start the bounded drain owner BEFORE moving to
+                # finished so _move_to_finished() defers the handle close:
+                # the drain thread keeps the read end open for at most
+                # _ORPHAN_DRAIN_WINDOW_S, captures the descendant's late
+                # output into output_buffer, then closes the handle and
+                # returns the FD charge. Completion/notification still fire
+                # promptly here — only the handle close is deferred.
+                self._start_drain_owner(session)
             self._move_to_finished(session)
 
     @staticmethod
@@ -1566,6 +1615,125 @@ class ProcessRegistry:
             f'if [ "$S" -gt "$O" ]; then '
             f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
         )
+    def _start_drain_owner(self, session: ProcessSession) -> None:
+        """Begin the bounded drain owner for a finished session's orphan-held pipe.
+
+        Guard fix 6: the reader loop idle-escaped without EOF — the direct
+        child exited but a descendant still owns the stdout pipe's write end.
+        Closing the parent's read end now would SIGPIPE/EPIPE the descendant
+        on its next write (PR #75162 review claim). A daemon drain thread
+        instead keeps the pipe open for at most ``_ORPHAN_DRAIN_WINDOW_S``,
+        capturing any late output into ``session.output_buffer``, then closes
+        the handle and returns the FD charge.
+
+        FD-budget honesty: while ``_drain_owner_active`` is True the session
+        still holds its pipe FD — the charge is NOT returned at
+        ``_move_to_finished()`` (which defers via ``_release_finished_handles``).
+        The charge is returned only when ``_finish_drain_owner`` actually
+        closes the handle. Callers accounting for open descriptors can observe
+        ``_drain_owner_active``.
+
+        No-op when there is no real select-able pipe (Windows keeps the
+        blocking-read path and never idle-escapes; mocked streams without a
+        fileno use the blocking fallback and never idle-escape either).
+        Idempotent: if a drain owner is already active (reader loop and a
+        poll/wait reconcile raced), the existing owner's deadline stands.
+        """
+        if _IS_WINDOWS:
+            return
+        if getattr(session, "_drain_owner_active", False):
+            return  # already engaged — keep the original bounded deadline
+        proc = getattr(session, "process", None)
+        stdout = getattr(proc, "stdout", None) if proc is not None else None
+        if stdout is None:
+            return
+        try:
+            if stdout.closed:
+                return
+        except Exception:
+            return
+        session._drain_deadline = time.monotonic() + _ORPHAN_DRAIN_WINDOW_S
+        session._drain_owner_active = True
+        thread = threading.Thread(
+            target=self._drain_owner_loop,
+            args=(session,),
+            daemon=True,
+            name=f"proc-drain-{session.id}",
+        )
+        thread.start()
+
+    def _drain_owner_loop(self, session: ProcessSession) -> None:
+        """Bounded tail-drain of a finished session's still-open stdout pipe.
+
+        Reads whatever the orphaned descendant writes until the drain window
+        elapses or the pipe reaches true EOF, appending it to
+        ``session.output_buffer`` (and forwarding to the live-output sink).
+        The window is a HARD bound: after ``_ORPHAN_DRAIN_WINDOW_S`` the
+        handle closes no matter what, so a descendant that holds the pipe
+        forever can never park this thread indefinitely — Fix 1's FD-hygiene
+        intent (finished sessions must stop holding FDs) is preserved.
+        """
+        proc = getattr(session, "process", None)
+        stdout = getattr(proc, "stdout", None) if proc is not None else None
+        if stdout is None:
+            self._finish_drain_owner(session)
+            return
+        try:
+            raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
+            try:
+                fd = stdout.fileno() if callable(getattr(stdout, "fileno", None)) else None
+            except Exception:
+                fd = None
+            if not isinstance(fd, int) or fd < 0 or raw_read is None:
+                # Not a select-able real pipe (mocked stream / closed) —
+                # nothing to drain; close immediately.
+                self._finish_drain_owner(session)
+                return
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            import select as _select
+
+            while True:
+                remaining = session._drain_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    ready, _, _ = _select.select([fd], [], [], min(remaining, 0.2))
+                except (ValueError, OSError):
+                    break  # fd already closed elsewhere (e.g. kill path)
+                if not ready:
+                    continue
+                try:
+                    raw = raw_read(4096)
+                except (ValueError, OSError):
+                    break  # closed mid-read
+                if not raw:
+                    break  # true EOF — all writers (incl. the descendant) closed
+                chunk = decoder.decode(raw)
+                if not chunk:
+                    continue
+                with session._lock:
+                    session.output_buffer += chunk
+                    if len(session.output_buffer) > session.max_output_chars:
+                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._emit_output(session, chunk)
+        except Exception as e:
+            logger.debug("Process drain owner ended for %s: %s", session.id, e)
+        finally:
+            self._finish_drain_owner(session)
+
+    def _finish_drain_owner(self, session: ProcessSession) -> None:
+        """Close the drained handle and clear the drain-owner state.
+
+        This is the point where the FD charge is actually RETURNED: the read
+        end closes here (force=True so the deferral guard does not re-defer),
+        not at ``_move_to_finished()``. Safe to run even if the window was
+        never engaged (no-op when the handle is already closed).
+        """
+        try:
+            self._release_finished_handles(session, force=True)
+        finally:
+            session._drain_owner_active = False
+            session._drain_deadline = 0.0
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
@@ -1715,6 +1883,13 @@ class ProcessRegistry:
         # poll()/wait()/read_log() serve output from the buffered
         # ``output_buffer``, never from the pipe, so closing the handles here
         # is lossless.
+        # EXCEPTION (guard fix 6): when the reader loop idle-escaped without
+        # EOF (orphaned descendant still owns the pipe's write end), the
+        # bounded drain owner is active — _release_finished_handles defers the
+        # close so the descendant's late output drains instead of EPIPE-ing
+        # it. Completion/notification fire right here; only the handle close
+        # (and with it the FD charge) is deferred to the drain owner, for at
+        # most _ORPHAN_DRAIN_WINDOW_S.
         self._release_finished_handles(session)
         session._completion_event.set()
         self._write_checkpoint()
@@ -1744,7 +1919,44 @@ class ProcessRegistry:
             _redact_process_result(notification)
             self.completion_queue.put(notification)
 
-    def _release_finished_handles(self, session: ProcessSession):
+    def _should_defer_pipe_close(self, session: ProcessSession) -> bool:
+        """Whether a finished local-pipe session's read end must stay open.
+
+        Guard fix 6: a non-reader path (poll()/wait() reconcile, kill) is
+        moving the session to finished while the reader thread is STILL
+        draining a pipe that has NOT reached EOF. Since the direct child is
+        gone, a missing EOF means an orphaned descendant still owns the write
+        end and may write later — closing now would EPIPE/SIGPIPE it. The
+        read end must instead be handed to a bounded drain owner.
+
+        False when: Windows (blocking path, no select), no local Popen
+        stdout, the stream is already closed, the reader already observed a
+        true EOF (pipe genuinely dead — close immediately), or the reader
+        thread is not alive (its own finally handles EOF/escape decisions).
+        """
+        if _IS_WINDOWS:
+            return False
+        proc = getattr(session, "process", None)
+        stdout = getattr(proc, "stdout", None) if proc is not None else None
+        if stdout is None:
+            return False
+        try:
+            if stdout.closed:
+                return False
+        except Exception:
+            return False
+        if session._reader_saw_eof:
+            return False  # true EOF — all writers closed, safe to release
+        reader = getattr(session, "_reader_thread", None)
+        if reader is None or not reader.is_alive():
+            return False  # reader finished (or never existed) — its own path decided
+        if reader is threading.current_thread():
+            return False  # called from the reader's own finally — already decided
+        return True
+
+    def _release_finished_handles(
+        self, session: ProcessSession, *, force: bool = False
+    ) -> None:
         """Close a finished session's OS handles (Popen pipes / PTY master).
 
         Best-effort and idempotent: the session may have no local Popen (env
@@ -1752,7 +1964,28 @@ class ProcessRegistry:
         the reader loop / kill path. Closing a Popen's stream objects does not
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
+
+        Guard fix 6 (deferral): while the bounded drain owner is active
+        (``session._drain_owner_active``), the close is DEFERRED — the read
+        end is still legitimately held open to drain an orphaned descendant's
+        late output, and the descriptor charge must not be returned before
+        the handle is actually closed. The drain owner calls back with
+        ``force=True`` (from ``_finish_drain_owner``) to perform the real
+        close when the window elapses or EOF arrives.
         """
+        if not force and getattr(session, "_drain_owner_active", False):
+            # FD-budget honesty: a finished session with an active drain owner
+            # still counts against the FD budget until the owner finishes —
+            # the charge is returned only when the read end actually closes.
+            return
+        if not force and self._should_defer_pipe_close(session):
+            # Non-reader path raced the reader while the pipe had NOT EOF'd
+            # (orphaned descendant still owns the write end — guard fix 6).
+            # Engage the bounded drain owner instead of closing: it keeps the
+            # read end open for at most _ORPHAN_DRAIN_WINDOW_S, captures the
+            # descendant's late output, then closes and returns the FD charge.
+            self._start_drain_owner(session)
+            return
         proc = getattr(session, "process", None)
         if proc is not None:
             for stream_name in ("stdout", "stderr", "stdin"):

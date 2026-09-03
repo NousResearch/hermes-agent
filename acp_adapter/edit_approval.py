@@ -33,6 +33,18 @@ class EditProposal:
     arguments: dict[str, Any]
 
 
+class _AlreadyAppliedEdit(Exception):
+    """Raised internally when a patch proposal's target text is already
+    present in the file (see ``tools.fuzzy_match.is_already_applied``).
+
+    Distinguished from a genuine build-proposal failure so
+    ``maybe_require_edit_approval`` can let dispatch fall through to the
+    real tool call instead of blocking it — the real ``patch_replace``
+    independently re-checks ``is_already_applied`` and returns a graceful
+    success-shaped no-op, same as the CLI/gateway path.
+    """
+
+
 EditApprovalRequester = Callable[[EditProposal], bool]
 
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
@@ -108,7 +120,7 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
     if old_text is None:
         raise ValueError(f"Failed to read file: {path}")
 
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
 
     new_text, match_count, _strategy, error = fuzzy_find_and_replace(
         old_text,
@@ -117,6 +129,16 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
         bool(arguments.get("replace_all", False)),
     )
     if error or match_count == 0:
+        # Same already-applied rescue tools/file_operations.py's real
+        # patch_replace applies: a re-send of an edit that already landed
+        # (identical old/new strings, or old_string gone while new_string is
+        # present) is the most common patch failure in production, not a
+        # genuine error. Raise a distinguishable exception so the approval
+        # layer can let this fall through to the real tool call — which
+        # performs the same check and returns a graceful no-op — instead of
+        # unconditionally blocking with a misleading "denied" error.
+        if is_already_applied(old_text, str(old_string), str(new_string)):
+            raise _AlreadyAppliedEdit(f"already applied to {path}")
         raise ValueError(error or f"Could not find match for old_string in {path}")
 
     return EditProposal(
@@ -243,6 +265,12 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 
     try:
         proposal = build_edit_proposal(tool_name, arguments)
+    except _AlreadyAppliedEdit:
+        # No diff to show — the target text is already in the file. Skip
+        # the approval prompt entirely and let dispatch reach the real
+        # tool call, which independently detects this and returns a
+        # graceful no-op instead of writing anything.
+        return None
     except Exception as exc:
         logger.warning("Could not build ACP edit approval proposal for %s: %s", tool_name, exc)
         return json.dumps({"error": f"Edit approval denied: could not prepare diff ({exc})"}, ensure_ascii=False)

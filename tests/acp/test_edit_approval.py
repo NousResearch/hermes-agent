@@ -93,6 +93,69 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
+def test_already_applied_patch_skips_approval_and_reports_no_change(tmp_path):
+    """tools.file_operations.patch_replace() rescues a re-send of an
+    already-landed edit (identical old/new strings, or old_string gone
+    while new_string is present) into a graceful success no-op instead of
+    an error — the most common patch failure in production. The ACP
+    proposal builder used to raise before that rescue was ever reached,
+    turning it into a misleading "denied by ACP client" error the user was
+    never actually asked about. The requester below always denies, so if
+    approval were requested this test would see an "Edit approval denied"
+    error instead of a no-op success.
+    """
+    target = tmp_path / "sample.txt"
+    target_text = "this text is already updated and present in the file"
+    target.write_text(f"alpha\n{target_text}\nbeta\n", encoding="utf-8")
+
+    requester_calls = []
+    set_edit_approval_requester(lambda proposal: requester_calls.append(proposal) or False)
+
+    result = json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": target_text,
+                "new_string": target_text,
+            },
+            task_id="acp-patch-already-applied",
+        )
+    )
+
+    assert requester_calls == []
+    assert result.get("success") is True
+    assert result.get("no_change") is True
+    assert target.read_text(encoding="utf-8") == f"alpha\n{target_text}\nbeta\n"
+
+
+def test_genuinely_unmatched_patch_still_denies(tmp_path):
+    """A real "old_string not found" failure must still be blocked — the
+    already-applied rescue must not swallow genuine build failures."""
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: True)
+
+    result = json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "this text does not exist in the file at all",
+                "new_string": "replacement text",
+            },
+            task_id="acp-patch-genuine-failure",
+        )
+    )
+
+    assert "error" in result
+    assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
 
 
 

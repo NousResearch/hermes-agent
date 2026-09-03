@@ -551,6 +551,95 @@ class TestFenceProgress:
 
 
 # ---------------------------------------------------------------------------
+# Bedrock auxiliary progress wiring (#101088)
+# ---------------------------------------------------------------------------
+
+class TestBedrockAuxProgress:
+    """The Bedrock adapter sits on _client_streams_internally's list, so no
+    outer wrapper can supply its liveness signal: with a hook installed the
+    adapter itself must stream and tick per ConverseStream event, or an
+    inactivity watchdog (CompressionCommitFence) kills every long summary as
+    hung with the tokens already billed."""
+
+    @staticmethod
+    def _client():
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+        return BedrockAuxiliaryClient("us-east-1", "amazon.nova-lite-v1:0")
+
+    def test_end_to_end_ticks_per_stream_event(self):
+        client = self._client()
+        streamed_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(role="assistant", content="summary"),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        def _fake_stream(**kwargs):
+            # Emit exactly three wire events through the captured callback.
+            on_event = kwargs["on_event"]
+            for _ in range(3):
+                on_event()
+            return streamed_response
+
+        ticks = []
+        with (
+            patch(
+                "agent.bedrock_adapter.call_converse_stream",
+                side_effect=_fake_stream,
+            ),
+            patch("agent.bedrock_adapter.call_converse") as plain_converse,
+        ):
+            with aux_progress_hook(lambda: ticks.append(1)):
+                result = _create_with_progress(
+                    client, {"model": "amazon.nova-lite-v1:0", "messages": []},
+                )
+
+        assert result.choices[0].message.content == "summary"
+        assert plain_converse.call_count == 0
+        # 1 dispatch tick (the watchdog's historical liveness signal) + one
+        # per stream event + 1 terminal provider-response tick.
+        assert ticks == [1] * 5
+
+    def test_no_hook_keeps_the_nonstreaming_path(self):
+        completions = self._client().chat.completions
+        plain_response = SimpleNamespace(choices=["as-is"], usage=None)
+        with (
+            patch(
+                "agent.bedrock_adapter.call_converse",
+                return_value=plain_response,
+            ) as plain_converse,
+            patch("agent.bedrock_adapter.call_converse_stream") as streamed,
+        ):
+            result = completions.create(messages=[{"role": "user", "content": "hi"}])
+        assert result is plain_response
+        assert streamed.call_count == 0
+        assert plain_converse.call_count == 1
+
+    def test_on_event_carries_the_provider_response_signal(self):
+        # Per-event ticks must be _notify_aux_provider_response (timing +
+        # progress), matching the Codex adapter's substantive-payload
+        # notification, so latency_info callers see time_to_first_progress_ms
+        # at the first stream event.
+        from agent.auxiliary_client import _notify_aux_provider_response
+        completions = self._client().chat.completions
+        seen = {}
+
+        def _fake_stream(**kwargs):
+            seen["on_event"] = kwargs.get("on_event")
+            return SimpleNamespace(choices=[], usage=None)
+
+        with patch(
+            "agent.bedrock_adapter.call_converse_stream", side_effect=_fake_stream,
+        ):
+            with aux_progress_hook(lambda: None):
+                completions.create(messages=[])
+        assert seen["on_event"] is _notify_aux_provider_response
+
+
+# ---------------------------------------------------------------------------
 # Stream-only providers (credit @kudi88, PR #60686)
 # ---------------------------------------------------------------------------
 

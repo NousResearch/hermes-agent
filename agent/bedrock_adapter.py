@@ -33,7 +33,7 @@ import logging
 import os
 import re
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -1625,11 +1625,18 @@ def call_converse_stream(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    on_event: Optional[Callable[[], None]] = None,
 ) -> SimpleNamespace:
     """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
 
     Consumes the full stream and returns the assembled response. For true
     streaming with delta callbacks, use ``iter_converse_stream()`` instead.
+
+    ``on_event`` is called with no arguments once per yielded ConverseStream
+    event (see :func:`stream_converse_with_callbacks`) — a wire-level liveness
+    signal for external inactivity watchdogs. The streaming-denied IAM
+    fallback path never invokes it: a non-streaming converse() has no
+    intermediate events to report.
     """
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(
@@ -1648,8 +1655,8 @@ def call_converse_stream(
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
-            return normalize_converse_stream_events(
-                client.converse_stream(**retry_kwargs)
+            return stream_converse_with_callbacks(
+                client.converse_stream(**retry_kwargs), on_event=on_event
             )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not
@@ -1669,7 +1676,7 @@ def call_converse_stream(
             )
             invalidate_runtime_client(region)
         raise
-    return normalize_converse_stream_events(response)
+    return stream_converse_with_callbacks(response, on_event=on_event)
 
 
 # ---------------------------------------------------------------------------

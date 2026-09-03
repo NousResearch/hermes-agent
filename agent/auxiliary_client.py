@@ -2719,7 +2719,7 @@ class _BedrockCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
+        from agent.bedrock_adapter import call_converse, call_converse_stream
 
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
@@ -2746,7 +2746,7 @@ class _BedrockCompletionsAdapter:
                 "stream); caller downgrades to non-streaming.",
                 model,
             )
-        response = call_converse(
+        converse_kwargs = dict(
             region=self._region,
             model=model,
             messages=messages,
@@ -2764,9 +2764,22 @@ class _BedrockCompletionsAdapter:
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
         )
-        # Converse is a complete-response API in this shim. Mark provider
-        # progress only after the response returns so TTFP reflects real
-        # Bedrock latency rather than dispatch/setup activity.
+        if _aux_progress_active():
+            # An active progress hook means an inactivity watchdog (e.g.
+            # CompressionCommitFence) is timing this call. A long Converse
+            # call must tick it per stream event or the watchdog cannot
+            # distinguish slow-but-alive from hung and kills the call with
+            # the tokens already billed. Streaming-denied IAM sessions fall
+            # back to non-streaming converse() inside call_converse_stream
+            # and stay unticked mid-call, exactly as before.
+            response = call_converse_stream(
+                **converse_kwargs, on_event=_notify_aux_provider_response,
+            )
+        else:
+            response = call_converse(**converse_kwargs)
+        # Terminal tick: TTFP still reflects real Bedrock latency on the
+        # non-streaming path (and after the final stream event), not
+        # dispatch/setup activity.
         _notify_aux_provider_response()
         return response
 
@@ -9770,8 +9783,9 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
 def _client_streams_internally(client: Any) -> bool:
     """Wire adapters that consume a stream inside .create() already tick the
     progress hook themselves (Codex per SSE event, Anthropic per stream
-    event); Bedrock's Converse shim cannot stream at all. None of them
-    accept chat-completions ``stream=True`` semantics from us."""
+    event, Bedrock per ConverseStream event when a hook is active — see
+    _BedrockCompletionsAdapter.create). None of them accept
+    chat-completions ``stream=True`` semantics from us."""
     return isinstance(client, (
         CodexAuxiliaryClient,
         AnthropicAuxiliaryClient,

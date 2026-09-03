@@ -252,7 +252,7 @@ def test_boolean_cap_drift_stays_uncapped_and_preserves_existing_reasoning():
     assert request["extra_body"]["reasoning"] == {"enabled": False}
 
 
-def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
+def test_bedrock_converse_ttfp_waits_for_the_provider_response():
     from agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
 
     config = {
@@ -276,13 +276,20 @@ def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
         time.sleep(0.02)
         return response
 
+    # latency_info installs a (no-op) progress hook, which routes the Bedrock
+    # adapter onto the streamed Converse path (#101088); the mock below emits
+    # no intermediate events, so the terminal provider-response tick after
+    # the call returns is still the first TTFP sample.
     with (
         patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
         patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "amazon.nova-lite-v1:0"),
         ),
-        patch("agent.bedrock_adapter.call_converse", side_effect=_delayed_converse),
+        patch(
+            "agent.bedrock_adapter.call_converse_stream",
+            side_effect=_delayed_converse,
+        ),
     ):
         assert call_llm(
             task="compression",

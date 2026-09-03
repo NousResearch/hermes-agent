@@ -595,6 +595,66 @@ class TestBuildConverseKwargs:
         wire_kwargs = boto3_client.converse_stream.call_args.kwargs
         assert "maxTokens" not in wire_kwargs.get("inferenceConfig", {})
 
+    def test_call_converse_stream_forwards_on_event(self):
+        """on_event must fire once per yielded ConverseStream event so an
+        external inactivity watchdog can tell a slow-but-alive call from a
+        hung one (#101088), while the assembled response stays unchanged."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from agent.bedrock_adapter import call_converse_stream
+        boto3_client = MagicMock()
+        boto3_client.converse_stream.return_value = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Hi"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+        ]}
+        ticks = []
+        with mock_patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=boto3_client,
+        ):
+            result = call_converse_stream(
+                region="us-east-1",
+                model="test-model",
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=None,
+                on_event=lambda: ticks.append(1),
+            )
+        assert result.choices[0].message.content == "Hi"
+        assert result.choices[0].finish_reason == "stop"
+        assert ticks == [1, 1, 1]
+
+    def test_call_converse_stream_denied_fallback_never_ticks_on_event(self):
+        """Streaming-denied IAM sessions fall back to non-streaming
+        converse(); that path has no intermediate events, so on_event must
+        stay silent and the plain response must still come back (#101088)."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from agent.bedrock_adapter import call_converse_stream
+        boto3_client = MagicMock()
+        boto3_client.converse_stream.side_effect = RuntimeError(
+            "User: arn:aws:iam::1:user/x is not authorized to perform: "
+            "bedrock:InvokeModelWithResponseStream on resource: y"
+        )
+        boto3_client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 3, "outputTokens": 1},
+        }
+        ticks = []
+        with mock_patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=boto3_client,
+        ):
+            result = call_converse_stream(
+                region="us-east-1",
+                model="test-model",
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=None,
+                on_event=lambda: ticks.append(1),
+            )
+        assert ticks == []
+        assert boto3_client.converse.call_count == 1
+        assert result.choices[0].message.content == "ok"
+
 
 
 

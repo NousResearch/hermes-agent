@@ -112,7 +112,10 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # blocked. "praxis" was removed for exactly this reason — it's a common
     # word and a legitimate agent name (Greek for practice/action), not a
     # C2-specific tell like the brands below.
-    (r'\b(?:cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    # "Havoc" is also used in ordinary product and brand names, so require
+    # framework-specific context for that one ambiguous token.  The remaining
+    # names are distinctive enough to match standalone.
+    (r'\b(?:cobalt\s*strike|sliver|mythic|metasploit|brainworm)\b|\bhavoc\s+(?:c2|framework|teamserver|listener|demon)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 

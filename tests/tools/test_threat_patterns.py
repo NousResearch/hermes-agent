@@ -80,6 +80,22 @@ class TestBrainwormPayload:
         )
 
 
+class TestKnownC2FrameworkNames:
+    def test_havoc_brand_name_does_not_block_project_context(self):
+        findings = scan_for_threats(
+            "Route Saint Havoc merchandising research to Scout.",
+            scope="context",
+        )
+        assert "known_c2_framework" not in findings
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Havoc C2", "Havoc framework", "Havoc teamserver", "Havoc listener", "Havoc demon"],
+    )
+    def test_havoc_security_context_is_still_detected(self, text):
+        assert "known_c2_framework" in scan_for_threats(text, scope="context")
+
+
 # =========================================================================
 # Individual promptware / C2 patterns
 # =========================================================================

@@ -64,7 +64,11 @@ from tools.fal_common import (
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
 )
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.managed_tool_gateway import (
+    build_managed_media_uploader,
+    managed_vendor_endpoints,
+    resolve_managed_tool_gateway,
+)
 from tools.tool_backend_helpers import (
     NOUS_MANAGED_PROVIDER,
     fal_key_is_configured,
@@ -844,7 +848,20 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     # Trigger the lazy import on first call. Idempotent.
     _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
-    managed_gateway = _resolve_managed_fal_gateway()
+    force_managed = _contains_managed_upload(arguments)
+    if force_managed:
+        managed_gateway = resolve_managed_tool_gateway("fal-queue")
+        if managed_gateway is None:
+            raise ValueError(
+                "A local image was uploaded to the Nous managed gateway, but "
+                "managed FAL generation is unavailable for this request."
+            )
+        logger.info(
+            "Forcing managed FAL gateway routing for this request because "
+            "its arguments contain a nous-upload: local-reference token"
+        )
+    else:
+        managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
@@ -880,6 +897,82 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
                 f"{gateway_message}"
             ) from exc
         raise
+
+
+def _contains_managed_upload(value: Any) -> bool:
+    """Return whether a nested request value contains a managed upload token."""
+    if isinstance(value, str):
+        return value.startswith("nous-upload:")
+    if isinstance(value, dict):
+        return any(_contains_managed_upload(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_managed_upload(item) for item in value)
+    return False
+
+
+def _is_local_image_source(value: Any) -> bool:
+    """Identify path-like sources without changing URL/data/token handling.
+
+    By contract, callers only ever pass a URL, a ``data:`` URI, a
+    ``nous-upload:`` token, or a local filesystem path — this treats
+    anything not matching one of the recognized non-local schemes as local.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    source = value.strip().lower()
+    if source.startswith(("http://", "https://", "data:", "nous-upload:")):
+        return False
+    # Explicit non-file URL schemes are provider inputs, not local paths.
+    if "://" in source and not source.startswith("file://"):
+        return False
+    return True
+
+
+def _upload_local_fal_sources(source_images: list) -> list:
+    """Upload local FAL edit sources when managed access is available.
+
+    Direct-FAL-only installations retain the historical local-path pass-through.
+    The resolver returns bytes, and those exact in-memory bytes are uploaded;
+    the path is never reopened by this adapter.
+    """
+    if not any(_is_local_image_source(source) for source in source_images):
+        return source_images
+
+    managed_gateway = resolve_managed_tool_gateway("fal-queue")
+    if managed_gateway is None:
+        if fal_key_is_configured():
+            return source_images
+        raise ValueError(
+            "A local image path requires either Nous managed FAL access for "
+            "secure upload or a configured FAL_KEY for legacy direct-FAL "
+            "pass-through; neither is available."
+        )
+
+    endpoints = managed_vendor_endpoints("fal")
+    uploader = None
+    if endpoints is not None:
+        uploader = build_managed_media_uploader(
+            endpoints["base_url"], endpoints["upload_path"]
+        )
+    if uploader is None:
+        raise ValueError(
+            "Nous managed FAL access is available, but its local-image upload "
+            "endpoint could not be configured."
+        )
+
+    from model_tools import _run_async
+    from tools.image_source import ResolveContext, resolve_image_source
+
+    resolved_sources = []
+    for source in source_images:
+        if not _is_local_image_source(source):
+            resolved_sources.append(source)
+            continue
+        resolved = _run_async(resolve_image_source(
+            source, ResolveContext(), permitted=("image",)
+        ))
+        resolved_sources.append(_run_async(uploader(resolved.data, resolved.mime)))
+    return resolved_sources
 
 
 # ---------------------------------------------------------------------------
@@ -1259,15 +1352,29 @@ def image_generate_tool(
     }
 
     start_time = datetime.datetime.now()
+    grounding_route = None
 
     try:
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
+        # This is the in-tree FAL path: plugin and Krea dispatch has already
+        # happened, while non-local sources were confined to data: URLs.
+        backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+        if backend in ("", "local") and source_images:
+            source_images = _upload_local_fal_sources(source_images)
+
         # Strict selection check: a stored-but-broken selection raises the
         # honest selection-naming error from _resolve_managed_fal_gateway();
         # only the never-configured path can report "no backend at all".
-        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
+        if _contains_managed_upload(source_images):
+            if resolve_managed_tool_gateway("fal-queue") is None:
+                raise ValueError(
+                    "A nous-upload: image reference requires managed FAL "
+                    "gateway access, but it is unavailable (stale token or "
+                    "lost managed access).\n\n" + _build_no_backend_setup_message()
+                )
+        elif not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
 
         # If the caller supplied source images but the active model has no
@@ -1322,6 +1429,9 @@ def image_generate_tool(
                 "Generating image with %s (%s) — prompt: %s",
                 meta.get("display", model_id), model_id, prompt[:80],
             )
+
+        if _contains_managed_upload(arguments):
+            grounding_route = "managed_gateway_forced_by_local_reference"
 
         handler = _submit_fal_request(endpoint, arguments=arguments)
         result = _wait_fal_result(handler)
@@ -1381,6 +1491,8 @@ def image_generate_tool(
             "modality": modality,
             "upscaled": bool(formatted_images and formatted_images[0].get("upscaled")),
         }
+        if grounding_route is not None:
+            response_data["grounding_route"] = grounding_route
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -1401,6 +1513,8 @@ def image_generate_tool(
             "error": str(e),
             "error_type": type(e).__name__,
         }
+        if grounding_route is not None:
+            response_data["grounding_route"] = grounding_route
 
         debug_call_data["error"] = error_msg
         debug_call_data["generation_time"] = generation_time

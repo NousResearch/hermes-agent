@@ -1062,7 +1062,12 @@ def ensure_hermes_home():
         finally:
             os.umask(old_umask)
     else:
-        home.mkdir(parents=True, exist_ok=True)
+        # Accept ~/.hermes as a symlink to a valid directory (e.g. settings
+        # kept under Git). Path.mkdir(exist_ok=True) on some platforms still
+        # raises for the symlink itself, so skip the home mkdir when it
+        # already resolves to a directory. See #101900.
+        if not home.is_dir():
+            home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
         for subdir in (
             "cron", "sessions", "logs", "logs/curator", "memories",

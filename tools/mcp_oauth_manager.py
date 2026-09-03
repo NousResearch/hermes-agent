@@ -543,12 +543,13 @@ def _make_hermes_provider_class() -> Optional[type]:
             resource_lock_released = False
             sent_access_token = None
             retry_after_concurrent_auth = False
+            primary_error: BaseException | None = None
             try:
                 outgoing = await inner.__anext__()
                 while True:
                     # The SDK holds context.lock for its entire generator,
                     # including while HTTPX waits on the actual MCP request.
-                    # Release it only for that request.  OAuth discovery,
+                    # Release it only for that request. OAuth discovery,
                     # refresh, registration, and token exchange remain
                     # serialized exactly as the SDK implements them.
                     if outgoing is request:
@@ -564,7 +565,7 @@ def _make_hermes_provider_class() -> Optional[type]:
                         resource_lock_released = False
                     # A different request may have completed refresh or full
                     # authorization while this resource request was in
-                    # flight.  Retry with that token instead of starting a
+                    # flight. Retry with that token instead of starting a
                     # duplicate OAuth transition from the stale 401/403.
                     tokens = self.context.current_tokens
                     if (
@@ -574,7 +575,6 @@ def _make_hermes_provider_class() -> Optional[type]:
                         and tokens.access_token != sent_access_token
                     ):
                         self._add_auth_header(request)
-                        await inner.aclose()
                         retry_after_concurrent_auth = True
                         break
                     # Sniff the response for a dead-client-registration signal
@@ -586,17 +586,40 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            except BaseException as exc:
+                primary_error = exc
+                raise
             finally:
-                if resource_lock_released:
-                    # Balance the SDK's surrounding ``async with`` even when
-                    # HTTPX cancels or closes the flow while the resource
-                    # request is still in flight.  Shield only this local
-                    # bookkeeping; general inner-generator teardown remains
-                    # the separate concern tracked by the cleanup PR.
+                # Bind the delegated SDK flow to the task driving this bridge.
+                # If HTTPX cancellation or explicit close arrives while the
+                # resource request is yielded, first reacquire #97458's binary
+                # semaphore so the SDK's surrounding async-with remains
+                # balanced, then close the inner generator exactly once.
+                try:
                     import anyio
 
                     with anyio.CancelScope(shield=True):
-                        await self.context.lock.acquire()
+                        if resource_lock_released:
+                            await self.context.lock.acquire()
+                            resource_lock_released = False
+                        await inner.aclose()
+                except BaseException as cleanup_error:
+                    # Preserve the real OAuth failure or cancellation. Normal
+                    # completion and explicit outer close have no user-visible
+                    # primary error, so cleanup failure remains authoritative.
+                    if primary_error is None or isinstance(primary_error, GeneratorExit):
+                        raise
+                    primary_error.add_note(
+                        "MCP OAuth inner auth-flow cleanup also raised "
+                        f"{type(cleanup_error).__name__}"
+                    )
+                    logger.warning(
+                        "MCP OAuth '%s': inner auth-flow cleanup raised %s while "
+                        "preserving %s",
+                        self._hermes_server_name,
+                        type(cleanup_error).__name__,
+                        type(primary_error).__name__,
+                    )
 
             if retry_after_concurrent_auth:
                 yield request

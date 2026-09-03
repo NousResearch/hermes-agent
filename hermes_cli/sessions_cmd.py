@@ -330,7 +330,10 @@ def cmd_sessions(args, sessions_parser=None):
         from hermes_state import workspace_key as _ws_key
 
         sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
+            source=args.source,
+            exclude_sources=_exclude,
+            limit=args.limit,
+            include_hidden=getattr(args, "include_hidden", False),
         )
 
         # Workspace filter: match a session by its workspace key (git repo
@@ -1080,6 +1083,39 @@ def cmd_sessions(args, sessions_parser=None):
                 return 1
         except ValueError as e:
             print(f"Error: {e}")
+            return 1
+
+    elif action == "unhide":
+        # The `hidden` flag is a durable "don't show in the global Sessions
+        # sidebar" marker set by surfaces that own their sessions (Bot Mode
+        # plumbing rows, plugins, the REST PATCH on api_server). Until now
+        # there was no way back out: a stale or wrongly-adopted pointer left
+        # an ordinary conversation hidden from every listing with no CLI, UI
+        # or documented recovery short of raw SQL on state.db. Unhide is the
+        # recovery affordance for that bug class — the DB setter flips the
+        # whole compression lineage as a unit (set_session_hidden), so one
+        # id per conversation is enough.
+        failures = 0
+        for raw_id in args.session_ids:
+            resolved = db.resolve_session_id(raw_id)
+            if not resolved:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+                continue
+            if db.set_session_hidden(resolved, False):
+                title = db.get_session_title(resolved)
+                suffix = f"  ({title})" if title else ""
+                print(f"Unhidden session '{resolved}'.{suffix}")
+            else:
+                # resolve_session_id() already proved the row exists, so a
+                # False here is the setter's "no rows changed" return — the
+                # session (and its whole lineage) was already visible.
+                # Reporting "not found" would be wrong AND would bump
+                # failures toward exit 1, making an idempotent second unhide
+                # of the same id look like a failure. set_session_hidden
+                # contract: True only when at least one row changed.
+                print(f"Session '{resolved}' is already visible — nothing to unhide.")
+        if failures:
             return 1
 
     elif action in ("pin", "unpin"):

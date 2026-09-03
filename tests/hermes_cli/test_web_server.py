@@ -568,6 +568,20 @@ class TestWebServerEndpoints:
         # Must swallow — reads fall back to the per-poll probe heal.
         web_server._eager_reconcile_own_session_db()
 
+    def test_startup_recovers_interrupted_update_receipt(self, monkeypatch):
+        from hermes_cli import update_receipt, web_server
+
+        seen = []
+        monkeypatch.setattr(
+            update_receipt,
+            "recover_interrupted_update_receipt",
+            lambda: seen.append(True),
+        )
+
+        web_server._recover_interrupted_update_receipt_at_startup()
+
+        assert seen == [True]
+
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
 

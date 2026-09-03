@@ -57,6 +57,7 @@ class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
     def __init__(self) -> None:
+        self.path: Optional[Path] = None
         self.data: dict[str, Any] = {
             "schema": 1,
             "started_at": _utc_now_iso(),
@@ -173,11 +174,89 @@ def _receipt_dir() -> Path:
     return get_hermes_home() / "logs" / _RECEIPT_DIR_NAME
 
 
+def _persist_receipt(receipt: UpdateReceipt) -> Optional[Path]:
+    """Write the active receipt and stable pointer without changing outcome.
+
+    The dashboard-owned updater runs in the Dashboard service cgroup. Restarting
+    that service can therefore terminate the updater before its normal command
+    boundary finalizer runs. Persist the initial ``running`` record before any
+    restart boundary, then overwrite that same timestamped receipt at finalize.
+    """
+    try:
+        directory = _receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        if receipt.path is None:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            receipt.path = directory / f"update_{stamp}_{os.getpid()}.json"
+        payload = json.dumps(receipt.data, indent=2, default=str)
+        receipt.path.write_text(payload, encoding="utf-8")
+        # Stable pointer for the dashboard/desktop.
+        try:
+            (directory / "latest.json").write_text(payload, encoding="utf-8")
+        except OSError:
+            pass
+        _prune_old_receipts(directory)
+        return receipt.path
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not write update receipt: %s", exc)
+        return None
+
+
+def _receipt_pid_is_live(pid: int) -> bool:
+    """Probe an updater PID with the project's cross-platform helper."""
+    try:
+        from gateway.status import _pid_exists
+
+        return pid > 0 and bool(_pid_exists(pid))
+    except Exception:
+        return False
+
+
+def _find_persisted_receipt(payload: dict[str, Any]) -> Optional[Path]:
+    """Find the timestamped file corresponding to a running latest pointer."""
+    try:
+        pid = int(payload.get("pid"))
+        started_at = payload.get("started_at")
+        for path in sorted(
+            _receipt_dir().glob(f"update_*_{pid}.json"),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        ):
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+            if candidate.get("started_at") == started_at:
+                return path
+    except Exception:
+        pass
+    return None
+
+
+def recover_interrupted_update_receipt() -> Optional[Path]:
+    """Finalize a dead updater's durable ``running`` receipt as interrupted."""
+    if _current is not None:
+        return None
+    payload = read_latest_receipt()
+    if not isinstance(payload, dict) or payload.get("outcome") != "running":
+        return None
+    try:
+        pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    if _receipt_pid_is_live(pid):
+        return None
+    receipt = UpdateReceipt.__new__(UpdateReceipt)
+    receipt.data = payload
+    receipt.path = _find_persisted_receipt(payload)
+    receipt.finalize("interrupted")
+    receipt.data["stop_reason"] = "updater exited before finalization"
+    return _persist_receipt(receipt)
+
+
 def begin_update_receipt() -> None:
     """Start recording a new update receipt. Never raises."""
     global _current
     try:
         _current = UpdateReceipt()
+        _persist_receipt(_current)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         _current = None
@@ -231,23 +310,7 @@ def finalize_update_receipt(
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
-        directory = _receipt_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        path = directory / f"update_{stamp}_{os.getpid()}.json"
-        path.write_text(
-            json.dumps(receipt.data, indent=2, default=str), encoding="utf-8"
-        )
-        # Stable pointer for the dashboard/desktop: latest receipt.
-        latest = directory / "latest.json"
-        try:
-            latest.write_text(
-                json.dumps(receipt.data, indent=2, default=str), encoding="utf-8"
-            )
-        except OSError:
-            pass
-        _prune_old_receipts(directory)
-        return path
+        return _persist_receipt(receipt)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not write update receipt: %s", exc)
         return None

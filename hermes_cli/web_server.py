@@ -403,6 +403,16 @@ def _eager_reconcile_own_session_db() -> None:
         )
 
 
+def _recover_interrupted_update_receipt_at_startup() -> None:
+    """Finalize an updater killed by this Dashboard service's restart."""
+    try:
+        from hermes_cli.update_receipt import recover_interrupted_update_receipt
+
+        recover_interrupted_update_receipt()
+    except Exception as exc:
+        _log.warning("startup update-receipt recovery failed (%s)", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
@@ -413,6 +423,11 @@ async def _lifespan(app: "FastAPI"):
     # On app.state (not a module global) so the Lock binds to the running
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
+
+    # A Dashboard-triggered updater is a child of this systemd unit. A service
+    # restart can kill that child before its command-boundary receipt finalizer
+    # runs, so the replacement Dashboard resolves its persisted running record.
+    _recover_interrupted_update_receipt_at_startup()
 
     # Bring this profile's state.db schema current BEFORE the first
     # session-list poll (#79531/#80037). Migrations used to run lazily on

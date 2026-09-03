@@ -111,6 +111,35 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
+    def test_begin_persists_running_receipt_for_crash_recovery(self, receipt_home):
+        """A dashboard-owned updater can be killed when it restarts that service.
+
+        The durable pointer must therefore exist before the restart boundary,
+        rather than only after the updater's in-memory finalizer runs.
+        """
+        ur.begin_update_receipt()
+
+        latest = ur.read_latest_receipt()
+
+        assert latest is not None
+        assert latest["outcome"] == "running"
+        assert latest["finished_at"] is None
+        assert latest["pre_update"]
+
+    def test_recover_dead_running_receipt_as_interrupted(self, receipt_home, monkeypatch):
+        ur.begin_update_receipt()
+        ur._current = None  # Simulate the updater process dying at service restart.
+        monkeypatch.setattr(ur, "_receipt_pid_is_live", lambda _pid: False)
+
+        path = ur.recover_interrupted_update_receipt()
+
+        assert path is not None and path.is_file()
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "interrupted"
+        assert latest["finished_at"] is not None
+        assert latest["stop_reason"] == "updater exited before finalization"
+
     def test_phase_error_shape(self, receipt_home):
         ur.begin_update_receipt()
         ur.record_gateway_restart(

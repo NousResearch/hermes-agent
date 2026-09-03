@@ -3153,6 +3153,25 @@ def _claimer_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def _with_operator(
+    operator: Optional[str], payload: Optional[dict]
+) -> Optional[dict]:
+    """Return ``payload`` with an additive ``operator`` key (issue #82689).
+
+    Operator attribution on state-changing events must never change what
+    existing consumers see: callers that don't pass an operator get the
+    exact legacy payload back (unchanged rows/keys), while callers that do
+    get a copy with one extra ``operator`` key. The value is a surface-
+    prefixed identity string, e.g. ``cli:<user>@<host>``,
+    ``dashboard:<session>``, or ``dispatcher:<host:pid>``.
+    """
+    if not operator:
+        return payload
+    merged = dict(payload) if payload else {}
+    merged["operator"] = operator
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Task creation / mutation
 # ---------------------------------------------------------------------------
@@ -3710,11 +3729,22 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+def assign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    operator: Optional[str] = None,
+) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``assigned`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` or ``dashboard:<session>``. Omitting it produces
+    the exact legacy payload (no new key), so old consumers are unaffected.
     """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
@@ -3739,7 +3769,10 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
+        _append_event(
+            conn, task_id, "assigned",
+            _with_operator(operator, {"assignee": profile}),
+        )
     # Task-mutation observer (RFC #58548), fired AFTER the assignment txn
     # has committed so subscribers always observe durable board state.
     notify_task_updated(conn, task_id, ("assignee",))
@@ -4631,11 +4664,17 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``claimed`` event payload (issue #82689); the
+    dispatcher passes ``dispatcher:<host:pid>``. Omitting it produces the
+    exact legacy payload.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -4733,7 +4772,9 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            _with_operator(
+                operator, {"lock": lock, "expires": expires, "run_id": run_id},
+            ),
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -5200,6 +5241,7 @@ def reassign_task(
     *,
     reclaim_first: bool = False,
     reason: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> bool:
     """Reassign a task, optionally reclaiming a stuck running worker first.
 
@@ -5210,14 +5252,15 @@ def reassign_task(
     and returns False (caller can retry with ``reclaim_first=True``).
 
     Returns True if the reassign landed. ``profile`` may be ``None`` to
-    unassign entirely.
+    unassign entirely. ``operator`` rides the ``assigned`` event payload
+    additively (issue #82689).
     """
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, operator=operator)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -5370,6 +5413,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    operator: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5396,6 +5440,11 @@ def complete_task(
     ``completion_blocked_hallucination`` event is emitted so the rejected
     attempt is auditable. When all ids verify, they are recorded on the
     ``completed`` event payload.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``completed`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` for a manual completion or ``worker:...`` from a
+    spawned worker. Omitting it produces the exact legacy payload.
 
     After a successful completion, ``summary`` and ``result`` are scanned
     for prose references like ``t_deadbeefcafe`` that do not resolve.
@@ -5555,6 +5604,10 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+        # Operator attribution (issue #82689): additive only — callers that
+        # don't pass an operator keep the exact legacy payload.
+        if operator:
+            completed_payload["operator"] = operator
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -10238,7 +10291,13 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        # Operator attribution (issue #82689): the dispatcher is the actor
+        # on auto-spawn claims — stamp it so post-incident forensics can
+        # tell dispatcher-driven claims from manual ``hermes kanban claim``.
+        claimed = claim_task(
+            conn, row["id"], ttl_seconds=ttl_seconds,
+            operator=f"dispatcher:{_claimer_id()}",
+        )
         if claimed is None:
             continue
         try:

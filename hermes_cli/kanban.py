@@ -1218,6 +1218,29 @@ def _profile_author() -> str:
         return "user"
 
 
+def _cli_operator() -> str:
+    """Operator identity stamped on state-changing kanban events (#82689).
+
+    Format: ``cli:<user>@<host>`` — the OS user and host driving this
+    CLI/gateway-slash-command process. Best-effort on both parts so a
+    exotic platform can never break a mutating verb. The value rides the
+    ``assigned`` / ``claimed`` / ``completed`` event payloads additively;
+    post-incident forensics reads it straight off ``task_events``.
+    """
+    import getpass
+    import socket
+
+    try:
+        user = getpass.getuser() or "unknown"
+    except Exception:
+        user = "unknown"
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    return f"cli:{user}@{host}"
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
     "create",
@@ -1961,7 +1984,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        ok = kb.assign_task(conn, args.task_id, profile, operator=_cli_operator())
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
@@ -2016,6 +2039,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
             conn, args.task_id, profile,
             reclaim_first=bool(getattr(args, "reclaim", False)),
             reason=getattr(args, "reason", None),
+            operator=_cli_operator(),
         )
     if not ok:
         print(
@@ -2185,7 +2209,8 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl,
+                             operator=_cli_operator())
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)
@@ -2413,6 +2438,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                operator=_cli_operator(),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)

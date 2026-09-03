@@ -14613,6 +14613,32 @@ class _SpawnedWorkerPid(int):
         return self
 
 
+def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
+    """Wrap a managed-gateway worker in the shared restart-safe scope."""
+    if task.current_run_id is None:
+        # Outside managed systemd this is harmless, but a managed dispatch must
+        # never mint an untraceable scope.  Check topology through the shared
+        # helper first, using a placeholder suffix that cannot be launched.
+        from tools.process_registry import restart_safe_gateway_child_argv
+
+        scoped = restart_safe_gateway_child_argv(
+            command, unit_suffix=f"kanban-{task.id}-run-missing"
+        )
+        if scoped is not command:
+            raise RuntimeError(
+                "cannot create restart-safe systemd scope for Kanban worker: "
+                "the claimed task has no current run id"
+            )
+        return command
+
+    from tools.process_registry import restart_safe_gateway_child_argv
+
+    return restart_safe_gateway_child_argv(
+        command,
+        unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
+    )
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -14650,7 +14676,13 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import build_subprocess_env
+
+    env = build_subprocess_env(
+        scrub_secrets=is_multiplex_active(),
+        inherit_profile_home=True,
+    )
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.
@@ -14801,6 +14833,34 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+
+    # A worker spawned by a managed systemd gateway must leave the gateway's
+    # cgroup before startup; otherwise restarting the service kills the worker
+    # that is performing the handoff.  That wrap is applied HERE, per launch
+    # path, rather than unconditionally to ``cmd``: worker isolation below
+    # wraps the same argv in its own transient scope through the same
+    # ``systemd-run --user --scope`` mechanism, so an isolated worker has
+    # already left the gateway cgroup.  Wrapping twice would nest one
+    # transient scope inside another — the inner unit adopts the process and
+    # the outer one is left empty — and it would also defeat the
+    # ``wrapped[0] != cmd[0]`` launch check below, which reads a systemd-run
+    # argv0 on both sides as "the scope wrap did not happen".  Every path
+    # that launches WITHOUT an isolation scope of its own goes through this
+    # helper instead, so the restart-safe guarantee still holds on each.
+    def _plain_launch_argv(log_handle=None) -> list[str]:
+        try:
+            return _restart_safe_worker_argv(task, cmd)
+        except RuntimeError as exc:
+            # Fail closed, but record the cause on the spawn-error channel
+            # so the dispatcher classifies it as spawn_failed with real
+            # text. ``log_handle`` is passed by the call sites that run
+            # before the spawn try/except owns the handle, matching the
+            # close-before-raise discipline of the strict-mode refusals.
+            _default_spawn._last_spawn_error = str(exc)
+            if log_handle is not None:
+                log_handle.close()
+            raise
+
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -14893,8 +14953,10 @@ def _default_spawn(
                 )
                 log_f.close()
                 raise RuntimeError(_default_spawn._last_spawn_error)
-            launch_cmd = cmd
+            launch_cmd = _plain_launch_argv(log_f)
             scope_unit = ""
+    else:
+        launch_cmd = _plain_launch_argv(log_f)
     if scope_unit:
         env["HERMES_KANBAN_SCOPE"] = scope_unit
 
@@ -15003,7 +15065,7 @@ def _default_spawn(
                         task.id, proc.returncode,
                         err_text or "no stderr captured",
                     )
-                    launch_cmd = cmd
+                    launch_cmd = _plain_launch_argv()
                     env.pop("HERMES_KANBAN_SCOPE", None)
                     scope_unit = ""
                     proc = _spawn(subprocess.STDOUT)
@@ -15800,8 +15862,8 @@ def purge_stale_done_notify_subs(
     *,
     max_age_days: int = 30,
 ) -> int:
-    """Delete notify subscriptions whose task has sat in ``done`` untouched
-    for longer than ``max_age_days``.
+    """Delete notify subscriptions whose task has sat in ``done`` or
+    ``blocked`` untouched for longer than ``max_age_days``.
 
     The notifier keeps subscriptions alive through ``done`` because a
     completed task can be reopened (review corrections, continuation) and
@@ -15810,7 +15872,10 @@ def purge_stale_done_notify_subs(
     subscription rows forever — each one scanned every notifier tick.
     This GC bounds that: a task that has been ``done`` with no new events
     for the retention window is treated as settled and its subscriptions
-    are purged. Age is measured from the task's most recent event
+    are purged. ``blocked`` tasks (circuit-breaker trips, dead workers)
+    are reaped on the same clock — they are abandoned, not idle, unlike a
+    ``backlog``/``ready`` card that is merely waiting for pickup (#100955).
+    Age is measured from the task's most recent event
     (falling back to ``completed_at`` then ``created_at``), so ANY
     activity — including a reopen, which also moves the task off
     ``done`` — resets or exempts it.
@@ -15829,7 +15894,7 @@ def purge_stale_done_notify_subs(
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id IN ("
             " SELECT t.id FROM tasks t"
-            " WHERE t.status = 'done'"
+            " WHERE t.status IN ('done', 'blocked')"
             " AND COALESCE("
             "  (SELECT MAX(e.created_at) FROM task_events e"
             "   WHERE e.task_id = t.id),"

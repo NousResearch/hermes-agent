@@ -161,7 +161,8 @@ export const en: Translations = {
       microphonePermission: 'Microphone permission was denied.',
       openaiRejectedApiKey: 'OpenAI rejected the API key.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.'
+      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.',
+      codeSkewRestartRequired: 'This backend is running old code after an update. Restart it to load the new code.'
     },
     voice: {
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',
@@ -394,6 +395,7 @@ export const en: Translations = {
       providerAccounts: 'Accounts',
       providerApiKeys: 'API keys',
       providerCustomEndpoints: 'Custom Endpoints',
+      providerLocalModels: 'Local Models',
       gateway: 'Gateways',
       apiKeys: 'Tools & Keys',
       keybinds: 'Keyboard Shortcuts',
@@ -606,6 +608,9 @@ export const en: Translations = {
       embedsAlways: 'Always',
       embedsOff: 'Off',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+      resumeLastSessionTitle: 'Reopen Last Chat on Launch',
+      resumeLastSessionDesc:
+        'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -673,6 +678,10 @@ export const en: Translations = {
       bundleOutOfSyncDesc:
         'The Hermes runtime was updated, but the desktop app itself is still an older build — new interface features (like Bot Mode) will be missing until it updates. Run the update below to rebuild the app. If that doesn\u2019t clear this warning, reinstall from the latest desktop installer.',
       bundleOutOfSyncAction: 'Get the installer',
+      bundleSwapPending: 'Restart to finish the update',
+      bundleSwapPendingDesc:
+        'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',
+      bundleSwapPendingAction: 'Restart Hermes',
       updates: 'Updates',
       checkNow: 'Check now',
       checking: 'Checking…',
@@ -1090,6 +1099,11 @@ export const en: Translations = {
       reasoning: 'Reasoning',
       reasoningOff: 'Off',
       defaultsFailed: 'Failed to save model defaults',
+      loadFailed: 'Could not load models',
+      restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
+      restartBackend: 'Restart backend',
+      restartingBackend: 'Restarting backend...',
+      restartFailed: 'Could not restart the backend',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
@@ -1110,6 +1124,124 @@ export const en: Translations = {
         review: { label: 'Review', hint: '/review reviewer subagent' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
+    },
+    localModels: {
+      title: 'Local Models',
+      runtimeTitle: 'Local runtime',
+      runtimeReady: backend => `Ready · ${backend}`,
+      serverRunning: 'Running',
+      runtimeInstalled: 'llama.cpp runtime installed',
+      runtimeInstalledDetail: (tag, backend) =>
+        `Build ${tag}, ${backend} backend. Hermes starts and manages the server for you.`,
+      installTitle: 'Install the local runtime',
+      installDetail:
+        'Downloads the llama.cpp inference engine (a few hundred MB). Models you download run entirely on this machine — no account, nothing leaves your computer.',
+      installAction: 'Install runtime',
+      installing: 'Installing runtime…',
+      installFailed: 'Runtime install failed',
+      hardwareTitle: 'This machine',
+      hardwareLoading: 'Checking your hardware…',
+      vram: label => `${label} GPU memory`,
+      ram: label => `${label} RAM`,
+      unifiedMemory: 'Unified memory',
+      modelsTitle: 'Models',
+      recommended: 'Recommended',
+      /* The Recommended badge's tooltip, keyed by the resolver branch that
+         made the pick. Qualitative on purpose: predictions order candidates,
+         they are not promises to print. */
+      recommendedReason: {
+        'best-quality-resident':
+          'The highest-quality model that runs entirely on your GPU at full speed. Picks weigh quality against predicted speed on this hardware.',
+        'speed-gated-quality':
+          'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
+        'fastest-resident':
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
+        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+      } as Record<string, string>,
+      downloaded: 'Downloaded',
+      downloadAction: size => `Download · ${size}`,
+      downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
+      downloadDoneToast: model => `${model} is ready.`,
+      installDoneToast: 'Local runtime installed and ready.',
+      quickstartTitle: 'Run a model on this machine',
+      quickstartDetail: (model, size) =>
+        `One click sets everything up: the local engine, ${model} (${size} download), and your default for new chats. Nothing leaves this computer.`,
+      quickstartDetailReady: model =>
+        `One click makes ${model} your default for new chats. Everything runs on this machine.`,
+      quickstartAction: 'Set up for me',
+      quickstartConfigure: 'Configure…',
+      quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
+      quickstartFailed: 'Local model setup failed',
+      quickstartStageEngine: 'Engine',
+      quickstartStageModel: 'Model',
+      quickstartStageFinish: 'Finish',
+      useAction: 'Use',
+      activePill: 'Default',
+      updateTitle: 'Engine update available',
+      updateDetail: (next, current) =>
+        `A newer llama.cpp build (${next}) is ready to install — you're on ${current}. Models keep working during the download.`,
+      updateAction: 'Update engine',
+      updating: 'Updating engine…',
+      upToDateTitle: 'Engine up to date',
+      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the latest build Hermes ships.`,
+      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
+      activeDetail: 'New chats use this model — it loads when you send your first message',
+      activeNotLoaded: 'Loads on your first message',
+      loadedPill: 'In memory',
+      placementResident: 'all on GPU',
+      placementSpilled: 'partly in RAM',
+      placementResidentTip: 'Running entirely in GPU memory at this context window — full speed.',
+      placementSpilledTip:
+        'Part of this model runs from system RAM — it works, but slower. A more compact build or a smaller context would fit fully.',
+      loadingPill: 'Loading…',
+      ejectTip: 'Free GPU memory (loads again on the next message)',
+      ejected: 'Model unloaded — GPU memory freed.',
+      ejectFailed: 'Could not unload the model',
+      stopServer: 'Turn off',
+      startServer: 'Turn on',
+      runtimeRunningDetail:
+        'The local server is running. Turning it off frees all GPU memory and stops new chats from using local models until you turn it back on.',
+      serverStopped: 'Local server stopped — GPU memory freed.',
+      serverStarted: 'Local server running.',
+      serverStopFailed: 'Could not stop the local server',
+      serverStartFailed: 'Could not start the local server',
+      activating: 'Starting…',
+      activateFailed: model => `Could not switch to ${model}`,
+      activateDoneToast: model => `New chats use ${model}.`,
+      downloadFailed: model => `Download of ${model} failed`,
+      pillFitsGpu: 'Fits your GPU',
+      pillUsesRam: 'Uses system RAM',
+      pillTooBig: 'Too big for this machine',
+      browseTitle: 'Find more models',
+      browseHint:
+        'Search all of Hugging Face. Models you download here are sized to your machine automatically, but not tested by us.',
+      browsePlaceholder: 'Search models by name or author…',
+      browseSearching: 'Searching Hugging Face',
+      browseListing: 'Reading model files',
+      browseShowFiles: 'Show files',
+      browseRefresh: 'Refresh',
+      browseDownloads: 'downloads',
+      browseLikes: 'likes',
+      browseGated: 'requires Hugging Face sign-in',
+      browseNoGguf: 'No compatible model files found.',
+      browseFitUnknown: 'Fit unknown',
+      browseAlreadyDownloaded: 'Already downloaded.',
+      addedByYou: 'Added by you',
+      browseDownloadStarted: 'Downloading {name}',
+      browseDownloadAria: 'Download {name}',
+      sideloadButton: 'Add model file',
+      sideloadTitle: 'Choose a GGUF model file',
+      sideloadDone: 'Added {name}.',
+      sideloadAlreadyPresent: 'Already in your library.',
+      pillFullContext: max => `Full ${max} context`,
+      pillFullContextTip: "Runs at the model's complete context window from the start",
+      pillUpTo: max => `Up to ${max} context`,
+      pillGrowsTip: 'Grows automatically as your conversation needs more room',
+      pillVision: 'Sees images',
+      deleteAction: 'Delete model',
+      deleteConfirm: model => `Delete ${model} from disk?`,
+      deleted: model => `${model} deleted.`,
+      deleteFailed: 'Delete failed'
     },
     providers: {
       connectAccount: 'Connect an account',
@@ -1257,7 +1389,17 @@ export const en: Translations = {
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
-        failedSave: 'Could not save the real-profile setting'
+        failedSave: 'Could not save the real-profile setting',
+        prompt: {
+          title: 'Stay signed in to your sites',
+          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
+          bulletLiveProfile: 'Your live browser profile is never opened directly.',
+          bulletLocal: 'Nothing leaves this computer.',
+          dontShowAgain: "Don't show again",
+          notNow: 'Not now',
+          enable: 'Use my profile'
+        }
       }
     }
   },
@@ -1318,6 +1460,8 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    officialCatalog: 'Available to install',
+    officialPill: 'Official',
     hub: {
       searchPlaceholder: 'Search the skill hub',
       search: 'Search',
@@ -2744,6 +2888,8 @@ export const en: Translations = {
     connected: 'Connected',
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
+    localModelsTitle: 'Run models locally',
+    localModelsPitch: 'No account needed — download a model and run it on this machine',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
       fireworks: {
@@ -2780,6 +2926,8 @@ export const en: Translations = {
     connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
+    signInExpired:
+      'Sign-in expired waiting for authorization. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then try again. If it keeps failing, use an API key or the CLI fallback instead.',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,
@@ -2815,6 +2963,9 @@ export const en: Translations = {
     noModels: 'No models found.',
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
+    loadingIntoMemory: 'Loading into memory',
+    downloading: 'Downloading',
+    localDownloadsHeading: 'Local',
     noAuthenticatedProviders: 'No authenticated providers.',
     pro: 'Pro',
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
@@ -2920,13 +3071,17 @@ export const en: Translations = {
       resetStatusbar: 'Reset to defaults',
       toggleApprovalMode: 'Approvals',
       toggleBackendVersion: 'Backend version',
+      toggleCacheHitRate: 'Cache hit rate',
       toggleCommandCenter: 'Command Center',
       toggleContextUsage: 'Context meter',
       toggleRunningTimer: 'Turn timer',
       toggleSessionTimer: 'Session timer',
       toggleTerminal: 'Terminal',
+      toggleTokensPerSecond: 'Tokens per second',
       toggleVersion: 'Version & updates',
       toggleWorkspace: 'Workspace',
+      cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
+      tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',
@@ -2941,6 +3096,15 @@ export const en: Translations = {
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       contextUsage: 'Context usage',
+      systemResources: {
+        title: 'System Resources',
+        loading: 'Resources…',
+        gpuUtilization: 'GPU utilization',
+        gpuMemory: 'GPU memory',
+        ram: 'RAM',
+        unifiedNote: 'Unified memory — the GPU and system share this pool.',
+        toggle: 'System resources'
+      },
       contextUsagePanel: {
         categories: {
           conversation: 'Conversation',
@@ -3105,7 +3269,17 @@ export const en: Translations = {
       loadFailedConsole: (code, message) => `Load failed${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'The preview page could not be reached.',
       openTarget: url => `Open ${url}`,
-      fallbackTitle: 'Preview'
+      fallbackTitle: 'Preview',
+      annotate: 'Annotate',
+      annotateOn: 'Stop annotating',
+      annotateNeedPage: 'Open a page in the in-app browser first.',
+      annotateFailed: 'Could not start annotation mode',
+      commenting: 'Commenting',
+      addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
+      commentPlaceholder: 'Add a comment...',
+      commentTitle: n => `Comment ${n}`,
+      saveComment: 'Save',
+      cancelComment: 'Cancel comment'
     }
   },
 
@@ -3187,6 +3361,8 @@ export const en: Translations = {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
+      loadingLocalModel: model => `Loading ${model} into memory`,
+      processingPrompt: 'Processing prompt',
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'Will resume when the background task finishes'
@@ -3511,9 +3687,10 @@ export const en: Translations = {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
       },
-      'model-switch': {
-        title: 'Switch models mid-thread',
-        text: 'The model name is a button. Change it whenever the work changes shape.'
+      'local-setup': {
+        title: 'This machine can run models locally',
+        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
+        action: 'Set it up'
       },
       'right-pane': {
         title: 'The working pane',

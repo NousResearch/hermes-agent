@@ -741,6 +741,26 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
+/**
+ * Keep the project drill-in consistent with the overview while its separate
+ * full-tree request is stale or still loading. The live cache remains the
+ * freshest copy when both sources contain a row; overview previews only fill
+ * sessions that are missing from that cache.
+ */
+export function reconcileEnteredProjectSessions(
+  live: SessionInfo[],
+  previewSessions: SessionInfo[] | undefined
+): SessionInfo[] {
+  if (!previewSessions?.length) {
+    return live
+  }
+
+  const liveIds = new Set(live.map(session => session.id))
+  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+
+  return missingPreviews.length ? [...live, ...missingPreviews] : live
+}
+
 interface PreviewOverlayOptions {
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */

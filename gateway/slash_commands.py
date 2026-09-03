@@ -37,6 +37,7 @@ from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
+    TranscriptReadError,
     build_session_key,
     is_shared_multi_user_session,
 )
@@ -48,6 +49,11 @@ from utils import (
 )
 
 logger = logging.getLogger("gateway.run")
+
+HISTORY_UNREADABLE = (
+    "⚠️ Conversation history is unreadable (state.db). "
+    "This is not a new conversation — earlier messages exist but cannot be loaded."
+)
 
 # Upper bound on the off-loop agent-resource cleanup during a /new or /reset
 # (see _handle_reset_command). A stuck teardown must not block the event loop;
@@ -963,7 +969,10 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         # Last resort: rough estimate from transcript
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -2592,7 +2601,6 @@ class GatewaySlashCommandsMixin:
             available_personalities,
             describe_personality,
             persist_personality,
-            prompt_text,
             resolve_personality,
         )
 
@@ -2621,32 +2629,32 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         try:
-            name, new_prompt = resolve_personality(args, config)
+            name, _new_prompt = resolve_personality(args, config)
         except ValueError:
             available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
             return t("gateway.personality.unknown", name=args.lower(), available=available)
 
         # Persist the selection only — hermes_cli.personality never writes
-        # agent.system_prompt (user-owned manual overlay).
+        # agent.system_prompt (user-owned manual overlay). persist_personality
+        # writes get_hermes_home()/config.yaml, i.e. the routed profile under
+        # multiplex; the next turn re-resolves the prompt from that file
+        # (_get_system_prompt_for_channel), so no process-global state to update.
         if not persist_personality(name):
             return t("gateway.personality.save_failed", error="config write failed")
 
         if not name:
-            self._ephemeral_system_prompt = prompt_text(
-                cfg_get(config, "agent", "system_prompt", default="")
-            )
             return t("gateway.personality.cleared")
-
-        # Update in-memory so it takes effect on the very next message.
-        self._ephemeral_system_prompt = new_prompt
         return t("gateway.personality.set_to", name=name)
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
-        
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
+
         # Find the last *real* user message. Timeline bookkeeping rows carry
         # role=user + display_kind (model_switch / async_delegation_complete /
         # auto_continue / hidden); clients never count them as user turns.
@@ -2838,6 +2846,22 @@ class GatewaySlashCommandsMixin:
             if not gate_arg or gate_lower == "list":
                 return mgr.render_gates()
             if gate_lower.startswith("add "):
+                # SECURITY: a gate is persisted and later executed with
+                # shell=True at every goal turn boundary (run_gate), with no
+                # approval prompt. Letting an allowed but non-admin gateway
+                # sender choose that string is authenticated RCE under the
+                # Hermes process account — and with no admin list configured
+                # (the backward-compatible default) every allowed sender is
+                # treated as unrestricted. Gate ONLY this shell-creating
+                # operation behind a real, explicitly-configured admin (the
+                # same fail-closed check that guards cross-origin /resume);
+                # list/remove/clear stay open so a non-admin can still recover.
+                if not self._resume_caller_is_admin(event.source):
+                    return (
+                        "⛔ /goal gate add requires an explicitly configured "
+                        "gateway admin (allow_admin_from for DMs, "
+                        "group_allow_admin_from for groups)."
+                    )
                 command = gate_arg[len("add"):].strip()
                 try:
                     gate = mgr.add_gate(command)
@@ -2874,8 +2898,12 @@ class GatewaySlashCommandsMixin:
                 import asyncio
                 from hermes_cli.goals import draft_contract
 
-                draft_contract_obj = await asyncio.get_running_loop().run_in_executor(
-                    None, draft_contract, objective
+                # _run_in_executor_with_context, not a bare hop: drafting a
+                # contract calls the auxiliary LLM, whose provider/credential
+                # resolution reads the profile secret scope — a contextvar that
+                # a default-executor hop drops, leaving it unscoped.
+                draft_contract_obj = await self._run_in_executor_with_context(
+                    draft_contract, objective
                 )
             except Exception as exc:
                 logger.debug("goal draft failed: %s", exc)
@@ -3075,8 +3103,6 @@ class GatewaySlashCommandsMixin:
             set_current_session_key,
         )
 
-        loop = asyncio.get_running_loop()
-
         def _dispatch():
             token = set_current_session_key(quick_key)
             try:
@@ -3087,7 +3113,10 @@ class GatewaySlashCommandsMixin:
                 reset_current_session_key(token)
 
         try:
-            result = await loop.run_in_executor(None, _dispatch)
+            # _run_in_executor_with_context, not a bare hop: the reviewer
+            # subagent is spawned from the worker and inherits its context,
+            # so a bare hop would run it under the launch home / no secret scope.
+            result = await self._run_in_executor_with_context(_dispatch)
         except ValueError as exc:
             return str(exc)
         except Exception as exc:
@@ -3346,10 +3375,12 @@ class GatewaySlashCommandsMixin:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
-        platform = event.source.platform
-        voice_key = self._voice_key(platform, chat_id)
+        # Voice state belongs to the (bot, chat) pair: resolve the adapter that
+        # received the command and key the mode by its owning profile so two
+        # multiplexed bots in one chat keep independent /voice state (#75198).
+        voice_key = self._voice_key_for_source(event.source)
 
-        adapter = self.adapters.get(platform)
+        adapter = self._adapter_for_source(event.source)
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -3381,7 +3412,6 @@ class GatewaySlashCommandsMixin:
                 "all": t("gateway.voice.label_all"),
             }
             # Append voice channel info if connected
-            adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
@@ -3440,7 +3470,9 @@ class GatewaySlashCommandsMixin:
             max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
         )
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        from tools.terminal_scope import terminal_env as _tenv
+
+        cwd = _tenv("TERMINAL_CWD", str(Path.home()))
         arg = event.get_command_args().strip()
 
         # --all / --force: classic full restore, overwriting user edits too.
@@ -3534,7 +3566,9 @@ class GatewaySlashCommandsMixin:
             elif low == "session":
                 mode = "session"
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        from tools.terminal_scope import terminal_env as _tenv
+
+        cwd = _tenv("TERMINAL_CWD", str(Path.home()))
 
         if mode == "session":
             return await self._gateway_session_diff(cwd, stat_only)
@@ -3671,7 +3705,10 @@ class GatewaySlashCommandsMixin:
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
         if not history:
             return t("gateway.btw.no_history")
 
@@ -3751,9 +3788,9 @@ class GatewaySlashCommandsMixin:
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
         and their interactive pickers)."""
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
         from hermes_cli.config import read_user_config_raw
-        config_path = _hermes_home / "config.yaml"
+        config_path = _gateway_config_home() / "config.yaml"
         try:
             # Write-back round-trip: raw read is correct (merged defaults must
             # not be persisted back to the user's file).
@@ -3995,7 +4032,7 @@ class GatewaySlashCommandsMixin:
         Gate changes persist to config.yaml and evict the cached agent so the
         new setting takes effect on the next message.
         """
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
@@ -4003,7 +4040,7 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
         session_key = self._session_key_for_source(event.source)
-        config_path = _hermes_home / "config.yaml"
+        config_path = _gateway_config_home() / "config.yaml"
 
         def _set_approval(enabled: bool):
             # Write-back round-trip: raw read is correct (merged defaults must
@@ -4044,14 +4081,14 @@ class GatewaySlashCommandsMixin:
         the write-approval ``diff <id>``; the CLI also has an unrelated
         ``hermes skills diff <name>`` that diffs a bundled skill vs stock.)
         """
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
 
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
         session_key = self._session_key_for_source(event.source)
-        config_path = _hermes_home / "config.yaml"
+        config_path = _gateway_config_home() / "config.yaml"
 
         gate_on = wa.write_approval_enabled(wa.SKILLS)
         wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
@@ -4122,6 +4159,9 @@ class GatewaySlashCommandsMixin:
                 tier = None
                 saved_value = "normal"
                 label = t("gateway.fast.label_normal")
+            elif value in {"auto", "cold"}:
+                tier = saved_value = value
+                label = value.upper()
             else:
                 return t("gateway.fast.unknown_arg", arg=value)
             self._service_tier = tier
@@ -4144,7 +4184,8 @@ class GatewaySlashCommandsMixin:
 
         if not args or args == "status":
             is_fast = self._service_tier == "priority"
-            status = t("gateway.fast.status_fast") if is_fast else t("gateway.fast.status_normal")
+            mode = "fast" if is_fast else (self._service_tier or "normal")
+            status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
             async def _on_fast_choice(_chat_id: str, value: str) -> str:
                 return _apply_fast_selection(value, persist=persist_global)
@@ -4162,7 +4203,17 @@ class GatewaySlashCommandsMixin:
                     {
                         "value": "normal",
                         "label": t("gateway.fast.choice_normal"),
-                        "is_current": not is_fast,
+                        "is_current": mode == "normal",
+                    },
+                    {
+                        "value": "auto",
+                        "label": t("gateway.fast.choice_auto"),
+                        "is_current": mode == "auto",
+                    },
+                    {
+                        "value": "cold",
+                        "label": t("gateway.fast.choice_cold"),
+                        "is_current": mode == "cold",
                     },
                 ],
                 on_choice_selected=_on_fast_choice,
@@ -4217,9 +4268,9 @@ class GatewaySlashCommandsMixin:
         ``display.platforms.<platform>.tool_progress`` so each channel can
         have its own verbosity level independently.
         """
-        from gateway.run import _hermes_home, _load_gateway_config, _platform_config_key
+        from gateway.run import _gateway_config_home, _load_gateway_config, _platform_config_key
 
-        config_path = _hermes_home / "config.yaml"
+        config_path = _gateway_config_home() / "config.yaml"
         platform_key = _platform_config_key(event.source.platform)
 
         # --- check config gate ------------------------------------------------
@@ -4355,10 +4406,10 @@ class GatewaySlashCommandsMixin:
         are respected but not modified here — edit config.yaml directly for
         per-platform control.
         """
-        from gateway.run import _hermes_home, _load_gateway_config, _platform_config_key, _resolve_gateway_model
+        from gateway.run import _gateway_config_home, _load_gateway_config, _platform_config_key, _resolve_gateway_model
         from gateway.runtime_footer import resolve_footer_config
 
-        config_path = _hermes_home / "config.yaml"
+        config_path = _gateway_config_home() / "config.yaml"
         platform_key = _platform_config_key(event.source.platform)
 
         # --- parse argument -------------------------------------------------
@@ -4525,7 +4576,10 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
 
         if not history or len(history) < 4:
             return t("gateway.compress.not_enough")
@@ -4959,6 +5013,7 @@ class GatewaySlashCommandsMixin:
             await self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
+                profile_name=self._telegram_topic_profile_name(source),
                 has_topics_enabled=capabilities.get("has_topics_enabled"),
                 allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"),
             )
@@ -4974,6 +5029,7 @@ class GatewaySlashCommandsMixin:
                 binding = await self._session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
+                    profile_name=self._telegram_topic_profile_name(source),
                 )
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
@@ -5199,10 +5255,19 @@ class GatewaySlashCommandsMixin:
                     s for s in titled
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
+                # A non-admin `--all` silently falls back to same-origin
+                # scoping; say so instead of rendering an unexplained
+                # narrower list (sibling of the /sessions `all` notice).
+                scope_note = (
+                    t("gateway.resume.all_requires_admin")
+                    if allow_all and not self._resume_caller_is_admin(source)
+                    else None
+                )
                 if not titled:
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
-                    return t("gateway.resume.no_named_sessions")
+                    base = t("gateway.resume.no_named_sessions")
+                    return f"{base}\n{scope_note}" if scope_note else base
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
@@ -5213,6 +5278,8 @@ class GatewaySlashCommandsMixin:
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
+                if scope_note:
+                    lines.append(scope_note)
                 lines.append(t("gateway.resume.list_footer_numbered"))
                 return "\n".join(lines)
             except Exception as e:
@@ -5303,7 +5370,17 @@ class GatewaySlashCommandsMixin:
         title = await self._session_db.get_session_title(target_id) or name
 
         # Count messages for context
-        history = await self.async_session_store.load_transcript(target_id)
+        try:
+            history = await self.async_session_store.load_transcript(target_id)
+        except TranscriptReadError:
+            # The resume itself succeeded; only the count is missing. Say the
+            # history is unreadable rather than reporting an empty session
+            # (#100788).
+            return (
+                t("gateway.resume.resumed_no_count", title=title)
+                + "\n"
+                + HISTORY_UNREADABLE
+            )
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
@@ -5358,6 +5435,15 @@ class GatewaySlashCommandsMixin:
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
         cross_origin = include_all and self._resume_caller_is_admin(source)
+        # Don't silently no-op a requested widening: a non-admin `/sessions all`
+        # used to render the same scoped list with zero feedback, which reads
+        # as "my session vanished" (community report, Aug 2026).
+        scope_notice = None
+        if include_all and not cross_origin:
+            scope_notice = (
+                "_Note: `all` (cross-chat listing) requires a configured admin; "
+                "showing this chat's sessions only._"
+            )
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
@@ -5365,6 +5451,7 @@ class GatewaySlashCommandsMixin:
             source=source.platform.value if source.platform else None,
             session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
+            include_current_session=True,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
             search_query=search_query,
@@ -5389,6 +5476,7 @@ class GatewaySlashCommandsMixin:
             rows,
             include_source=cross_origin,
             title=title,
+            notice=scope_notice,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
@@ -5409,7 +5497,10 @@ class GatewaySlashCommandsMixin:
 
         # Load the current session and its transcript
         current_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(current_entry.session_id)
+        try:
+            history = await self.async_session_store.load_transcript(current_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
         if not history:
             return t("gateway.branch.no_conversation")
 
@@ -5594,6 +5685,10 @@ class GatewaySlashCommandsMixin:
             try:
                 entry = self.session_store.get_or_create_session(source)
                 history = self.session_store.load_transcript(entry.session_id) or []
+            except TranscriptReadError:
+                # A read failure is not an empty transcript (#100788): the
+                # breakdown would understate the context by the whole chat.
+                return [HISTORY_UNREADABLE]
             except Exception:
                 history = []
 
@@ -5625,6 +5720,10 @@ class GatewaySlashCommandsMixin:
             try:
                 entry = self.session_store.get_or_create_session(source)
                 history = self.session_store.load_transcript(entry.session_id) or []
+            except TranscriptReadError:
+                # See _context_breakdown_block: don't pass a read failure off
+                # as an empty transcript (#100788).
+                return [HISTORY_UNREADABLE]
             except Exception:
                 history = []
 
@@ -5808,7 +5907,10 @@ class GatewaySlashCommandsMixin:
 
         # No agent at all -- check session history for a rough count
         session_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        try:
+            history = await self.async_session_store.load_transcript(session_entry.session_id)
+        except TranscriptReadError:
+            return HISTORY_UNREADABLE
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
@@ -5867,22 +5969,27 @@ class GatewaySlashCommandsMixin:
                     i += 1
 
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db, release_shared_session_db
             from agent.insights import InsightsEngine
 
-            loop = asyncio.get_running_loop()
-
             def _run_insights():
-                db = SessionDB()
+                db = get_shared_session_db()
                 try:
                     engine = InsightsEngine(db)
                     report = engine.generate(days=days, source=source)
                     result = engine.format_gateway(report)
                     return result
                 finally:
-                    db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(db)
 
-            return await loop.run_in_executor(None, _run_insights)
+            # _run_in_executor_with_context, not a bare hop: ``SessionDB()``
+            # with no explicit path resolves ``get_hermes_home()`` at call
+            # time, and that override is a contextvar installed by
+            # ``_profile_runtime_scope``. A default-executor hop starts the
+            # worker with an EMPTY context, so /insights read the DEFAULT
+            # profile's state.db and reported another profile's conversations.
+            return await self._run_in_executor_with_context(_run_insights)
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)
@@ -5965,11 +6072,12 @@ class GatewaySlashCommandsMixin:
         is written to the session transcript out-of-band, so message
         alternation is preserved.
         """
-        loop = asyncio.get_running_loop()
         try:
             from agent.skill_commands import reload_skills
 
-            result = await loop.run_in_executor(None, reload_skills)
+            # _run_in_executor_with_context, not a bare hop: the rescan walks
+            # get_hermes_home()/skills, a contextvar override under multiplex.
+            result = await self._run_in_executor_with_context(reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -6277,8 +6385,6 @@ class GatewaySlashCommandsMixin:
             _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
         )
 
-        loop = asyncio.get_running_loop()
-
         # Run blocking I/O (dump capture, log reads, uploads) in a thread.
         def _collect_and_upload():
             _best_effort_sweep_expired_pastes()
@@ -6305,7 +6411,11 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.debug.share_hint"))
             return "\n".join(lines)
 
-        return await loop.run_in_executor(None, _collect_and_upload)
+        # _run_in_executor_with_context, not a bare hop: this collects the
+        # profile's logs/config off ``get_hermes_home()`` and uploads them to a
+        # public paste. Losing the contextvar override would publish the DEFAULT
+        # profile's diagnostics from another profile's chat.
+        return await self._run_in_executor_with_context(_collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

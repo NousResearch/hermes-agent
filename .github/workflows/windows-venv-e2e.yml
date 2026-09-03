@@ -60,6 +60,7 @@ jobs:
             tests/hermes_cli/test_venv_holder_windows_live.py \
             tests/hermes_cli/test_taskkill_identity_windows_live.py \
             tests/hermes_cli/test_git_trampoline_windows_live.py \
+            "tests/hermes_cli/test_managed_uv.py::TestWindowsRuntimeSelfLock" \
             -o addopts= -v -p no:cacheprovider
 
       - name: Run Telegram CLOSE-WAIT reconnect live E2E (#87057)
@@ -68,4 +69,12 @@ jobs:
           set -uo pipefail
           uv run --no-sync python -m pytest \
             tests/gateway/test_telegram_closewait_windows_live.py \
+            -o addopts= -v -p no:cacheprovider
+
+      - name: Run background-executor spawn parity live E2E (#70716)
+        shell: bash
+        run: |
+          set -uo pipefail
+          uv run --no-sync python -m pytest \
+            tests/tools/test_process_registry_windows_live.py \
             -o addopts= -v -p no:cacheprovider

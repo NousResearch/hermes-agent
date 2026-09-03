@@ -303,6 +303,17 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             profile_homes = list(profiles_to_serve(multiplex=True))
             if len(profile_homes) > 1:
                 start_kwargs["profile_homes"] = profile_homes
+                # Stand down, per tick, for any profile whose OWN gateway is
+                # running: that gateway ticks it with live adapters, and the
+                # tick-lock race otherwise lets this adapter-less ticker win
+                # and deliver the job through the standalone path (#100489).
+                # Evaluated every cycle so a gateway starting/stopping later
+                # is picked up without a dashboard restart.
+                from hermes_cli.profiles import _check_gateway_running
+
+                start_kwargs["profile_gate"] = (
+                    lambda _name, home: not _check_gateway_running(Path(home))
+                )
                 from hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(profile_homes)
@@ -318,6 +329,11 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)
+
+
+# Desktop `serve` only (start_server(start_mcp_discovery_after_bind=True)):
+# seconds after the READY sentinel before the MCP discovery thread starts.
+_DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
 def _warm_gateway_module() -> None:
@@ -511,6 +527,28 @@ async def _lifespan(app: "FastAPI"):
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
 
+    # Managed local runtime: when the user opted in (local_runtime.enabled,
+    # set by the Local Models 'Use' action), bring the llama-server back up
+    # so a restart doesn't strand a llamacpp main model without a backend.
+    # Off-thread and best-effort: binary check + spawn + health poll must
+    # not delay the server socket, and failure falls back to configured
+    # cloud providers exactly like a cold start.
+    def _boot_local_runtime():
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
+
+            # Server only — models load on first inference, always (residency
+            # design: downloaded = available; demand loads; idleness
+            # evicts). An empty router holds no VRAM; warming a model at
+            # boot would reload gigabytes nobody asked for yet.
+            ensure_local_runtime(load_config())
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("local runtime boot failed: %s", exc)
+
+    threading.Thread(target=_boot_local_runtime, daemon=True,
+                     name="local-runtime-boot").start()
+
     try:
         yield
     finally:
@@ -523,6 +561,14 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
+        # Stop the managed llama-server with its parent — a supervisor-less
+        # orphan would keep VRAM pinned after the app closes.
+        try:
+            from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
+
+            shutdown_local_runtime()
+        except Exception:  # noqa: BLE001
+            pass
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
 
@@ -1399,8 +1445,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "agent.service_tier": {
         "type": "select",
-        "description": "API service tier (OpenAI/Anthropic)",
-        "options": ["", "auto", "default", "flex"],
+        "description": "Fast mode: fast = always, auto = first N seconds of each turn, cold = first turn only",
+        "options": ["", "normal", "fast", "auto", "cold"],
     },
     "delegation.reasoning_effort": {
         "type": "select",
@@ -1497,6 +1543,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",
+    # `nous.keepalive_interval_seconds` is the only schema-surfaced nous field
+    # (Portal tokens live in auth.json) — fold it into the agent tab.
+    "nous": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -1806,6 +1855,7 @@ from hermes_cli.web_models import (  # noqa: F401
     LearningNodeEdit,
     DebugShareRequest,
     TTSSpeakRequest,
+    TTSLeaseRequest,
     OAuthSubmitBody,
     BulkDeleteSessions,
     SessionImport,
@@ -3289,6 +3339,10 @@ def _git_path(path: str) -> str:
 from hermes_cli.web_routers import git as _git_routes  # noqa: E402
 
 app.include_router(_git_routes.router)
+
+from hermes_cli.web_routers import local_models as _local_models_routes  # noqa: E402
+
+app.include_router(_local_models_routes.router)
 from hermes_cli.web_routers.git import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     git_status_route,
     git_worktrees_route,
@@ -3363,6 +3417,7 @@ _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
     "sms": ("webhook_port", 8080),
     "whatsapp_cloud": ("webhook_port", 8090),
     "line": ("port", 8646),
+    "teams": ("port", 3978),
 }
 
 # Platform states that mean the adapter is NOT serving its port right now.
@@ -5631,6 +5686,43 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     }
 
 
+@app.post("/api/audio/tts-lease")
+async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
+    """Desktop TTS-output toggles as warm-up / release signals.
+
+    "Read replies aloud" and voice-conversation mode are explicit "speech is
+    about to be needed" gestures. ``active: true`` registers the toggle as a
+    lease on the TTS engine and pre-loads the configured provider (local
+    piper/kittentts model, lazily-installed SDK) so the first spoken reply
+    doesn't pay the load as dead air; ``active: false`` drops the lease and,
+    once no surface holds one, unloads resident local models.
+
+    Blocking work (model load, voice download) runs off the event loop.
+    Warm-up failures are reported in the body, never as an HTTP error — the
+    toggle must succeed even when the engine can't preload.
+    """
+    lease = (payload.lease or "").strip()
+    if not lease:
+        raise HTTPException(status_code=400, detail="lease is required")
+
+    def _apply():
+        from tools.tts_tool import acquire_tts_lease, release_tts_lease
+
+        if payload.active:
+            with _config_profile_scope(profile):
+                return acquire_tts_lease(lease)
+        return release_tts_lease(lease)
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    return {"ok": True, "lease": lease, "active": payload.active, **result}
+
+
 def _split_text_for_speak_stream(text: str, cap: int) -> list:
     """Split *text* into provider-cap-sized pieces on sentence boundaries.
 
@@ -7416,17 +7508,18 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 def _dashboard_code_skew_guard() -> Optional[str]:
-    """Return a clear \"restart required\" message when the dashboard runs stale code.
+    """Return a clear \"restart required\" message when this process runs stale code.
 
-    The dashboard is a long-lived process; its ``sys.modules`` is frozen at
-    boot.  When ``hermes update`` (or a manual ``git pull``) replaces the
-    checkout underneath it, a first-time lazy import on a new code path can
-    resolve a freshly-pulled consumer module against a stale cached dependency
-    -> ImportError — e.g. ``/api/model/options`` 500 after the update added
-    ``agent.model_metadata.is_grok_46_family`` while the running process kept
-    serving the pre-update module (#86207).  Mirror the gateway's
-    ``_model_switch_skew_guard``: refuse the risky call with an actionable
-    message instead of crashing with a cryptic import error.
+    The dashboard and Desktop-owned ``hermes serve`` are long-lived; their
+    ``sys.modules`` is frozen at boot.  When ``hermes update`` (or a manual
+    ``git pull``) replaces the checkout underneath them, a first-time lazy
+    import on a new code path can resolve a freshly-pulled consumer module
+    against a stale cached dependency -> ImportError — e.g. ``/api/model/options``
+    500 after the update added ``agent.model_metadata.is_grok_46_family`` while
+    the running process kept serving the pre-update module (#86207).  Mirror
+    the gateway's ``_model_switch_skew_guard``: refuse the risky call with an
+    actionable, deployment-aware message instead of crashing with a cryptic
+    import error (#97046).
 
     Returns None when no drift is detectable (fresh process, or a non-git
     install where the boot fingerprint could not be read — never a false
@@ -7439,10 +7532,28 @@ def _dashboard_code_skew_guard() -> Optional[str]:
         return None
     boot_rev, disk_rev = skew
     return (
-        f"This dashboard is running code from {boot_rev} but the checkout on "
+        f"This process is running code from {boot_rev} but the checkout on "
         f"disk is now {disk_rev}. The model picker would risk a stale-module "
-        f"crash — restart the dashboard to load the new code "
-        f"(systemctl --user restart hermes-dashboard, or hermes dashboard --port <port>)"
+        f"crash — {_dashboard_skew_restart_hint()}"
+    )
+
+
+def _dashboard_skew_restart_hint() -> str:
+    """Restart advice that matches how this process is actually owned.
+
+    The same FastAPI app backs the browser dashboard *and* Desktop-owned
+    ``hermes serve --isolated`` (local or SSH). Hardcoding a systemd unit
+    misleads macOS/launchd hosts and Desktop SSH backends, which have no
+    ``hermes-dashboard`` unit (#97046).
+    """
+    if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
+        return (
+            "restart the Desktop-owned backend to load the new code "
+            "(use Restart backend in Hermes Desktop, or quit and reopen the app)"
+        )
+    return (
+        "restart this Hermes process to load the new code "
+        "(hermes dashboard --port <port>, or the equivalent service restart for this install)"
     )
 
 
@@ -7482,7 +7593,11 @@ async def get_model_options(
             # Keep the profile override inside the worker thread so the full
             # sync picker build (config load, pricing, refresh probes) runs
             # off the event loop under the requested profile.
-            with _profile_scope(profile):
+            # Use _config_profile_scope (contextvar only, no skill-module
+            # lock) — the payload build can block for 15s on a models.dev
+            # cache miss, and _profile_scope's RLock held across that block
+            # starves concurrent /api/config and freezes the server (#58576).
+            with _config_profile_scope(profile):
                 return build_model_options_payload(
                     load_picker_context(),
                     explicit_only=bool(explicit_only),
@@ -7520,8 +7635,10 @@ def get_recommended_default_model(provider: str = ""):
                 get_curated_nous_model_ids,
                 get_pricing_for_provider,
                 check_nous_free_tier,
+                nous_policy_allowed_ids,
                 partition_nous_models_by_tier,
                 pick_silent_default_model,
+                restrict_to_nous_policy,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -7538,9 +7655,18 @@ def get_recommended_default_model(provider: str = ""):
             except Exception:
                 portal_url = ""
 
+            # This endpoint picks the model a user lands on without choosing it,
+            # so an unreachable one here is worse than in a picker. Narrow before
+            # the tier split, so a rescued id still has to pass the free/paid
+            # predicate.
+            _policy_allowed = nous_policy_allowed_ids()
+
             if free_tier:
                 model_ids, pricing = union_with_portal_free_recommendations(
                     model_ids, pricing, portal_url
+                )
+                model_ids = restrict_to_nous_policy(
+                    model_ids, _policy_allowed, rescue_empty=True,
                 )
                 model_ids, _unavailable = partition_nous_models_by_tier(
                     model_ids, pricing, free_tier=True
@@ -7548,6 +7674,9 @@ def get_recommended_default_model(provider: str = ""):
             else:
                 model_ids, pricing = union_with_portal_paid_recommendations(
                     model_ids, pricing, portal_url
+                )
+                model_ids = restrict_to_nous_policy(
+                    model_ids, _policy_allowed, rescue_empty=True,
                 )
 
             model = pick_silent_default_model(model_ids, provider="nous")
@@ -11004,18 +11133,61 @@ def _claude_code_only_status() -> Dict[str, Any]:
 def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp — credentials are owned by the Copilot CLI.
 
-    There is no cheap programmatic credential probe for the ACP subprocess, so
-    this is a read-only "managed by the Copilot CLI" card (like claude-code):
-    Hermes never claims a login state it can't verify.
+    ``logged_in`` is claimed only on positive evidence (a supported env token
+    or a known on-disk GitHub Copilot credential store, via
+    ``auth.get_external_process_provider_status``). The Copilot CLI may also
+    hold its session in an OS keychain Hermes can't read, so the unverified
+    state is presented as "managed by the Copilot CLI" — never as signed out.
     """
+    try:
+        from hermes_cli.auth import get_external_process_provider_status
+        status = get_external_process_provider_status("copilot-acp") or {}
+    except Exception:
+        status = {}
+    verified = bool(status.get("auth_verified"))
+    configured = bool(status.get("configured"))
+    if verified:
+        source_label = status.get("auth_source") or "Copilot credentials detected"
+    elif configured:
+        found = status.get("resolved_command") or status.get("command") or "copilot"
+        source_label = f"Managed by the GitHub Copilot CLI ({found})"
+    else:
+        source_label = "GitHub Copilot CLI not found on PATH"
     return {
-        "logged_in": False,
+        "logged_in": verified,
         "source": "copilot_cli",
-        "source_label": "Managed by the GitHub Copilot CLI",
+        "source_label": source_label,
         "token_preview": None,
         "expires_at": None,
         "has_refresh_token": False,
+        "configured": configured,
     }
+
+
+def _external_process_cli_command(provider_id: str, default: str) -> str:
+    """Render an external-process provider's sign-in command with the CLI the
+    user actually has configured.
+
+    The static catalog assumes the default executable name; users who point
+    Hermes at a custom binary (``HERMES_COPILOT_ACP_COMMAND`` /
+    ``COPILOT_CLI_PATH``) would otherwise be told to run a command that isn't
+    the one Hermes spawns. Non-external-process providers get ``default`` back
+    untouched.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return default
+        status = get_external_process_provider_status(provider_id) or {}
+        command = str(status.get("command") or "").strip()
+        if command:
+            parts = default.split(" ", 1)
+            tail = f" {parts[1]}" if len(parts) > 1 else ""
+            return f"{command}{tail}"
+    except Exception:
+        pass
+    return default
 
 
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
@@ -11083,7 +11255,11 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "id": "copilot-acp",
         "name": "GitHub Copilot (ACP)",
         "flow": "external",
-        "cli_command": "copilot /login",
+        # `copilot login` is the CLI's non-interactive device-code login
+        # subcommand; the previous `copilot /login` form is not a valid
+        # invocation (slash-commands only exist inside an interactive
+        # session, reachable as `copilot -i /login`).
+        "cli_command": "copilot login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
     },
@@ -11342,7 +11518,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
                     "id": p["id"],
                     "name": p["name"],
                     "flow": p["flow"],
-                    "cli_command": p["cli_command"],
+                    "cli_command": _external_process_cli_command(p["id"], p["cli_command"]),
                     "docs_url": p["docs_url"],
                     "disconnect_hint": disconnect_hint,
                     "disconnect_command": _oauth_provider_disconnect_command(p),
@@ -12851,6 +13027,13 @@ def _normalize_dashboard_cron_updates(
         )
     if "deliver" in normalized:
         normalized["deliver"] = _cron_optional_text(normalized["deliver"]) or "local"
+    if "failure_deliver" in normalized:
+        # Same text normalization as deliver, but empty CLEARS the override
+        # (failures fall back to deliver) rather than coalescing to a target
+        # — the field is optional by design (NS-788).
+        normalized["failure_deliver"] = _cron_optional_text(
+            normalized["failure_deliver"]
+        )
     if "context_from" in normalized:
         normalized["context_from"] = _cron_string_list(normalized["context_from"])
     if "enabled_toolsets" in normalized:
@@ -13405,20 +13588,47 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     """Resolve the loopback URL of the gateway api_server's cron-fire route.
 
     Port resolution mirrors gateway/config.py's api_server load order for the
-    TARGET profile: ``platforms.api_server.extra.port`` in the profile's
-    config.yaml, then ``API_SERVER_PORT`` (process env for the active profile,
-    the profile's own .env otherwise), then the adapter default 8642. The bind
-    host is the adapter's loopback default — the dashboard and gateway share a
-    network namespace in every supported deployment (same host process tree,
-    or the same container under s6).
+    LISTENER-OWNER profile: ``platforms.api_server.extra.port`` in that
+    profile's config.yaml, then ``API_SERVER_PORT`` (process env for the
+    active profile, the profile's own .env otherwise), then the adapter
+    default 8642. The bind host is the adapter's loopback default — the
+    dashboard and gateway share a network namespace in every supported
+    deployment (same host process tree, or the same container under s6).
 
     Multiplex mode (one gateway serving several profiles) exposes per-profile
     mirrors under ``/p/<profile>/…``, so a non-default profile routes through
-    the default gateway's port with that prefix; per-profile-gateway mode
-    (each profile its own process/port) uses the bare path on the profile's
-    own port.
+    the default gateway's port with that prefix — only the DEFAULT profile's
+    api_server is bound in that mode, so the port must be read from the
+    default home, never the target profile's (a secondary's own
+    ``API_SERVER_PORT`` is a port nothing listens on). Per-profile-gateway
+    mode (each profile its own process/port) uses the bare path on the
+    profile's own port.
     """
     import os as _os
+
+    multiplex = False
+    try:
+        from gateway.config import _env_multiplex_profiles_override
+
+        cfg = load_config()
+        multiplex = bool(cfg_get(cfg, "gateway", "multiplex_profiles", default=False))
+        env_flag = _env_multiplex_profiles_override()
+        if env_flag is not None:
+            multiplex = env_flag
+    except Exception:
+        _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
+
+    listener_profile, listener_home = profile, home
+    if multiplex and profile != "default":
+        from hermes_constants import get_default_hermes_root
+
+        listener_profile, listener_home = "default", get_default_hermes_root()
+        _log.info(
+            "cron fire: multiplex gateway — resolving api_server port for %s "
+            "from the default profile's listener (%s)",
+            profile,
+            listener_home,
+        )
 
     port = 0
     try:
@@ -13426,14 +13636,14 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
         # overlay, ${ENV_VAR} expansion, profile pathing) — never a raw
         # yaml.safe_load of config.yaml (tests/hermes_cli/
         # test_config_read_guard.py). The HERMES_HOME override scopes
-        # get_config_path() to the TARGET profile, same pattern the
+        # get_config_path() to the LISTENER-OWNER profile, same pattern the
         # deprecated _fire_cron_job_for_profile used for its store scope.
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
 
-        token = set_hermes_home_override(str(home))
+        token = set_hermes_home_override(str(listener_home))
         try:
             profile_cfg = load_config()
         finally:
@@ -13448,8 +13658,8 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     if not port:
         raw = (
             _os.getenv("API_SERVER_PORT", "")
-            if profile == _cron_default_profile()
-            else _profile_env_value(home, "API_SERVER_PORT")
+            if listener_profile == _cron_default_profile()
+            else _profile_env_value(listener_home, "API_SERVER_PORT")
         )
         try:
             port = int(raw) if raw else 0
@@ -13457,18 +13667,6 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
             port = 0
     if not port:
         port = 8642
-
-    multiplex = False
-    try:
-        cfg = load_config()
-        multiplex = bool(cfg_get(cfg, "gateway", "multiplex_profiles", default=False))
-        env_flag = _os.getenv("GATEWAY_MULTIPLEX_PROFILES", "").strip().lower()
-        if env_flag in {"1", "true", "yes", "on"}:
-            multiplex = True
-        elif env_flag in {"0", "false", "no", "off"}:
-            multiplex = False
-    except Exception:
-        pass
 
     if multiplex and profile != "default":
         return f"http://127.0.0.1:{port}/p/{profile}/api/cron/fire"
@@ -14188,26 +14386,35 @@ async def list_credential_pool():
     from agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
 
-    providers = []
-    # read_credential_pool(None) lists every provider that has pooled entries;
-    # load_pool() then gives us the rich PooledCredential objects per provider.
-    raw_pool = read_credential_pool()
-    for provider_id in sorted(raw_pool.keys()):
-        try:
-            pool = load_pool(provider_id)
-        except Exception:
-            _log.exception("load_pool(%s) failed", provider_id)
-            continue
-        entries = pool.entries()
-        if not entries:
-            continue
-        providers.append({
-            "provider": provider_id,
-            "entries": [
-                _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
-            ],
-        })
-    return {"providers": providers}
+    # load_pool() may hit the network synchronously (Copilot token exchange
+    # over raw urllib). urllib's timeout does NOT bound DNS resolution
+    # (getaddrinfo blocks in C), so on a networkless Windows host this froze
+    # the uvicorn event loop for 17 minutes (2026-08-22 00:03-00:20 stall).
+    # Keep every provider load off the loop - same pattern as
+    # get_memory_status below.
+    def _run():
+        providers = []
+        # read_credential_pool(None) lists every provider that has pooled entries;
+        # load_pool() then gives us the rich PooledCredential objects per provider.
+        raw_pool = read_credential_pool()
+        for provider_id in sorted(raw_pool.keys()):
+            try:
+                pool = load_pool(provider_id)
+            except Exception:
+                _log.exception("load_pool(%s) failed", provider_id)
+                continue
+            entries = pool.entries()
+            if not entries:
+                continue
+            providers.append({
+                "provider": provider_id,
+                "entries": [
+                    _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
+                ],
+            })
+        return {"providers": providers}
+
+    return await asyncio.to_thread(_run)
 
 
 @app.post("/api/credentials/pool")
@@ -14226,40 +14433,46 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
 
-    try:
-        pool = load_pool(provider)
-        label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
-        entry = PooledCredential(
-            provider=provider,
-            id=_uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_API_KEY,
-            priority=0,
-            source=SOURCE_MANUAL,
-            access_token=api_key,
-        )
-        pool.add_entry(entry)
-        # Re-adding a credential is an explicit re-engagement signal: lift
-        # every suppression for this provider so a source deleted earlier
-        # (via DELETE below or `hermes auth remove`) can seed again.
-        # Mirrors the `hermes auth add` behaviour in auth_commands.py.
-        if not provider.startswith(CUSTOM_POOL_PREFIX):
-            try:
-                from hermes_cli.auth import (
-                    _load_auth_store,
-                    unsuppress_credential_source,
-                )
-                suppressed = _load_auth_store().get("suppressed_sources", {})
-                for src in list(suppressed.get(provider, []) or []):
-                    unsuppress_credential_source(provider, src)
-            except Exception:
-                _log.exception("unsuppress after pool add failed (non-fatal)")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.exception("POST /api/credentials/pool failed")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+    # load_pool() may run synchronous OAuth token exchanges (network I/O);
+    # keep it off the event loop - see list_credential_pool (2026-08-22
+    # 17-minute stall fix).
+    def _run():
+        try:
+            pool = load_pool(provider)
+            label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
+            entry = PooledCredential(
+                provider=provider,
+                id=_uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_API_KEY,
+                priority=0,
+                source=SOURCE_MANUAL,
+                access_token=api_key,
+            )
+            pool.add_entry(entry)
+            # Re-adding a credential is an explicit re-engagement signal: lift
+            # every suppression for this provider so a source deleted earlier
+            # (via DELETE below or `hermes auth add`) can seed again.
+            # Mirrors the `hermes auth add` behaviour in auth_commands.py.
+            if not provider.startswith(CUSTOM_POOL_PREFIX):
+                try:
+                    from hermes_cli.auth import (
+                        _load_auth_store,
+                        unsuppress_credential_source,
+                    )
+                    suppressed = _load_auth_store().get("suppressed_sources", {})
+                    for src in list(suppressed.get(provider, []) or []):
+                        unsuppress_credential_source(provider, src)
+                except Exception:
+                    _log.exception("unsuppress after pool add failed (non-fatal)")
+            return {"ok": True, "provider": provider, "count": len(pool.entries())}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _log.exception("POST /api/credentials/pool failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return await asyncio.to_thread(_run)
 
 
 @app.delete("/api/credentials/pool/{provider}/{index}")
@@ -14280,44 +14493,50 @@ async def remove_credential_pool_entry(provider: str, index: int):
     from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
-    try:
-        pool = load_pool(provider)
-        removed = pool.remove_index(index)
-    except Exception as exc:
-        _log.exception("DELETE /api/credentials/pool failed")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if removed is None:
-        raise HTTPException(status_code=404, detail="No pool entry at that index")
-
-    cleaned: List[str] = []
-    hints: List[str] = []
-    step = find_removal_step(provider, removed.source or "")
-    if step is not None:
+    # load_pool() may run synchronous token exchanges and the removal steps do
+    # blocking disk writes - keep them off the event loop (see
+    # list_credential_pool; 2026-08-22 17-minute stall fix).
+    def _run():
         try:
-            result = step.remove_fn(provider, removed)
-            cleaned = list(result.cleaned)
-            hints = list(result.hints)
-            if result.suppress:
-                suppress_credential_source(provider, removed.source)
-        except Exception:
-            # Cleanup is best-effort, but suppression is the actual bug fix —
-            # without it the entry resurrects on the next load_pool().  Apply
-            # it even when source-specific cleanup blew up.
-            _log.exception(
-                "credential source cleanup failed for %s/%s; suppressing anyway",
-                provider, removed.source,
-            )
+            pool = load_pool(provider)
+            removed = pool.remove_index(index)
+        except Exception as exc:
+            _log.exception("DELETE /api/credentials/pool failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if removed is None:
+            raise HTTPException(status_code=404, detail="No pool entry at that index")
+
+        cleaned: List[str] = []
+        hints: List[str] = []
+        step = find_removal_step(provider, removed.source or "")
+        if step is not None:
             try:
-                suppress_credential_source(provider, removed.source)
+                result = step.remove_fn(provider, removed)
+                cleaned = list(result.cleaned)
+                hints = list(result.hints)
+                if result.suppress:
+                    suppress_credential_source(provider, removed.source)
             except Exception:
-                _log.exception("suppress_credential_source failed")
-    return {
-        "ok": True,
-        "provider": provider,
-        "count": len(pool.entries()),
-        "cleaned": cleaned,
-        "hints": hints,
-    }
+                # Cleanup is best-effort, but suppression is the actual bug fix -
+                # without it the entry resurrects on the next load_pool(). Apply
+                # it even when source-specific cleanup blew up.
+                _log.exception(
+                    "credential source cleanup failed for %s/%s; suppressing anyway",
+                    provider, removed.source,
+                )
+                try:
+                    suppress_credential_source(provider, removed.source)
+                except Exception:
+                    _log.exception("suppress_credential_source failed")
+        return {
+            "ok": True,
+            "provider": provider,
+            "count": len(pool.entries()),
+            "cleaned": cleaned,
+            "hints": hints,
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 # ---------------------------------------------------------------------------
@@ -15002,7 +15221,13 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "provider": provider,
                 "has_env": _safe(lambda entry=entry_path: (entry / ".env").exists(), False),
                 "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
-                "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
+                "gateway_running": _safe(
+                    lambda entry=entry_path, name=entry.name: (
+                        profiles_mod._check_gateway_running(entry)
+                        or profiles_mod._served_by_running_multiplexer(name)
+                    ),
+                    False,
+                ),
                 "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
                 "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
                 "distribution_name": None,
@@ -19559,6 +19784,7 @@ def start_server(
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
+    start_mcp_discovery_after_bind: bool = False,
 ):
     """Start the web UI server.
 
@@ -19573,6 +19799,10 @@ def start_server(
 
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
+
+    ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers the
+    background MCP discovery thread until the ready sentinel has been written,
+    so its SDK import cannot hold the GIL against the pre-bind import path.
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
@@ -19949,6 +20179,27 @@ def start_server(
             else:
                 print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+
+            if start_mcp_discovery_after_bind:
+                # Deferred from cmd_dashboard for Desktop `serve` (see there).
+                # Not started at the bind itself either: the ~350ms `mcp` SDK
+                # import holds the GIL, and at bind time the renderer is doing
+                # its WebSocket handshake + first hydration reads against this
+                # loop (measured: starting it here gave back most of the
+                # READY gain as a slower connect). One second later the shell
+                # is painted and idle. An agent build inside that second fires
+                # the deferred start itself (wait_for_mcp_discovery), so its
+                # bounded join and the late-binding refresh are unchanged.
+                try:
+                    from hermes_cli.mcp_startup import defer_background_mcp_discovery
+
+                    defer_background_mcp_discovery(
+                        logger=_log,
+                        thread_name="dashboard-mcp-discovery",
+                        delay=_DESKTOP_MCP_DISCOVERY_DELAY_S,
+                    )
+                except Exception:
+                    _log.debug("Deferred MCP discovery arm failed", exc_info=True)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop
             # forcibly closes its WebSocket mid-write, asyncio logs a full

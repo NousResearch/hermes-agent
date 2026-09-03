@@ -530,19 +530,6 @@ async function openSecondary(entry: Secondary): Promise<void> {
         // Best effort for partial test/HMR graphs. Production always loads the
         // real store; a failed import must not make the transport unrecoverable.
       }
-
-      // Runtime re-mint also invalidates the status-stack gone-latch: ids
-      // the dead runtime 4001'd may be live again once tiles re-resume.
-      // Fire-and-forget: composer-status imports from this module, so the
-      // import must stay dynamic (cycle), and it must NOT sit on the timed
-      // redial path — awaiting the module load here pushed cold-start
-      // redials past test/waitFor budgets. The reset needs no ordering
-      // guarantee relative to the dial.
-      void import('@/store/composer-status')
-        .then(({ resetBackgroundPollingGuard }) => resetBackgroundPollingGuard())
-        .catch(() => {
-          // Best effort for partial test/HMR graphs, same as above.
-        })
     }
 
     // Registry-scoped entries dial through getConnectionFor when the bridge has
@@ -1225,6 +1212,13 @@ export async function retainGatewayForSessionTurn(
   profile: string,
   sessionId: string
 ): Promise<() => void> {
+  // Primary events do not flow through a Secondary's terminal-event listener.
+  // Registering a no-op lease here would leave a phantom key that can suppress
+  // the real hold if this route is later re-homed as a secondary.
+  if (isPrimaryRegistryRoute(connectionId, normKey(profile))) {
+    return () => undefined
+  }
+
   const scope = registryBackendScopeKey(connectionId, normKey(profile))
   const key = turnLeaseKey(scope, sessionId)
 
@@ -1588,6 +1582,24 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     clearTimer(entry)
     void reconnectSecondary(entry)
   }
+}
+
+// How many non-primary backends currently hold an open socket. Hover-intent
+// prewarming consults this before spawning: a speculative spawn that pushes
+// the pool past its cap causes the Electron main to LRU-evict a warm backend
+// — often one the user is about to click — turning the prewarm into churn
+// (the #91545 evict/respawn cascade). The active gateway's backend is
+// primary-routed and never counts toward the pool cap.
+export function openSecondaryCount(): number {
+  let count = 0
+
+  for (const entry of g.secondaries.values()) {
+    if (isOpen(entry.gateway)) {
+      count += 1
+    }
+  }
+
+  return count
 }
 
 // Keep the idle reaper from killing a backend we still need: ping every live

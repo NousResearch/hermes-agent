@@ -1213,6 +1213,29 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return max(MIN_GRACE, min(grace, MAX_GRACE))
 
 
+# Missed-run visibility (#99879): a recurring dispatch within this many
+# seconds of its scheduled instant renders as "on time". The built-in ticker
+# runs once a minute and a busy tick can push dispatch a couple of minutes
+# past the scheduled instant — that is normal cadence, not gateway downtime.
+_LATE_DISPATCH_TOLERANCE_SECONDS = 300
+
+
+def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> str:
+    """Classify a recurring dispatch by how late it fired.
+
+    ``on_time``  — within normal ticker cadence slack;
+    ``late``     — missed the scheduled instant but within the catch-up
+                   grace window (e.g. gateway briefly down);
+    ``catch_up`` — beyond the grace window; the due-scan skipped the
+                   accumulated misses and executed once now.
+    """
+    if lateness_seconds > grace_seconds:
+        return "catch_up"
+    if lateness_seconds > _LATE_DISPATCH_TOLERANCE_SECONDS:
+        return "late"
+    return "on_time"
+
+
 # Durable (persisted-state) recovery counter for a recurring job wedged in a
 # stale ``last_status == "error"`` state with ``next_run_at`` parked in the
 # future.  This is the restart-surviving half of the recurring-cron wedge
@@ -1225,7 +1248,8 @@ def _compute_grace_seconds(schedule: dict) -> int:
 # ``next_run_at`` to now so the next tick re-dispatches it, exactly like the
 # operator's force-run / mech_red_guard's ``cron resume`` but built-in.
 _persisted_error_recoveries: int = 0
-_PERSISTED_ERROR_RECOVERY_HISTORY = 20
+# Bounded in-memory history kept by every probe-visible fire-path counter.
+_TELEMETRY_RECENT_HISTORY = 20
 _persisted_error_recoveries_recent: list = []
 
 
@@ -1328,26 +1352,38 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
 _cron_cadence_cache: Dict[str, Optional[float]] = {}
 
 
+def _append_telemetry_record(filename: str, entry: Dict[str, Any], recent: list) -> None:
+    """Keep ``entry`` in the bounded in-memory ``recent`` list and append it to
+    ``<cron_dir>/<filename>`` (best effort — telemetry must never break a tick).
+
+    Shared by the probe-visible fire-path counters (persisted-error recovery,
+    timezone-migration catch-up); each keeps its own module-level int counter
+    because tests reset those by name.
+    """
+    recent.append(entry)
+    del recent[:-_TELEMETRY_RECENT_HISTORY]
+    try:
+        path = _current_cron_store().cron_dir / filename
+        _ensure_cron_dir(path.parent)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        logger.debug("Could not append %s record: %s", filename, exc)
+
+
 def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str) -> None:
     """Persist a countable, probe-visible signal for one stale-error re-arm."""
     global _persisted_error_recoveries
-    now = _hermes_now()
     entry = {
         "job_id": job.get("id"),
         "name": job.get("name") or job.get("id"),
         "previous_next_run_at": previous_next_run,
-        "rearmed_at": now.isoformat(),
+        "rearmed_at": _hermes_now().isoformat(),
     }
     _persisted_error_recoveries += 1
-    _persisted_error_recoveries_recent.append(entry)
-    del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
-    try:
-        path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
-        _ensure_cron_dir(path.parent)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except Exception as exc:  # never let telemetry break a tick
-        logger.debug("Could not append persisted-error-recovery record: %s", exc)
+    _append_telemetry_record(
+        "persisted_error_recoveries.jsonl", entry, _persisted_error_recoveries_recent
+    )
 
 
 def get_persisted_error_recovery_stats() -> Dict[str, Any]:
@@ -1385,6 +1421,95 @@ def _cron_next_run_matches_expr(
         return abs((prev - next_run_dt).total_seconds()) < 1.0
     except Exception:
         return True
+
+
+# Classification results for a due cron instant that is NOT an occurrence of
+# the job's current expression (see _classify_stale_cron_next_run).
+STALE_CRON_MATCH = "match"
+STALE_CRON_TIMEZONE_MIGRATION = "timezone_migration"
+STALE_CRON_EXPR_EDIT = "expr_edit"
+
+
+def _classify_stale_cron_next_run(
+    schedule: Dict[str, Any],
+    raw_next_run_dt: datetime,
+    next_run_dt: datetime,
+) -> str:
+    """Explain WHY a stored ``next_run_at`` misses the current cron lattice.
+
+    ``_cron_next_run_matches_expr`` answers "does the stored instant occur in
+    the current expression?" but not "why not?", and the two answers call for
+    opposite actions:
+
+    * ``expr_edit`` — a direct ``jobs.json`` edit changed ``schedule.expr``
+      while leaving ``next_run_at`` computed under the old one (#93049). The
+      stored instant is a time the current expression *excludes*, so it must
+      be re-anchored WITHOUT firing.
+    * ``timezone_migration`` — the expression never changed; only the stored
+      value's *offset representation* did. Upgrading from a UTC-scheduling
+      build to one that honours the profile timezone leaves legacy rows like
+      ``2026-09-02T04:00:00+00:00`` for ``0 4 * * *``; normalizing to
+      Europe/Brussels turns that into ``06:00+02``, which the expression
+      excludes. Treating it as a stale edit re-anchored to tomorrow and
+      silently skipped a due occurrence that had never fired.
+
+    The discriminator is whether *normalization itself* moved the wall clock.
+    Cron expressions describe local wall-clock intent, so a stored instant
+    whose OWN wall clock is a legal occurrence, and which only left the
+    lattice because ``_ensure_aware`` converted it into a different offset, is
+    a representation migration — not a schedule edit. When the offsets agree
+    (the common case, including every value this build wrote) the wall clock
+    is unchanged, so a genuine ``expr`` edit can never be misread as a
+    migration.
+    """
+    if _cron_next_run_matches_expr(schedule, next_run_dt):
+        return STALE_CRON_MATCH
+    wall_clock_shifted = (
+        raw_next_run_dt.replace(tzinfo=None) != next_run_dt.replace(tzinfo=None)
+    )
+    if wall_clock_shifted and _cron_next_run_matches_expr(schedule, raw_next_run_dt):
+        return STALE_CRON_TIMEZONE_MIGRATION
+    return STALE_CRON_EXPR_EDIT
+
+
+# Durable, probe-visible counter for offset-representation migrations caught
+# on the fire path. Kept separate from `catch_up_occurrences` (runs skipped
+# past their grace window — a migrated row that is ALSO past grace increments
+# both) because this one means "an upgrade rewrote how next_run_at is
+# represented" — an operator seeing it climb after a deploy is seeing the
+# migration drain, and seeing it climb steadily afterwards is seeing a
+# timezone that keeps changing under the store.
+_timezone_migration_catchups: int = 0
+_timezone_migration_catchups_recent: list = []
+
+
+def _record_timezone_migration_catchup(
+    job: Dict[str, Any],
+    raw_next_run_dt: datetime,
+    next_run_dt: datetime,
+) -> None:
+    """Persist a countable signal for one offset-migration catch-up fire."""
+    global _timezone_migration_catchups
+    entry = {
+        "job_id": job.get("id"),
+        "name": job.get("name") or job.get("id"),
+        "expr": (job.get("schedule") or {}).get("expr"),
+        "stored_next_run_at": raw_next_run_dt.isoformat(),
+        "normalized_next_run_at": next_run_dt.isoformat(),
+        "fired_at": _hermes_now().isoformat(),
+    }
+    _timezone_migration_catchups += 1
+    _append_telemetry_record(
+        "timezone_migration_catchups.jsonl", entry, _timezone_migration_catchups_recent
+    )
+
+
+def get_timezone_migration_catchup_stats() -> Dict[str, Any]:
+    """Probe-visible snapshot of offset-migration catch-up fires."""
+    return {
+        "timezone_migration_catchups": _timezone_migration_catchups,
+        "recent": list(_timezone_migration_catchups_recent),
+    }
 
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
@@ -2225,6 +2350,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -2327,6 +2453,18 @@ def create_job(
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    # failure_deliver shares deliver's value grammar; the str/list
+    # flatten below mirrors the tool layer's _normalize_deliver_param for
+    # direct create_job callers (the tool pre-normalizes). Semantic
+    # validation happens at resolution time via the shared deliver path.
+    normalized_failure_deliver = (
+        str(failure_deliver).strip() if isinstance(failure_deliver, str) else None
+    )
+    if isinstance(failure_deliver, (list, tuple)):
+        normalized_failure_deliver = ",".join(
+            str(p).strip() for p in failure_deliver if str(p).strip()
+        )
+    normalized_failure_deliver = normalized_failure_deliver or None
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
     normalized_monitor_script = normalized_monitor_script or None
     normalized_monitor_url = str(monitor_url).strip() if isinstance(monitor_url, str) else None
@@ -2427,6 +2565,9 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        # Live-adapter targets whose last send was acked with no message_id /
+        # raw_response (accepted, but UNVERIFIED — surfaced by cron list/doctor).
+        "last_delivery_unverified": None,
         "failure_streak": 0,
         # Delivery configuration
         "deliver": deliver,
@@ -2443,6 +2584,10 @@ def create_job(
     # absent key = job follows config resolution (pre-feature behavior).
     if normalized_reasoning_effort is not None:
         job["reasoning_effort"] = normalized_reasoning_effort
+    # Conditional-persist for failure_deliver too: absent key = failures
+    # follow deliver, byte-identical to pre-feature jobs (NS-788).
+    if normalized_failure_deliver is not None:
+        job["failure_deliver"] = normalized_failure_deliver
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -3010,7 +3155,13 @@ def _mark_job_run_locked(
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
 
-    ``status`` overrides the derived ``last_status`` ("ok"/"error") with a
+    A run that succeeded but failed delivery records
+    ``last_status = "delivery_failed"`` (never "ok") so the failure is
+    visible to every reader, while ``failure_streak`` stays untouched —
+    the agent did its job.
+
+    ``status`` overrides the derived ``last_status`` ("ok"/"error"/
+    "delivery_failed") with a
     specific terminal status for this run — e.g. ``"blocked_config"`` when
     the pre-dispatch configuration validation refused to run the agent
     (T1-26), so `cronjob list` distinguishes "your config is broken" from
@@ -3035,7 +3186,21 @@ def _mark_job_run_locked(
                 # The transient manual-run context is single-fire: whatever
                 # run just completed consumed it (or superseded it).
                 job.pop("manual_run_prompt", None)
-                job["last_status"] = status or ("ok" if success else "error")
+                # A run whose agent succeeded but whose delivery failed is NOT
+                # "ok": recording it as such hid last_delivery_error behind a
+                # green status in `cron list`/the UI and made a job that never
+                # reached the user look like a quiet success (#83993). It gets
+                # its own status so every reader that keys off "ok" (CLI list,
+                # doctor, cronjob_tools) sees the failure. An explicit
+                # ``status`` override (e.g. "blocked_config") still wins.
+                if status:
+                    job["last_status"] = status
+                elif not success:
+                    job["last_status"] = "error"
+                elif isinstance(delivery_error, str) and delivery_error.strip():
+                    job["last_status"] = "delivery_failed"
+                else:
+                    job["last_status"] = "ok"
                 job["last_error"] = error if not success else None
                 # A healthy run means the configuration validates again — drop
                 # the preflight alert-dedup marker so a FUTURE config break
@@ -4000,9 +4165,18 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # so re-anchor before either can fire. Recomputation uses the
                 # current expression, so this converges — it cannot defer
                 # forever.
-                if not manual_run and kind == "cron" and not _cron_next_run_matches_expr(
-                    schedule, next_run_dt
-                ):
+                #
+                # Not every mismatch is an edit, though: an offset-representation
+                # migration (UTC-scheduling build -> profile-timezone build)
+                # moves a legacy instant off the lattice without the expression
+                # ever changing, and re-anchoring THAT silently swallowed a due
+                # occurrence. Classify first, and only the edit case skips.
+                stale_class = (
+                    _classify_stale_cron_next_run(schedule, raw_next_run_dt, next_run_dt)
+                    if not manual_run and kind == "cron"
+                    else STALE_CRON_MATCH
+                )
+                if stale_class == STALE_CRON_EXPR_EDIT:
                     new_next = compute_next_run(schedule, now.isoformat())
                     logger.info(
                         "Job '%s' next_run_at %s does not match its current "
@@ -4020,6 +4194,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 needs_save = True
                                 break
                     continue
+                if stale_class == STALE_CRON_TIMEZONE_MIGRATION:
+                    # Fall through to the normal due path: the occurrence is
+                    # real and overdue, so it fires ONCE here and the usual
+                    # advance/mark_job_run re-anchor writes the value back in
+                    # the current offset. At-most-once is preserved because
+                    # nothing re-reads the legacy instant after that.
+                    logger.warning(
+                        "cron.timezone_migration.catch_up job='%s' id=%s expr=%r "
+                        "stored=%s normalized=%s — stored next_run_at carries a "
+                        "pre-migration UTC offset (%s, now %s) and is a legal "
+                        "occurrence at its own wall clock; firing the due run "
+                        "instead of re-anchoring past it.",
+                        job.get("name", job.get("id", "?")),
+                        job.get("id"),
+                        schedule.get("expr"),
+                        next_run,
+                        next_run_dt.isoformat(),
+                        raw_next_run_dt.utcoffset(),
+                        now.utcoffset(),
+                    )
+                    _record_timezone_migration_catchup(job, raw_next_run_dt, next_run_dt)
 
                 # For recurring jobs, check if the scheduled time is stale
                 # (gateway was down and missed the window). Fast-forward to
@@ -4182,6 +4377,28 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["run_claim"] = claim
+                            needs_save = True
+                            break
+
+                # Missed-run visibility (#99879): persist scheduled-vs-actual
+                # dispatch timing on the job record so `hermes cron list` /
+                # `hermes cron status` (separate CLI processes) can show a
+                # late catch-up run as such instead of an ordinary on-time
+                # run. Recurring schedules only — one-shots beyond grace are
+                # retired above, and manual triggers have no scheduled
+                # instant to be late against.
+                if not manual_run and kind in {"cron", "interval"}:
+                    lateness = max(0.0, (now - next_run_dt).total_seconds())
+                    dispatch_stamp = {
+                        "scheduled_at": next_run,
+                        "dispatched_at": now.isoformat(),
+                        "lateness_seconds": round(lateness, 1),
+                        "kind": _classify_dispatch_lateness(lateness, grace),
+                    }
+                    job["last_dispatch"] = dispatch_stamp
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["last_dispatch"] = dispatch_stamp
                             needs_save = True
                             break
 

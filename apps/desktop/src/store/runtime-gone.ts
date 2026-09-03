@@ -1,15 +1,39 @@
 import { $activeSessionId, requestSessionResume } from './session'
+import {
+  healsByStoredId,
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  latchSessionGone,
+  resetBackgroundPollingGuard,
+  resetBackgroundPollingGuardAfterRebind
+} from './session-gone-latch'
 import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-states'
+
+export {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  resetBackgroundPollingGuard,
+  resetBackgroundPollingGuardAfterRebind
+}
+
+/** Latch `sid` off and heal the bound view. Safe to call on every 4001. */
+export function markSessionGone(sid: string): void {
+  if (!sid) {
+    return
+  }
+
+  latchSessionGone(sid)
+  markRuntimeGone(sid)
+}
 
 /** Heal a session view whose bound runtime id the gateway no longer holds.
  *
- *  The desktop learns a runtime is gone through two channels, and only one of
- *  them ever repaired anything:
+ *  The desktop learns a runtime is gone through two channels:
  *
- *  - PUSH — `session.reclaimed`. `gateway-event/lifecycle.ts` drops the cached
- *    state and calls `unbindTileRuntime`, which re-arms SessionTilePane's
- *    resume effect (gated on `!runtimeId`) so the tile rebinds a fresh runtime
- *    from the intact stored row.
+ *  - PUSH — `session.reclaimed`. `gateway-event/lifecycle.ts` calls
+ *    {@link markRuntimeGone} (same levers as the pull path) before dropping
+ *    the cached state, so the primary chat resumes instead of sitting on the
+ *    dead runtime until the user types.
  *  - PULL — a session-scoped RPC rejected `4001 "session not found"`. The
  *    gateway logs "client should resume the stored session" precisely because
  *    this is the terminal verdict; `_sess_nowait` has no other way to say it.
@@ -21,14 +45,9 @@ import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-stat
  *  id forever or (with the gone-latch) went silent against it, and in both cases
  *  the view stayed bound to a phantom runtime for the rest of its life.
  *
- *  That gap is only reachable through the pull channel. The push channel cannot
- *  cover a runtime that died with a previous app process (boot-restore), was
- *  reaped while this client was disconnected, or was reaped by a remote gateway
- *  this renderer had not yet dialled — the broadcast has no live listener. In
- *  those cases the 4001 is the *only* notice that ever arrives.
- *
- *  So route it to the same recovery the broadcast drives. Both surfaces that can
- *  hold a binding get their existing re-arm lever pulled:
+ *  The pull channel is the only notice when the client missed the broadcast
+ *  (boot-restore, disconnect, remote gateway). Both surfaces that can hold a
+ *  binding get their existing re-arm lever pulled:
  *
  *  - Tiles: `unbindTileRuntime` (SessionTilePane's resume effect refires).
  *  - The primary chat: `requestSessionResume`, the explicit-request lever. Its
@@ -42,11 +61,12 @@ import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-stat
  *  for the same id could only come from a duplicate report of the same death. */
 const healedRuntimes = new Set<string>()
 
-/** Consecutive heals per stored session id, reset by {@link noteRuntimeAlive}.
- *  A backend that reaps as fast as we resume would otherwise turn this into the
- *  very storm it exists to stop — one resume per poll tick, forever. Cap it and
- *  let the user's next action (which carries its own recovery) take over. */
-const healsByStoredId = new Map<string, number>()
+/** Consecutive heals per stored session id live in `session-gone-latch`
+ *  (`healsByStoredId`), reset by {@link noteRuntimeAlive} and by a successful
+ *  rebind. A backend that reaps as fast as we resume would otherwise turn this
+ *  into the very storm it exists to stop — one resume per poll tick, forever.
+ *  Cap it and let the user's next action (which carries its own recovery)
+ *  take over. */
 
 /** Enough to ride out a reap that races a resume, low enough that a backend
  *  reaping on sight cannot be turned into a resume loop. */

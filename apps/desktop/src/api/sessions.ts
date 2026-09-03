@@ -148,6 +148,11 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
+   *  same profile errors on every slice (one DB open). Legacy per-slice calls
+   *  stamp only the slice that actually failed, so a cron I/O error cannot
+   *  carry-forward recents. */
+  errors?: Array<{ profile: string; error: string }>
 }
 
 /** Which profiles filled their per-profile window in a returned page. The
@@ -216,16 +221,24 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
     })
   ])
 
-  const errors = [...(recents.errors ?? []), ...(cron.errors ?? []), ...(messaging.errors ?? [])]
+  const recentsErrors = recents.errors ?? []
+  const cronErrors = cron.errors ?? []
+  const messagingErrors = messaging.errors ?? []
 
   return {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
-      sessions: recents.sessions
+      sessions: recents.sessions,
+      ...(recentsErrors.length ? { errors: recentsErrors } : {})
     },
-    cron: { sessions: cron.sessions },
-    messaging: { sessions: messaging.sessions },
-    ...(errors.length ? { errors } : {})
+    cron: {
+      sessions: cron.sessions,
+      ...(cronErrors.length ? { errors: cronErrors } : {})
+    },
+    messaging: {
+      sessions: messaging.sessions,
+      ...(messagingErrors.length ? { errors: messagingErrors } : {})
+    }
   }
 }
 
@@ -288,9 +301,21 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 
   return {
-    recents: { ...result.recents, sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []) },
-    cron: { ...result.cron, sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []) },
-    messaging: { ...result.messaging, sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []) },
+    recents: {
+      ...result.recents,
+      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
+    cron: {
+      ...result.cron,
+      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
+    messaging: {
+      ...result.messaging,
+      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
     errors: result.errors
   }
 }

@@ -30,7 +30,7 @@ def close_terminal_tool(process_id: str) -> str:
 CLOSE_TERMINAL_SCHEMA = {
     "name": "close_terminal",
     "description": (
-        "Close the read-only terminal tab for one of your background processes in "
+        "Hide a background process's terminal tab (process keeps running) in "
         "the Hermes desktop GUI (the tabs mirroring terminal(background=true) runs). "
         "This does NOT kill the process — it only drops the tab/view; the output "
         "keeps buffering and the user can reopen it from the status stack. Use it "

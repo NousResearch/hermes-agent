@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "qwen3.8-27b",
+      "display_name": "Qwen3.8 27B",
+      "description": "Best all-round agent model; sees images; long context stays fast",
+      "repo": "unsloth/Qwen3.8-27B-GGUF",
+      "variants": [
+        {
+          "quant": "UD-Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+              "size_bytes": 16464440224
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 16,
+      "recurrent_layers": 48,
+      "per_layer_f16": 4096,
+      "n_vocab": 248320,
+      "mmproj": {
+        "path": "mmproj-BF16.gguf",
+        "size_bytes": 931146432,
+        "local": "mmproj-Qwen3.8-27B-BF16.gguf"
+      },
+      "mtp": true,
+      "mtp_draft_depth": 2,
+      "sampling": {
+        "temp": "1.0",
+        "top-p": "0.95",
+        "top-k": "20",
+        "min-p": "0.0"
+      },
+      "quality": 90,
+      "decode_fraction": 1.0
+    },
+    {
+      "id": "qwen3.8-flash-next",
+      "display_name": "Qwen3.8 Flash Next",
+      "description": "Frontier-scale model; needs a very large GPU to run well",
+      "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "variants": [
+        {
+          "quant": "UD-Q4_K_XL",
+          "files": [
+            {
+              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+              "size_bytes": 10946624
+            },
+            {
+              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+              "size_bytes": 49859583136
+            },
+            {
+              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+              "size_bytes": 49376141504
+            },
+            {
+              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+              "size_bytes": 12087983520
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 12,
+      "recurrent_layers": 36,
+      "per_layer_f16": 2048,
+      "moe": true,
+      "n_vocab": 248320,
+      "mmproj": {
+        "path": "mmproj-BF16.gguf",
+        "size_bytes": 907542944,
+        "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+      },
+      "min_engine": "b10678",
+      "quality": 95,
+      "decode_fraction": 0.08
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "display_name": "Qwen3.6 35B-A3B",
+      "description": "Bigger mixture-of-experts with multi-token prediction; sees images",
+      "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "variants": [
+        {
+          "quant": "UD-Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+              "size_bytes": 22663387424
+            }
+          ],
+          "validated": true
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 10,
+      "recurrent_layers": 30,
+      "per_layer_f16": 2048,
+      "moe": true,
+      "mtp": true,
+      "n_vocab": 248320,
+      "mtp_draft_depth": 2,
+      "mmproj": {
+        "path": "mmproj-BF16.gguf",
+        "size_bytes": 902822528,
+        "local": "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
+      },
+      "sampling": {
+        "temp": "1.0",
+        "top-p": "0.95",
+        "top-k": "20",
+        "min-p": "0.0"
+      },
+      "quality": 80,
+      "decode_fraction": 0.15
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "description": "Frontier-class model for machines with 128GB+ memory",
+      "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "variants": [
+        {
+          "quant": "UD-Q4_K_XL",
+          "files": [
+            {
+              "path": "UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
+              "size_bytes": 5257408
+            },
+            {
+              "path": "UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00005.gguf",
+              "size_bytes": 48935523072
+            },
+            {
+              "path": "UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00003-of-00005.gguf",
+              "size_bytes": 48980787136
+            },
+            {
+              "path": "UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00004-of-00005.gguf",
+              "size_bytes": 49999168416
+            },
+            {
+              "path": "UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00005-of-00005.gguf",
+              "size_bytes": 7174505088
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 1048576,
+      "full_layers": 43,
+      "recurrent_layers": 0,
+      "per_layer_f16": 1152,
+      "moe": true,
+      "n_vocab": 163840,
+      "draft": {
+        "path": "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+        "size_bytes": 10896057440
+      },
+      "sampling": {
+        "temp": "1.0",
+        "top-p": "0.95",
+        "min-p": "0.01"
+      },
+      "quality": 85,
+      "decode_fraction": 0.1
+    }
+  ]
+}

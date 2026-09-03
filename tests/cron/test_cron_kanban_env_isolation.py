@@ -438,6 +438,13 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
         "HERMES_KANBAN_BRANCH",
         "HERMES_KANBAN_GOAL_MODE",
         "HERMES_KANBAN_GOAL_MAX_TURNS",
+        # Names the transient systemd scope the worker runs in. Deliberately
+        # NOT scrubbed for delegated children: _handoff_caller_is_worker uses
+        # it to recognise "the worker or a descendant", and every descendant
+        # really is inside that cgroup. Scrubbing it would make a delegated
+        # child's terminal handoff run the pre-write teardown and stop the
+        # scope out from under the caller before its write commits.
+        "HERMES_KANBAN_SCOPE",
     }
     uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
     assert not uncovered, (

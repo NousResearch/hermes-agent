@@ -40,6 +40,8 @@ Configuration in config.yaml::
           client_name: "My Custom Client"       # default: "Hermes Agent"
           client_metadata_url: "https://me/cimd.json"  # self-hosted CIMD
           cimd: false                           # force DCR for this server
+          extra_auth_params:                    # extra URL params for auth
+            access_type: "offline"              # e.g. Zoho refresh tokens
 """
 
 import asyncio
@@ -506,7 +508,7 @@ class HermesTokenStorage:
         # model_validate because it's not part of the SDK's OAuthToken schema.
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            data["expires_in"] = int(max(absolute_expiry - time.time() - 60, 0))
         elif data.get("expires_in") is not None:
             try:
                 file_mtime = self._tokens_path().stat().st_mtime
@@ -515,7 +517,7 @@ class HermesTokenStorage:
             if file_mtime is not None:
                 try:
                     implied_expiry = file_mtime + int(data["expires_in"])
-                    data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+                    data["expires_in"] = int(max(implied_expiry - time.time() - 60, 0))
                 except (TypeError, ValueError):
                     pass
         try:
@@ -1163,6 +1165,51 @@ def _paste_callback_reader(result: dict) -> None:
 
 HermesOAuthClientProvider: Any = None
 
+# ---------------------------------------------------------------------------
+# Provider-specific authorization parameters
+#
+# Some OAuth providers require extra query parameters in the authorization
+# URL that the MCP SDK does not include by default.  Zoho, for example,
+# requires ``access_type=offline`` to return refresh tokens — without it,
+# only a short-lived access_token is issued, and when it expires the SDK
+# opens a new browser tab for re-authorization on every request.
+#
+# The mapping below is keyed by a substring match against the server URL
+# or authorization endpoint URL (case-insensitive).  When a match is
+# found, the associated params are merged into the authorization request.
+# Users can also supply arbitrary extra params via
+# ``oauth.extra_auth_params`` in config.yaml, which takes precedence over
+# built-in defaults.
+# ---------------------------------------------------------------------------
+_PROVIDER_AUTH_PARAMS: dict[str, dict[str, str]] = {
+    # Zoho requires access_type=offline for refresh token issuance.
+    "zohomcp": {"access_type": "offline"},
+}
+
+
+def _extract_extra_auth_params(
+    cfg: dict,
+    server_url: str = "",
+    *,
+    auth_endpoint: str = "",
+) -> dict[str, str]:
+    """Return extra authorization params for this provider.
+
+    Merges user-configured ``oauth.extra_auth_params`` with built-in
+    provider defaults.  User config takes precedence.
+    """
+    params: dict[str, str] = {}
+    # Built-in provider defaults (matched against server URL or auth endpoint)
+    lookup = (server_url or auth_endpoint).lower()
+    for pattern, extra in _PROVIDER_AUTH_PARAMS.items():
+        if pattern in lookup:
+            params.update(extra)
+    # User-configured overrides (takes precedence)
+    user_params = cfg.get("extra_auth_params")
+    if isinstance(user_params, dict):
+        params.update({k: str(v) for k, v in user_params.items()})
+    return params
+
 
 def _get_hermes_oauth_provider_class() -> type | None:
     global HermesOAuthClientProvider
@@ -1186,9 +1233,87 @@ def _get_hermes_oauth_provider_class() -> type | None:
         and WAFs reject httpx's default User-Agent there (#75576).
         """
 
-        def __init__(self, *args: Any, token_user_agent: "str | None" = None, **kwargs: Any):
+        def __init__(
+            self,
+            *args: Any,
+            token_user_agent: "str | None" = None,
+            extra_auth_params: "dict[str, str] | None" = None,
+            **kwargs: Any,
+        ):
             super().__init__(*args, **kwargs)
             self._hermes_token_user_agent = token_user_agent
+            self._extra_auth_params: dict[str, str] = extra_auth_params or {}
+
+        async def _perform_authorization_code_grant(self):
+            """Override to inject provider-specific extra authorization params.
+
+            Mirrors the upstream SDK flow exactly, with one addition: extra
+            params from ``_extra_auth_params`` are merged into ``auth_params``
+            before the authorization URL is built.
+            """
+            from urllib.parse import urlencode
+            import secrets as _secrets
+            from mcp.client.auth.oauth2 import (
+                OAuthFlowError,
+                PKCEParameters,
+                validate_authorization_response_iss,
+            )
+
+            if self.context.client_metadata.redirect_uris is None:
+                raise OAuthFlowError("No redirect URIs provided")
+            if not self.context.redirect_handler:
+                raise OAuthFlowError("No redirect handler provided")
+            if not self.context.callback_handler:
+                raise OAuthFlowError("No callback handler provided")
+
+            if self.context.oauth_metadata and self.context.oauth_metadata.authorization_endpoint:
+                auth_endpoint = str(self.context.oauth_metadata.authorization_endpoint)
+            else:
+                auth_base = self.context.get_authorization_base_url(self.context.server_url)
+                auth_endpoint = f"{auth_base}/authorize"
+
+            if not self.context.client_info:
+                raise OAuthFlowError("No client info available for authorization")
+
+            pkce_params = PKCEParameters.generate()
+            state = _secrets.token_urlsafe(32)
+
+            auth_params = {
+                "response_type": "code",
+                "client_id": self.context.client_info.client_id,
+                "redirect_uri": str(self.context.client_metadata.redirect_uris[0]),
+                "state": state,
+                "code_challenge": pkce_params.code_challenge,
+                "code_challenge_method": "S256",
+            }
+
+            # RFC 8707 resource parameter
+            if self.context.should_include_resource_param(self.context.protocol_version):
+                auth_params["resource"] = self.context.get_resource_url()
+
+            if self.context.client_metadata.scope:
+                auth_params["scope"] = self.context.client_metadata.scope
+
+            # OIDC requires prompt=consent when offline_access is requested
+            if "offline_access" in self.context.client_metadata.scope.split():
+                auth_params["prompt"] = "consent"
+
+            # --- Hermes addition: inject provider-specific extra params ---
+            if self._extra_auth_params:
+                auth_params.update(self._extra_auth_params)
+            # --- end addition ---
+
+            authorization_url = f"{auth_endpoint}?{urlencode(auth_params)}"
+            await self.context.redirect_handler(authorization_url)
+
+            # Wait for callback
+            result = await self.context.callback_handler()
+            if result.state is None or not _secrets.compare_digest(result.state, state):
+                raise OAuthFlowError(f"State parameter mismatch: {result.state} != {state}")
+            validate_authorization_response_iss(result.iss, self.context.oauth_metadata)
+            if not result.code:
+                raise OAuthFlowError("No authorization code received")
+            return result.code, pkce_params.code_verifier
 
         def _stamp_token_user_agent(self, request):
             ua = getattr(self, "_hermes_token_user_agent", None)
@@ -1258,6 +1383,60 @@ def _get_hermes_oauth_provider_class() -> type | None:
                 logger.warning("Invalid refresh response: %s", response.status_code)
                 self.context.clear_tokens()
                 return False
+
+
+        async def async_auth_flow(self, request: Any) -> Any:
+            """Override to try refresh_token before browser auth on 401.
+
+            The base SDK goes straight to browser authorization when a 401
+            arrives, even when a refresh token is available. This causes
+            unnecessary browser tab accumulation when tokens expire during
+            normal operation. This override intercepts the 401 response and
+            attempts a token refresh first, only falling through to the full
+            browser flow when refresh fails.
+            """
+            # Yield the initial request - httpx will add auth headers
+            response = yield request
+
+            # On 401, try refresh before browser auth
+            if response.status_code == 401:
+                logger.debug("Got 401, attempting token refresh before browser auth")
+
+                # Check if we have a refresh token available
+                if (self.context.current_tokens is not None and
+                    hasattr(self.context.current_tokens, 'refresh_token') and
+                    self.context.current_tokens.refresh_token is not None):
+
+                    try:
+                        # Attempt token refresh
+                        refresh_request = await self._refresh_token()
+                        refresh_response = yield refresh_request
+
+                        if await self._handle_refresh_response(refresh_response):
+                            logger.debug("Token refresh successful, retrying original request")
+                            # Refresh succeeded - retry the original request
+                            self._add_auth_header(request)
+                            response = yield request
+
+                            # If the retry also fails, we need full re-auth
+                            if response.status_code == 401:
+                                logger.debug("Retry after refresh still got 401, falling through to browser auth")
+                                async for r in super().async_auth_flow(request):
+                                    response = yield r
+                        else:
+                            # Refresh failed - need full browser auth
+                            logger.debug("Token refresh failed, falling through to browser auth")
+                            async for r in super().async_auth_flow(request):
+                                response = yield r
+                    except Exception as e:
+                        # Any error during refresh - fall back to browser auth
+                        logger.debug("Token refresh error: %s, falling through to browser auth", e)
+                        async for r in super().async_auth_flow(request):
+                            response = yield r
+                else:
+                    # No refresh token available - use parent's browser auth
+                    async for r in super().async_auth_flow(request):
+                        response = yield r
 
     _HermesOAuthClientProvider.__name__ = "HermesOAuthClientProvider"
     _HermesOAuthClientProvider.__qualname__ = "HermesOAuthClientProvider"
@@ -1953,5 +2132,6 @@ def build_oauth_auth(
         # where the browser round-trip is actually awaited.
         callback_handler=callback_handler,
         token_user_agent=token_request_user_agent(cfg),
+        extra_auth_params=_extract_extra_auth_params(cfg, server_url),
         **cimd_provider_kwargs(cfg),
     )

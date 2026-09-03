@@ -1223,6 +1223,7 @@ class TestSafeCopyDb:
         assert not dst.exists()
 
 
+    @pytest.mark.live_system_guard_bypass
     def test_locked_source_fails_fast_not_hang(self, tmp_path):
         import subprocess
         import sys

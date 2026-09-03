@@ -1464,7 +1464,11 @@ class LineAdapter(BasePlatformAdapter):
         audio_path: str,
         duration_ms: int = 1000,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
+        # ``is_voice`` is accepted for signature compatibility with the
+        # gateway media router (BasePlatformAdapter.send_voice kwarg set)
+        # and has no effect on LINE delivery.
         path = Path(audio_path)
         if not path.exists() or not path.is_file():
             return SendResult(success=False, error=f"audio file not found: {audio_path}")

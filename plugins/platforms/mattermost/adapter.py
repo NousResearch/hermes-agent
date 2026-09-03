@@ -500,8 +500,15 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
-        """Upload an audio file."""
+        """Upload an audio file.
+
+        ``is_voice`` mirrors the shared ``BasePlatformAdapter.send_voice``
+        keyword set (the gateway media router passes it for MEDIA: audio);
+        Mattermost uploads are generic attachments, so the flag is accepted
+        for signature compatibility and ignored.
+        """
         return await self._send_local_file(
             chat_id, audio_path, caption, reply_to, metadata=metadata
         )

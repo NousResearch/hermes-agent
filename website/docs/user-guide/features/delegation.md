@@ -190,6 +190,23 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
+:::warning
+**Provider override clears inherited routing.** An explicit `delegation.provider` is treated as "children run on a different provider," so children do **not** inherit the parent's OpenRouter routing preferences (`provider_routing.only` / `ignore` / `order` / `sort`) — those are cleared so the override isn't silently fought by parent-level filters. The parent's fallback provider chain is also not inherited (a pinned child fails loudly instead of silently rerouting mid-run). If you pin `delegation.provider: openrouter` and want children to land on a specific sub-provider, restate the routing in `delegation.request_overrides`:
+
+```yaml
+delegation:
+  model: "deepseek/deepseek-v4-flash-0731"
+  provider: "openrouter"
+  request_overrides:
+    extra_body:
+      provider:
+        only:
+          - deepinfra   # children pin to one OpenRouter sub-provider
+```
+
+`extra_body` is deep-merged one level into the request's `extra_body`, so this `provider` object reaches the OpenRouter wire payload even though the inherited `provider_routing` preferences were cleared. Note the pin replaces the profile's default provider preferences wholesale (the one-level `extra_body` deep-merge covers the `extra_body` dict itself, not sub-keys within `provider`).
+:::
+
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
 ## The `/review` Command
@@ -450,7 +467,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
 - Only the final summary enters the parent's context, keeping token usage efficient
-- Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
+- Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits) — except when an explicit `delegation.provider` or `delegation.base_url` pin is configured, which routes children to a different provider and therefore clears the parent's OpenRouter routing preferences and fallback chain (see [Model Override](#model-override))
 
 ## Worktree Isolation
 

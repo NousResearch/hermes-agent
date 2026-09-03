@@ -2651,6 +2651,8 @@ delegation:
 
 **Per-child request settings (`request_overrides`):** `delegation.request_overrides` is a dict of request settings sent on every subagent API call. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. It is honored on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so the key always takes effect. Precedence: explicit `request_overrides` values merge **over** any runtime- or parent-derived overrides — top-level explicit keys win, and `extra_body` is deep-merged one level so runtime `extra_body` keys (e.g. a provider's `thinking: {type: disabled}` personality) survive unless your key redefines them. The canonical use case is OpenRouter routing hints for delegation children:
 
+> **Gotcha:** when `delegation.provider` is set, children do **not** inherit the parent's `provider_routing` preferences (they are cleared so the pin is honored) — so for OpenRouter delegation you must restate sub-provider routing here via `request_overrides.extra_body.provider`. See [Delegation → Model Override](../features/delegation.md#model-override) for the worked example.
+
 ```yaml
 delegation:
   model: "deepseek/deepseek-v4-flash-0731"

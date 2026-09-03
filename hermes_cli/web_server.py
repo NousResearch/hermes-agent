@@ -8884,7 +8884,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
 
             models = _models_from_custom_endpoint_entry(entry)
-            model = str(entry.get("model") or (models[0] if models else "")).strip()
+            model = str(entry.get("model") or entry.get("default_model") or (models[0] if models else "")).strip()
             base_url = str(entry.get("base_url") or "").strip()
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")

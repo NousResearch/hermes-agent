@@ -1783,3 +1783,34 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+def test_named_custom_provider_resolves_model_written_by_desktop_panel(monkeypatch):
+    """A providers.<name> dict whose default model is keyed ``model`` (the
+    spelling the Desktop custom-endpoint panel writes) must resolve, not just
+    ``default_model`` (the spelling the CLI picker writes). Regression for the
+    model-version-stuck-in-profile symptom (#71298)."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "acme": {
+                    "name": "ACME",
+                    "api": "https://acme.example.com/v1",
+                    "api_key": "acme-key",
+                    # Desktop writes ``model``; the named-custom resolver must
+                    # honor it the same as ``default_model``.
+                    "model": "acme-model-1",
+                }
+            }
+        },
+    )
+
+    resolved = rp._get_named_custom_provider("acme")
+
+    assert resolved is not None
+    assert resolved["model"] == "acme-model-1"
+    assert resolved["base_url"] == "https://acme.example.com/v1"

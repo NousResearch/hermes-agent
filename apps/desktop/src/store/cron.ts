@@ -7,54 +7,87 @@ import type { CronJob } from '@/types/hermes'
 // first-class entity; its runs (sessions) resolve under it in the cron detail.
 export const $cronJobs = atom<CronJob[]>([])
 
+type CronJobsCache = Record<string, CronJob[]>
+
 export interface CronJobsRequest {
+  epoch: number
   generation: number
   scope: string
 }
 
 export interface CronJobsScopeToken {
+  epoch: number
   generation: number
   scope: string
 }
 
-let cronJobsRequestGeneration = 0
-let cronJobsRequestScope = ''
-let cronJobsScopeGeneration = 0
+let cronJobsCache: CronJobsCache = {}
+let cronJobsInvalidationEpoch = 0
+let activeCronJobsScope = ''
+const requestGenerationByScope = new Map<string, number>()
+const actionGenerationByScope = new Map<string, number>()
 
 function activateCronJobsScope(scope: string): void {
-  if (scope === cronJobsRequestScope) {
+  if (scope === activeCronJobsScope) {
     return
   }
 
-  cronJobsRequestScope = scope
-  cronJobsRequestGeneration += 1
-  cronJobsScopeGeneration += 1
+  activeCronJobsScope = scope
+  $cronJobs.set(cronJobsCache[scope] ?? [])
+}
+
+function nextGeneration(generations: Map<string, number>, scope: string): number {
+  const generation = (generations.get(scope) ?? 0) + 1
+  generations.set(scope, generation)
+
+  return generation
 }
 
 export function beginCronJobsRequest(scope: string): CronJobsRequest {
   activateCronJobsScope(scope)
-  cronJobsRequestGeneration += 1
 
-  return { generation: cronJobsRequestGeneration, scope }
+  return {
+    epoch: cronJobsInvalidationEpoch,
+    generation: nextGeneration(requestGenerationByScope, scope),
+    scope
+  }
 }
 
 export function beginCronJobsAction(scope: string): CronJobsScopeToken {
   activateCronJobsScope(scope)
 
-  return { generation: cronJobsScopeGeneration, scope }
+  return {
+    epoch: cronJobsInvalidationEpoch,
+    generation: nextGeneration(actionGenerationByScope, scope),
+    scope
+  }
 }
 
 export function isCronJobsScopeCurrent(token: CronJobsScopeToken): boolean {
-  return token.scope === cronJobsRequestScope && token.generation === cronJobsScopeGeneration
+  return (
+    token.epoch === cronJobsInvalidationEpoch &&
+    token.scope === activeCronJobsScope &&
+    token.generation === actionGenerationByScope.get(token.scope)
+  )
 }
 
 export function isCronJobsRequestCurrent(request: CronJobsRequest): boolean {
-  return request.scope === cronJobsRequestScope && request.generation === cronJobsRequestGeneration
+  return (
+    request.epoch === cronJobsInvalidationEpoch &&
+    request.scope === activeCronJobsScope &&
+    request.generation === requestGenerationByScope.get(request.scope)
+  )
 }
 
+// A gateway switch can retain the same profile name. Clearing per-scope
+// generations alone would let a pre-switch completion reuse generation 1, so
+// every token also carries this monotonic backend epoch.
 export function invalidateCronJobsRequests(): void {
-  cronJobsRequestGeneration += 1
-  cronJobsScopeGeneration += 1
+  cronJobsInvalidationEpoch += 1
+  requestGenerationByScope.clear()
+  actionGenerationByScope.clear()
+  cronJobsCache = {}
+  $cronJobs.set([])
 }
 
 export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[]): boolean {
@@ -64,22 +97,26 @@ export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[])
 
   // Consume the token so neither a duplicate completion nor any older request
   // can publish after this authoritative snapshot.
-  cronJobsRequestGeneration += 1
+  nextGeneration(requestGenerationByScope, request.scope)
+  cronJobsCache = { ...cronJobsCache, [request.scope]: jobs }
   $cronJobs.set(jobs)
 
   return true
 }
 
 export const setCronJobs = (jobs: CronJob[]) => {
-  cronJobsRequestGeneration += 1
+  nextGeneration(requestGenerationByScope, activeCronJobsScope)
+  cronJobsCache = { ...cronJobsCache, [activeCronJobsScope]: jobs }
   $cronJobs.set(jobs)
 }
 
 // In-place edit so the cron overlay's mutations (create/edit/delete/pause/…)
 // land in the same atom the sidebar renders — no stale list until the next poll.
 export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => {
-  cronJobsRequestGeneration += 1
-  $cronJobs.set(fn($cronJobs.get()))
+  nextGeneration(requestGenerationByScope, activeCronJobsScope)
+  const jobs = fn($cronJobs.get())
+  cronJobsCache = { ...cronJobsCache, [activeCronJobsScope]: jobs }
+  $cronJobs.set(jobs)
 }
 
 // One-shot focus target: clicking "Manage" on a job sets this, then opens the

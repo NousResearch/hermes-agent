@@ -1172,6 +1172,36 @@ const server = http.createServer(async (req, res) => {
       }
       return badRequest(res, "no tracked reaction for message");
     }
+    if (req.url === "/unsend-message") {
+      // Recall one of OUR OWN messages via iMessage unsend.
+      // spectrum-ts/iMessage rejects unsending inbound or foreign messages —
+      // surface that as a 4xx, not a crash. Restart-recovery: if the id is
+      // not in the live cache, rehydrate by id before attempting the unsend.
+      const { spaceId, messageId } = body || {};
+      if (!spaceId || !messageId) {
+        return badRequest(res, "spaceId and messageId are required");
+      }
+      const space = await resolveSpace(spaceId);
+      let target = null;
+      try {
+        target = knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      } catch (e) {
+        target = null;
+      }
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      try {
+        await space.unsend(target);
+      } catch (e) {
+        return badRequest(
+          res,
+          "not unsent: " + (e && e.message ? e.message : String(e))
+        );
+      }
+      knownMessages.delete(messageId);
+      return ok(res, { unsent: messageId });
+    }
     if (req.url === "/send-poll") {
       const { spaceId, title, options } = body || {};
       const choices = Array.isArray(options)

@@ -2591,6 +2591,38 @@ class PhotonAdapter(BasePlatformAdapter):
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
+    async def unsend(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Recall one of OUR OWN messages via iMessage unsend.
+
+        Only messages sent by the bot can be unsent. Returns success if
+        the provider accepted the recall.
+        """
+        if not chat_id.strip() or not message_id.strip():
+            return SendResult(
+                success=False, error="chat_id and message_id are required"
+            )
+        return await self._sidecar_unsend(chat_id, message_id)
+
+    async def _sidecar_unsend(
+        self, space_id: str, message_id: str
+    ) -> SendResult:
+        """POST to the sidecar's ``/unsend-message`` endpoint.
+
+        Calls spectrum-ts's ``space.unsend()`` on the target message.
+        iMessage only permits unsending messages we sent; other cases
+        return a 4xx from the sidecar.
+        """
+        body: Dict[str, Any] = {"spaceId": space_id, "messageId": message_id}
+        try:
+            data = await self._sidecar_call("/unsend-message", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("unsent"))
+
     async def _sidecar_send_attachment(
         self,
         space_id: str,

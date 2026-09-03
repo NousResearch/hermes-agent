@@ -27,6 +27,7 @@ Configuration in config.yaml::
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
             reply_in_thread: true      # false = post replies flat to the channel timeline
             reaction_only_users: []    # acknowledge explicit tags without dispatching; allowed_users wins on overlap
+            reactions: true             # emoji reaction lifecycle (👀 received → 🧠 working → ✅/❌ done); false disables
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
@@ -173,6 +174,7 @@ from gateway.platforms.base import (
     SendResult,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     cache_media_bytes_async,
 )
 from gateway.config import Platform
@@ -239,6 +241,30 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+# Buzz relays document a 180-second expiry for presence records. Refresh at
+# most once a minute, leaving a two-minute margin even if the relay's clock or
+# delivery is delayed.
+_PRESENCE_EXPIRY = 180.0
+_PRESENCE_REFRESH_MARGIN = 120.0
+_PRESENCE_INTERVAL = min(60.0, _PRESENCE_EXPIRY - _PRESENCE_REFRESH_MARGIN)
+_REACTION_CLEANUP_INTERVAL = 60.0
+_REACTION_CLEANUP_TTL = 300.0
+
+
+def _presence_refresh_interval(refresh: float, expiry: float, margin: float) -> float:
+    """Effective presence-refresh interval for a relay TTL of ``expiry``.
+
+    The relay expires presence records after ``expiry`` seconds; the
+    effective cadence is the configured ``refresh`` clamped so every
+    refresh (including the first, scheduled right after the connect-time
+    ``online`` publish) lands at least ``margin`` seconds before the
+    record would lapse. A degenerate ``margin >= expiry`` falls back to
+    half the expiry rather than a zero/negative sleep.
+    """
+    bounded = expiry - margin
+    if bounded <= 0:
+        bounded = expiry / 2.0
+    return max(0.0, min(refresh, bounded))
 
 # Mention-resolution caches: member lists are cheap to refetch but hit on
 # every publish containing "@", so a short TTL amortizes the CLI round-trip;
@@ -908,6 +934,12 @@ class BuzzAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
+        self._presence_task: Optional[asyncio.Task] = None
+        self._ws_connection = None
+        self._ws_send_lock = asyncio.Lock()
+        self._presence_interval = _PRESENCE_INTERVAL
+        self._presence_expiry = _PRESENCE_EXPIRY
+        self._presence_margin = _PRESENCE_REFRESH_MARGIN
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
         self._lock_key: Optional[str] = None
@@ -936,6 +968,36 @@ class BuzzAdapter(BasePlatformAdapter):
         # was itself top-level.  Lets send() mirror the user's own threading
         # instead of opening a new thread under every reply (see _thread_root).
         self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
+
+        # ── Reaction lifecycle (👀 received → 🧠 working → ✅/❌) ──────────
+        # Best-effort visible progress: Buzz has no typing-indicator API, so
+        # reactions are the only pre-reply surface. Config gate:
+        #   gateway.platforms.buzz.extra.reactions (default true)
+        # Deliberately NOT an env var — behavioral config belongs in
+        # config.yaml (profile-scoped, so multiplex profiles stay isolated).
+        reactions_raw = extra.get("reactions", True)
+        if isinstance(reactions_raw, bool):
+            self._reactions_enabled_flag = reactions_raw
+        else:
+            _text = str(reactions_raw).strip().lower()
+            if _text in ("true", "1", "yes", "on"):
+                self._reactions_enabled_flag = True
+            elif _text in ("false", "0", "no", "off"):
+                self._reactions_enabled_flag = False
+            else:
+                logger.warning(
+                    "Buzz: invalid reactions value %r in platforms.buzz.extra; "
+                    "using default true",
+                    reactions_raw,
+                )
+                self._reactions_enabled_flag = True
+        # (chat_id, message_id) -> {"emoji": str|None, "terminal": bool,
+        # "tail_task": asyncio.Task|None, "last_active": float}
+        self._reaction_lifecycle: Dict[tuple, dict] = {}
+        self._reaction_tasks: set = set()
+        self._reaction_cleanup_task: Optional[asyncio.Task] = None
+        self._reaction_cleanup_interval = _REACTION_CLEANUP_INTERVAL
+        self._reaction_cleanup_ttl = _REACTION_CLEANUP_TTL
 
     @property
     def name(self) -> str:
@@ -966,6 +1028,74 @@ class BuzzAdapter(BasePlatformAdapter):
             auth_tag=self._auth_tag,
             input_text=input_text,
         )
+
+    async def _send_ws(self, websocket, payload: list) -> None:
+        """Serialize all frames sharing the authenticated connection."""
+        async with self._ws_send_lock:
+            await websocket.send(json.dumps(payload, separators=(",", ":")))
+
+    async def _publish_presence(self, websocket, status: str) -> None:
+        """Sign and publish a kind-20001 event on the authenticated socket.
+
+        Ephemeral kinds (20000-29999) are rejected by the relay's HTTP
+        bridge, so presence always rides the authenticated WebSocket. The
+        pure-Python secp256k1 signature is CPU-bound (~50ms); it runs in
+        the default executor so the inbound frame pump is never stalled.
+        """
+        build_presence_event = _load_nostr_auth().build_presence_event
+        event = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: build_presence_event(private_key=self._private_key, status=status),
+        )
+        await self._send_ws(websocket, ["EVENT", event])
+
+    async def _presence_heartbeat(self, websocket) -> None:
+        """Publish online immediately, then at the effective cadence.
+
+        Best-effort: a failed sign/send is logged and retried on the next
+        tick — it must never take down message delivery. Each sleep uses
+        the cadence from :func:`_presence_refresh_interval`, so every
+        publish lands at least the margin before the relay's 180-second
+        presence TTL lapses.
+        """
+        try:
+            while True:
+                try:
+                    await self._publish_presence(websocket, "online")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Buzz: presence publish failed", exc_info=True)
+                await asyncio.sleep(
+                    _presence_refresh_interval(
+                        self._presence_interval,
+                        self._presence_expiry,
+                        self._presence_margin,
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
+
+    async def _stop_presence(self) -> None:
+        """Stop the heartbeat, then publish offline on the live socket.
+
+        Called from disconnect() *before* the WebSocket task is cancelled,
+        so the offline event still has an open socket to travel on. A
+        failed publish must not break shutdown (relay may already be gone);
+        cancellation still propagates.
+        """
+        if self._presence_task and not self._presence_task.done():
+            self._presence_task.cancel()
+            await asyncio.gather(self._presence_task, return_exceptions=True)
+        self._presence_task = None
+        websocket = self._ws_connection
+        self._ws_connection = None
+        if websocket is None:
+            return
+        try:
+            await asyncio.wait_for(self._publish_presence(websocket, "offline"), timeout=5)
+        except Exception:
+            pass
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
@@ -1111,6 +1241,12 @@ class BuzzAdapter(BasePlatformAdapter):
                 pass
             self._lock_key = None
         self._ws_active = False
+        # Presence: stop the heartbeat and publish offline on the live
+        # socket — this must happen BEFORE the WebSocket task is cancelled,
+        # because cancelling it closes the connection (the offline event
+        # needs the open socket to travel on). A failed publish must not
+        # break shutdown (relay may already be gone).
+        await self._stop_presence()
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
             try:
@@ -1125,8 +1261,263 @@ class BuzzAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        # Reaction lifecycle: cancel any in-flight transition tasks so
+        # shutdown never leaks "task pending" warnings or hangs on a wedged
+        # buzz-cli call.
+        pending = [t for t in self._reaction_tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Stop the abandoned-state sweeper before clearing its state: it only
+        # runs while entries exist and restarts on the next enqueue.
+        if self._reaction_cleanup_task and not self._reaction_cleanup_task.done():
+            self._reaction_cleanup_task.cancel()
+            try:
+                await self._reaction_cleanup_task
+            except asyncio.CancelledError:
+                pass
+        self._reaction_cleanup_task = None
+        self._reaction_tasks.clear()
+        self._reaction_lifecycle = {}
         self._channel_state = {}
         self._poll_count = 0
+
+    async def remove_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Remove our emoji reaction from a message via buzz-cli.
+
+        Mirrors :meth:`send_reaction`: best-effort, returns True/False, never
+        raises into the message flow. Requires the exact emoji because the
+        CLI contract is ``reactions remove --event <id> --emoji <e>``.
+        """
+        if not self.cli_path or not emoji or not message_id:
+            return False
+        args = [
+            "reactions", "remove",
+            "--event", str(message_id),
+            "--emoji", emoji,
+        ]
+        try:
+            code, _out, err = await self._run_cli(args)
+        except Exception as exc:
+            logger.debug(
+                "Buzz: reaction remove failed for message %s in %s — %s",
+                message_id[:12], chat_id, exc,
+            )
+            return False
+        if code != 0:
+            logger.debug(
+                "Buzz: reaction remove failed for message %s in %s — %s",
+                message_id[:12], chat_id, _cli_error_message(err, code),
+            )
+            return False
+        return True
+
+    # ── Reaction lifecycle coordinator ────────────────────────────────────
+    #
+    # Buzz has no typing-indicator API, so reactions are the only visible
+    # pre-reply progress. State machine per inbound message, keyed
+    # (chat_id, message_id): 👀 queued at dispatch → 🧠 when background
+    # processing starts → ✅/❌ on the real outcome (CANCELLED removes the
+    # working reaction and adds nothing). Transitions are serialized per
+    # message behind a tail task so hooks can fire out of order / early
+    # without stacking or racing reactions on the relay, and every buzz-cli
+    # call happens in a background task — never awaited by message
+    # processing or response delivery. Best-effort throughout: any failure
+    # only means the user sees a stale emoji, never a broken reply.
+    #
+    # Abandoned-state cleanup: the terminal hook is the only normal way an
+    # entry leaves ``_reaction_lifecycle``, so a hung/hard-crashed turn
+    # would otherwise pin its entry until disconnect. A single shared
+    # sweeper task (started lazily with the first entry, self-terminating
+    # when the map empties — never one task per message) drops entries idle
+    # past ``_REACTION_CLEANUP_TTL`` and cancels wedged transitions at the
+    # same bound; sweeps never touch a valid in-flight transition younger
+    # than the TTL.
+
+    _RECEIVED_EMOJI = "\N{EYES}"
+    _WORKING_EMOJI = "\N{BRAIN}"
+    _OK_EMOJI = "\N{WHITE HEAVY CHECK MARK}"
+    _FAIL_EMOJI = "\N{CROSS MARK}"
+
+    def _reactions_enabled(self) -> bool:
+        """Config gate: platforms.buzz.extra.reactions (default true)."""
+        return self._reactions_enabled_flag
+
+    def _reaction_begin(self, chat_id: str, message_id: str) -> None:
+        """Create lifecycle state and queue the 👀 transition (non-blocking)."""
+        key = (chat_id, message_id)
+        if key in self._reaction_lifecycle:
+            return
+        self._reaction_lifecycle[key] = {
+            "emoji": None, "terminal": False, "tail_task": None,
+            "last_active": time.monotonic(),
+        }
+        self._reaction_transition_enqueue(key, self._RECEIVED_EMOJI)
+        self._ensure_reaction_cleanup()
+
+    def _ensure_reaction_cleanup(self) -> None:
+        """Run the abandoned-state sweeper while any lifecycle entry exists.
+
+        One shared task, (re)started lazily when state is created and ending
+        itself when the map empties — never one background task per message.
+        """
+        if self._reaction_cleanup_task is None or self._reaction_cleanup_task.done():
+            self._reaction_cleanup_task = asyncio.ensure_future(
+                self._reaction_cleanup_loop()
+            )
+
+    async def _reaction_cleanup_loop(self) -> None:
+        """Drop lifecycle entries whose terminal hook never arrives."""
+        try:
+            while self._reaction_lifecycle:
+                await asyncio.sleep(self._reaction_cleanup_interval)
+                await self._reaction_cleanup_once()
+        except asyncio.CancelledError:
+            raise
+
+    async def _reaction_cleanup_once(self) -> None:
+        """One sweep: expire idle entries; time out wedged transitions.
+
+        An entry is idle when its transition chain has been quiescent for
+        ``_reaction_cleanup_ttl`` — the tail task is done AND no new activity
+        happened within the TTL. A wedged (never-completing) transition is
+        cancelled at the TTL and its entry dropped: the tail's ``finally``
+        only pops terminal entries, so cleanup must drop non-terminal state
+        itself, and cancelling the tail stops the chain head from enqueuing
+        more work (each successor re-raises when its predecessor is
+        cancelled). Older links still draining a slow buzz-cli call finish
+        on their own ``_CLI_TIMEOUT`` and find the state gone. In-flight
+        work younger than the TTL is never touched.
+        """
+        now = time.monotonic()
+        stale: List[tuple] = []
+        for key, state in self._reaction_lifecycle.items():
+            tail = state.get("tail_task")
+            if now - state.get("last_active", 0) >= self._reaction_cleanup_ttl:
+                if tail is not None and not tail.done():
+                    tail.cancel()
+                stale.append(key)
+        for key in stale:
+            self._reaction_lifecycle.pop(key, None)
+
+    def _reaction_transition_enqueue(
+        self, key: tuple, desired: Optional[str], *, terminal: bool = False
+    ) -> None:
+        """Queue a transition behind the current tail; returns immediately.
+
+        ``terminal=True`` marks the lifecycle finished. The transition still
+        runs (chained behind its predecessors), but no further transitions
+        may be enqueued and the terminal task drops the lifecycle state when
+        it completes.
+        """
+        state = self._reaction_lifecycle.get(key)
+        if state is None or state["terminal"]:
+            return
+        if terminal:
+            state["terminal"] = True
+        state["last_active"] = time.monotonic()
+        task = asyncio.create_task(
+            self._reaction_transition_run(
+                key, desired, state.get("tail_task"), terminal
+            )
+        )
+        state["tail_task"] = task
+        self._reaction_tasks.add(task)
+        task.add_done_callback(self._reaction_tasks.discard)
+
+    async def _reaction_transition_run(
+        self,
+        key: tuple,
+        desired: Optional[str],
+        prev: Optional[asyncio.Task],
+        terminal: bool,
+    ) -> None:
+        """Serialized remove-gated replacement; see block comment above."""
+        try:
+            if prev is not None:
+                try:
+                    await prev
+                except asyncio.CancelledError:
+                    # Shutdown cancelled the chain ahead of us — stop here.
+                    raise
+                except Exception:
+                    pass  # predecessor failed; best-effort chain continues
+            state = self._reaction_lifecycle.get(key)
+            if state is None:
+                return
+            chat_id, message_id = key
+            current = state["emoji"]
+            if desired != current:
+                if current is not None:
+                    if not await self.remove_reaction(chat_id, message_id, current):
+                        # Keep the old reaction authoritative; skip the add
+                        # so two lifecycle reactions never stack on the relay.
+                        return
+                    state["emoji"] = None
+                if desired is not None and await self.send_reaction(
+                    chat_id, message_id, desired
+                ):
+                    state["emoji"] = desired
+        finally:
+            if terminal:
+                # The terminal task is the chain's last link (later enqueues
+                # are rejected), so dropping the state here cannot orphan a
+                # queued transition. Best-effort end regardless of I/O result.
+                self._reaction_lifecycle.pop(key, None)
+
+    def _reaction_eligible(self, event: MessageEvent) -> bool:
+        """True when this turn should carry lifecycle reactions.
+
+        Requires message ids, an enabled gate, a conversational (non-command)
+        message, and — when a gateway authorization callback is installed —
+        a positive authorization for the sender. ``on_processing_start`` runs
+        before the runner's central authorization check, so without this
+        gate unauthorized senders would earn a 👀 they can see.
+        """
+        if not getattr(event, "message_id", None):
+            return False
+        if not self._reactions_enabled():
+            return False
+        if not isinstance(getattr(event, "text", None), str) or event.is_command():
+            return False
+        user_id = getattr(event.source, "user_id", None)
+        if user_id and self._authorization_check is not None:
+            decision = self._is_sender_authorized(
+                user_id,
+                chat_type=getattr(event.source, "chat_type", None),
+                chat_id=getattr(event.source, "chat_id", None),
+            )
+            if decision is False:
+                return False
+        return True
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """👀 → 🧠 when background processing of the message begins."""
+        key = (
+            getattr(event.source, "chat_id", None),
+            getattr(event, "message_id", None),
+        )
+        if key in self._reaction_lifecycle:
+            self._reaction_transition_enqueue(key, self._WORKING_EMOJI)
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """🧠 → ✅/❌ on the real outcome; CANCELLED removes and adds nothing."""
+        key = (
+            getattr(event.source, "chat_id", None),
+            getattr(event, "message_id", None),
+        )
+        if key not in self._reaction_lifecycle:
+            return
+        if outcome == ProcessingOutcome.SUCCESS:
+            desired = self._OK_EMOJI
+        elif outcome == ProcessingOutcome.FAILURE:
+            desired = self._FAIL_EMOJI
+        else:
+            desired = None  # CANCELLED: remove current, add no terminal.
+        self._reaction_transition_enqueue(key, desired, terminal=True)
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -1401,7 +1792,14 @@ class BuzzAdapter(BasePlatformAdapter):
             "--event", str(message_id),
             "--emoji", emoji,
         ]
-        code, _out, err = await self._run_cli(args)
+        try:
+            code, _out, err = await self._run_cli(args)
+        except Exception as exc:
+            logger.debug(
+                "Buzz: reaction add failed for message %s in %s — %s",
+                message_id[:12], chat_id, exc,
+            )
+            return False
         if code != 0:
             logger.debug(
                 "Buzz: reaction add failed for message %s in %s — %s",
@@ -1803,7 +2201,7 @@ class BuzzAdapter(BasePlatformAdapter):
             subscription_id,
             request_filter,
         ]
-        await websocket.send(json.dumps(request, separators=(",", ":")))
+        await self._send_ws(websocket, request)
 
     async def _subscribe_websocket(self, websocket) -> Dict[str, Optional[str]]:
         """Subscribe to every watched conversation plus membership events
@@ -1825,7 +2223,7 @@ class BuzzAdapter(BasePlatformAdapter):
                     "since": max(self._membership_since - 1, 0),
                 },
             ]
-            await websocket.send(json.dumps(request, separators=(",", ":")))
+            await self._send_ws(websocket, request)
             subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
         return subscriptions
 
@@ -1896,6 +2294,29 @@ class BuzzAdapter(BasePlatformAdapter):
                         await self._authenticate_websocket(websocket)
                         subscriptions = await self._subscribe_websocket(websocket)
                         self._ws_active = True
+                        self._ws_connection = websocket
+                        # First online publish happens inline before the
+                        # connection is reported ready; the heartbeat keeps
+                        # it fresh afterwards. Inline = no barrier window in
+                        # which cancellation could strand the heartbeat task.
+                        try:
+                            await self._publish_presence(websocket, "online")
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.warning("Buzz: initial presence publish failed", exc_info=True)
+                        # The publish's executor await can silently consume a
+                        # cancellation delivered mid-signing on Python 3.11
+                        # (the loop then resumes with a pending cancel that is
+                        # never observed as terminal — shutdown would wedge
+                        # with orphan heartbeat/discovery tasks). Re-arm it
+                        # here, before any child task is spawned.
+                        loop_task = asyncio.current_task()
+                        if loop_task is not None and loop_task.cancelling():
+                            raise asyncio.CancelledError()
+                        self._presence_task = asyncio.create_task(
+                            self._presence_heartbeat(websocket)
+                        )
                         if self._ws_ready is not None:
                             self._ws_ready.set()
                         backoff = 1.0
@@ -1974,13 +2395,36 @@ class BuzzAdapter(BasePlatformAdapter):
                                     logger.warning("Buzz: relay notice: %s", message[-1])
                         finally:
                             discovery_task.cancel()
-                            try:
-                                await discovery_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
+                            # gather(return_exceptions=True) reaps the child
+                            # without swallowing OUR OWN cancellation — a
+                            # bare `except CancelledError: pass` here would
+                            # resurrect the reconnect loop after shutdown.
+                            await asyncio.gather(discovery_task, return_exceptions=True)
+                            # Retire the heartbeat with this connection; the
+                            # reconnect's first inline publish renews online
+                            # immediately. No offline here — a transient drop
+                            # must not flap presence offline, and the relay
+                            # clears the lease when the socket closes anyway.
+                            if self._presence_task is not None:
+                                self._presence_task.cancel()
+                                await asyncio.gather(
+                                    self._presence_task, return_exceptions=True
+                                )
+                                self._presence_task = None
+                            if self._ws_connection is websocket:
+                                self._ws_connection = None
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
+                    # On Python 3.11 a cancellation delivered inside
+                    # asyncio.wait_for() (e.g. mid-handshake) can surface as
+                    # TimeoutError instead of CancelledError (fixed in 3.12).
+                    # Retrying after that would resurrect this loop after
+                    # shutdown and wedge disconnect(); un-cancelling instead
+                    # propagates the shutdown.
+                    loop_task = asyncio.current_task()
+                    if loop_task is not None and loop_task.cancelling():
+                        raise asyncio.CancelledError() from e
                     self._ws_active = False
                     logger.warning("Buzz: WebSocket disconnected; retrying in %.1fs: %s", backoff, e)
                     await asyncio.sleep(backoff)
@@ -2999,6 +3443,11 @@ class BuzzAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
+        # Reaction lifecycle: create state and queue 👀 as a tracked
+        # transition BEFORE handle_message (which spawns the background task
+        # that fires on_processing_start) so the states stay ordered.
+        # Skipped for commands / disabled gate / unauthorized senders / bad
+        # ids — see _reaction_eligible.
         event = MessageEvent(
             text=text,
             message_type=message_type,
@@ -3015,14 +3464,10 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_is_own_message=reply_to_is_own_message,
         )
 
-        await self.handle_message(event)
+        if self._reaction_eligible(event):
+            self._reaction_begin(chat_id, message_id)
 
-        # Add a "seen" reaction after dispatching — signals to the user that
-        # their message was received and is being processed.
-        try:
-            await self.send_reaction(chat_id, message_id, "👀")
-        except Exception:
-            logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
+        await self.handle_message(event)
 
 
 # ---------------------------------------------------------------------------

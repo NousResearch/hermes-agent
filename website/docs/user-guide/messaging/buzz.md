@@ -85,6 +85,7 @@ gateway:
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
+        reactions: true                   # 👀 received → 🧠 working → ✅/❌ done reactions on each conversational turn
 ```
 
 **Why these defaults:**
@@ -121,6 +122,23 @@ gateway:
 ```
 
 The opt-out applies to **all** send paths — final answers, streamed updates, interim commentary, tool-progress bubbles, and out-of-process cron delivery (`deliver=buzz`).
+
+## Reaction lifecycle
+
+Buzz has no typing indicator, so the agent marks each conversational turn with emoji reactions on your message:
+
+- 👀 — received
+- 🧠 — working on it
+- ✅ — replied successfully
+- ❌ — failed (the error follows as a regular message)
+
+Only one reaction is shown at a time — each replaces the previous one. Commands (`/status`, `/stop`, …) don't get reactions, and senders who aren't authorized to talk to the agent never see any. Reactions are best-effort: if a reaction fails to update, the reply is unaffected. Set `reactions: false` in the `buzz` `extra` block to turn them off.
+
+If a reply never finishes (the agent crashes or processing hangs), the working reaction could otherwise stay on the message until restart. A periodic sweep retires these abandoned lifecycle reactions a few minutes after the last activity, and a wedged update is cancelled at the same bound — a slow relay that resumes after that simply finds nothing left to update. Normal replies always finish their ✅/❌ first; the sweep only catches turns whose terminal state never arrived.
+
+## Presence
+
+Buzz relays expire presence records after about 3 minutes unless they are republished, and they tie a presence record to the authenticated WebSocket that published it: when that socket closes, the relay drops the record. So the adapter publishes presence on its own already-authenticated persistent WebSocket — a signed kind-20001 `online` event right after the NIP-42 handshake (before the connection is reported ready), refreshed at a conservative cadence well inside the expiry window, and `offline` on graceful shutdown while the socket is still open (best-effort: a slow or unreachable relay never blocks startup or shutdown). A transient disconnect never publishes `offline` — the relay clears the record itself, and the reconnect's first publish restores it immediately.
 
 ## Access control
 

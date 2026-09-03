@@ -149,6 +149,46 @@ async def test_direct_url_only_send_falls_back_to_plain_send(
 
 
 @pytest.mark.asyncio
+async def test_target_not_allowed_falls_back_and_reports_error_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A target_not_allowed rich-link failure degrades to plain text, and the
+    returned SendResult carries the error class so callers (and the fallback
+    path) can distinguish a plan limitation from a transient fault (#97305)."""
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    adapter = _make_adapter(monkeypatch)
+    calls: List[Tuple[str, Dict[str, Any]]] = []
+
+    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append((path, body))
+        if path == "/send-richlink":
+            raise photon_adapter.PhotonSidecarError(
+                path="/send-richlink",
+                status_code=500,
+                error="Target not allowed for this project",
+                error_class="target_not_allowed",
+                retryable=False,
+            )
+        return {"ok": True, "messageId": "plain-msg"}
+
+    adapter._sidecar_call = _fake_call  # type: ignore[assignment]
+
+    result = await adapter.send("+155****4567", _URL)
+
+    assert result.success is True
+    assert result.message_id == "plain-msg"
+    assert calls == [
+        ("/send-richlink", {"spaceId": "+155****4567", "url": _URL}),
+        ("/send", {"spaceId": "+155****4567", "text": _URL}),
+    ]
+    # The richlink attempt itself reported the structured error class.
+    probe = await adapter._sidecar_send_richlink("+155****4567", _URL)
+    assert probe.success is False
+    assert probe.raw_response == {"error_class": "target_not_allowed", "retryable": False}
+    assert probe.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_standalone_url_only_send_routes_to_richlink_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

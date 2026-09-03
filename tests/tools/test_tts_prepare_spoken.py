@@ -44,8 +44,8 @@ class TestThinkBlockStrip:
 
 class TestVerifierFooterStrip:
     FOOTER = (
-        "⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn "
-        "despite any wording above that may suggest otherwise. Run `git "
+        "⚠️ File-mutation verifier: 2 tracked file mutation attempt(s) did not land. "
+        "The file may still have changed by another operation; run `git "
         "status` or `read_file` to confirm.\n"
         "  • `tools/foo.py` — [patch] old_string not found\n"
         "  • `bar.md` — [write_file] failed"
@@ -55,7 +55,7 @@ class TestVerifierFooterStrip:
         raw = "I fixed the file.\n\n" + self.FOOTER
         spoken = prepare_spoken_text(raw)
         assert "File-mutation verifier" not in spoken
-        assert "NOT modified" not in spoken
+        assert "did not land" not in spoken
         assert "fixed the file" in spoken
 
 

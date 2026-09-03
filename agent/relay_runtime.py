@@ -1092,6 +1092,47 @@ class RelayRuntime:
                 "; ".join(failures),
             )
 
+    def discard_session_tree(self, session_id: str) -> None:
+        """Forget a corrupted session stack without attempting more pops.
+
+        Relay scopes are strictly LIFO.  Once a turn pop is rejected, trying
+        to guess and close unknown nested scopes can corrupt the stack further.
+        Remove the affected session and its delegated children instead; the
+        next turn will create a fresh context while Hermes conversation state
+        remains untouched.
+        """
+        root_id = str(session_id or "")
+        if not root_id:
+            return
+
+        with self._sessions_lock:
+            discarded_ids = {root_id}
+            while True:
+                children = {
+                    child_id
+                    for child_id, parent_id in self._subagent_parents.items()
+                    if parent_id in discarded_ids
+                }
+                new_children = children - discarded_ids
+                if not new_children:
+                    break
+                discarded_ids.update(new_children)
+
+            discarded = [
+                session
+                for current_id in discarded_ids
+                if (session := self._sessions.pop(current_id, None)) is not None
+            ]
+            for current_id in discarded_ids:
+                self._subagent_parents.pop(current_id, None)
+                self._subagent_parent_handles.pop(current_id, None)
+
+        for session in discarded:
+            with session.lock:
+                session.closing = True
+                session.handle = None
+                session.context = None
+
     def shutdown(self) -> None:
         """Close core scopes and release process plugin configuration."""
         with self._sessions_lock:
@@ -1514,6 +1555,7 @@ class RelaySessionCoordinator:
                                 "Hermes Relay turn finalization failed: %s",
                                 failure,
                             )
+                            lease.host.discard_session_tree(lease.session.session_id)
             finally:
                 try:
                     # Segment turn accounting (max_turns rotation trigger).

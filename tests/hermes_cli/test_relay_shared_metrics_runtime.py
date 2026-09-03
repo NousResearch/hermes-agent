@@ -1533,6 +1533,68 @@ def test_skipped_turn_stays_gated_after_instrumented_turn_ends(direct_runtime):
     coordinator.release_conversation(lease)
 
 
+def test_turn_pop_failure_discards_corrupted_session_for_next_turn(
+    direct_runtime,
+    monkeypatch,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="corrupted-session",
+        platform="cli",
+    )
+    corrupted_session = lease.session
+    assert corrupted_session is not None
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="interrupted-turn",
+        task_id="interrupted-task",
+    )
+    assert turn.handle is not None
+    runtime = lease.host
+    delegated_session = runtime.register_subagent({
+        "parent_session_id": "corrupted-session",
+        "child_session_id": "interrupted-child",
+    })
+    assert delegated_session is not None
+
+    original_pop = direct_runtime.scope.pop
+
+    def reject_turn_pop(handle, **kwargs):
+        if handle == turn.handle:
+            raise RuntimeError("scope handle is not at the top of the stack")
+        return original_pop(handle, **kwargs)
+
+    monkeypatch.setattr(direct_runtime.scope, "pop", reject_turn_pop)
+
+    coordinator.end_turn(turn, outcome="cancelled")
+
+    assert runtime.get_session("corrupted-session") is None
+    assert runtime.get_session("interrupted-child") is None
+    assert corrupted_session.closing is True
+    assert corrupted_session.handle is None
+    assert corrupted_session.context is None
+    assert delegated_session.closing is True
+    assert delegated_session.handle is None
+    assert delegated_session.context is None
+
+    replacement_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="corrupted-session",
+        platform="cli",
+    )
+    assert replacement_lease.session is not None
+    assert replacement_lease.session is not corrupted_session
+    assert replacement_lease.session.handle is not None
+
+    coordinator.release_conversation(lease)
+    coordinator.release_conversation(replacement_lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="corrupted-session",
+    )
+
 
 
 

@@ -348,27 +348,62 @@ class HostSupervisor:
         try:
             return q.get(timeout=timeout)
         except queue.Empty:
-            if on_late_ack is not None:
-                self._register_late_control_handler(request_id, on_late_ack)
+            if on_late_ack is None:
+                raise
+            # #101824: the timeout→late-handler handoff must be atomic under
+            # self._lock. Retiring the pending route (the old finally) AFTER
+            # registering the late handler left a window where a terminal
+            # frame was still routed into the (now unobserved) synchronous
+            # queue and dropped, so the caller never saw the ack and the late
+            # handler never fired. The helper settles both sides atomically.
+            with self._lock:
+                settled = self._retire_pending_and_arm_late(request_id, on_late_ack)
+            if settled is not None:
+                # A terminal frame raced into the synchronous queue inside the
+                # window: hand it back synchronously — exactly-once, no late
+                # handler needed (same contract as an ack that arrives before
+                # the timeout).
+                return settled
             raise
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
 
     def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
-        now = time.monotonic()
         with self._lock:
-            expired = [
-                rid
-                for rid, (registered_at, _cb) in self._late_control_handlers.items()
-                if now - registered_at > _LATE_CONTROL_TTL_SECS
-            ]
-            for rid in expired:
-                self._late_control_handlers.pop(rid, None)
-            while len(self._late_control_handlers) >= _LATE_CONTROL_MAX:
-                oldest = min(self._late_control_handlers, key=lambda rid: self._late_control_handlers[rid][0])
-                self._late_control_handlers.pop(oldest, None)
-            self._late_control_handlers[request_id] = (now, handler)
+            self._register_late_control_handler_locked(request_id, handler)
+
+    def _register_late_control_handler_locked(self, request_id: str, handler: Callable[[dict], None]) -> None:
+        """Register a one-shot late handler. Caller holds ``self._lock``."""
+        now = time.monotonic()
+        expired = [
+            rid
+            for rid, (registered_at, _cb) in self._late_control_handlers.items()
+            if now - registered_at > _LATE_CONTROL_TTL_SECS
+        ]
+        for rid in expired:
+            self._late_control_handlers.pop(rid, None)
+        while len(self._late_control_handlers) >= _LATE_CONTROL_MAX:
+            oldest = min(self._late_control_handlers, key=lambda rid: self._late_control_handlers[rid][0])
+            self._late_control_handlers.pop(oldest, None)
+        self._late_control_handlers[request_id] = (now, handler)
+
+    def _retire_pending_and_arm_late(self, request_id: str, handler: Callable[[dict], None]):
+        """Atomically retire the sync route and settle or hand off the result.
+
+        Caller holds ``self._lock``. Pops the pending queue for *request_id*;
+        if a terminal frame already raced into it past the caller's timeout,
+        returns that frame for synchronous settlement; otherwise arms the
+        one-shot late *handler* and returns ``None`` (#101824).
+        """
+        q = self._pending_controls.pop(request_id, None)
+        if q is None:
+            return None
+        try:
+            return q.get_nowait()
+        except queue.Empty:
+            self._register_late_control_handler_locked(request_id, handler)
+            return None
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
         with self._lock:

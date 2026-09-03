@@ -644,6 +644,18 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        # Honor agent.max_turns from config.yaml the way the CLI does. Without
+        # this, ACP sessions ignored the configured cap entirely and rode the
+        # AIAgent constructor default instead (90 before, sys.maxsize now).
+        try:
+            from hermes_cli.config import resolve_turn_limit
+
+            kwargs["max_iterations"] = resolve_turn_limit(
+                (config.get("agent") or {}).get("max_turns")
+            )
+        except Exception:
+            pass  # fall back to the AIAgent default
+
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(

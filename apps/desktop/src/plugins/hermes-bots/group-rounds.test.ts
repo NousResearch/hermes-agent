@@ -855,3 +855,80 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(reply).toBe('finished anyway')
   })
 })
+
+// #98004 / ports #96842: the round, message and continuation ceilings are the
+// room's cost control, but 3 rounds cannot express a workflow whose hops are
+// genuinely serial. config.yaml decides the ceiling; the renderer still clamps,
+// so a typo in config can only ever narrow the blast radius, never widen it
+// past what the app is willing to spend.
+describe('configurable room limits', () => {
+  it('falls back to the shipped defaults when config.yaml says nothing', async () => {
+    const room = await loadRoom()
+
+    expect(room.chat.resolveGroupChatLimits({})).toEqual({
+      maxContinuations: room.chat.GROUP_CHAT_MAX_CONTINUATIONS,
+      maxMessages: room.chat.GROUP_CHAT_MAX_MESSAGES,
+      maxRounds: room.chat.GROUP_CHAT_MAX_ROUNDS
+    })
+  })
+
+  it('takes configured values over the defaults', async () => {
+    const room = await loadRoom()
+
+    expect(room.chat.resolveGroupChatLimits({ max_continuations: 8, max_messages: 40, max_rounds: 12 })).toEqual({
+      maxContinuations: 8,
+      maxMessages: 40,
+      maxRounds: 12
+    })
+  })
+
+  it('clamps to the hard ceiling so config can never uncap the room', async () => {
+    const room = await loadRoom()
+
+    const limits = room.chat.resolveGroupChatLimits({
+      max_continuations: 9999,
+      max_messages: 9999,
+      max_rounds: 9999
+    })
+
+    expect(limits.maxRounds).toBe(room.chat.GROUP_CHAT_HARD_CAP_ROUNDS)
+    expect(limits.maxMessages).toBe(room.chat.GROUP_CHAT_HARD_CAP_MESSAGES)
+    expect(limits.maxContinuations).toBe(room.chat.GROUP_CHAT_HARD_CAP_CONTINUATIONS)
+  })
+
+  it('ignores junk instead of letting it disable the room', async () => {
+    const room = await loadRoom()
+
+    // 0 and negatives would stop the room from ever speaking; NaN and words
+    // are config typos. Every one of them means "unset", not "silence".
+    for (const bad of [0, -5, Number.NaN, 'many', '', '  ', null, undefined, [], {}, true]) {
+      expect(room.chat.resolveGroupChatLimits({ max_rounds: bad }).maxRounds).toBe(room.chat.GROUP_CHAT_MAX_ROUNDS)
+    }
+  })
+
+  it('reads a quoted number, since YAML quoting is a formatting choice', async () => {
+    const room = await loadRoom()
+
+    expect(room.chat.resolveGroupChatLimits({ max_rounds: '12' }).maxRounds).toBe(12)
+  })
+
+  it('floors fractional values rather than half-running a round', async () => {
+    const room = await loadRoom()
+
+    expect(room.chat.resolveGroupChatLimits({ max_rounds: 4.9 }).maxRounds).toBe(4)
+  })
+
+  it('drives more rounds when configured to, and still stops', async () => {
+    const room = await loadRoom({ turn: ({ n }) => `message ${n} — @everyone keep going` })
+
+    room.chat.setGroupChatLimits({ max_messages: 25, max_rounds: 8 })
+    room.rounds.sendToGroupChat('Loud', MEMBERS, 'go wild')
+    await settle(room, 'Loud')
+
+    const posted = log(room, 'Loud').filter(entry => entry.from.kind === 'member')
+
+    expect(posted.length).toBeGreaterThan(room.chat.GROUP_CHAT_MAX_MESSAGES)
+    expect(posted.length).toBeLessThanOrEqual(25)
+  })
+})
+

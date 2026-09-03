@@ -10,10 +10,8 @@ import {
   $groupChats,
   $groupNeedsYou,
   appendGroupChatEntry,
+  getGroupChatLimits,
   GROUP_CHAT_HISTORY_LIMIT,
-  GROUP_CHAT_MAX_CONTINUATIONS,
-  GROUP_CHAT_MAX_MESSAGES,
-  GROUP_CHAT_MAX_ROUNDS,
   groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
@@ -29,7 +27,7 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
 // Behavioral model (clean-room): a group conversation is ONE ordered room log
-// owned by the plugin. A user send triggers at most GROUP_CHAT_MAX_ROUNDS
+// owned by the plugin. A user send triggers at most the configured round cap
 // serial round-robin rounds over the member roster — never parallel, no LLM
 // router. Who speaks each round is a deterministic @mention parse since the
 // last user message (mentioned members only, else everyone); whether a member
@@ -495,6 +493,9 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+  // Snapshot the ceilings once: a drive that changed its own budget halfway
+  // through would make "capped" mean two different things in one activity line.
+  const { maxContinuations, maxMessages, maxRounds } = getGroupChatLimits()
   let posted = 0
   let continuations = 0
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
@@ -503,7 +504,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
   let exitKind: 'capped' | 'settled' = 'settled'
 
   try {
-    for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+    for (let round = 0; round < maxRounds; round++) {
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
       // late, never lost.
@@ -546,7 +547,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       let spokeThisRound = 0
 
       for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+        if (!isCurrent() || posted >= maxMessages) {
           if (!isCurrent()) {
             recordGroupActivity(group, {
               kind: 'cancelled',
@@ -749,10 +750,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // room's entire budget on back-and-forth handoffs.
         continuations += 1
 
-        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
+        if (pendingKeys.length && continuations <= maxContinuations) {
           const citedMembers = members.filter((member: GroupMember) => pendingKeys.includes(groupMemberKey(member)))
 
-          if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
+          if (citedMembers.length && posted < maxMessages) {
             const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
             const continuationResponders = citedMembers.filter(
@@ -760,7 +761,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
             )
 
             for (const member of continuationResponders) {
-              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
+              if (!isCurrent() || posted >= maxMessages || continuations > maxContinuations) {
                 break
               }
 
@@ -873,7 +874,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           // exit, not consensus. (#94478)
           if (
             pendingKeys.length &&
-            (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)
+            (continuations > maxContinuations || posted >= maxMessages)
           ) {
             exitKind = 'capped'
           }
@@ -883,7 +884,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       }
     }
 
-    // All GROUP_CHAT_MAX_ROUNDS rounds ran with someone still speaking —
+    // Every configured round ran with someone still speaking —
     // the round cap ended the drive, not consensus. (#94478)
     exitKind = 'capped'
   } finally {

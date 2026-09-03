@@ -1198,13 +1198,14 @@ export function setGroupChatSyncDisposed(disposed: boolean) {
 }
 
 // ── one room's budget ────────────────────────────────────────────────────────
-// Every ceiling a single user send can spend, in one block on purpose: making
-// them configurable (per room, or model-aware from config.yaml) is live
-// contributor work — #92213 (per-room limits) and #96842 (config + token
-// budget) — and both need exactly one seam to hook. Carried over at the same
-// values the old plugin.js shipped so neither rebase inherits a behavior
-// change on top of a rewrite; deciding the shape of the override belongs to
-// those PRs, not to a design-system pass.
+// Every ceiling a single user send can spend, in one block on purpose: the
+// shipped defaults below are what a room uses until `group_chat` in config.yaml
+// says otherwise (#98004, porting the design from #96842 onto these modules).
+// Three rounds is right for a quick two-bot exchange and too tight for a
+// workflow whose hops are genuinely serial — a coordinator triaging to a
+// domain expert, to a data operator, and back — so the ceiling belongs to the
+// person paying for the calls. Per-room overrides remain open work (#92213);
+// this is the global seam both can share.
 export const GROUP_CHAT_MAX_ROUNDS = 3
 
 // #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.
@@ -1212,6 +1213,86 @@ export const GROUP_CHAT_MAX_MESSAGES = 10
 export const GROUP_CHAT_MAX_CONTINUATIONS = 2
 export const GROUP_CHAT_HISTORY_LIMIT = 24
 export const GROUP_CHAT_MAX_MEMBERS = 6
+
+// The ceilings config cannot climb past. Config decides what a room may spend;
+// these decide what the app is willing to spend at all, so a fat-fingered
+// `max_rounds: 99999` costs a bounded number of model calls instead of a
+// runaway room. Raise them deliberately, never to satisfy one config.
+export const GROUP_CHAT_HARD_CAP_ROUNDS = 20
+export const GROUP_CHAT_HARD_CAP_MESSAGES = 100
+export const GROUP_CHAT_HARD_CAP_CONTINUATIONS = 20
+
+/** The `group_chat` block as it arrives from config.yaml: user-authored, so
+ *  every field is unknown until proven otherwise. */
+export interface GroupChatLimitsConfig {
+  max_continuations?: unknown
+  max_messages?: unknown
+  max_rounds?: unknown
+}
+
+export interface GroupChatLimits {
+  maxContinuations: number
+  maxMessages: number
+  maxRounds: number
+}
+
+/** One configured ceiling, or the shipped default when the value cannot be
+ *  spent as a limit. Numeric strings count: YAML quoting is a formatting
+ *  choice, and `max_rounds: "12"` plainly means twelve. A limit of zero or
+ *  less would mute the room entirely, and a config typo should never be the
+ *  thing that silences your bots — so anything unusable reads as "unset"
+ *  rather than as "stop". */
+function resolveLimit(raw: unknown, fallback: number, hardCap: number): number {
+  const value = typeof raw === 'number' || (typeof raw === 'string' && raw.trim()) ? Number(raw) : Number.NaN
+
+  if (!Number.isFinite(value) || value < 1) {
+    return fallback
+  }
+
+  return Math.min(Math.floor(value), hardCap)
+}
+
+/** Resolve the room's spend ceilings from config, clamped to the hard caps. */
+export function resolveGroupChatLimits(config: GroupChatLimitsConfig | null | undefined): GroupChatLimits {
+  const cfg = config || {}
+
+  return {
+    maxContinuations: resolveLimit(cfg.max_continuations, GROUP_CHAT_MAX_CONTINUATIONS, GROUP_CHAT_HARD_CAP_CONTINUATIONS),
+    maxMessages: resolveLimit(cfg.max_messages, GROUP_CHAT_MAX_MESSAGES, GROUP_CHAT_HARD_CAP_MESSAGES),
+    maxRounds: resolveLimit(cfg.max_rounds, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_HARD_CAP_ROUNDS)
+  }
+}
+
+// Resolved once at load and refreshed when config changes, not read per drive:
+// the round loop is hot and a gateway round-trip mid-drive would be a stall the
+// user feels. A config edit reaches a room on its next send.
+let groupChatLimits: GroupChatLimits = resolveGroupChatLimits(null)
+
+/** The ceilings in force right now. */
+export function getGroupChatLimits(): GroupChatLimits {
+  return groupChatLimits
+}
+
+/** Apply a `group_chat` config block. Exported for the config refresh path and
+ *  for tests that need a room to run under a different ceiling. */
+export function setGroupChatLimits(config: GroupChatLimitsConfig | null | undefined) {
+  groupChatLimits = resolveGroupChatLimits(config)
+}
+
+/** Read `group_chat` from config.yaml. A gateway that cannot answer leaves the
+ *  shipped defaults in place — a room that runs is always better than a room
+ *  that refuses to start because config could not be read. */
+export async function refreshGroupChatLimits(): Promise<GroupChatLimits> {
+  try {
+    const res = await host.request<{ config?: { group_chat?: GroupChatLimitsConfig } }>('config.get', { key: 'full' })
+
+    setGroupChatLimits(res?.config?.group_chat)
+  } catch {
+    setGroupChatLimits(null)
+  }
+
+  return groupChatLimits
+}
 
 /** Transcript form of a room speaker's profile name. Friendly identity wins:
  *  a Bot Mode title or a core profile display_name (e.g. default renamed to

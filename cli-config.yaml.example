@@ -1946,6 +1946,32 @@ display:
 
 
 # =============================================================================
+# Bot Mode Group Chats (Desktop)
+# =============================================================================
+# Ceilings for one user send in a Desktop Bot Mode room. A send drives serial
+# round-robin rounds over the members; these decide when that drive stops.
+#
+# The defaults suit a quick exchange between two bots. Raise them when a room
+# runs workflows whose hops are genuinely serial — a coordinator triaging to a
+# domain expert, to a data operator, and back — and the room keeps stopping
+# mid-task with "turn stopped at the round/message cap".
+#
+# Every extra round costs real model calls in every member that answers, so
+# raise deliberately. Desktop clamps each value to its own hard ceiling
+# (20 rounds / 100 messages / 20 continuations), and any value below 1 or
+# unparseable is ignored in favour of the default — a config typo can never
+# silence a room or uncap it.
+group_chat:
+  # Serial round-robin passes over the roster per user send.
+  max_rounds: 3
+  # Total member messages one send may produce.
+  max_messages: 10
+  # Extra turns granted to a bot another bot @mentioned, bounded separately so
+  # a mention chain cannot spend the whole room budget on handoffs.
+  max_continuations: 2
+
+
+# =============================================================================
 # Telemetry
 # =============================================================================
 # Shared metrics are disabled by default. When enabled, Hermes writes only

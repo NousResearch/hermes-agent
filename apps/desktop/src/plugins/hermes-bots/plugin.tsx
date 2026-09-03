@@ -48,6 +48,7 @@ import {
   assignLegacyThreads,
   handleSessionsGatewayTransition,
   pullGroupChatServerState,
+  refreshGroupChatLimits,
   scheduleGroupChatServerSync,
   setGroupChatSyncDisposed,
   stopGroupChatServerSync,
@@ -102,6 +103,11 @@ export default {
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()
+    // Room ceilings come from config.yaml (#98004). Read once at load rather
+    // than per drive: the round loop is hot, and a gateway round-trip inside it
+    // would be a stall the user feels. Failure is silent by design — the
+    // shipped defaults already work, so a room still runs.
+    void refreshGroupChatLimits()
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()

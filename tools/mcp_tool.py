@@ -35,6 +35,7 @@ Example config::
         supports_parallel_tool_calls: true  # tools from this server may run concurrently
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
+        env_file: "/home/user/projects/acme/.env.hermes"
         headers:
           Authorization: "Bearer sk-..."
         identity_header:       # optional per-user identity header attached
@@ -42,6 +43,7 @@ Example config::
           value_from: "static" # "static" (default) or "profile"
           value: "alice"       # required for static; profile mode uses the
                                # active Hermes profile name
+ (fix(mcp): isolate per-server env file resolution)
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -69,6 +71,7 @@ Features:
     - SSE transport (transport: sse) for MCP servers using the SSE protocol
     - Automatic reconnection with exponential backoff (up to 5 retries)
     - Environment variable filtering for stdio subprocesses (security)
+    - Isolated per-server env files for project-specific credentials
     - Credential stripping in error messages returned to the LLM
     - Configurable per-server timeouts for tool calls and connections
     - Thread-safe architecture with dedicated background event loop
@@ -114,7 +117,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Coroutine, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
@@ -772,14 +775,23 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return env
 
 
-def _sanitize_error(text: str) -> str:
+def _sanitize_error(text: str, redaction_values: Iterable[str] = ()) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
     Replaces tokens, keys, and other secrets with [REDACTED] to prevent
-    accidental credential exposure in tool error responses.
+    accidental credential exposure in tool error responses. Callers that load
+    isolated per-server values can pass them explicitly so opaque credentials
+    are removed even when they do not match a known token shape.
     """
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
-
+    sanitized = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    values = {
+        str(value)
+        for value in redaction_values
+        if value is not None and str(value)
+    }
+    for value in sorted(values, key=len, reverse=True):
+        sanitized = sanitized.replace(value, "[REDACTED]")
+    return sanitized
 
 def _exc_str(exc: BaseException) -> str:
     """Return a non-empty human-readable string for *exc*.
@@ -1973,7 +1985,10 @@ def _make_redirect_header_stripper(
     return _strip_on_cross_origin_redirect
 
 
-def _format_connect_error(exc: BaseException) -> str:
+def _format_connect_error(
+    exc: BaseException,
+    redaction_values: Iterable[str] = (),
+) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
     def _find_missing(current: BaseException) -> Optional[str]:
@@ -2024,13 +2039,80 @@ def _format_connect_error(exc: BaseException) -> str:
                 "or set mcp_servers.<name>.command to an absolute path and include "
                 "that directory in mcp_servers.<name>.env.PATH)"
             )
-        return _sanitize_error(message)
+        return _sanitize_error(message, redaction_values)
 
     deduped: List[str] = []
     for item in _flatten_messages(exc):
         if item not in deduped:
             deduped.append(item)
-    return _sanitize_error("; ".join(deduped[:3]))
+    return _sanitize_error("; ".join(deduped[:3]), redaction_values)
+
+
+# ---------------------------------------------------------------------------
+# Sampling -- server-initiated LLM requests (MCP sampling/createMessage)
+# ---------------------------------------------------------------------------
+
+def _format_connect_error(
+    exc: BaseException,
+    redaction_values: Iterable[str] = (),
+) -> str:
+    """Render nested MCP connection errors into an actionable short message."""
+
+    def _find_missing(current: BaseException) -> Optional[str]:
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            for child in nested:
+                missing = _find_missing(child)
+                if missing:
+                    return missing
+            return None
+        if isinstance(current, FileNotFoundError):
+            if getattr(current, "filename", None):
+                return str(current.filename)
+            match = re.search(r"No such file or directory: '([^']+)'", str(current))
+            if match:
+                return match.group(1)
+        for attr in ("__cause__", "__context__"):
+            nested_exc = getattr(current, attr, None)
+            if isinstance(nested_exc, BaseException):
+                missing = _find_missing(nested_exc)
+                if missing:
+                    return missing
+        return None
+
+    def _flatten_messages(current: BaseException) -> List[str]:
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            flattened: List[str] = []
+            for child in nested:
+                flattened.extend(_flatten_messages(child))
+            return flattened
+        messages = []
+        text = str(current).strip()
+        if text:
+            messages.append(text)
+        for attr in ("__cause__", "__context__"):
+            nested_exc = getattr(current, attr, None)
+            if isinstance(nested_exc, BaseException):
+                messages.extend(_flatten_messages(nested_exc))
+        return messages or [current.__class__.__name__]
+
+    missing = _find_missing(exc)
+    if missing:
+        message = f"missing executable '{missing}'"
+        if os.path.basename(missing) in {"npx", "npm", "node"}:
+            message += (
+                " (ensure Node.js is installed and PATH includes its bin directory, "
+                "or set mcp_servers.<name>.command to an absolute path and include "
+                "that directory in mcp_servers.<name>.env.PATH)"
+            )
+        return _sanitize_error(message, redaction_values)
+
+    deduped: List[str] = []
+    for item in _flatten_messages(exc):
+        if item not in deduped:
+            deduped.append(item)
+    return _sanitize_error("; ".join(deduped[:3]), redaction_values)
 
 
 # ---------------------------------------------------------------------------
@@ -2682,6 +2764,7 @@ class MCPServerTask:
         "_inflight_tasks", "_reconnecting", "_suspect_reason",
         "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
         "_ever_connected",
+        "_redaction_values",
     )
 
     def __init__(self, name: str):
@@ -2746,6 +2829,9 @@ class MCPServerTask:
         # the child dies instead of waiting out the full tool timeout
         # (#81995).
         self._stdio_child_pids: Set[int] = set()
+        # Exact secret values loaded from this server's env_file (if
+        # any) — redacted from logs and returned error text.
+        self._redaction_values: tuple[str, ...] = ()
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -3416,7 +3502,9 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' keepalive failed, triggering "
                             "reconnect (state: connected → degraded): %s: %s",
-                            self.name, type(root).__name__, root,
+                            self.name,
+                            type(root).__name__,
+                            _sanitize_error(_exc_str(root), self._redaction_values),
                         )
                         self.mark_suspect(
                             f"keepalive failed: {type(root).__name__}: {root}"
@@ -3873,7 +3961,7 @@ class MCPServerTask:
             return  # Looks like a real MCP endpoint.
 
         raise NonMcpEndpointError(
-            f"MCP server '{self.name}' at {url} returned Content-Type "
+            f"MCP server '{self.name}' at the configured URL returned Content-Type "
             f"'{ct_base}', not an MCP response (expected one of: "
             f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it "
@@ -4277,6 +4365,7 @@ class MCPServerTask:
         connection drops unexpectedly (unless shutdown was requested).
         """
         self._config = config
+        self._redaction_values = tuple(_load_mcp_server_env(config).values())
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -4322,7 +4411,9 @@ class MCPServerTask:
             try:
                 _validate_remote_mcp_url(self.name, config.get("url"))
             except InvalidMcpUrlError as exc:
-                logger.warning("%s", exc)
+                logger.warning(
+                    "%s", _sanitize_error(_exc_str(exc), self._redaction_values)
+                )
                 self._error = exc
                 self._ready.set()
                 return
@@ -4349,7 +4440,9 @@ class MCPServerTask:
                         client_cert=_resolve_client_cert(self.name, config),
                     )
                 except NonMcpEndpointError as exc:
-                    logger.warning("%s", exc)
+                    logger.warning(
+                        "%s", _sanitize_error(_exc_str(exc), self._redaction_values)
+                    )
                     self._error = exc
                     self._ready.set()
                     return
@@ -4478,11 +4571,14 @@ class MCPServerTask:
                 # (e.g. "BrokenPipeError: ").
                 root = _unwrap_exception_group(exc)
                 failure_class = _classify_mcp_failure(root)
+                root_message = _sanitize_error(
+                    _exc_str(root), self._redaction_values
+                )
                 if self._is_recycled_stdio():
                     logger.warning(
                         "MCP server '%s': lazy reconnect after stdio recycle "
                         "failed, marking unavailable while retrying: %s: %s",
-                        self.name, type(root).__name__, root,
+                        self.name, type(root).__name__, root_message,
                     )
                     self._recycled_reason = None
 
@@ -4527,6 +4623,7 @@ class MCPServerTask:
                                 "(state: connecting → parked): %s: %s",
                                 self.name, type(root).__name__, root,
                             )
+
                         self._error = exc
                         self._ready.set()
                         self._was_parked = True
@@ -4557,7 +4654,7 @@ class MCPServerTask:
                             "%d attempts, parking until a reconnect is "
                             "requested (state: connecting → parked): %s: %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES,
-                            type(root).__name__, root,
+                            type(root).__name__, root_message,
                         )
                         self._error = exc
                         self._ready.set()
@@ -4587,7 +4684,7 @@ class MCPServerTask:
                         "(attempt %d/%d), retrying in %.0fs: %s: %s",
                         self.name, initial_retries,
                         _MAX_INITIAL_CONNECT_RETRIES, backoff,
-                        type(root).__name__, root,
+                        type(root).__name__, root_message,
                     )
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -4603,7 +4700,7 @@ class MCPServerTask:
                 if self._shutdown_event.is_set():
                     logger.debug(
                         "MCP server '%s' disconnected during shutdown: %s: %s",
-                        self.name, type(root).__name__, root,
+                        self.name, type(root).__name__, root_message,
                     )
                     return
 
@@ -4647,7 +4744,7 @@ class MCPServerTask:
                         "without retries; will self-probe every %ds "
                         "(state: connected → parked): %s: %s",
                         self.name, _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        type(root).__name__, root_message,
                     )
                     self._was_parked = True
                     self._deregister_tools()
@@ -4675,7 +4772,7 @@ class MCPServerTask:
                         "(state: degraded → parked): %s: %s",
                         self.name, _MAX_RECONNECT_RETRIES,
                         _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        type(root).__name__, root_message,
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -4716,7 +4813,7 @@ class MCPServerTask:
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
-                    backoff, type(root).__name__, root,
+                    backoff, type(root).__name__, root_message,
                 )
                 await asyncio.sleep(_jittered(backoff))
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -6152,7 +6249,7 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _interpolate_env_vars(value):
+def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None):
     """Recursively resolve ``${VAR}`` placeholders.
 
     Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
@@ -6166,6 +6263,7 @@ def _interpolate_env_vars(value):
     profile's value, not the process-global ``os.environ`` which may hold
     another profile's), falling back to ``os.environ`` otherwise. Unset vars
     keep the literal placeholder, as before.
+ (fix(mcp): isolate per-server env file resolution)
     """
     from agent.secret_scope import get_secret as _get_secret
 
@@ -6175,12 +6273,14 @@ def _interpolate_env_vars(value):
             if ctx is not None:
                 return ctx
             name = _env_ref_name(m.group(1))
+            if env_overrides is not None and name in env_overrides:
+                return env_overrides[name]
             return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, env_overrides) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, env_overrides) for v in value]
     return value
 
 
@@ -6235,6 +6335,55 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     return flagged
 
 
+def _load_mcp_server_env(config: dict) -> Dict[str, str]:
+    """Load one MCP server's optional env file into an isolated mapping."""
+    from pathlib import Path
+
+    raw_path = config.get("env_file")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return {}
+
+    interpolated_path = _interpolate_env_vars(raw_path.strip())
+    if not isinstance(interpolated_path, str):
+        return {}
+
+    env_path = os.path.expanduser(interpolated_path)
+    if not os.path.isabs(env_path):
+        terminal_cwd = (os.environ.get("TERMINAL_CWD") or "").strip()
+        if not (os.path.isabs(terminal_cwd) and os.path.isdir(terminal_cwd)):
+            terminal_cwd = os.getcwd()
+        env_path = os.path.abspath(os.path.join(terminal_cwd, env_path))
+
+    env_path_obj = Path(env_path)
+    if not env_path_obj.is_file():
+        logger.warning(
+            "MCP env_file does not exist; falling back to profile/process secrets"
+        )
+        return {}
+    if not os.access(env_path_obj, os.R_OK):
+        logger.warning(
+            "MCP env_file is not readable; falling back to profile/process secrets"
+        )
+        return {}
+
+    try:
+        from agent.secret_scope import load_env_file
+
+        return load_env_file(env_path_obj, strict=True)
+    except Exception:
+        logger.warning(
+            "MCP env_file could not be read; falling back to profile/process secrets"
+        )
+        return {}
+
+
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve one server config using its isolated env-file overlay."""
+    server_env = _load_mcp_server_env(config)
+    resolved = _interpolate_env_vars(config, server_env)
+    return resolved if isinstance(resolved, dict) else config
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -6268,10 +6417,11 @@ def _load_mcp_config() -> Dict[str, dict]:
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
     transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
+    ``env_file``, ``timeout``, ``connect_timeout``, and ``auth`` overrides.
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
-    ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    the server's ``env_file`` first when configured, then from the active
+    profile secret scope or ``os.environ``.
     """
     try:
         from hermes_cli.config import load_config
@@ -6291,7 +6441,13 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
-            interpolated = _interpolate_env_vars(cfg)
+            if not isinstance(cfg, dict):
+                logger.warning(
+                    "Skipping MCP server '%s': invalid configuration (expected a mapping)",
+                    name,
+                )
+                continue
+            interpolated = _resolve_mcp_server_config(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
@@ -6310,7 +6466,10 @@ def _load_mcp_config() -> Dict[str, dict]:
                 safe_servers[name] = dict(cfg)
         except Exception:
             logger.debug("Failed to load portable MCP servers", exc_info=True)
-        return safe_servers
+        # Environment interpolation can turn an otherwise harmless-looking
+        # placeholder into a blocked command/argument shape. Revalidate the
+        # effective config at the final spawn boundary as well.
+        return _filter_suspicious_mcp_servers(safe_servers)
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
@@ -6399,7 +6558,8 @@ def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
     except Exception as exc:
         logger.warning(
             "MCP server '%s': lazy reconnect after stdio recycle failed: %s",
-            server_name, exc,
+            server_name,
+            _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
         )
         return False
 
@@ -6755,7 +6915,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return tool_error(_sanitize_error(
                     _truncate_mcp_text_result(
                         error_text or "MCP tool returned an error"
-                    )
+                    ),
+                    getattr(server, "_redaction_values", ()),
                 ))
 
             # Collect text from content blocks. MCP tool results can also
@@ -6946,10 +7107,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _bump_server_error(server_name)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
+                server_name,
+                tool_name,
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -7005,10 +7169,13 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/list_resources failed: %s", server_name, exc,
+                "MCP %s/list_resources failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -7066,10 +7233,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/read_resource failed: %s", server_name, exc,
+                "MCP %s/read_resource failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -7127,10 +7297,13 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/list_prompts failed: %s", server_name, exc,
+                "MCP %s/list_prompts failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -7192,10 +7365,13 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/get_prompt failed: %s", server_name, exc,
+                "MCP %s/get_prompt failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -8311,7 +8487,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         for name, result in zip(server_names, results):
             if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
-                message = _format_connect_error(result)
+                redaction_values = tuple(
+                    _load_mcp_server_env(new_servers.get(name, {})).values()
+                )
+                message = _format_connect_error(result, redaction_values)
+                if command:
+                    command = _sanitize_error(str(command), redaction_values)
                 with _lock:
                     _server_connecting.discard(name)
                     _server_connect_errors[name] = message

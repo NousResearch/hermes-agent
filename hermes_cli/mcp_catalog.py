@@ -662,7 +662,10 @@ def _probe_tools(name: str) -> Optional[List[tuple]]:
         return list(tools) if tools is not None else []
     except Exception as exc:
         # Display the cause but never raise from the install path.
-        print(color(f"  Probe failed: {exc}", Colors.YELLOW))
+        from hermes_cli.mcp_config import _sanitize_mcp_probe_error
+
+        error = _sanitize_mcp_probe_error(exc, server_cfg)
+        print(color(f"  Probe failed: {error}", Colors.YELLOW))
         return None
 
 

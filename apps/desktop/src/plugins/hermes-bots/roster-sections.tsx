@@ -253,7 +253,7 @@ export function RosterSectionHeader({
     <RowButton
       aria-expanded={!collapsed}
       className={cn(
-        'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
+        'hermes-bots-section-header flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
         action ? 'flex-1' : 'mt-1'
       )}
       onClick={onToggle}

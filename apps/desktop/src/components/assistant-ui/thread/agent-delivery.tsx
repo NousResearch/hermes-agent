@@ -1,6 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
+import { AgentExchangeCard } from '@/components/assistant-ui/thread/agent-exchange-card'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
@@ -9,7 +10,7 @@ import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/compon
 // Rendering it as a terminal transcript makes the sending bot's chat read
 // like ops tooling; the user-facing truth is "Messaged X" and, when the
 // quiet run returns the recipient's reply, "Message from X" — the same
-// compact event notices the receiving chat shows.
+// compact transcript-aligned event notices the receiving chat shows.
 const DELIVERY_COMMAND_RE =
   /(?:^|[;&|]\s*|\bhermes\s+)-p\s+("?)([a-z0-9][a-z0-9_-]{0,63})\1\s+chat\b[\s\S]*?-q\s+["']Message from/iu
 
@@ -55,9 +56,6 @@ export function replyTextFromResult(result: unknown): string {
     .trim()
 }
 
-const NOTICE_CLASS =
-  'flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60'
-
 const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
   const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
 
@@ -76,9 +74,9 @@ const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
   }, [handle])
 
   return avatar ? (
-    <img alt="" aria-hidden className="size-4 shrink-0 rounded-full object-cover" src={avatar} />
+    <img alt="" aria-hidden className="size-full object-cover" src={avatar} />
   ) : (
-    <span aria-hidden className="text-[0.8125rem] leading-none">
+    <span aria-hidden className="text-[0.875rem] leading-none">
       🤖
     </span>
   )
@@ -102,30 +100,21 @@ export const AgentDeliveryNotice: FC<ToolCallMessagePartProps> = props => {
 
   return (
     <div className="flex w-full min-w-0 flex-col items-stretch gap-0.5">
-      <div className={NOTICE_CLASS} data-slot="aui_agent-delivery-notice">
-        <span className="flex items-center justify-center gap-1.5">
-          <AgentGlyph handle={target} />
-          <span className="wrap-anywhere">
-            {pending ? 'Messaging' : 'Messaged'} {target}
-            {pending ? '…' : ''}
-          </span>
-        </span>
-      </div>
+      <AgentExchangeCard
+        agent={target}
+        avatar={<AgentGlyph handle={target} />}
+        kind={pending ? 'sending' : 'sent'}
+        slot="aui_agent-delivery-notice"
+      />
       {!pending && replyBody && (
-        <div className={NOTICE_CLASS} data-slot="aui_agent-reply-notice">
-          <span className="flex items-center justify-center gap-1.5">
-            <AgentGlyph handle={target} />
-            <span className="wrap-anywhere">Message from {target}</span>
-          </span>
-          <details className="self-center">
-            <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
-              show message
-            </summary>
-            <div className="mt-1 max-w-[36rem] whitespace-pre-wrap rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-              {replyBody}
-            </div>
-          </details>
-        </div>
+        <AgentExchangeCard
+          agent={target}
+          avatar={<AgentGlyph handle={target} />}
+          body={<div className="whitespace-pre-wrap">{replyBody}</div>}
+          bodyText={replyBody}
+          kind="reply-from"
+          slot="aui_agent-reply-notice"
+        />
       )}
     </div>
   )

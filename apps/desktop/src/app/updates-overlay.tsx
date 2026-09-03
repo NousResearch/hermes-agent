@@ -69,8 +69,10 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
-    apply.stage === 'manual'
+  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'protected' | 'error' =
+    apply.error === 'protected-custom-edition'
+      ? 'protected'
+      : apply.stage === 'manual'
       ? 'manual'
       : apply.stage === 'guiSkew'
         ? 'guiSkew'
@@ -118,6 +120,8 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+
+        {phase === 'protected' && <ProtectedEditionView message={apply.message} onDone={() => handleClose(false)} />}
 
         {phase === 'error' && updateBlockers ? (
           <BlockerView
@@ -377,6 +381,31 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
+      </Button>
+    </div>
+  )
+}
+
+/** A protected Team Hermes package intentionally refuses the stock GUI
+ * replacement. This is a successful safety gate, not a retryable failure. */
+function ProtectedEditionView({ message, onDone }: { message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="grid size-12 place-items-center rounded-full bg-primary/12 text-primary">
+          <Check aria-hidden className="size-6" />
+        </div>
+        <DialogTitle className="text-center text-xl">Custom interface preserved</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message ||
+            'The official desktop update was skipped so it cannot replace your protected Team Hermes interface. Update the Hermes backend separately.'}
+        </DialogDescription>
+      </div>
+
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+        {t.updates.done}
       </Button>
     </div>
   )

@@ -184,6 +184,10 @@
     --theme-neutral-chrome: #f3f3f3;
     --theme-neutral-sidebar: #f3f3f3;
     --theme-neutral-card: #fcfcfc;
+    /* Sampled from the user's light-blue reference. The composer uses it only
+       as a translucent tint; when the canvas already has this colour, the
+       reply field disappears into it instead of reading as a white card. */
+    --hermes-reply-blue: #cedaf1;
     --theme-mix-chrome: 92%;
     --theme-mix-sidebar: 100%;
     --theme-mix-card: 22%;
@@ -1711,6 +1715,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 .dark {
+  --hermes-reply-blue: var(--ui-chat-surface-background);
   --dock-glow-scale: 1;
   --chat-unfocused-opacity: 0.72;
 }
@@ -1761,7 +1766,16 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='composer-surface'] {
-  border-color: var(--ui-stroke-secondary) !important;
+  border-color: color-mix(in srgb, var(--ui-accent) 16%, transparent) !important;
+  box-shadow: none !important;
+}
+
+[data-slot='composer-root']:hover [data-slot='composer-surface'] {
+  border-color: color-mix(in srgb, var(--ui-accent) 26%, transparent) !important;
+}
+
+[data-slot='composer-root']:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+  border-color: var(--ui-accent) !important;
 }
 
 [data-slot='composer-fade'] {
@@ -1777,24 +1791,24 @@ body.guest-pointer-lock :is(webview, iframe) {
   color: var(--ui-text-tertiary) !important;
 }
 
-/* ── Composer fill — ONE var painted by the surface AND anything docked to it
-   (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+/* ── Composer fills — raised dock cards and the reply field intentionally use
+   separate variables. Status/queue surfaces keep `--composer-fill` for
+   readability; the typing surface uses `--composer-reply-fill` so it can melt
+   into the powder-blue chat canvas without weakening those raised controls. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
+  --composer-reply-fill: color-mix(in srgb, var(--hermes-reply-blue) 14%, transparent);
 }
 
 [data-slot='composer-root'] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-reply-fill: color-mix(in srgb, var(--hermes-reply-blue) 14%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-reply-fill: color-mix(in srgb, var(--hermes-reply-blue) 8%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -2814,7 +2828,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
 /* Flipped, the sheet hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
-  top: var(--hud-bar-height, var(--composer-fallback-height));
+  top: calc(var(--hud-top-inset, 0px) + var(--hud-bar-height, var(--composer-fallback-height)));
   bottom: auto;
   --hud-exit-shift: -2.5rem;
   border-radius: 0 0 0.75rem 0.75rem;
@@ -2954,15 +2968,20 @@ button[data-slot='aui_msg-reactions'] svg {
    Widgets on the shared shell (components/chat/widget-shell.ts →
    `--ui-widget-surface-background`) and any chat-surface card are matched on
    their class, so new ones inherit this without touching the list. */
-[data-hud-shell] [data-slot='composer-bounds']
+[data-hud-shell]
+  [data-slot='composer-bounds']
   :is(
     [data-slot='clarify-inline'],
     [data-slot='tool-block'],
     [data-slot='file-diff-panel'],
     [data-slot='code-card'],
     [data-slot='aui_system-message-root'],
+    [data-slot='aui_agent-work-flashcard'],
+    [data-slot='aui_assistant-message-content'],
     [class*='ui-widget-surface-background'],
     [class*='ui-chat-surface-background'],
+    [class*='ui-chat-bubble-opaque-background'],
+    [class*='ui-chat-bubble-background'],
     pre,
     input,
     textarea,
@@ -3105,13 +3124,13 @@ button[data-slot='aui_msg-reactions'] svg {
    window's top edge, the band hangs BELOW it, and text melts at the bottom.
    Same surfaces, same variables — only the anchors swap. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-dock'] {
-  top: 0 !important;
+  top: var(--hud-top-inset, 0px) !important;
   bottom: auto !important;
 }
 
 /* Flipped, the band hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
-  top: var(--hud-bar-height, var(--composer-fallback-height)) !important;
+  top: calc(var(--hud-top-inset, 0px) + var(--hud-bar-height, var(--composer-fallback-height))) !important;
   bottom: auto !important;
   border-radius: 0 0 0.75rem 0.75rem;
 }
@@ -3290,15 +3309,64 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 [data-hud-shell] [data-slot='composer-root'] {
-  /* Opaque, so anything docked to the composer (status stack, queue panel)
-     paints the same solid fill the bar does — they share this var. */
+  /* Keep docked status/queue cards readable. The reply field itself is the
+     band's contract again — LIGHT ON DARK, unconditionally. A 32% powder-blue
+     tint blended into the app's own blue canvas, but the HUD floats over
+     whatever the desktop shows; on a bright wallpaper the theme ink on that
+     tint simply disappeared. So the bar is a dark scrim in the reply-blue
+     family, and every ink inside it is pinned light whatever the app theme. */
   --composer-fill: var(--dt-card);
+  --composer-reply-fill: color-mix(in srgb, rgb(12 14 18) 78%, var(--hermes-reply-blue));
   /* The base rule adds 5px of transparent grab margin for the peel-out drag,
      and the dock compensates with +10px of width. Neither applies here (the
      HUD composer doesn't peel out), and left in they inset the card unevenly
      inside its own float. */
   padding: 0 !important;
   width: 100% !important;
+}
+
+/* A small, explicit grip makes HUD movement discoverable and supports an
+   ordinary press-and-drag. The full composer still supports its guarded
+   long-press gesture, while this handle arms movement immediately. */
+[data-hud-shell] .hud-move-handle {
+  position: absolute;
+  top: 0.2rem;
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  width: 2.5rem;
+  height: 0.8rem;
+  padding: 0;
+  translate: -50% 0;
+  cursor: grab;
+  touch-action: none;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+[data-hud-shell] .hud-move-handle > span {
+  width: 1.5rem;
+  height: 0.18rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-text-tertiary) 55%, transparent);
+  transition:
+    width 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+[data-hud-shell] .hud-move-handle:hover > span,
+[data-hud-shell] .hud-move-handle:focus-visible > span {
+  width: 1.9rem;
+  background: color-mix(in srgb, var(--dt-primary) 72%, var(--ui-text-tertiary));
+  box-shadow: 0 0 0.45rem color-mix(in srgb, var(--dt-primary) 35%, transparent);
+}
+
+[data-hud-shell] .hud-move-handle:active,
+[data-hud-shell] [data-slot='composer-root'][data-hud-grabbing] .hud-move-handle {
+  cursor: grabbing;
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
@@ -3309,28 +3377,35 @@ button[data-slot='aui_msg-reactions'] svg {
   display: none !important;
 }
 
-/* Opaque, pill-rounded — the Spotlight bar. Same surface tokens the composer
-   already uses; only the radius steps up so a lone floating bar reads as an
-   object rather than a snippet of app chrome.
-
-   ALWAYS fully opaque. It's the input — the one thing that must never be
-   compromised by whatever's behind the window, in any state. The idle/engaged
-   breathing belongs to the thread and the chat surface; the bar just sits
-   there, solid, like Spotlight does. */
+/* Powder-blue glass, pill-rounded — the reply box now blends into the user's
+   light-blue canvas instead of floating above it as an opaque white card.
+   The tint remains partially transparent in HUD mode; a clear border and an
+   accent focus state preserve discoverability over changing backgrounds. */
 [data-hud-shell] [data-slot='composer-surface'] {
-  border: 1px solid var(--ui-stroke-secondary) !important;
+  /* Every ink inside the BAR is pinned light to match its dark scrim, whatever
+     the app theme. Scoped to the surface, not the composer root: the transcript
+     band is the root's sibling subtree, and its theme cards (tool rows, code,
+     widgets) keep the theme's own ink on their own fills — see the ink
+     exemption above. */
+  --ui-text-primary: #f2f5f9;
+  --ui-text-secondary: #ccd5e0;
+  --ui-text-tertiary: #aebaca;
+  --ui-text-quaternary: #93a2b5;
+  --dt-foreground: #f2f5f9;
+  --dt-muted-foreground: #aebaca;
+  --muted-foreground: #aebaca;
+  color: #f2f5f9;
+  color-scheme: dark;
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 24%, transparent) !important;
   /* Same radius as the band's top and the window's own corners, so the HUD
      reads as one object however the band is behaving. Its top corners let a
      sliver of band through, which is the point — the glass wraps the bar's
      shoulders instead of stopping in a straight line above it. */
   border-radius: 0.75rem !important;
-  background: var(--dt-card) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  /* Bottom edge only. Enough to lift the bar off whatever it is lying over —
-     without it the HUD reads as pasted onto the other app — and tight enough
-     that it never becomes a glow around a floating card. */
-  box-shadow: 0 2px 2px -1px rgb(0 0 0 / 0.12) !important;
+  background: var(--composer-reply-fill) !important;
+  backdrop-filter: blur(0.45rem) saturate(1.04) !important;
+  -webkit-backdrop-filter: blur(0.45rem) saturate(1.04) !important;
+  box-shadow: none !important;
   transition: border-color var(--hud-reveal) var(--hud-ease-enter);
 }
 
@@ -3341,6 +3416,18 @@ button[data-slot='aui_msg-reactions'] svg {
    space, cannot be clipped, and leaves the working arc as the only ring. */
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
   border-color: var(--dt-primary) !important;
+}
+
+/* The typing surface's own ink and hint, pinned light to match the dark bar —
+   the base placeholder rule mixes the theme's muted ink, which is near-black
+   on a light theme. */
+[data-hud-shell] [data-slot='composer-rich-input'] {
+  color: #f2f5f9 !important;
+  caret-color: #f2f5f9;
+}
+
+[data-hud-shell] [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  color: rgb(242 245 249 / 0.62) !important;
 }
 
 /* GAME OVERLAY — a fullscreen app owns the screen (data-hud-game, pushed by
@@ -3514,4 +3601,179 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* The desktop character acknowledges a deliberate hover, then performs one
+   playful turn per work cycle. Motion lives on an inner wrapper so dragging
+   and left/right facing transforms remain independent. */
+@keyframes hermes-agent-greet {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  35% {
+    transform: translateY(-5px) rotate(-3deg);
+  }
+  70% {
+    transform: translateY(-2px) rotate(3deg);
+  }
+}
+
+.hermes-agent-motion--greet {
+  animation: hermes-agent-greet 620ms ease-in-out;
+  transform-origin: 50% 90%;
+}
+
+/* Bot Mode's command workspace. The roster and conversation area are two
+   related slate surfaces joined by one deliberate seam. Keeping this scoped
+   to the workspace-mode attribute prevents the skin from leaking into
+   Sessions, Settings, or portalled menus. */
+[data-tree-group][data-workspace-mode='bots'] {
+  --hermes-bots-workspace: #252d39;
+  --hermes-bots-rail: #303946;
+  --hermes-bots-rail-top: #343e4c;
+  --hermes-bots-card: #2d3744;
+  --hermes-bots-card-raised: #333f4e;
+  --hermes-bots-seam: rgb(181 199 224 / 0.3);
+  --hermes-bots-seam-light: rgb(255 255 255 / 0.055);
+  --ui-bg-chrome: var(--hermes-bots-workspace);
+  --ui-bg-editor: var(--hermes-bots-card);
+  --ui-bg-sidebar: var(--hermes-bots-rail);
+  --ui-editor-surface-background: var(--hermes-bots-workspace);
+  --ui-chat-surface-background: var(--hermes-bots-workspace);
+  --ui-sidebar-surface-background: var(--hermes-bots-rail);
+  --ui-chat-bubble-background: var(--hermes-bots-card-raised);
+  --ui-chat-bubble-opaque-background: var(--hermes-bots-card);
+  --ui-widget-surface-background: var(--hermes-bots-card);
+  --ui-text-primary: #f2f5f9;
+  --ui-text-secondary: #ccd5e0;
+  --ui-text-tertiary: #aebaca;
+  --ui-text-quaternary: #93a2b5;
+  --ui-stroke-primary: rgb(181 199 224 / 0.24);
+  --ui-stroke-secondary: rgb(181 199 224 / 0.17);
+  --ui-stroke-tertiary: rgb(181 199 224 / 0.11);
+  --ui-stroke-quaternary: rgb(181 199 224 / 0.07);
+  --ui-row-hover-background: rgb(173 198 232 / 0.09);
+  --ui-row-active-background: rgb(131 171 224 / 0.18);
+  --chrome-action-hover: rgb(173 198 232 / 0.1);
+  --dt-background: var(--hermes-bots-workspace);
+  --dt-foreground: var(--ui-text-primary);
+  --dt-card: var(--hermes-bots-card);
+  --dt-card-foreground: var(--ui-text-primary);
+  --dt-muted: var(--hermes-bots-card-raised);
+  --dt-muted-foreground: var(--ui-text-tertiary);
+  --dt-accent: rgb(142 175 218 / 0.16);
+  --dt-accent-foreground: var(--ui-text-primary);
+  --dt-border: var(--ui-stroke-secondary);
+  --dt-input: var(--ui-stroke-primary);
+  --dt-user-bubble: var(--hermes-bots-card-raised);
+  color-scheme: dark;
+  background: var(--hermes-bots-workspace);
+}
+
+[data-tree-group][data-workspace-mode='bots'] [data-slot='composer-root'] {
+  --composer-fill: color-mix(in srgb, var(--hermes-bots-card) 94%, transparent);
+  --composer-reply-fill: var(--hermes-bots-card-raised);
+}
+
+/* The default scrolled-up state fades the complete input row to 30%. Against
+   the dark Bot Mode surface that erases model and placeholder labels. Keep a
+   quiet inactive cue without sacrificing legibility. */
+[data-tree-group][data-workspace-mode='bots']
+  [data-slot='composer-root'][data-thread-scrolled-up]
+  [data-slot='composer-fade'] {
+  opacity: 0.82;
+}
+
+.hermes-bots-roster {
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 28%), var(--hermes-bots-rail, #303946);
+  border-right: 1px solid var(--hermes-bots-seam, rgb(181 199 224 / 0.3));
+  box-shadow:
+    inset -1px 0 var(--hermes-bots-seam-light, rgb(255 255 255 / 0.055)),
+    0.45rem 0 1.25rem rgb(8 13 21 / 0.13);
+}
+
+.hermes-bots-roster__toolbar {
+  min-height: 2.25rem;
+  background: color-mix(in srgb, var(--hermes-bots-rail-top, #343e4c) 88%, transparent);
+  border-bottom: 1px solid rgb(181 199 224 / 0.12);
+}
+
+.hermes-bots-roster__scroll {
+  scrollbar-color: rgb(181 199 224 / 0.2) transparent;
+}
+
+.hermes-bots-section-header {
+  border-top: 1px solid rgb(181 199 224 / 0.13);
+  border-radius: 0.2rem;
+  letter-spacing: 0.105em;
+}
+
+.hermes-bots-section-header:focus-visible {
+  outline: 1px solid rgb(163 199 247 / 0.72);
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-agent-motion {
+    animation: none !important;
+  }
+}
+
+/* ── Pixel pets ───────────────────────────────────────────────────────────────
+   A strip of headroom above the bar (--hud-top-inset, set by the shell while
+   pets are on) that two sprites patrol. Pointer-transparent end to end: the
+   strip is not "something" for the click-through hit test, so the desktop
+   under it still gets the click, and a pet can never be grabbed by mistake. */
+[data-hud-shell] [data-hud-pets] {
+  position: absolute;
+  top: 0;
+  right: var(--hud-band-inset, 0.5rem);
+  left: var(--hud-band-inset, 0.5rem);
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+[data-hud-shell] [data-hud-pet] {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  image-rendering: pixelated;
+  transform-origin: 50% 100%;
+  will-change: transform;
+  filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.45));
+  pointer-events: none;
+  user-select: none;
+}
+
+/* What the pet is saying: a tiny dark pill over its head. Un-flipped when the
+   sprite faces left (the sprite's own scaleX(-1) would mirror the text). */
+[data-hud-shell] [data-hud-pet-bubble] {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  translate: -50% 0;
+  max-width: 200px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(12 14 18 / 0.88);
+  color: #f2f5f9;
+  font-size: 0.625rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  pointer-events: none;
+}
+
+[data-hud-shell] [data-hud-pet][style*='scaleX(-1)'] [data-hud-pet-bubble] {
+  transform: scaleX(-1);
 }

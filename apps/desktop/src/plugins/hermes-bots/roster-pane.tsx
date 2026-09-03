@@ -65,6 +65,8 @@ import { useBots } from './i18n'
 import { displayName } from './labels'
 import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { $activityToasts, setActivityToasts, trackInboundActivity } from './roster-actions'
+import { rosterPresentationMode } from './roster-presentation'
+import { $collapsedRosterSections, setSectionCollapsed } from './roster-section-collapse'
 import {
   botNeedsHandleLabel,
   filterBotsByGateway,
@@ -279,7 +281,9 @@ export function BotsPane() {
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
   const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
   const [gatewayFilter, setGatewayFilter] = useState('all')
-  const [collapsedRosterSections, setCollapsedRosterSections] = useState<Set<string>>(() => new Set())
+  // Folding a section is a preference, not view state, so it reads from a
+  // persisted atom and survives a restart instead of resetting on mount.
+  const collapsedRosterSections = useValue($collapsedRosterSections)
   const hiddenSectionRef = useRef<null | HTMLDivElement>(null)
   const activityToasts = useValue($activityToasts)
   const groupChatName = useValue($groupChatWorkspace)
@@ -430,6 +434,7 @@ export function BotsPane() {
   const sortedGroupRows = sortRosterRows(groupRows)
   const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
   const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
+  const rosterMode = rosterPresentationMode(showGatewaySections, sortedGroupRows.length)
 
   const activeFilterCount =
     (rowKindFilter === 'all' ? 0 : 1) + (activityFilter === 'all' ? 0 : 1) + (gatewayFilter === 'all' ? 0 : 1)
@@ -465,17 +470,9 @@ export function BotsPane() {
   )
 
   const toggleRosterSection = (id: string): void => {
-    setCollapsedRosterSections(previous => {
-      const next = new Set(previous)
-
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-
-      return next
-    })
+    // Updates the atom AND persists in one step, so no call site can fold a
+    // section and forget the write.
+    setSectionCollapsed(id)
   }
 
   useEffect(() => {
@@ -710,6 +707,27 @@ export function BotsPane() {
     )
   }
 
+  const renderTeamSection = () => {
+    const sectionId = 'team'
+    const collapsed = rosterSectionCollapsed(sectionId)
+
+    return (
+      <div className="min-w-0" key={sectionId}>
+        <RosterSectionHeader
+          collapsed={collapsed}
+          count={botRows.length}
+          icon="organization"
+          label={b.roster.team}
+          onToggle={() => toggleRosterSection(sectionId)}
+          tip={`${botRows.length} team member${botRows.length === 1 ? '' : 's'}`}
+        />
+        {collapsed ? null : (
+          <div className="grid min-w-0 gap-0.5">{botRows.map(row => renderBotRow(row.bot))}</div>
+        )}
+      </div>
+    )
+  }
+
   const renderHiddenGatewaySection = (section: ResolvedRosterGatewaySection) => (
     <div className="min-w-0" key={`hidden-gateway:${section.id}`}>
       <div className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
@@ -724,8 +742,8 @@ export function BotsPane() {
   )
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
+    <div className="hermes-bots-roster flex h-full flex-col" data-hermes-bots-roster>
+      <div className="hermes-bots-roster__toolbar flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
         <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
           Bots
         </span>
@@ -936,12 +954,12 @@ export function BotsPane() {
           />
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-slot="bots-roster">
+        <div className="hermes-bots-roster__scroll min-h-0 flex-1 overflow-y-auto overscroll-contain" data-slot="bots-roster">
           <div className="grid w-full min-w-0 gap-0.5 px-1.5 pb-2">
-            {showGatewaySections
+            {rosterMode === 'gateway-sections'
               ? [
-                  sortedGroupRows.length ? renderGroupChatSection() : null,
-                  ...gatewaySections.sections.map(renderGatewaySection)
+                  ...gatewaySections.sections.map(renderGatewaySection),
+                  sortedGroupRows.length ? renderGroupChatSection() : null
                 ].filter(Boolean)
               : renderUserSections(rosterRows)}
             {showHiddenSection ? (

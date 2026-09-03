@@ -44,6 +44,9 @@ export interface StreamThrottle {
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
+  /** Temporarily keep chat renderers runnable for non-stream work such as the
+   * initial backend handshake. Returns an idempotent release callback. */
+  hold(): () => void
 }
 
 export function createStreamThrottle(
@@ -52,6 +55,8 @@ export function createStreamThrottle(
 ): StreamThrottle {
   const windows = new Set<ThrottleWindowLike>()
   let unthrottled = false
+  let busyState = false
+  let holds = 0
   let trailing: unknown = null
 
   function apply(win: ThrottleWindowLike) {
@@ -80,6 +85,35 @@ export function createStreamThrottle(
     }
   }
 
+  function keepUnthrottled() {
+    if (trailing !== null) {
+      timers.clearTimeout(trailing)
+      trailing = null
+    }
+
+    if (!unthrottled) {
+      unthrottled = true
+      applyAll()
+    }
+  }
+
+  function scheduleRethrottle() {
+    if (busyState || holds > 0 || !unthrottled || trailing !== null) {
+      return
+    }
+
+    trailing = timers.setTimeout(() => {
+      trailing = null
+
+      if (busyState || holds > 0) {
+        return
+      }
+
+      unthrottled = false
+      applyAll()
+    }, delayMs)
+  }
+
   return {
     isUnthrottled: () => unthrottled,
 
@@ -90,30 +124,33 @@ export function createStreamThrottle(
     },
 
     update(busy) {
+      // Retain the edge so releasing a boot hold cannot re-throttle a window
+      // that started streaming while the hold was active.
+      busyState = Boolean(busy)
+
       if (busy) {
-        if (trailing !== null) {
-          timers.clearTimeout(trailing)
-          trailing = null
-        }
-
-        if (!unthrottled) {
-          unthrottled = true
-          applyAll()
-        }
+        keepUnthrottled()
 
         return
       }
 
-      if (!unthrottled || trailing !== null) {
-        return
-      }
+      scheduleRethrottle()
+    },
 
-      // Trailing edge: keep full cadence briefly so the final flush paints.
-      trailing = timers.setTimeout(() => {
-        trailing = null
-        unthrottled = false
-        applyAll()
-      }, delayMs)
+    hold() {
+      holds += 1
+      keepUnthrottled()
+      let released = false
+
+      return () => {
+        if (released) {
+          return
+        }
+
+        released = true
+        holds = Math.max(0, holds - 1)
+        scheduleRethrottle()
+      }
     }
   }
 }

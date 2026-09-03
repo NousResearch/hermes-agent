@@ -139,6 +139,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // user is working in. Ships bound because the whole point is leaving the app
   // without reaching for it — but the titlebar button is the discoverable door.
   { id: 'view.toggleHud', category: 'view', defaults: ['mod+shift+h'] },
+  // ⌥⌘F — "f" for follow (⌘⇧F is session search). Lazy follow-the-pointer
+  // for the HUD bar; a pref main owns, so it works from the app window too.
+  { id: 'hud.toggleFollow', category: 'view', defaults: ['mod+alt+f'] },
   // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
   // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on
   // every platform. Off macOS `ctrl` folds to `mod` (= Ctrl), so it's unchanged.

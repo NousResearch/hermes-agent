@@ -1,13 +1,62 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  canShowQuickEntryFrom,
   createQuickEntryShortcut,
   DEFAULT_QUICK_ENTRY_SHORTCUT,
   type GlobalShortcutLike,
+  isQuickEntryAgentOffered,
+  isQuickEntryFallbackProfile,
   parseQuickEntryShortcut,
+  quickEntryRejectedLaunchResult,
+  quickEntryScreenAnchorRect,
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
+
+describe('canShowQuickEntryFrom', () => {
+  it('trusts only live declared pet hosts', () => {
+    const primarySender = { id: 'primary' }
+    const overlaySender = { id: 'overlay' }
+    const destroyedSender = { id: 'destroyed' }
+
+    const hosts = [
+      { isDestroyed: () => false, webContents: primarySender },
+      { isDestroyed: () => false, webContents: overlaySender },
+      { isDestroyed: () => true, webContents: destroyedSender }
+    ]
+
+    expect(canShowQuickEntryFrom(primarySender, hosts)).toBe(true)
+    expect(canShowQuickEntryFrom(overlaySender, hosts)).toBe(true)
+    expect(canShowQuickEntryFrom(destroyedSender, hosts)).toBe(false)
+    expect(canShowQuickEntryFrom({ id: 'quick-entry' }, hosts)).toBe(false)
+    expect(canShowQuickEntryFrom(primarySender, [null, undefined])).toBe(false)
+  })
+})
+
+describe('quickEntryScreenAnchorRect', () => {
+  it('translates a renderer-local pet rectangle into screen coordinates', () => {
+    expect(
+      quickEntryScreenAnchorRect(
+        { x: 300, y: 200 },
+        { height: 80, width: 56, x: 24, y: 40 }
+      )
+    ).toEqual({ height: 80, width: 56, x: 324, y: 240 })
+  })
+
+  it('scales renderer coordinates into Electron content bounds at non-default zoom', () => {
+    expect(
+      quickEntryScreenAnchorRect(
+        { height: 800, width: 1200, x: 100, y: 50 },
+        { height: 80, viewportHeight: 1000, viewportWidth: 1600, width: 56, x: 200, y: 700 }
+      )
+    ).toEqual({ height: 64, width: 42, x: 250, y: 610 })
+  })
+
+  it('rejects an invalid rectangle', () => {
+    expect(quickEntryScreenAnchorRect({ x: 0, y: 0 }, { height: 0, width: 56, x: 24, y: 40 })).toBeUndefined()
+  })
+})
 
 function fakeGlobalShortcut(options: { register?: boolean; taken?: string[] } = {}) {
   const held = new Set(options.taken ?? [])
@@ -213,8 +262,8 @@ describe('quickEntryWindowBounds', () => {
   it('centers horizontally and sits below the top edge of the work area', () => {
     const bounds = quickEntryWindowBounds({ height: 1000, width: 1600, x: 0, y: 0 })
 
-    expect(bounds.width).toBe(640)
-    expect(bounds.x).toBe((1600 - 640) / 2)
+    expect(bounds.width).toBe(760)
+    expect(bounds.x).toBe((1600 - 760) / 2)
     expect(bounds.y).toBeGreaterThan(0)
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(1000)
   })
@@ -222,8 +271,26 @@ describe('quickEntryWindowBounds', () => {
   it('respects a display origin offset (second monitor)', () => {
     const bounds = quickEntryWindowBounds({ height: 900, width: 1440, x: 1600, y: -200 })
 
-    expect(bounds.x).toBe(1600 + (1440 - 640) / 2)
+    expect(bounds.x).toBe(1600 + (1440 - 760) / 2)
     expect(bounds.y).toBeGreaterThanOrEqual(-200)
+  })
+
+  it('opens beside the pointer when there is room', () => {
+    const bounds = quickEntryWindowBounds({ height: 1000, width: 1600, x: 0, y: 0 }, { x: 400, y: 300 })
+
+    expect(bounds.x).toBe(418)
+    expect(bounds.y).toBe(318)
+  })
+
+  it('flips around the pointer and clamps on monitor edges', () => {
+    const bounds = quickEntryWindowBounds({ height: 900, width: 1440, x: -1440, y: -200 }, { x: -20, y: 650 })
+
+    expect(bounds.x).toBe(-798)
+    expect(bounds.y).toBe(212)
+    expect(bounds.x).toBeGreaterThanOrEqual(-1440)
+    expect(bounds.y).toBeGreaterThanOrEqual(-200)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(0)
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(700)
   })
 
   it('stays inside a tiny work area', () => {
@@ -235,6 +302,143 @@ describe('quickEntryWindowBounds', () => {
   })
 
   it('falls back to the origin without a work area', () => {
-    expect(quickEntryWindowBounds()).toEqual({ height: 168, width: 640, x: 0, y: 0 })
+    expect(quickEntryWindowBounds()).toEqual({ height: 420, width: 760, x: 0, y: 0 })
+  })
+
+  it('uses the compact rounded-picker footprint for a pet agent launch', () => {
+    expect(quickEntryWindowBounds(undefined, undefined, 'agents')).toEqual({ height: 238, width: 224, x: 0, y: 0 })
+
+    // Centred on the summon point and sitting above it — 500 - 224/2 = 388,
+    // 400 - 238 - 10 = 152 — so the menu reads as attached to the pet.
+    const bounds = quickEntryWindowBounds({ height: 900, width: 1440, x: 0, y: 0 }, { x: 500, y: 400 }, 'agents')
+
+    expect(bounds).toEqual({ height: 238, width: 224, x: 388, y: 152 })
+  })
+
+  it('keeps the pet chooser above the summon point and falls below only at the top edge', () => {
+    // Room above: opens above, and clamps X at the left edge rather than
+    // letting the centred panel run off-screen.
+    expect(quickEntryWindowBounds({ height: 900, width: 1440, x: 0, y: 0 }, { x: 80, y: 700 }, 'agents')).toEqual({
+      height: 238,
+      width: 224,
+      x: 0,
+      y: 452
+    })
+
+    // No room above: drops below the summon point.
+    expect(quickEntryWindowBounds({ height: 900, width: 1440, x: 0, y: 0 }, { x: 500, y: 40 }, 'agents')).toEqual({
+      height: 238,
+      width: 224,
+      x: 388,
+      y: 50
+    })
+  })
+
+  it('never covers the summon point while either side has room', () => {
+    const workArea = { height: 900, width: 1440, x: 0, y: 0 }
+
+    for (const y of [30, 120, 200, 450, 700, 860]) {
+      const bounds = quickEntryWindowBounds(workArea, { x: 500, y }, 'agents')
+      const clearsAbove = bounds.y + bounds.height <= y
+      const clearsBelow = bounds.y >= y
+
+      expect(clearsAbove || clearsBelow).toBe(true)
+      expect(bounds.y).toBeGreaterThanOrEqual(workArea.y)
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(workArea.y + workArea.height)
+    }
+  })
+
+  it('takes the roomier side when the panel fits on neither', () => {
+    // A 200px work area cannot hold the full vertical list clear of a pointer
+    // in the middle, so it must pick the roomier side and shrink to fit.
+    const workArea = { height: 200, width: 1440, x: 0, y: 0 }
+
+    // Pointer low: more room above, so the panel is pushed as high as it goes.
+    expect(quickEntryWindowBounds(workArea, { x: 500, y: 150 }, 'agents').y).toBe(0)
+    // Pointer high: more room below, so it is pushed as low as it goes.
+    expect(quickEntryWindowBounds(workArea, { x: 500, y: 40 }, 'agents').y).toBe(0)
+  })
+
+  it('respects a second monitor origin for the pet chooser', () => {
+    const bounds = quickEntryWindowBounds(
+      { height: 900, width: 1440, x: -1440, y: -200 },
+      { x: -700, y: 400 },
+      'agents'
+    )
+
+    expect(bounds).toEqual({ height: 238, width: 224, x: -812, y: 152 })
+    expect(bounds.x).toBeGreaterThanOrEqual(-1440)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(0)
+  })
+
+  it('anchors the pet chooser to the whole pet rectangle instead of the cursor point', () => {
+    const bounds = quickEntryWindowBounds(
+      { height: 900, width: 1440, x: 0, y: 0 },
+      { x: 438, y: 340 },
+      'agents',
+      { height: 80, width: 56, x: 410, y: 300 }
+    )
+
+    expect(bounds).toEqual({ height: 238, width: 224, x: 326, y: 52 })
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(300)
+  })
+
+  it('shrinks on a short work area rather than overlapping the pet rectangle', () => {
+    const anchor = { height: 60, width: 56, x: 132, y: 80 }
+
+    const bounds = quickEntryWindowBounds(
+      { height: 220, width: 320, x: 0, y: 0 },
+      { x: 160, y: 110 },
+      'agents',
+      anchor
+    )
+
+    const clearsAbove = bounds.y + bounds.height <= anchor.y
+    const clearsBelow = bounds.y >= anchor.y + anchor.height
+
+    expect(clearsAbove || clearsBelow).toBe(true)
+    expect(bounds.height).toBeLessThan(238)
+  })
+})
+
+describe('isQuickEntryFallbackProfile', () => {
+  it('allows only the shipped pet agents while the live roster is loading', () => {
+    expect(isQuickEntryFallbackProfile('default')).toBe(true)
+    expect(isQuickEntryFallbackProfile(' DEFAULT ')).toBe(true)
+    expect(isQuickEntryFallbackProfile('jarvis')).toBe(false)
+    expect(isQuickEntryFallbackProfile('invented-agent')).toBe(false)
+  })
+})
+
+describe('isQuickEntryAgentOffered', () => {
+  it('uses the shipped fallback only before any roster arrives', () => {
+    expect(isQuickEntryAgentOffered('default', undefined)).toBe(true)
+    expect(isQuickEntryAgentOffered('jarvis', undefined)).toBe(false)
+  })
+
+  it('treats an arrived roster as authoritative, including unreachable fallback agents', () => {
+    expect(isQuickEntryAgentOffered('jarvis', [{ profile: 'jarvis', reachable: false }])).toBe(false)
+    expect(isQuickEntryAgentOffered('jarvis', [])).toBe(false)
+    expect(isQuickEntryAgentOffered('jarvis', [{ profile: 'jarvis', reachable: true }])).toBe(true)
+  })
+})
+
+describe('quickEntryRejectedLaunchResult', () => {
+  it('creates a correlated visible error for a rejected agent launch', () => {
+    expect(
+      quickEntryRejectedLaunchResult(
+        { action: 'open-agent', profile: 'jarvis', requestId: 'request-1234' },
+        'This launcher is no longer active.'
+      )
+    ).toEqual({
+      error: 'This launcher is no longer active.',
+      ok: false,
+      profile: 'jarvis',
+      requestId: 'request-1234'
+    })
+  })
+
+  it('does not invent a launch result for a plain prompt submit', () => {
+    expect(quickEntryRejectedLaunchResult({ text: 'hello' }, 'Rejected')).toBeUndefined()
   })
 })

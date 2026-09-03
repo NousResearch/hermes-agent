@@ -4,6 +4,7 @@
 import '@/store/suggestion-providers/cron'
 import '@/store/suggestion-providers/github'
 import '@/store/suggestion-providers/mcp'
+import '@/store/suggestion-providers/prompt-coach'
 import '@/store/suggestion-providers/skill'
 
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'

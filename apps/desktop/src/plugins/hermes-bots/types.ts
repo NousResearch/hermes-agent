@@ -141,9 +141,31 @@ export interface GroupMessageAuthor {
   source?: string
 }
 
+/**
+ * Why a member message exists: the causal edge back to the speaker that put
+ * this member on turn, plus the slice of `log` the turn actually read.
+ *
+ * Stamped onto the message rather than kept beside it. The activity feed
+ * carries the same `source`, but it is runtime-only, epoch-scoped and capped
+ * at 50 events — it evaporates on the next send and on restart, which is
+ * precisely when someone asks why a room produced what it did. The transcript
+ * is the durable record, so the edge belongs there.
+ *
+ * Deliberately two short keys: every member message carries one and the
+ * gateway room mirror is byte-bounded.
+ */
+export interface GroupMessageCause {
+  /** Room speaker whose message put this member on turn, when known. */
+  by?: string
+  /** Half-open `log` range the member read before replying: `[from, to)`. */
+  saw?: [number, number]
+}
+
 export interface GroupMessage {
   /** Milliseconds. */
   at: number
+  /** Present on member messages produced by a turn; absent on user sends. */
+  cause?: GroupMessageCause
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
@@ -172,7 +194,7 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  stranded?: Record<string, number | { before: number; source?: string; thread?: string }>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
@@ -236,6 +258,8 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
+  /** The room speaker whose message caused this member turn, when known. */
+  source?: string
 }
 
 /**

@@ -845,6 +845,128 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** macOS-inspired graphite glass with electric cyan and restrained lime. */
+export const auroraTheme: DesktopTheme = {
+  name: 'aurora',
+  label: 'Hermes Aurora',
+  description: 'Graphite glass with electric cyan and aurora green',
+  colors: {
+    background: '#eef6f8',
+    foreground: '#10212b',
+    card: '#f7fbfc',
+    cardForeground: '#10212b',
+    muted: '#dfecef',
+    mutedForeground: '#58717d',
+    popover: '#fbfeff',
+    popoverForeground: '#10212b',
+    primary: '#0b6072',
+    primaryForeground: '#f5ffff',
+    secondary: '#d9e9ed',
+    secondaryForeground: '#1d4652',
+    accent: '#d7f0eb',
+    accentForeground: '#15574b',
+    border: '#c4d9df',
+    input: '#c4d9df',
+    ring: '#00a9d6',
+    midground: '#00a9d6',
+    composerRing: '#00a9d6',
+    destructive: '#c9414d',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#e7f1f3',
+    sidebarBorder: '#c8dce1',
+    userBubble: '#d7edf3',
+    userBubbleBorder: '#88c9d9'
+  },
+  darkColors: {
+    background: '#071015',
+    foreground: '#e8f7fa',
+    card: '#0d1b22',
+    cardForeground: '#e8f7fa',
+    muted: '#14272f',
+    mutedForeground: '#83a3ad',
+    popover: '#102129',
+    popoverForeground: '#e8f7fa',
+    primary: '#78e9ff',
+    primaryForeground: '#061116',
+    secondary: '#18323d',
+    secondaryForeground: '#c3e3ea',
+    accent: '#16372f',
+    accentForeground: '#b9ff8c',
+    border: '#1f3b46',
+    input: '#294957',
+    ring: '#27d8ff',
+    midground: '#27d8ff',
+    composerRing: '#27d8ff',
+    destructive: '#ff5f6d',
+    destructiveForeground: '#fff5f6',
+    sidebarBackground: '#050c10',
+    sidebarBorder: '#17313b',
+    userBubble: '#102d38',
+    userBubbleBorder: '#2b6a7b'
+  }
+}
+
+/** Low-eye-strain navy slate for long-running agent conversations. */
+export const hermesSlateTheme: DesktopTheme = {
+  name: 'hermes-slate',
+  label: 'Hermes Slate',
+  description: 'Quiet navy surfaces with restrained steel-blue accents',
+  colors: {
+    background: '#f3f6f9',
+    foreground: '#172231',
+    card: '#ffffff',
+    cardForeground: '#172231',
+    muted: '#e7edf3',
+    mutedForeground: '#667589',
+    popover: '#ffffff',
+    popoverForeground: '#172231',
+    primary: '#426f94',
+    primaryForeground: '#ffffff',
+    secondary: '#dce7ef',
+    secondaryForeground: '#29465d',
+    accent: '#d8e7f1',
+    accentForeground: '#284d69',
+    border: '#c8d3de',
+    input: '#bac8d5',
+    ring: '#6e9fc5',
+    midground: '#6e9fc5',
+    composerRing: '#6e9fc5',
+    destructive: '#a94f5b',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#e9eef3',
+    sidebarBorder: '#c8d3de',
+    userBubble: '#dbe7f0',
+    userBubbleBorder: '#9bb7cc'
+  },
+  darkColors: {
+    background: '#0b1019',
+    foreground: '#d3d9e4',
+    card: '#111a28',
+    cardForeground: '#d3d9e4',
+    muted: '#182333',
+    mutedForeground: '#8d9aae',
+    popover: '#111a28',
+    popoverForeground: '#d3d9e4',
+    primary: '#6e9fc5',
+    primaryForeground: '#07101a',
+    secondary: '#17283a',
+    secondaryForeground: '#c5d1dd',
+    accent: '#1a3852',
+    accentForeground: '#d9e9f5',
+    border: '#26364a',
+    input: '#31465e',
+    ring: '#6e9fc5',
+    midground: '#6e9fc5',
+    composerRing: '#6e9fc5',
+    destructive: '#c56f79',
+    destructiveForeground: '#fff4f5',
+    sidebarBackground: '#080d15',
+    sidebarBorder: '#1d2a3a',
+    userBubble: '#1a3852',
+    userBubbleBorder: '#416b8c'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   github: githubTheme,
@@ -856,6 +978,8 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   ember: emberTheme,
   mono: monoTheme,
   slate: slateTheme,
+  aurora: auroraTheme,
+  'hermes-slate': hermesSlateTheme,
   cyberpunk: cyberpunkTheme
 }
 

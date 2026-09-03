@@ -17,8 +17,8 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
@@ -615,9 +615,81 @@ export function stageGetWindows(
   return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, install })
 }
 
+
+// ─── uiohook-napi (HUD ask-at-cursor right-click hook) ───────────────────
+//
+// Optional dependency: the packaged app ships only `dist/**`, so the module
+// has to be staged into dist/node_modules like get-windows. The runtime loads
+// the staged copy first (see electron/hud-hook.ts) and degrades to "hook not
+// installed" when it is absent — never a build failure, because the chord
+// path works without it.
+function resolveUiohookRoot() {
+  try {
+    const entryPath = require.resolve('uiohook-napi')
+    return resolve(dirname(entryPath), '..')
+  } catch {
+    return null
+  }
+}
+
+function copyPackageFiles(srcRoot, destRoot, files) {
+  for (const rel of files) {
+    const from = join(srcRoot, rel)
+    if (!existsSync(from)) continue
+    const to = join(destRoot, rel)
+    mkdirSync(dirname(to), { recursive: true })
+    cpSync(from, to)
+  }
+}
+
+export function stageUiohook({ platform = process.platform, arch = process.arch } = {}) {
+  const srcRoot = resolveUiohookRoot()
+  const destRoot = resolve(projectRoot, 'dist/node_modules/uiohook-napi')
+
+  if (!srcRoot) {
+    console.warn(
+      `[stage-native-deps] uiohook-napi not installed (optional dep skipped for ${platform}-${arch}); ` +
+        'the HUD right-click ask gesture will be unavailable in this build'
+    )
+    return undefined
+  }
+
+  const prebuild = join(srcRoot, 'prebuilds', `${platform}-${arch}`)
+  if (!existsSync(prebuild)) {
+    console.warn(
+      `[stage-native-deps] uiohook-napi has no ${platform}-${arch} prebuild; ` +
+        'the HUD right-click ask gesture will be unavailable in this build'
+    )
+    return undefined
+  }
+
+  rmSync(destRoot, { recursive: true, force: true })
+  copyPackageFiles(srcRoot, destRoot, ['package.json', 'LICENSE', 'dist/index.js', 'dist/index.d.ts'])
+  cpSync(prebuild, join(destRoot, 'prebuilds', `${platform}-${arch}`), { recursive: true })
+
+  // uiohook-napi locates its binding through node-gyp-build, which must
+  // therefore be resolvable next to the staged copy.
+  let gypRoot = null
+  try {
+    gypRoot = dirname(require.resolve('node-gyp-build/package.json'))
+  } catch {
+    gypRoot = null
+  }
+  if (!gypRoot) {
+    throw new Error('[stage-native-deps] uiohook-napi is installed but node-gyp-build is not resolvable')
+  }
+  const gypDest = resolve(projectRoot, 'dist/node_modules/node-gyp-build')
+  rmSync(gypDest, { recursive: true, force: true })
+  copyPackageFiles(gypRoot, gypDest, ['package.json', 'index.js', 'node-gyp-build.js', 'build-test.js', 'optional.js', 'LICENSE'])
+
+  console.log(`[stage-native-deps] staged uiohook-napi (${platform}-${arch}) -> ${destRoot}`)
+  return destRoot
+}
+
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
 if (isMain(import.meta.url)) {
   const [platform, arch] = process.argv.slice(2)
   stageNodePty({ platform, arch })
   stageGetWindows({ platform, arch })
+  stageUiohook({ platform, arch })
 }

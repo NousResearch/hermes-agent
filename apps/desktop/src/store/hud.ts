@@ -15,6 +15,8 @@
 
 import { atom } from 'nanostores'
 
+import type { HudAskPayload, HudLaunchOptions, HudPrefs, HudPrefsStatus, HudRoomFeed } from '@/lib/hud-prefs'
+import { parseHudVoiceCommand } from '@/lib/hud-voice-command'
 import { requestComposerDraftSync } from '@/store/composer'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $sessions, rememberedSessionProfile } from '@/store/session'
@@ -71,6 +73,32 @@ export function openHud(sessionId?: null | string): void {
   void api.open({ sessionId: sessionId ?? null, profile })
 }
 
+/** Start HUD mode on a fresh draft owned by an explicit agent profile. Unlike
+ * openHud(null), this does not infer the target from the primary window's
+ * active profile — the pointer launcher may choose a different agent while the
+ * main workspace stays exactly where it is. */
+export async function openHudForProfile(profile: string): Promise<boolean> {
+  const api = window.hermesDesktop?.hud
+
+  if (!api) {
+    return false
+  }
+
+  requestComposerDraftSync('flush')
+  $hudActive.set(true)
+  $hudSession.set(null)
+
+  try {
+    const result = await api.open({ sessionId: null, profile: normalizeProfileKey(profile) })
+
+    return result.ok === true
+  } catch {
+    $hudActive.set(false)
+
+    return false
+  }
+}
+
 /** Leave HUD mode. Callable from either window — main closes the child, the
  *  HUD closes itself; both restore the app window. */
 export function closeHud(): void {
@@ -114,4 +142,245 @@ export function watchHudState(onClosed?: (sessionId: null | string) => void): ()
   })
 
   return off ?? (() => {})
+}
+
+// ── Follow / ask prefs, switchers ─────────────────────────────────────────────
+//
+// Main owns these (the OS chord, the optional input hook, the cursor poll);
+// the renderer mirrors the status it broadcasts and asks for changes. Read in
+// the HUD (toggle + pills), in Settings (rows), and in the app window's
+// keybinds — one atom, one broadcast, no window disagrees.
+
+export const $hudPrefs = atom<HudPrefsStatus | null>(null)
+
+/** Agents + rooms for the HUD's switchers, as last pushed by the primary
+ *  renderer for Quick Entry and cached in main. */
+export const $hudLaunchOptions = atom<HudLaunchOptions>({ agents: [], groups: [] })
+
+/** The ask sheet's payload while the sheet is up; null otherwise. */
+export const $hudAsk = atom<HudAskPayload | null>(null)
+
+export async function loadHudPrefs(): Promise<HudPrefsStatus | null> {
+  const api = window.hermesDesktop?.hud
+
+  if (!api?.getPrefs) {
+    return null
+  }
+
+  try {
+    const status = await api.getPrefs()
+    $hudPrefs.set(status)
+
+    return status
+  } catch {
+    return null
+  }
+}
+
+/** Mirror main's status broadcasts. Returns a disposer; no-op outside Electron. */
+export function watchHudPrefs(): () => void {
+  return window.hermesDesktop?.hud?.onPrefs?.(status => $hudPrefs.set(status)) ?? (() => {})
+}
+
+export async function setHudPrefs(patch: Partial<HudPrefs>): Promise<HudPrefsStatus | null> {
+  const api = window.hermesDesktop?.hud
+
+  if (!api?.setPrefs) {
+    return null
+  }
+
+  try {
+    const status = await api.setPrefs(patch)
+    $hudPrefs.set(status)
+
+    return status
+  } catch {
+    return null
+  }
+}
+
+export function toggleHudFollow(): void {
+  void setHudPrefs({ follow: !($hudPrefs.get()?.follow ?? false) })
+}
+
+export async function refreshHudLaunchOptions(): Promise<HudLaunchOptions> {
+  const api = window.hermesDesktop?.hud
+
+  if (!api?.launchOptions) {
+    return $hudLaunchOptions.get()
+  }
+
+  try {
+    const options = await api.launchOptions()
+
+    const next: HudLaunchOptions = {
+      agents: Array.isArray(options?.agents) ? options.agents : [],
+      groups: Array.isArray(options?.groups) ? options.groups : []
+    }
+
+    $hudLaunchOptions.set(next)
+
+    return next
+  } catch {
+    return $hudLaunchOptions.get()
+  }
+}
+
+/** Remote control: open a room in the app window. The HUD keeps its own
+ *  session — rooms render in the pane tree the HUD does not have. */
+export async function openHudRoom(groupId: string): Promise<boolean> {
+  const api = window.hermesDesktop?.hud
+  const id = groupId.trim()
+
+  if (!api?.openRoom || !id) {
+    return false
+  }
+
+  try {
+    return (await api.openRoom(id)).ok === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Step the HUD to the next/previous agent in launcher order, wrapping — the
+ * HUD's answer to ⌘⇧] / ⌘⇧[. Goes through `openHudForProfile`, so the app
+ * window's workspace is untouched and the HUD respawns against the chosen
+ * profile's backend. Returns false when there was nowhere to step.
+ */
+export function hudCycleAgent(direction: -1 | 1): boolean {
+  const agents = $hudLaunchOptions.get().agents.filter(agent => agent.reachable)
+
+  if (agents.length < 2) {
+    return false
+  }
+
+  const current = normalizeProfileKey($activeGatewayProfile.get())
+  const index = agents.findIndex(agent => normalizeProfileKey(agent.profile) === current)
+  const start = index < 0 ? (direction === 1 ? -1 : 0) : index
+  const next = agents[(start + direction + agents.length) % agents.length]
+
+  if (!next || normalizeProfileKey(next.profile) === current) {
+    return false
+  }
+
+  void openHudForProfile(next.profile)
+
+  return true
+}
+
+/** HUD side: receive ask payloads — the one parked before this renderer
+ *  existed, then every live push. Returns a disposer. */
+export function watchHudAsk(): () => void {
+  const api = window.hermesDesktop?.hud
+
+  if (!api) {
+    return () => {}
+  }
+
+  void api
+    .takePendingAsk?.()
+    .then(payload => {
+      if (payload) {
+        $hudAsk.set(payload)
+      }
+    })
+    .catch(() => undefined)
+
+  return api.onAsk?.(payload => $hudAsk.set(payload)) ?? (() => {})
+}
+
+export const dismissHudAsk = (): void => $hudAsk.set(null)
+
+/**
+ * A whole-utterance HUD command ("HUD top left", "HUD follow me", "HUD come
+ * here", "HUD hide"). Returns true when the text WAS such a command and has
+ * been handed to main — the caller must then not submit it as a turn. The
+ * HUD need not be open for "follow me" (a pref) but must be for the moves;
+ * main answers ok:false then and the words fall through to the agent.
+ */
+export function runHudVoiceCommand(text: string): boolean {
+  const command = parseHudVoiceCommand(text)
+  const api = window.hermesDesktop?.hud
+
+  if (!command || !api?.command) {
+    return false
+  }
+
+  void api.command(command).catch(() => undefined)
+
+  return true
+}
+
+// ── Room mode ─────────────────────────────────────────────────────────────────
+//
+// The HUD talking into a room. The room engine runs in the app window; the
+// HUD posts lines through main and shows the feed main pushes back. While a
+// room is entered the HUD's composer submits here instead of to the agent
+// session (see use-prompt-actions/submit).
+
+/** The room the HUD is talking into, or null for the ordinary agent session. */
+export const $hudRoom = atom<null | string>(null)
+
+export const $hudRoomFeed = atom<HudRoomFeed | null>(null)
+
+export async function enterHudRoom(groupId: string): Promise<boolean> {
+  const api = window.hermesDesktop?.hud
+  const id = groupId.trim()
+
+  if (!api?.roomFeed || !id) {
+    return false
+  }
+
+  $hudRoom.set(id)
+  $hudRoomFeed.set(null)
+
+  try {
+    await api.watchRoom?.(id)
+    const feed = await api.roomFeed(id)
+
+    if ($hudRoom.get() === id) {
+      $hudRoomFeed.set(feed && feed.groupId === id ? feed : null)
+    }
+
+    return true
+  } catch {
+    return $hudRoom.get() === id
+  }
+}
+
+export function leaveHudRoom(): void {
+  $hudRoom.set(null)
+  $hudRoomFeed.set(null)
+  void window.hermesDesktop?.hud?.watchRoom?.(null)?.catch(() => undefined)
+}
+
+/** Post a line into the entered room. False when not in a room, the text is
+ *  blank, or the app window could not deliver it. */
+export async function postHudRoom(text: string): Promise<boolean> {
+  const api = window.hermesDesktop?.hud
+  const room = $hudRoom.get()
+  const trimmed = text.trim()
+
+  if (!api?.roomPost || !room || !trimmed) {
+    return false
+  }
+
+  try {
+    return (await api.roomPost(room, trimmed)).ok === true
+  } catch {
+    return false
+  }
+}
+
+/** HUD side: take feed pushes for the entered room. Returns a disposer. */
+export function watchHudRoomFeed(): () => void {
+  return (
+    window.hermesDesktop?.hud?.onRoomFeed?.(feed => {
+      if (feed && feed.groupId === $hudRoom.get()) {
+        $hudRoomFeed.set(feed)
+      }
+    }) ?? (() => {})
+  )
 }

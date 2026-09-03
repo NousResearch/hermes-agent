@@ -123,6 +123,17 @@ export type GatewayEventPayload = {
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
+  // screen.tutor.point / screen.tutor.annotations — normalized locations on
+  // the explicitly captured display. Renderer + main validate again before
+  // showing the click-through OS overlay.
+  display_id?: string
+  x?: number
+  y?: number
+  annotations?: unknown
+  frozen?: boolean
+  guide?: unknown
+  mode?: string
+  ttl_ms?: number
   // layout.apply (agent applying a layout preset via the apply_layout tool)
   preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`

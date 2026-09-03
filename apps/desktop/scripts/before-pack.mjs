@@ -60,7 +60,7 @@
 import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
+import { stageNodePty, stageGetWindows, stageUiohook } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -148,6 +148,8 @@ export default async function beforePack(context) {
       // Pass the target arch so an ARM64 package never stages an x64 binding.
       stageGetWindows({ platform, arch: archName })
       console.log(`[before-pack] re-staged get-windows for target ${platform}-${archName}`)
+      // Same arch rule for the optional HUD right-click hook.
+      stageUiohook({ platform, arch: archName })
     }
   } catch (err) {
     // This one SHOULD fail the build — a missing/wrong native binary for the

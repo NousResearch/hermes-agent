@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
 import type { ComposerAttachment } from '@/store/composer'
@@ -9,6 +9,22 @@ import { AttachmentList } from './attachments'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 const THUMBNAIL_URL = 'data:image/png;base64,dGh1bWJuYWls'
+const nativeResizeObserver = globalThis.ResizeObserver
+
+beforeAll(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class ResizeObserverMock {
+      disconnect() {}
+      observe() {}
+      unobserve() {}
+    }
+  )
+})
+
+afterAll(() => {
+  vi.stubGlobal('ResizeObserver', nativeResizeObserver)
+})
 
 function makeAttachment(id: string, label = 'test.pdf'): ComposerAttachment {
   return { id, kind: 'file', label }
@@ -27,6 +43,24 @@ async function renderWithI18n(ui: React.ReactNode) {
   return result!
 }
 
+async function openAttachmentMenu() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: /^\d+ attachments?$/ }))
+  })
+}
+
+function imageLightbox(src: string): HTMLElement | undefined {
+  return screen
+    .queryAllByRole('dialog')
+    .find(dialog => dialog.querySelector<HTMLImageElement>(`img[src="${src}"]`))
+}
+
+async function findImageLightbox(src: string): Promise<HTMLElement> {
+  await waitFor(() => expect(imageLightbox(src)).toBeDefined())
+
+  return imageLightbox(src)!
+}
+
 describe('AttachmentList', () => {
   afterEach(() => {
     cleanup()
@@ -37,6 +71,7 @@ describe('AttachmentList', () => {
   it('renders valid attachments', async () => {
     const attachments = [makeAttachment('a', 'doc.pdf'), makeAttachment('b', 'img.png')]
     await renderWithI18n(<AttachmentList attachments={attachments} />)
+    await openAttachmentMenu()
     expect(screen.getByText('doc.pdf')).toBeDefined()
     expect(screen.getByText('img.png')).toBeDefined()
   })
@@ -59,6 +94,7 @@ describe('AttachmentList', () => {
     ]
 
     await expect(renderWithI18n(<AttachmentList attachments={attachments} />)).resolves.toBeTruthy()
+    await openAttachmentMenu()
 
     // Only valid attachments should render
     expect(screen.getByText('good.pdf')).toBeDefined()
@@ -69,6 +105,7 @@ describe('AttachmentList', () => {
     const attachments = [null as unknown as ComposerAttachment, makeAttachment('a', 'valid.txt')]
 
     await expect(renderWithI18n(<AttachmentList attachments={attachments} />)).resolves.toBeTruthy()
+    await openAttachmentMenu()
 
     expect(screen.getByText('valid.txt')).toBeDefined()
   })
@@ -86,6 +123,7 @@ describe('AttachmentList', () => {
     }
 
     await renderWithI18n(<AttachmentList attachments={[image]} />)
+    await openAttachmentMenu()
 
     expect(screen.getByAltText<HTMLImageElement>('shot.png').getAttribute('src')).toBe(THUMBNAIL_URL)
 
@@ -94,7 +132,7 @@ describe('AttachmentList', () => {
     })
 
     // The lightbox renders the full-size image in a dialog; the rail stays empty.
-    const lightbox = await screen.findByRole('dialog')
+    const lightbox = await findImageLightbox(DATA_URL)
 
     expect(lightbox.querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
     expect($previewTabs.get()).toHaveLength(0)
@@ -117,6 +155,7 @@ describe('AttachmentList', () => {
     }
 
     const { container } = await renderWithI18n(<AttachmentList attachments={[image]} />)
+    await openAttachmentMenu()
 
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(screen.getByAltText<HTMLImageElement>('shot.png').getAttribute('src')).toBe(THUMBNAIL_URL)
@@ -127,7 +166,7 @@ describe('AttachmentList', () => {
     })
 
     expect(readFileDataUrl).toHaveBeenCalledOnce()
-    const lightboxImage = (await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')
+    const lightboxImage = (await findImageLightbox(DATA_URL)).querySelector<HTMLImageElement>('img')
 
     expect(lightboxImage?.getAttribute('src')).toBe(DATA_URL)
 
@@ -135,7 +174,7 @@ describe('AttachmentList', () => {
       fireEvent.click(lightboxImage!)
     })
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(imageLightbox(DATA_URL)).toBeUndefined())
     expect(container.querySelector(`img[src="${DATA_URL}"]`)).toBeNull()
   })
 
@@ -167,6 +206,7 @@ describe('AttachmentList', () => {
     }
 
     await renderWithI18n(<AttachmentList attachments={[image]} />)
+    await openAttachmentMenu()
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /photo\.png/ }))
@@ -174,7 +214,7 @@ describe('AttachmentList', () => {
 
     expect(readFileDataUrl).toHaveBeenCalledWith(stagedPath)
     expect(readFileDataUrl).toHaveBeenCalledWith(hostPath)
-    expect((await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
+    expect((await findImageLightbox(DATA_URL)).querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
   })
 
   it('does not let an old occurrence open a replacement lightbox after a deferred read', async () => {
@@ -209,6 +249,7 @@ describe('AttachmentList', () => {
     }
 
     const { rerender } = await renderWithI18n(<AttachmentList attachments={[oldOccurrence]} />)
+    await openAttachmentMenu()
 
     fireEvent.click(screen.getByRole('button', { name: /same\.png/ }))
     expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/old.png')
@@ -224,14 +265,16 @@ describe('AttachmentList', () => {
       await oldRead
     })
 
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(imageLightbox(DATA_URL)).toBeUndefined()
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /same\.png/ }))
     })
 
     expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/replacement.png')
-    expect((await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')?.src).toBe(
+    expect(
+      (await findImageLightbox('data:image/png;base64,replacement')).querySelector<HTMLImageElement>('img')?.src
+    ).toBe(
       'data:image/png;base64,replacement'
     )
   })
@@ -251,12 +294,13 @@ describe('AttachmentList', () => {
     const file: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.md', path: '/tmp/notes.md' }
 
     await renderWithI18n(<AttachmentList attachments={[file]} />)
+    await openAttachmentMenu()
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
     })
 
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryAllByRole('dialog').some(dialog => dialog.querySelector('img'))).toBe(false)
     expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/tmp/notes.md'])
   })
 })

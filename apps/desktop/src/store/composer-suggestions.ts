@@ -36,6 +36,9 @@ export interface ComposerSuggestion {
   label: string
   /** Tooltip explaining WHY this is being suggested. */
   tip: string
+  /** Optional behavior revision. Change it when an otherwise-identical pill
+   *  closes over new input so the bus replaces the invoke callback too. */
+  revision?: string
   /** Brand identity for the glyph slot; falls back to `icon`. */
   brand?: string
   /** Codicon name when there is no brand glyph (default: lightbulb). */
@@ -65,9 +68,13 @@ export const suggestionKey = (suggestion: Pick<ComposerSuggestion, 'id' | 'provi
  *  derived from them are too. */
 export const $composerSuggestionsBySession = atom<Record<string, ComposerSuggestion[]>>({})
 
-const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
+// The landing composer has no runtime session id yet, but it is still a real
+// draft surface. Use a non-empty sentinel so `useSessionSlice` can subscribe to
+// it (that hook intentionally treats null/empty keys as "no slice").
+export const suggestionSessionKey = (sessionId: string | null | undefined): string =>
+  sessionId ?? '__new-session-draft__'
 
-// Everything the pill actually paints. Compared field-by-field rather than by
+// Everything the pill paints or uses when invoked. Compared field-by-field rather than by
 // key alone: a provider rebuilds its suggestion objects on every sample, so
 // key equality is true constantly, and treating that as "no change" pins the
 // FIRST object forever — the strip then paints a stale tip and, worse, calls a
@@ -80,6 +87,7 @@ const RENDERED: readonly (keyof ComposerSuggestion)[] = [
   'doneTip',
   'icon',
   'label',
+  'revision',
   'tip',
   'workingLabel',
   'workingTip'
@@ -94,7 +102,7 @@ const sameSuggestions = (a: readonly ComposerSuggestion[], b: readonly ComposerS
   })
 
 function write(sessionId: string | null | undefined, suggestions: ComposerSuggestion[]): void {
-  const key = keyFor(sessionId)
+  const key = suggestionSessionKey(sessionId)
   const current = $composerSuggestionsBySession.get()
   const existing = current[key] ?? []
 
@@ -151,7 +159,7 @@ export function offerSuggestions(
   provider: string,
   suggestions: ComposerSuggestion[]
 ): void {
-  const key = keyFor(sessionId)
+  const key = suggestionSessionKey(sessionId)
   let providers = eventOfferings.get(key)
 
   if (!providers) {
@@ -188,8 +196,8 @@ const shown = new Map<string, Set<string>>()
 /** The pill strip marks a suggestion invoked so its withdrawal isn't
  *  miscounted as the user ignoring it. */
 export function markSuggestionInvoked(sessionId: string | null | undefined, key: string): void {
-  ignoredCounts.get(keyFor(sessionId))?.delete(key)
-  shown.get(keyFor(sessionId))?.delete(key)
+  ignoredCounts.get(suggestionSessionKey(sessionId))?.delete(key)
+  shown.get(suggestionSessionKey(sessionId))?.delete(key)
 }
 
 const quieted = (sessionKey: string, key: string): boolean =>
@@ -218,7 +226,7 @@ function recordWithdrawals(sessionKey: string, next: readonly ComposerSuggestion
 /** Event offerings first (they carry session/tool state, stronger signal
  *  than draft keywords), then draft matches, capped. */
 function publish(sessionId: string | null): void {
-  const key = keyFor(sessionId)
+  const key = suggestionSessionKey(sessionId)
   const event = [...(eventOfferings.get(key)?.values() ?? [])].flat()
   const draft = draftOfferings.get(key) ?? []
   const seen = new Set<string>()
@@ -259,7 +267,7 @@ const sampleGenerations = new Map<string, number>()
  * actually differs, so typing within a line costs nothing downstream.
  */
 export function sampleComposerDraft(sessionId: string | null | undefined, text: string): void {
-  const key = keyFor(sessionId)
+  const key = suggestionSessionKey(sessionId)
 
   window.clearTimeout(sampleTimers.get(key))
 
@@ -298,7 +306,7 @@ export function sampleComposerDraft(sessionId: string | null | undefined, text: 
  *  Draft offerings die with the draft; event offerings persist — their
  *  providers own that lifecycle and withdraw on their own signal. */
 export function clearDraftSuggestions(sessionId: string | null | undefined): void {
-  const key = keyFor(sessionId)
+  const key = suggestionSessionKey(sessionId)
 
   window.clearTimeout(sampleTimers.get(key))
   draftOfferings.delete(key)

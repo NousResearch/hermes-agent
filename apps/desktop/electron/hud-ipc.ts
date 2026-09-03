@@ -4,6 +4,7 @@
 // latch when handing the session back to the app window.
 import { type BrowserWindow, ipcMain, screen } from 'electron'
 
+import type { HudAskPayload, HudLaunchOptions, HudPrefs, HudPrefsStatus } from './hud-ask'
 import { createHudDragSession } from './hud-drag'
 import { normalizeHudResizeBounds } from './hud-geometry'
 import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
@@ -22,6 +23,18 @@ export interface HudIpcDeps {
   closeHudWindow: () => void
   resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
+  /** Follow / ask prefs — main is authoritative (it owns the chord + hook). */
+  getHudPrefs: () => HudPrefsStatus
+  updateHudPrefs: (patch: Partial<HudPrefs>) => HudPrefsStatus
+  /** The ask payload parked for a HUD renderer that was not up yet. */
+  takePendingAsk: () => HudAskPayload | null
+  getLaunchOptions: () => HudLaunchOptions
+  /** Open a room in the MAIN window on the HUD's behalf. */
+  openRoom: (groupId: string) => boolean
+  /** A parsed HUD voice/typed command (place, come-here, follow, hide). */
+  runCommand: (command: { anchor?: string; kind: string; on?: boolean }) => boolean
+  /** The app window, where Bot Mode's room engine runs. */
+  getMainWindow: () => BrowserWindow | null
 }
 
 export function registerHudIpc({
@@ -31,7 +44,14 @@ export function registerHudIpc({
   openHudWindow,
   closeHudWindow,
   resetHudLayout,
-  setHudSessionId
+  setHudSessionId,
+  getHudPrefs,
+  updateHudPrefs,
+  takePendingAsk,
+  getLaunchOptions,
+  openRoom,
+  runCommand,
+  getMainWindow
 }: HudIpcDeps) {
   const hudDrag = createHudDragSession()
 
@@ -295,6 +315,165 @@ export function registerHudIpc({
     closeHudWindow()
 
     return { ok: true }
+  })
+
+  // Follow / ask prefs. Readable and writable from ANY window — Settings
+  // lives in the app window, the follow toggle in the HUD's controls row —
+  // and main answers with the ground truth either way.
+  ipcMain.handle('hermes:hud:prefs:get', () => getHudPrefs())
+
+  ipcMain.handle('hermes:hud:prefs:set', (_event, patch) => {
+    const record = patch && typeof patch === 'object' ? (patch as Record<string, unknown>) : {}
+    const next: Partial<HudPrefs> = {}
+
+    if (typeof record.follow === 'boolean') {
+      next.follow = record.follow
+    }
+
+    if (typeof record.askOnRightClick === 'boolean') {
+      next.askOnRightClick = record.askOnRightClick
+    }
+
+    if (typeof record.pets === 'boolean') {
+      next.pets = record.pets
+    }
+
+    if (record.petByAgent && typeof record.petByAgent === 'object') {
+      next.petByAgent = record.petByAgent as HudPrefs['petByAgent']
+    }
+
+    if (typeof record.askShortcut === 'string') {
+      next.askShortcut = record.askShortcut
+    }
+
+    return updateHudPrefs(next)
+  })
+
+  // The HUD renderer, once its sheet is mounted, collects an ask that arrived
+  // before it existed. HUD sender only: the payload names another app's window
+  // and carries a screenshot path.
+  ipcMain.handle('hermes:hud:ask-pending', event => {
+    const hudWindow = getHudWindow()
+
+    if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+      return null
+    }
+
+    return takePendingAsk()
+  })
+
+  ipcMain.handle('hermes:hud:launch-options', () => getLaunchOptions())
+
+  ipcMain.handle('hermes:hud:open-room', (_event, request) => {
+    const groupId = typeof request?.groupId === 'string' ? request.groupId.trim() : ''
+
+    return { ok: groupId ? openRoom(groupId) : false }
+  })
+
+  // "HUD top left" / "HUD follow me" / "HUD come here" / "HUD hide" — parsed in
+  // the renderer (src/lib/hud-voice-command.ts), carried out here. Any window
+  // may send one: the voice loop runs in the HUD and in the app window alike.
+  // ── The HUD talking into a room ─────────────────────────────────────────
+  // Rooms live in the app window. The HUD asks main; main asks the primary
+  // renderer over a request id and answers when the reply comes back (or
+  // times out — a hung primary must not hang the HUD's composer).
+  const HUD_ROOM_TIMEOUT_MS = 6000
+  let roomRequestSeq = 0
+  const roomRequests = new Map<string, (value: unknown) => void>()
+  let hudWatchedRoom: null | string = null
+
+  const askPrimary = (channel: string, payload: Record<string, unknown>): Promise<unknown> => {
+    const mainWindow = getMainWindow()
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return Promise.resolve(null)
+    }
+
+    const requestId = `hud-room-${++roomRequestSeq}`
+
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        roomRequests.delete(requestId)
+        resolve(null)
+      }, HUD_ROOM_TIMEOUT_MS)
+
+      roomRequests.set(requestId, value => {
+        clearTimeout(timer)
+        roomRequests.delete(requestId)
+        resolve(value)
+      })
+
+      mainWindow.webContents.send(channel, { ...payload, requestId })
+    })
+  }
+
+  const settle = (reply: unknown, pick: (record: Record<string, unknown>) => unknown) => {
+    const record = reply && typeof reply === 'object' ? (reply as Record<string, unknown>) : {}
+    const requestId = typeof record.requestId === 'string' ? record.requestId : ''
+    const resolve = roomRequests.get(requestId)
+
+    if (resolve) {
+      resolve(pick(record))
+    }
+  }
+
+  ipcMain.on('hermes:hud:room-feed-reply', (_event, reply) => settle(reply, record => record.feed ?? null))
+  ipcMain.on('hermes:hud:room-post-reply', (_event, reply) => settle(reply, record => record.ok === true))
+
+  ipcMain.handle('hermes:hud:room-feed', (_event, request) => {
+    const groupId = typeof request?.groupId === 'string' ? request.groupId.trim() : ''
+
+    return groupId ? askPrimary('hermes:hud:room-feed-request', { groupId }) : Promise.resolve(null)
+  })
+
+  ipcMain.handle('hermes:hud:room-post', async (_event, request) => {
+    const groupId = typeof request?.groupId === 'string' ? request.groupId.trim() : ''
+    const text = typeof request?.text === 'string' ? request.text.trim() : ''
+
+    if (!groupId || !text) {
+      return { ok: false }
+    }
+
+    return { ok: (await askPrimary('hermes:hud:room-post', { groupId, text })) === true }
+  })
+
+  // Which room the HUD is watching: the primary pushes that room's feed on
+  // every change, and a respawned HUD renderer asks for it again on mount.
+  ipcMain.handle('hermes:hud:watch-room', (_event, request) => {
+    hudWatchedRoom = typeof request?.groupId === 'string' && request.groupId.trim() ? request.groupId.trim() : null
+    const mainWindow = getMainWindow()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('hermes:hud:watch-room', { groupId: hudWatchedRoom })
+    }
+
+    return { groupId: hudWatchedRoom }
+  })
+
+  ipcMain.on('hermes:hud:room-feed-push', (_event, feed) => {
+    const hudWindow = getHudWindow()
+    const groupId = feed && typeof feed === 'object' ? (feed as { groupId?: unknown }).groupId : null
+
+    if (hudWindow && !hudWindow.isDestroyed() && typeof groupId === 'string' && groupId === hudWatchedRoom) {
+      hudWindow.webContents.send('hermes:hud:room-feed', feed)
+    }
+  })
+
+  ipcMain.handle('hermes:hud:command', (_event, command) => {
+    const record = command && typeof command === 'object' ? (command as Record<string, unknown>) : {}
+    const kind = typeof record.kind === 'string' ? record.kind : ''
+
+    if (!kind) {
+      return { ok: false }
+    }
+
+    return {
+      ok: runCommand({
+        kind,
+        ...(typeof record.anchor === 'string' ? { anchor: record.anchor } : {}),
+        ...(typeof record.on === 'boolean' ? { on: record.on } : {})
+      })
+    }
   })
 
   // Main re-applies the frost when the translucency SETTING changes, since the

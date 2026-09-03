@@ -49,7 +49,10 @@ export function LayoutTreeRoot({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1">
+    <div
+      className="relative mx-1.5 mb-1.5 flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--ui-accent,#6e9fc5)_18%,var(--ui-stroke-secondary))] bg-(--ui-editor-surface-background) shadow-[0_10px_32px_color-mix(in_srgb,var(--ui-bg-chrome)_72%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--ui-text-primary)_5%,transparent)] max-[44rem]:mx-1 max-[44rem]:mb-1 max-[44rem]:rounded-[0.625rem]"
+      data-hermes-workspace-frame=""
+    >
       {/* ZonesOverlay::GetAnimationAlpha ramp: clamp(t / 200ms, 0.001, 1). */}
       <style>{`@keyframes hermes-zone-fade { from { opacity: 0.001 } to { opacity: 1 } }`}</style>
       {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash

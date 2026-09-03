@@ -96,6 +96,7 @@ import {
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { clearSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -132,6 +133,18 @@ const $focusedAwaitingResponse = focusedTurnFlag(
 export interface PluginFocusedSessionOwner {
   connectionId: string
   profile: string
+}
+
+export type PluginAgentActivityStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+
+export interface PluginAgentActivityUpdate {
+  createIfMissing?: boolean
+  goal?: string
+  id: string
+  parentId?: null | string
+  status: PluginAgentActivityStatus
+  summary?: string
+  text?: string
 }
 
 /**
@@ -629,6 +642,44 @@ export const host = {
   /** Toast into the app's notification stack. */
   notify,
   notifyError,
+
+  /** Project plugin-owned work into the shared Agents panel without exposing
+   * the core subagent store. Scopes are namespaced by the host, so a plugin
+   * cannot collide with backend session ids or another plugin's native rows. */
+  agentActivity: {
+    clear: (scope: string): void => {
+      const key = String(scope || '').trim()
+
+      if (key) {
+        clearSessionSubagents(`plugin:${key}`)
+      }
+    },
+    update: (scope: string, activity: PluginAgentActivityUpdate): void => {
+      const key = String(scope || '').trim()
+      const id = String(activity?.id || '').trim()
+
+      if (!key || !id) {
+        return
+      }
+
+      const terminal =
+        activity.status === 'completed' || activity.status === 'failed' || activity.status === 'interrupted'
+
+      upsertSubagent(
+        `plugin:${key}`,
+        {
+          goal: activity.goal,
+          parent_id: activity.parentId,
+          status: activity.status,
+          subagent_id: id,
+          summary: activity.summary,
+          text: activity.text
+        },
+        activity.createIfMissing ?? true,
+        terminal ? 'subagent.complete' : 'subagent.progress'
+      )
+    }
+  },
 
   // NOTE: every host door is async-safe — wrapped so a sync throw from an
   // internal helper (e.g. no desktop bridge in a plain browser) becomes a

@@ -17,6 +17,8 @@
 
 import { atom } from 'nanostores'
 
+import type { PromptCoachAnalysis } from '@/lib/prompt-coach'
+
 export interface QuickEntryState {
   enabled: boolean
   /** null before the first read; the settings row shows a skeleton until then. */
@@ -27,6 +29,32 @@ export interface QuickEntryState {
 }
 
 export type QuickEntryRegistrationError = 'invalid' | 'taken'
+export type QuickEntryMode = 'agents' | 'composer'
+
+export interface QuickEntryAnchorRect {
+  height: number
+  viewportHeight?: number
+  viewportWidth?: number
+  width: number
+  x: number
+  y: number
+}
+
+export interface QuickEntryShownPayload {
+  mode: QuickEntryMode
+}
+
+export interface QuickEntryPromptCoachRequest {
+  requestId: string
+  target: string
+  text: string
+}
+
+export interface QuickEntryPromptCoachResult {
+  analysis: PromptCoachAnalysis | null
+  requestId: string
+  text: string
+}
 
 export interface QuickEntryStatus {
   enabled: boolean
@@ -105,6 +133,48 @@ export interface QuickEntrySessionOption {
   title: string
 }
 
+/** A Hermes profile exposed as an agent target in the pointer-adjacent
+ * launcher. Routing identity is always `profile`; displayName is presentation
+ * only. */
+export interface QuickEntryAgentOption {
+  color?: string
+  displayName: string
+  /** Role glyph (see lib/agent-emoji) for surfaces too small for an avatar. */
+  emoji?: string
+  /** Bot Mode avatar image as a small data URL, when the user set one. */
+  image?: string
+  profile: string
+  reachable: boolean
+  /** Present when the authoritative roster knows why this target is unavailable. */
+  reason?: string
+  /** Bot Mode title ("Chief Marketing Officer"), presentation only. */
+  title?: string
+}
+
+export interface QuickEntryGroupOption {
+  displayName: string
+  groupId: string
+  memberCount?: number
+  reachable: boolean
+}
+
+/** The name a launcher shows for a profile: its display name (set in Bot
+ * Mode or profile.yaml), else the profile key. Profile keys stay unchanged
+ * because they are routing identities; only presentation is normalized. */
+export function quickEntryAgentDisplayName(profile: string, fallback: string): string {
+  return fallback.trim() || profile.trim()
+}
+
+/**
+ * Product agents available before the primary profile store finishes loading.
+ * Selecting one still goes through main's allowlist and the primary renderer's
+ * real getConnection -> HUD path; this is presentation fallback, not a fake
+ * backend status.
+ */
+export const QUICK_ENTRY_FALLBACK_AGENTS: QuickEntryAgentOption[] = [
+  { color: '#b7ff2a', displayName: 'Hermes', emoji: '🪽', profile: 'default', reachable: true }
+]
+
 /** Send into whatever chat the main window currently has in front. */
 export const QUICK_TARGET_CURRENT = 'current'
 /** Start a brand-new session for this prompt. */
@@ -117,15 +187,41 @@ export const QUICK_TARGET_NEW = 'new'
  * disconnected (input disabled) until the first push proves otherwise.
  */
 export interface QuickEntryStatePush {
+  agents: QuickEntryAgentOption[]
   connected: boolean
+  groups: QuickEntryGroupOption[]
   sessions: QuickEntrySessionOption[]
 }
 
-/** What a quick-window submit carries back to the primary renderer. */
-export interface QuickEntrySubmitPayload {
+export interface QuickEntryPromptSubmitPayload {
+  action?: 'prompt'
   /** QUICK_TARGET_CURRENT, QUICK_TARGET_NEW, or a stored session id. */
   target: string
   text: string
+}
+
+export interface QuickEntryAgentLaunchPayload {
+  action: 'open-agent'
+  profile: string
+  /** Correlates the async primary-window launch result with this exact gesture. */
+  requestId: string
+}
+
+export interface QuickEntryGroupLaunchPayload {
+  action: 'open-group'
+  groupId: string
+  requestId: string
+}
+
+/** What the quick window carries back to the primary renderer. */
+export type QuickEntrySubmitPayload =
+  QuickEntryAgentLaunchPayload | QuickEntryGroupLaunchPayload | QuickEntryPromptSubmitPayload
+
+export interface QuickEntryLaunchResult {
+  error?: string
+  ok: boolean
+  profile: string
+  requestId: string
 }
 
 /**
@@ -137,6 +233,12 @@ export interface QuickEntrySubmitPayload {
  * needs React or Electron.
  */
 export interface QuickComposerState {
+  /** Keyboard-selected agent; pointer selection uses this same index. */
+  activeAgentIndex: number
+  /** Profile-backed agents the primary renderer says are currently available. */
+  agents: QuickEntryAgentOption[]
+  /** Plugin-owned group rooms offered beside individual agents. */
+  groups: QuickEntryGroupOption[]
   /** Last pushed gateway truth. False (the initial value) disables submit. */
   connected: boolean
   draft: string
@@ -144,6 +246,10 @@ export interface QuickComposerState {
   sessions: QuickEntrySessionOption[]
   /** True between a send and the window actually hiding. Blocks a double-send. */
   submitting: boolean
+  /** Human-readable launch failure retained in the launcher for retry. */
+  launchError: null | string
+  /** The only agent launch allowed to change this window's state. */
+  pendingRequestId: null | string
   /** Where a submit lands: current / new / a stored session id. */
   target: string
   /** Whether the window should be visible. False asks the shell to hide. */
@@ -154,8 +260,19 @@ export type QuickComposerEvent =
   | { type: 'blur' }
   | { type: 'dismiss' }
   | { type: 'edit'; draft: string }
+  | { type: 'launch-result'; result: QuickEntryLaunchResult }
+  | { delta: -1 | 1; type: 'move-agent' }
+  | { type: 'open-agent'; profile: string; requestId: string }
+  | { type: 'open-group'; groupId: string; requestId: string }
+  | { type: 'select-agent'; index: number }
   | { type: 'shown' }
-  | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
+  | {
+      type: 'state'
+      agents: QuickEntryAgentOption[]
+      connected: boolean
+      groups: QuickEntryGroupOption[]
+      sessions: QuickEntrySessionOption[]
+    }
   | { type: 'submit' }
   | { type: 'target'; target: string }
 
@@ -166,10 +283,15 @@ export interface QuickComposerTransition {
 }
 
 export const initialQuickComposerState: QuickComposerState = {
+  activeAgentIndex: 0,
+  agents: QUICK_ENTRY_FALLBACK_AGENTS,
   // Disconnected until the primary renderer's first push proves otherwise — a
   // capture window that accepts text it can never deliver is a lie.
   connected: false,
   draft: '',
+  groups: [],
+  launchError: null,
+  pendingRequestId: null,
   sessions: [],
   submitting: false,
   target: QUICK_TARGET_CURRENT,
@@ -184,7 +306,15 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // hides — the send already left for the main process.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: false }
+        state: {
+          ...state,
+          draft: '',
+          launchError: null,
+          pendingRequestId: null,
+          submitting: false,
+          target: QUICK_TARGET_CURRENT,
+          visible: false
+        }
       }
     }
 
@@ -197,7 +327,15 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // a leftover target — but the pushed gateway truth carries over.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: true }
+        state: {
+          ...state,
+          draft: '',
+          launchError: null,
+          pendingRequestId: null,
+          submitting: false,
+          target: QUICK_TARGET_CURRENT,
+          visible: true
+        }
       }
     }
 
@@ -210,13 +348,103 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           state.target === QUICK_TARGET_NEW ||
           event.sessions.some(session => session.id === state.target))
 
+      // The fallback list is only for the period before the first authoritative
+      // state push. An arrived empty roster means no launchable agents, not
+      // permission to resurrect the shipped fallback profiles indefinitely.
+      const agents = event.agents
+
       return {
         send: null,
         state: {
           ...state,
+          activeAgentIndex: Math.max(0, Math.min(state.activeAgentIndex, Math.max(0, agents.length - 1))),
+          agents,
           connected: event.connected,
+          groups: event.groups,
           sessions: event.sessions,
           target: targetStillValid ? state.target : QUICK_TARGET_CURRENT
+        }
+      }
+    }
+
+    case 'open-agent': {
+      const profile = event.profile.trim()
+      const requestId = event.requestId.trim()
+
+      const valid = requestId.length >= 8 && state.agents.some(agent => agent.profile === profile && agent.reachable)
+
+      if (!valid || state.submitting) {
+        return { send: null, state }
+      }
+
+      return {
+        send: { action: 'open-agent', profile, requestId },
+        // Keep this surface present until the primary proves backend readiness
+        // and HUD creation. A failed launch must leave a visible retry path.
+        state: { ...state, launchError: null, pendingRequestId: requestId, submitting: true }
+      }
+    }
+
+    case 'open-group': {
+      const groupId = event.groupId.trim()
+      const requestId = event.requestId.trim()
+
+      const valid = requestId.length >= 8 && state.groups.some(group => group.groupId === groupId && group.reachable)
+
+      if (!valid || state.submitting) {
+        return { send: null, state }
+      }
+
+      return {
+        send: { action: 'open-group', groupId, requestId },
+        state: { ...state, launchError: null, pendingRequestId: requestId, submitting: true }
+      }
+    }
+
+    case 'move-agent': {
+      const enabled = state.agents.map((agent, index) => ({ agent, index })).filter(({ agent }) => agent.reachable)
+
+      if (state.submitting || enabled.length === 0) {
+        return { send: null, state }
+      }
+
+      const active = Math.max(
+        0,
+        enabled.findIndex(({ index }) => index === state.activeAgentIndex)
+      )
+
+      const next = enabled[(active + event.delta + enabled.length) % enabled.length]
+
+      return { send: null, state: { ...state, activeAgentIndex: next.index } }
+    }
+
+    case 'select-agent': {
+      const agent = state.agents[event.index]
+
+      if (state.submitting || !agent?.reachable) {
+        return { send: null, state }
+      }
+
+      return { send: null, state: { ...state, activeAgentIndex: event.index } }
+    }
+
+    case 'launch-result': {
+      const { result } = event
+
+      // Late results from a superseded click must not hide a current retry or
+      // replace its error. Main and primary both validate the same request id.
+      if (!state.pendingRequestId || result.requestId !== state.pendingRequestId) {
+        return { send: null, state }
+      }
+
+      return {
+        send: null,
+        state: {
+          ...state,
+          launchError: result.ok ? null : result.error || 'Unable to open this agent.',
+          pendingRequestId: null,
+          submitting: false,
+          visible: !result.ok
         }
       }
     }
@@ -272,6 +500,21 @@ function normalizeSubmitPayload(raw: unknown): null | QuickEntrySubmitPayload {
   }
 
   const record = raw as Record<string, unknown>
+
+  if (record.action === 'open-agent') {
+    const profile = typeof record.profile === 'string' ? record.profile.trim() : ''
+    const requestId = typeof record.requestId === 'string' ? record.requestId.trim() : ''
+
+    return profile && requestId.length >= 8 ? { action: 'open-agent', profile, requestId } : null
+  }
+
+  if (record.action === 'open-group') {
+    const groupId = typeof record.groupId === 'string' ? record.groupId.trim() : ''
+    const requestId = typeof record.requestId === 'string' ? record.requestId.trim() : ''
+
+    return groupId && requestId.length >= 8 ? { action: 'open-group', groupId, requestId } : null
+  }
+
   const text = typeof record.text === 'string' ? record.text : ''
 
   if (!text.trim()) {

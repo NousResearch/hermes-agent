@@ -41,6 +41,7 @@ type BotsMessages = {
     searchPlaceholder: string
     newBotOrGroup: string
     groupChats: string
+    team: string
     emptyTitle: string
     emptyDesc: string
     noMatchQuery: (query: string) => string
@@ -272,6 +273,7 @@ const en: BotsMessages = {
     searchPlaceholder: 'Search bots and group chats…',
     newBotOrGroup: 'New bot or group chat',
     groupChats: 'Group chats',
+    team: 'Team',
     emptyTitle: 'No bots yet',
     emptyDesc: 'Create your first bot.',
     noMatchQuery: query => `No bots or group chats match “${query}”`,
@@ -490,6 +492,7 @@ const ja: BotsMessages = {
     searchPlaceholder: 'ボットとグループチャットを検索…',
     newBotOrGroup: '新しいボットまたはグループチャット',
     groupChats: 'グループチャット',
+    team: 'チーム',
     emptyTitle: 'ボットはまだありません',
     emptyDesc: '最初のボットを作成しましょう。',
     noMatchQuery: query => `「${query}」に一致するボットやグループチャットはありません`,
@@ -707,6 +710,7 @@ const zh: BotsMessages = {
     searchPlaceholder: '搜索机器人和群聊…',
     newBotOrGroup: '新建机器人或群聊',
     groupChats: '群聊',
+    team: '团队',
     emptyTitle: '还没有机器人',
     emptyDesc: '创建你的第一个机器人。',
     noMatchQuery: query => `没有机器人或群聊匹配“${query}”`,
@@ -920,6 +924,7 @@ const zhHant: BotsMessages = {
     searchPlaceholder: '搜尋機器人和群組聊天…',
     newBotOrGroup: '新增機器人或群組聊天',
     groupChats: '群組聊天',
+    team: '團隊',
     emptyTitle: '還沒有機器人',
     emptyDesc: '建立你的第一個機器人。',
     noMatchQuery: query => `沒有機器人或群組聊天符合「${query}」`,

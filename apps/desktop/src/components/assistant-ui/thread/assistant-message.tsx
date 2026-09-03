@@ -228,39 +228,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
     >
       {collapsedNotice ?? (
         <>
-          <div
-            className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
-            data-slot="aui_assistant-message-content"
-          >
-            {/* Todos render in the composer status stack now, not inline. */}
-            {MESSAGE_PARTS}
-            <AssistantStatusSlot />
-            <AssistantPreviewEmbeds />
-            <MessagePrimitive.Error>
-              <ErrorPrimitive.Root
-                className="mt-1.5 flex flex-col gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--dt-destructive)_35%,transparent)] bg-[color-mix(in_srgb,var(--dt-destructive)_7%,transparent)] px-3 py-2 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
-                role="alert"
-              >
-                <div className="flex items-start gap-1.5">
-                  <div className="min-w-0 flex-1">
-                    <ErrorLayerLabel />
-                    <ErrorPrimitive.Message className="min-w-0" />
-                  </div>
-                  {onDismissError && (
-                    <TooltipIconButton
-                      className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
-                      onClick={() => onDismissError(messageId)}
-                      side="top"
-                      tooltip={t.assistant.thread.dismissError}
-                    >
-                      <XIcon className="size-3.5" />
-                    </TooltipIconButton>
-                  )}
-                </div>
-                <ErrorRecoveryActions />
-              </ErrorPrimitive.Root>
-            </MessagePrimitive.Error>
-          </div>
+          <AssistantMessageContent messageId={messageId} onDismissError={onDismissError} />
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
           {hasVisibleText && !isInterim && (
             <AssistantFooter
@@ -277,6 +245,86 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+/**
+ * Settled tool-only turns are receipts, not answers. Keep their command and
+ * thought trace available without painting a large empty-looking message
+ * outline through the transcript. Running work and final prose still use the
+ * normal full agent flashcard so live progress and actual answers stay visible.
+ */
+const AssistantMessageContent: FC<{
+  messageId: string
+  onDismissError?: (messageId: string) => void
+}> = ({ messageId, onDismissError }) => {
+  const { t } = useI18n()
+  const compactToolWork = useAuiState(
+    s =>
+      s.message.status?.type === 'complete' &&
+      !contentHasVisibleText(s.message.content) &&
+      s.message.content.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+  )
+
+  if (compactToolWork) {
+    return (
+      <details
+        className="group/work w-full min-w-0 overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-opaque-background) shadow-sm"
+        data-slot="aui_agent-work-flashcard"
+      >
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[0.75rem] font-medium text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground [&::-webkit-details-marker]:hidden">
+          <Codicon
+            className="shrink-0 transition-transform duration-150 group-open/work:rotate-90"
+            name="chevron-right"
+            size="0.75rem"
+          />
+          <span>What the agent worked on</span>
+          <span className="ml-auto text-[0.6875rem] font-normal text-(--ui-text-quaternary)">Show details</span>
+        </summary>
+        <div
+          className="grid gap-(--tool-row-gap) border-t border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-3 py-2.5"
+          data-slot="aui_agent-work-details"
+        >
+          {MESSAGE_PARTS}
+        </div>
+      </details>
+    )
+  }
+
+  return (
+    <div
+      className="wrap-anywhere min-w-0 max-w-full overflow-hidden rounded-xl border border-l-4 border-(--ui-stroke-tertiary) border-l-(--ui-stroke-secondary) bg-(--ui-chat-bubble-opaque-background) px-3 py-2 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground shadow-sm transition-shadow hover:shadow-[0_0_20px_color-mix(in_srgb,var(--ui-accent,#6e9fc5)_16%,transparent)]"
+      data-slot="aui_assistant-message-content"
+    >
+      {/* Todos render in the composer status stack now, not inline. */}
+      {MESSAGE_PARTS}
+      <AssistantStatusSlot />
+      <AssistantPreviewEmbeds />
+      <MessagePrimitive.Error>
+        <ErrorPrimitive.Root
+          className="mt-1.5 flex flex-col gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--dt-destructive)_35%,transparent)] bg-[color-mix(in_srgb,var(--dt-destructive)_7%,transparent)] px-3 py-2 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+          role="alert"
+        >
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ErrorLayerLabel />
+              <ErrorPrimitive.Message className="min-w-0" />
+            </div>
+            {onDismissError && (
+              <TooltipIconButton
+                className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                onClick={() => onDismissError(messageId)}
+                side="top"
+                tooltip={t.assistant.thread.dismissError}
+              >
+                <XIcon className="size-3.5" />
+              </TooltipIconButton>
+            )}
+          </div>
+          <ErrorRecoveryActions />
+        </ErrorPrimitive.Root>
+      </MessagePrimitive.Error>
+    </div>
   )
 }
 

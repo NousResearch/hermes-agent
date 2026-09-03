@@ -68,6 +68,20 @@ function assistantMessage(): ThreadMessage {
   } as unknown as ThreadMessage
 }
 
+function assistantToolWorkMessage(): ThreadMessage {
+  return {
+    ...assistantMessage(),
+    content: [
+      {
+        type: 'reasoning',
+        text: 'Ran three commands and inspected seven files',
+        timestamp: createdAt.getTime() / 1000 + 0.05,
+        completedAt: createdAt.getTime() / 1000 + 0.5
+      }
+    ]
+  } as unknown as ThreadMessage
+}
+
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat
@@ -104,6 +118,50 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     await screen.findByText('done')
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
+  })
+})
+
+describe('responsive message lane width', () => {
+  it('lets user and assistant cards use the complete transcript lane', async () => {
+    const { container } = render(<Harness />)
+
+    await screen.findByText('done')
+
+    const userActions = container.querySelector('[data-slot="aui_user-bubble-actions"]')
+    const assistantRoot = container.querySelector('[data-slot="aui_assistant-message-root"]')
+
+    expect(userActions?.className).toContain('w-full')
+    expect(userActions?.className).not.toContain('sm:w-[84%]')
+    expect(assistantRoot?.className).toContain('w-full')
+    expect(assistantRoot?.className).not.toContain('sm:w-[92%]')
+  })
+})
+
+describe('Team Hermes agent flashcard', () => {
+  it('keeps every visible assistant reply inside the bordered agent card surface', async () => {
+    const { container } = render(<Harness />)
+
+    await screen.findByText('done')
+
+    const card = container.querySelector('[data-slot="aui_assistant-message-content"]')
+
+    expect(card?.className).toContain('rounded-xl')
+    expect(card?.className).toContain('border-l-4')
+    expect(card?.className).toContain('bg-(--ui-chat-bubble-opaque-background)')
+    expect(card?.className).toContain('shadow-sm')
+  })
+
+  it('hides settled tool-only traces inside a compact work flashcard', async () => {
+    const { container } = render(<Harness assistant={assistantToolWorkMessage()} />)
+
+    await screen.findByText('What the agent worked on')
+
+    const workCard = container.querySelector<HTMLDetailsElement>('[data-slot="aui_agent-work-flashcard"]')
+
+    expect(workCard).toBeTruthy()
+    expect(workCard?.open).toBe(false)
+    expect(container.querySelector('[data-slot="aui_agent-work-details"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_assistant-message-content"]')).toBeNull()
   })
 })
 

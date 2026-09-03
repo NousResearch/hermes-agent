@@ -21,6 +21,7 @@ import type {
   GroupMember,
   GroupMessage,
   GroupMessageAuthor,
+  GroupMessageCause,
   GroupPrompt,
   RosterRow
 } from './types'
@@ -1421,7 +1422,8 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  cause?: GroupMessageCause
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
@@ -1429,6 +1431,12 @@ export function appendGroupChatEntry(
     from,
     text: normalizeGroupChatText(text),
     thread: thread || 'legacy'
+  }
+
+  // Only member turns have a cause. Omitted entirely when empty so user sends
+  // and legacy rooms stay byte-identical in the size-bounded gateway mirror.
+  if (cause && (cause.by || cause.saw)) {
+    entry.cause = cause
   }
 
   if (Array.isArray(images) && images.length) {

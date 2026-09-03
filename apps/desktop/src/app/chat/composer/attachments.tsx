@@ -4,11 +4,12 @@ import { useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
 import { Codicon } from '@/components/ui/codicon'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { readDesktopFileDataUrlLocalFirst } from '@/lib/desktop-fs'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, Terminal } from '@/lib/icons'
+import { AlertCircle, Clipboard, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -22,15 +23,46 @@ export function AttachmentList({
   attachments: ComposerAttachment[]
   onRemove?: (id: string) => void
 }) {
+  const { t } = useI18n()
+  const validAttachments = attachments.filter((attachment): attachment is ComposerAttachment => Boolean(attachment))
+
+  if (validAttachments.length === 0) {
+    return <div data-slot="composer-attachments" />
+  }
+
+  const attachmentLabel = t.composer.attachments(validAttachments.length)
+  const attachmentDetails = validAttachments.map(attachment => attachment.label).join(', ')
+
   return (
-    <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
-      {attachments.filter(Boolean).map(attachment => (
-        <AttachmentPill
-          attachment={attachment}
-          key={attachment.occurrenceId ? `occ:${attachment.occurrenceId}` : attachment.id}
-          onRemove={onRemove}
-        />
-      ))}
+    <div className="flex px-1 pt-1" data-slot="composer-attachments">
+      <Popover>
+        <Tip label={attachmentDetails}>
+          <PopoverTrigger asChild>
+            <button
+              aria-label={attachmentLabel}
+              className="group/attachment-trigger relative grid size-7 place-items-center rounded-lg border border-border/55 bg-background/45 text-muted-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.14)] transition-colors hover:border-primary/35 hover:bg-accent/45 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/55"
+              data-slot="composer-attachment-trigger"
+              type="button"
+            >
+              <Clipboard className="size-3.5" />
+              <span className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full border border-background bg-primary px-1 text-[0.58rem] font-semibold leading-none text-primary-foreground shadow-xs">
+                {validAttachments.length}
+              </span>
+            </button>
+          </PopoverTrigger>
+        </Tip>
+        <PopoverContent align="start" className="w-64 p-2" data-slot="composer-attachment-popover" side="top">
+          <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+            {validAttachments.map(attachment => (
+              <AttachmentPill
+                attachment={attachment}
+                key={attachment.occurrenceId ? `occ:${attachment.occurrenceId}` : attachment.id}
+                onRemove={onRemove}
+              />
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }

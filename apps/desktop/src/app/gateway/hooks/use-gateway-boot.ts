@@ -8,7 +8,12 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  CONNECTION_SWITCH_WAIT_TIMEOUT_MS,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -243,6 +248,11 @@ export function useGatewayBoot({
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
 
+    const finishDesktopBoot = () => {
+      completeDesktopBoot()
+      desktop.signalRendererBootComplete?.()
+    }
+
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
         clearTimeout(bootRetryTimer)
@@ -250,17 +260,30 @@ export function useGatewayBoot({
       }
     }
 
-    // Whether the failed boot is a TRANSIENT remote fault main marked as
-    // retryable (dropped SSH/HTTP registered connection, mint timeout).
-    // Local failures and confirmed reauth rejections come back false and go
-    // straight to the recovery overlay.
-    const bootFailureIsRetryable = async (): Promise<boolean> => {
+    // Whether the failed boot is transient. Main explicitly tags dropped
+    // remote transports as retryable. A separate local race exists when the
+    // renderer's bounded IPC budget expires while `hermes serve` is still starting:
+    // main can publish a healthy descriptor moments later, but the renderer
+    // used to park permanently on the failure overlay. Retry that exact timeout
+    // while main is still running, has no terminal error, or cannot be queried;
+    // the shared attempt cap still prevents an infinite spinner. Confirmed
+    // local capability/auth failures remain terminal.
+    const bootFailureIsRetryable = async (error: unknown): Promise<boolean> => {
+      const rendererBackendTimeout =
+        error instanceof Error && error.message.startsWith('Timed out connecting to Hermes backend')
+
       try {
         const snapshot = await desktop.getBootProgress()
 
-        return snapshot?.retryable === true
+        if (snapshot?.retryable === true) {
+          return true
+        }
+
+        return rendererBackendTimeout && (snapshot?.running === true || !snapshot?.error)
       } catch {
-        return false
+        // A failed progress read is itself inconclusive for this one bounded,
+        // renderer-owned timeout. The retry budget is the safety boundary.
+        return rendererBackendTimeout
       }
     }
 
@@ -603,11 +626,13 @@ export function useGatewayBoot({
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // main-process round-trip must not latch $gatewaySwitching stuck —
         // the `finally` below only runs once this promise settles. Uses the
-        // shared backend-boot budget rather than the reconnect budget because
-        // ensureBackend may cold-spawn a pooled helper backend here.
+        // connection-switch budget rather than the reconnect budget because
+        // ensureBackend may cold-spawn a pooled helper backend here. Do not
+        // use the longer primary cold-boot budget: the switching barrier must
+        // still clear promptly if this IPC round-trip wedges.
         const conn = await withTimeout(
           desktop.getConnection(windowProfileOverride() ?? undefined),
-          BACKEND_BOOT_WAIT_TIMEOUT_MS,
+          CONNECTION_SWITCH_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
 
@@ -662,7 +687,7 @@ export function useGatewayBoot({
           return
         }
 
-        completeDesktopBoot()
+        finishDesktopBoot()
         bootCompleted = true
         // Rediscover local-runtime jobs (model downloads, runtime installs)
         // that were running before a reload — the backend registry is the
@@ -825,7 +850,7 @@ export function useGatewayBoot({
         // so dismiss it here once we're open again — otherwise the overlay sticks
         // at ~94%. A no-op on a normal (non-rebuild) reconnect.
         if (bootCompleted) {
-          completeDesktopBoot()
+          finishDesktopBoot()
         }
       } else if (bootCompleted && !$gatewaySwitching.get() && (st === 'closed' || st === 'error')) {
         // The socket dropped after a healthy boot (typically sleep/wake). Try
@@ -981,7 +1006,7 @@ export function useGatewayBoot({
         // Everything else keeps dialing the primary.
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
-        // rides out a full backend cold spawn, so it gets the shared 45s
+        // rides out a full backend cold spawn, so it gets the shared 180s
         // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
           desktop.getConnection(windowProfileOverride() ?? undefined),
@@ -1067,7 +1092,7 @@ export function useGatewayBoot({
           return
         }
 
-        completeDesktopBoot()
+        finishDesktopBoot()
         bootCompleted = true
         bootRetryAttempt = 0
       } catch (err) {
@@ -1082,7 +1107,7 @@ export function useGatewayBoot({
           // exactly what manual re-entry forced. Exhausted retries, local
           // failures, and confirmed reauth rejections end in the real recovery
           // affordance (the boot-failure overlay), never an infinite spinner.
-          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable()) && !cancelled) {
+          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable(err)) && !cancelled) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
             resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
@@ -1110,7 +1135,7 @@ export function useGatewayBoot({
     // intact across an HMR update.
     async function adoptBoot() {
       bootCompleted = true
-      completeDesktopBoot()
+      finishDesktopBoot()
 
       if (survivor?.connection) {
         publish(survivor.connection)

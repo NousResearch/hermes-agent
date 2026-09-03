@@ -246,6 +246,63 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'screen.tutor.point') {
+    // A Screen Tutor pointer is a temporary, click-through OS overlay. Only
+    // the foreground session may paint it, and every field is validated before
+    // crossing the renderer→main IPC boundary.
+    const displayId = typeof payload?.display_id === 'string' ? payload.display_id.trim() : ''
+    const x = Number(payload?.x)
+    const y = Number(payload?.y)
+    const label = typeof payload?.label === 'string' ? payload.label.trim().slice(0, 120) : undefined
+
+    if (
+      isActiveEvent &&
+      displayId &&
+      Number.isFinite(x) &&
+      Number.isFinite(y) &&
+      x >= 0 &&
+      x <= 1 &&
+      y >= 0 &&
+      y <= 1
+    ) {
+      window.hermesDesktop?.screenTutor?.showPoint({ displayId, label, x, y })
+    }
+
+    return true
+  }
+
+  if (event.type === 'screen.tutor.annotations') {
+    // Rich annotations keep the same safety boundary as the pointer: current
+    // foreground session only, normalized coordinates, and a click-through
+    // window that cannot operate the app underneath it. Main validates every
+    // primitive a second time before painting it.
+    const displayId = typeof payload?.display_id === 'string' ? payload.display_id.trim() : ''
+    const annotations = Array.isArray(payload?.annotations) ? payload.annotations : []
+
+    if (isActiveEvent && displayId && annotations.length) {
+      window.hermesDesktop?.screenTutor?.showAnnotations({
+        annotations: annotations as never[],
+        displayId,
+        frozen: payload?.frozen === true,
+        guide:
+          payload?.guide && typeof payload.guide === 'object'
+            ? {
+                id: String((payload.guide as Record<string, unknown>).id ?? ''),
+                instruction: String((payload.guide as Record<string, unknown>).instruction ?? ''),
+                step: Number((payload.guide as Record<string, unknown>).step),
+                successCheck: String((payload.guide as Record<string, unknown>).success_check ?? ''),
+                title: String((payload.guide as Record<string, unknown>).title ?? ''),
+                total: Number((payload.guide as Record<string, unknown>).total)
+              }
+            : undefined,
+        mode: payload?.mode === 'append' ? 'append' : 'replace',
+        ttlMs: Number(payload?.ttl_ms)
+      })
+    }
+
+    return true
+  }
+
   if (event.type === 'pane.reveal') {
     // Agent revealed a pane via the desktop-gated focus_pane tool, in
     // response to an explicit user request. Active session only — a

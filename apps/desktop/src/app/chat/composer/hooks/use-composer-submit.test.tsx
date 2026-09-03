@@ -6,6 +6,7 @@ import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
+import { $promptCoachPreviewBySession, allowPromptCoachOriginal, closePromptCoachPreview } from '@/store/prompt-coach'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -560,5 +561,42 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 
     // The approval card is still the turn's owner; only its own buttons answer it.
     expect(hasBlockingPromptRequest('runtime-session')).toBe(true)
+  })
+})
+
+describe('useComposerSubmit Prompt Coach guard', () => {
+  afterEach(() => {
+    closePromptCoachPreview('runtime-session')
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('opens the preview on Enter before an ambiguous prompt can send', () => {
+    const { clearDraft, hook, onSubmit } = renderSubmitHook({ text: 'givme that' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect($promptCoachPreviewBySession.get()['runtime-session']?.original).toBe('givme that')
+  })
+
+  it('sends an explicitly approved original exactly once', async () => {
+    const { clearDraft, hook, onSubmit } = renderSubmitHook({ text: 'givme that' })
+    allowPromptCoachOriginal('runtime-session', 'givme that')
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('givme that', {
+        attachments: [],
+        composerScope: 'stored-session'
+      })
+    )
+    expect(clearDraft).toHaveBeenCalledTimes(1)
   })
 })

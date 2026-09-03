@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -42,6 +43,7 @@ import {
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
+  processLiveness,
   processStartMarker
 } from './backend-claim'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
@@ -221,15 +223,40 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import {
+  createHudAskShortcut,
+  cropAroundCursor,
+  DEFAULT_HUD_PREFS,
+  HUD_ASK_CROP_SIZE,
+  type HudAskPayload,
+  type HudLaunchOptions,
+  type HudPrefs,
+  type HudPrefsStatus,
+  sanitizeHudPrefs,
+  windowUnderCursor
+} from './hud-ask'
 import { cursorPointInWindow } from './hud-cursor'
+import {
+  HUD_FOLLOW_BAR_HEIGHT,
+  HUD_FOLLOW_DEAD_ZONE,
+  HUD_FOLLOW_EASE,
+  HUD_FOLLOW_GAP,
+  HUD_FOLLOW_REACH,
+  HUD_FOLLOW_TICK_MS,
+  hudFollowStep,
+  hudFollowTarget
+} from './hud-follow'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
+import { createHudInputHook, type HudInputHook, loadUiohook } from './hud-hook'
 import { registerHudIpc } from './hud-ipc'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { createHudSummonShortcut, resolveHudSummon } from './hud-summon-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { createLastWindowQuitWatchdog } from './last-window-quit-watchdog'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -313,7 +340,12 @@ import {
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import {
+  createQuickEntryShortcut,
+  parseQuickEntryShortcut,
+  quickEntryWindowBounds,
+  sanitizeQuickEntrySettings
+} from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -333,6 +365,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { createScreenTutorWindowController } from './screen-tutor-window'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -354,6 +387,14 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
+import {
+  legacyHermesUserDataPath,
+  migrateLegacyUserData,
+  TEAM_HERMES_APP_NAME,
+  TEAM_HERMES_APP_USER_MODEL_ID,
+  TEAM_HERMES_PROTOCOL,
+  teamHermesUserDataPath
+} from './team-hermes-edition'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
@@ -451,6 +492,19 @@ if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
+} else {
+  const appData = app.getPath('appData')
+  const teamUserData = teamHermesUserDataPath(appData)
+  const legacyUserData = legacyHermesUserDataPath(appData)
+
+  try {
+    migrateLegacyUserData(legacyUserData, teamUserData)
+  } catch {
+    // Existing Team Hermes state still wins if legacy migration is unavailable.
+  }
+
+  fs.mkdirSync(teamUserData, { recursive: true })
+  app.setPath('userData', teamUserData)
 }
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
@@ -893,7 +947,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || TEAM_HERMES_APP_NAME
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1306,7 +1360,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(TEAM_HERMES_APP_USER_MODEL_ID)
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -3402,20 +3456,18 @@ async function backendCommandForPid(pid) {
 }
 
 async function processIdentityMatches(identity) {
+  const alive = processLiveness(identity.pid)
+
+  if (alive !== true) {
+    return alive
+  }
+
   // Degraded PID-only identity (#93608): the start-marker probe failed while
   // the child was verifiably alive, so only PID liveness can be checked here.
   // backendIdentityMatches layers the command-line check on top before
   // anything destructive relies on the answer.
   if (isPidOnlyStartMarker(identity.startMarker)) {
-    try {
-      process.kill(identity.pid, 0)
-
-      return true
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | null)?.code
-
-      return code === 'ESRCH' || code === 'ENOENT' ? false : code === 'EPERM' ? true : undefined
-    }
+    return true
   }
 
   try {
@@ -3444,6 +3496,12 @@ async function backendIdentityMatches(identity) {
 async function backendParentMatches(entry) {
   if (!Number.isInteger(entry.parentPid) || typeof entry.parentStartMarker !== 'string' || !entry.parentStartMarker) {
     return undefined
+  }
+
+  const alive = processLiveness(entry.parentPid)
+
+  if (alive !== true) {
+    return alive
   }
 
   try {
@@ -13481,6 +13539,20 @@ function closePetOverlay() {
 // restores it.
 let hudWindow = null
 
+// Screen Tutor is deliberately separate from the HUD. It captures only after
+// an explicit composer action and paints a click-through pointer that cannot
+// steal focus or swallow input from the app underneath it.
+const screenTutorController = createScreenTutorWindowController({
+  devServer: DEV_SERVER,
+  getWindowsToHide: () =>
+    BrowserWindow.getAllWindows().filter(window => !window.webContents.getURL().includes('win=screen-tutor')),
+  loadWindowUrl,
+  log: rememberLog,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('overlay'))
+})
+
 // Whether the main window was visible when HUD mode was entered, so exiting
 // puts the desktop back as it was rather than raising a window the user had
 // already minimized.
@@ -13513,10 +13585,15 @@ function readHudState() {
   try {
     const raw = JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8'))
 
+    // Upper bound too: a size drift bug once persisted a 2045x1392 HUD, and a
+    // window taller than any sane display must fall back to the defaults
+    // rather than come back bigger than the screen on the next launch.
     if (
       [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
       raw.width >= 380 &&
-      raw.height >= 160
+      raw.height >= 160 &&
+      raw.width <= 1400 &&
+      raw.height <= 800
     ) {
       return raw
     }
@@ -13613,6 +13690,446 @@ function registerHudSnapShortcut() {
   if (!hudSnapShortcut.register()) {
     rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
   }
+}
+
+/**
+ * Global HUD summon (⌘⇧H from ANY app). Registered for the app's whole life —
+ * unlike snap, which lives only while the HUD is up — so the HUD can be called
+ * up from Figma or a terminal without visiting Hermes first. Which flavour of
+ * open it does is decided by where focus is at the press (see
+ * `resolveHudSummon`): from inside Hermes it behaves exactly like the titlebar
+ * toggle; from another app it appears as a companion — no focus steal, and the
+ * main window is left alone.
+ */
+function onHudSummon() {
+  const focused = BrowserWindow.getFocusedWindow()
+  const hermesFocused = focused !== null && !focused.isDestroyed()
+  const hudOpen = Boolean(hudWindow && !hudWindow.isDestroyed())
+  const mode = resolveHudSummon({ hermesFocused, hudOpen })
+
+  if (mode === 'close') {
+    closeHudWindow()
+
+    return
+  }
+
+  openHudWindow(hudSessionId, hudProfile, mode === 'open-external' ? { summon: 'external' } : {})
+}
+
+const hudSummonShortcut = createHudSummonShortcut(globalShortcut, onHudSummon)
+
+function registerHudSummonShortcut() {
+  if (!hudSummonShortcut.register()) {
+    rememberLog(
+      '[hud] summon shortcut unavailable — CommandOrControl+Shift+H may be owned by another app; the in-app keybind still works'
+    )
+  }
+}
+
+// ── HUD prefs: lazy follow + the ask-at-cursor gesture ───────────────────────
+//
+// Follow and ask are main-owned for the same reason snap and summon are: the
+// cursor, other apps' windows, and the global chord are only visible from
+// here. Renderers see a status snapshot (`hermes:hud:prefs`) and ask for
+// changes over IPC; main is authoritative and persists hud-prefs.json.
+const HUD_PREFS_PATH = path.join(app.getPath('userData'), 'hud-prefs.json')
+
+let hudPrefs: HudPrefs = { ...DEFAULT_HUD_PREFS }
+let hudInputHook: HudInputHook | null = null
+let hudAskError: HudPrefsStatus['askError'] = null
+
+function readHudPrefs(): HudPrefs {
+  try {
+    return sanitizeHudPrefs(JSON.parse(fs.readFileSync(HUD_PREFS_PATH, 'utf8')))
+  } catch {
+    // First run / unreadable — shipped defaults.
+    return sanitizeHudPrefs(undefined)
+  }
+}
+
+function writeHudPrefs(prefs: HudPrefs) {
+  try {
+    fs.mkdirSync(path.dirname(HUD_PREFS_PATH), { recursive: true })
+    writeFileAtomic(HUD_PREFS_PATH, JSON.stringify(prefs, null, 2))
+  } catch (err) {
+    rememberLog(`[hud-prefs] write failed: ${err?.message || err}`)
+  }
+}
+
+function hudPrefsStatus(): HudPrefsStatus {
+  return {
+    ...hudPrefs,
+    askError: hudAskError,
+    askHookAvailable: hudInputHook?.available ?? false,
+    askHookReason: hudInputHook ? hudInputHook.reason : 'loading',
+    askRegistered: hudAskShortcut.current() !== null,
+    followSupported: hudWindowing().clientPlacement
+  }
+}
+
+function broadcastHudPrefs() {
+  const payload = hudPrefsStatus()
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:hud:prefs', payload)
+    }
+  }
+}
+
+// Lazy follow. Main polls the cursor while the HUD is up and follow is on and
+// moves the window by the pure step in hud-follow.ts. It pauses while the HUD
+// is hidden or FOCUSED — the user is typing into it, and a bar that walks away
+// mid-sentence is worse than one that waits for them to click elsewhere.
+let hudFollowTimer: null | ReturnType<typeof setInterval> = null
+let hudFollowSettled: null | { x: number; y: number } = null
+let hudFollowPosition: null | { x: number; y: number } = null
+// The size follow writes back every tick. Captured ONCE and held: reading the
+// window's size and feeding it straight back grows a transparent frameless
+// window by a pixel per call under display scaling (the same bug the move-by
+// handler documents), and at 60 Hz that is a full-screen HUD in half a
+// minute. Only a real resize (a jump of more than a few px) replaces it.
+let hudFollowSize: null | { width: number; height: number } = null
+const HUD_FOLLOW_RESIZE_JUMP = 4
+
+function stopHudFollow() {
+  if (hudFollowTimer) {
+    clearInterval(hudFollowTimer)
+    hudFollowTimer = null
+  }
+
+  hudFollowSettled = null
+  hudFollowPosition = null
+  hudFollowSize = null
+}
+
+function startHudFollow(win: BrowserWindow) {
+  stopHudFollow()
+
+  // Native Wayland cannot place its own windows (see hud-windowing.ts), so
+  // follow is a documented no-op there — Settings says so via followSupported.
+  if (!hudPrefs.follow || win.isDestroyed() || !hudWindowing().clientPlacement) {
+    return
+  }
+
+  hudFollowTimer = setInterval(() => {
+    if (win.isDestroyed()) {
+      stopHudFollow()
+
+      return
+    }
+
+    if (!win.isVisible() || win.isFocused()) {
+      hudFollowSettled = null
+      hudFollowPosition = null
+
+      return
+    }
+
+    const cursor = screen.getCursorScreenPoint()
+    const live = win.getBounds()
+
+    if (
+      !hudFollowSize ||
+      Math.abs(live.width - hudFollowSize.width) > HUD_FOLLOW_RESIZE_JUMP ||
+      Math.abs(live.height - hudFollowSize.height) > HUD_FOLLOW_RESIZE_JUMP
+    ) {
+      hudFollowSize = { width: live.width, height: live.height }
+    }
+
+    const bounds = { x: live.x, y: live.y, width: hudFollowSize.width, height: hudFollowSize.height }
+    const display = screen.getDisplayNearestPoint(cursor)
+
+    const step = hudFollowStep({
+      cursor,
+      bounds,
+      barHeight: HUD_FOLLOW_BAR_HEIGHT,
+      workArea: display?.workArea ?? bounds,
+      zoomFactor: win.webContents.getZoomFactor(),
+      gap: HUD_FOLLOW_GAP,
+      reach: HUD_FOLLOW_REACH,
+      deadZone: HUD_FOLLOW_DEAD_ZONE,
+      ease: HUD_FOLLOW_EASE,
+      lastTarget: hudFollowSettled,
+      position: hudFollowPosition
+    })
+
+    hudFollowSettled = step.target
+    hudFollowPosition = step.position
+
+    // Only touch the window when the rounded origin actually changes — a
+    // no-op setBounds still costs a frame on a transparent window.
+    // Also re-assert the held size whenever the live size has crept, so the
+    // drift can never accumulate between moves.
+    const crept = live.width !== bounds.width || live.height !== bounds.height
+
+    if ((step.origin && (step.origin.x !== bounds.x || step.origin.y !== bounds.y)) || crept) {
+      // setBounds — NOT setPosition (the Windows transparent-frameless growth
+      // bug; see the move-by handler in hud-ipc.ts).
+      const origin = step.origin ?? { x: bounds.x, y: bounds.y }
+      win.setBounds({ x: origin.x, y: origin.y, width: bounds.width, height: bounds.height })
+    }
+  }, HUD_FOLLOW_TICK_MS)
+}
+
+/** Park the HUD just under the cursor (or above it near the bottom edge) —
+ *  where the ask sheet should appear, and where follow would settle anyway. */
+function parkHudNearCursor(win: BrowserWindow, cursor: { x: number; y: number }) {
+  if (win.isDestroyed() || !hudWindowing().clientPlacement) {
+    return
+  }
+
+  const bounds = win.getBounds()
+  const display = screen.getDisplayNearestPoint(cursor)
+
+  const origin = hudFollowTarget(
+    cursor,
+    bounds,
+    HUD_FOLLOW_BAR_HEIGHT,
+    win.webContents.getZoomFactor(),
+    display?.workArea ?? bounds,
+    HUD_FOLLOW_GAP
+  )
+
+  win.setBounds({ x: origin.x, y: origin.y, width: bounds.width, height: bounds.height })
+}
+
+// Ask about this. Captures what is under the OS cursor — which app/window
+// (metadata via the read_window_below enumerator) and a crop of the display
+// around the pointer (the screen-tutor capture, Hermes windows hidden) — then
+// opens the HUD as a companion next to the cursor and hands it the payload.
+// The crop is saved through the composer-images path, so the HUD attaches it
+// exactly like a pasted screenshot and the ordinary submit carries it.
+let hudPendingAsk: HudAskPayload | null = null
+let hudAskInFlight = false
+
+async function onHudAsk(via: HudAskPayload['via']) {
+  if (hudAskInFlight) {
+    return
+  }
+
+  hudAskInFlight = true
+
+  try {
+    const cursor = screen.getCursorScreenPoint()
+    const titlesAvailable = IS_MAC ? systemPreferences.getMediaAccessStatus?.('screen') === 'granted' : true
+    const windows = await enumerateWindowsFrontToBack(process.pid, titlesAvailable).catch(() => null)
+    const under = windows && !enumerationFailed(windows) ? windowUnderCursor(windows, cursor, process.pid) : null
+
+    let imagePath = ''
+    let thumbnail = ''
+
+    try {
+      const capture = await screenTutorController.capture()
+      const full = nativeImage.createFromPath(capture.path)
+      const rect = cropAroundCursor(cursor, capture.display.bounds, full.getSize(), HUD_ASK_CROP_SIZE)
+      const crop = full.crop(rect)
+
+      imagePath = await writeComposerImage(crop.toPNG(), '.png')
+      thumbnail = crop.resize({ width: 320 }).toDataURL()
+
+      try {
+        // The full-display capture was only ever the source of the crop.
+        fs.unlinkSync(capture.path)
+      } catch {
+        // best effort
+      }
+    } catch (err) {
+      rememberLog(`[hud-ask] capture failed: ${err?.message || err}`)
+    }
+
+    const payload: HudAskPayload = {
+      app: under?.app ?? '',
+      title: under?.title ?? '',
+      cursor,
+      imagePath,
+      thumbnail,
+      via
+    }
+
+    hudPendingAsk = payload
+
+    // A companion summon: the user is in another app, pointing at something.
+    const win = openHudWindow(hudSessionId, hudProfile, { summon: 'external' })
+
+    if (win && !win.isDestroyed()) {
+      parkHudNearCursor(win, cursor)
+
+      // A freshly spawned renderer pulls the pending payload once its sheet
+      // mounts (hermes:hud:ask-pending); a live one is told right away.
+      if (!win.webContents.isLoading()) {
+        win.webContents.send('hermes:hud:ask', payload)
+      }
+    }
+  } finally {
+    hudAskInFlight = false
+  }
+}
+
+function takePendingHudAsk(): HudAskPayload | null {
+  const pending = hudPendingAsk
+  hudPendingAsk = null
+
+  return pending
+}
+
+const hudAskShortcut = createHudAskShortcut(globalShortcut, () => void onHudAsk('shortcut'))
+
+function applyHudInputHook() {
+  if (!hudInputHook) {
+    return
+  }
+
+  if (!hudPrefs.askOnRightClick) {
+    hudInputHook.stop()
+
+    return
+  }
+
+  if (!hudInputHook.start(() => void onHudAsk('right-click'))) {
+    rememberLog(`[hud] right-click hook unavailable: ${hudInputHook.reason}`)
+  }
+}
+
+function applyHudPrefs(next: HudPrefs) {
+  hudPrefs = next
+
+  if (hudAskShortcut.register(hudPrefs.askShortcut)) {
+    hudAskError = null
+  } else {
+    hudAskError = 'taken'
+    rememberLog(`[hud] ask shortcut unavailable — ${hudPrefs.askShortcut} may be owned by another app`)
+  }
+
+  applyHudInputHook()
+
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    startHudFollow(hudWindow)
+  }
+
+  broadcastHudPrefs()
+}
+
+function updateHudPrefs(patch: Partial<HudPrefs>): HudPrefsStatus {
+  // A chord that does not parse is refused, not silently replaced: Settings
+  // shows "invalid" under the field and the live registration is untouched.
+  if (patch.askShortcut !== undefined && !parseQuickEntryShortcut(patch.askShortcut).ok) {
+    hudAskError = 'invalid'
+    broadcastHudPrefs()
+
+    return hudPrefsStatus()
+  }
+
+  const next = sanitizeHudPrefs({ ...hudPrefs, ...patch })
+  writeHudPrefs(next)
+  applyHudPrefs(next)
+
+  return hudPrefsStatus()
+}
+
+/** Park the HUD at a screen anchor ("top left", "bottom center", …) on the
+ *  display the cursor is on, with a small margin so the rounded corners never
+ *  kiss the edge. Follow is switched off first: a placed HUD that immediately
+ *  walked back to the pointer would make the command look ignored. */
+const HUD_PLACE_MARGIN = 16
+
+function placeHudAtAnchor(anchor: string): boolean {
+  if (!hudWindow || hudWindow.isDestroyed() || !hudWindowing().clientPlacement) {
+    return false
+  }
+
+  const win = hudWindow
+  const bounds = win.getBounds()
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const area = display?.workArea ?? bounds
+  const [vertical, horizontal] = anchor.includes('-') ? anchor.split('-') : ['center', 'center']
+
+  const x =
+    horizontal === 'left'
+      ? area.x + HUD_PLACE_MARGIN
+      : horizontal === 'right'
+        ? area.x + area.width - bounds.width - HUD_PLACE_MARGIN
+        : Math.round(area.x + (area.width - bounds.width) / 2)
+
+  const y =
+    vertical === 'top'
+      ? area.y + HUD_PLACE_MARGIN
+      : vertical === 'bottom'
+        ? area.y + area.height - bounds.height - HUD_PLACE_MARGIN
+        : Math.round(area.y + (area.height - bounds.height) / 2)
+
+  if (hudPrefs.follow) {
+    updateHudPrefs({ follow: false })
+  }
+
+  win.setBounds({ x, y, width: bounds.width, height: bounds.height })
+
+  return true
+}
+
+/** One spoken/typed HUD command (see src/lib/hud-voice-command.ts), already
+ *  parsed by the renderer. Main does the moving because it owns the window. */
+function runHudCommand(command: { anchor?: string; kind: string; on?: boolean }): boolean {
+  switch (command.kind) {
+    case 'place':
+      return typeof command.anchor === 'string' ? placeHudAtAnchor(command.anchor) : false
+
+    case 'come-here':
+      if (!hudWindow || hudWindow.isDestroyed()) {
+        return false
+      }
+
+      if (hudPrefs.follow) {
+        updateHudPrefs({ follow: false })
+      }
+
+      applyHudSnapToPointer()
+
+      return true
+
+    case 'follow':
+      updateHudPrefs({ follow: command.on === true })
+
+      return true
+
+    case 'hide':
+      closeHudWindow()
+
+      return true
+
+    default:
+      return false
+  }
+}
+
+/** The switchers' rows — whatever the primary renderer last pushed for Quick
+ *  Entry (agents + rooms), so the HUD never needs a roster of its own. */
+function hudLaunchOptions(): HudLaunchOptions {
+  const state = quickEntryLastState
+
+  return {
+    agents: Array.isArray(state?.agents) ? state.agents : [],
+    groups: Array.isArray(state?.groups) ? state.groups : []
+  }
+}
+
+/** Remote control: open a room in the MAIN window. The HUD keeps its own
+ *  session — rooms render in the app's pane tree, which the HUD does not
+ *  have. Raised without focus, so the user stays in the app they were in. */
+function openRoomInMainWindow(groupId: string): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    rememberLog('[hud] dropped a room open: no primary window to route it to')
+
+    return false
+  }
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.showInactive()
+  }
+
+  mainWindow.webContents.send('hermes:hud:open-room', { groupId })
+
+  return true
 }
 
 /**
@@ -13786,7 +14303,9 @@ function broadcastHudState(open) {
   }
 }
 
-function spawnHudWindow(sessionId, profile) {
+function spawnHudWindow(sessionId, profile, summon = 'in-app') {
+  const external = summon === 'external'
+
   const win = new BrowserWindow({
     ...hudBounds(),
     minWidth: 380,
@@ -13854,15 +14373,27 @@ function spawnHudWindow(sessionId, profile) {
 
   startHudCursorFeed(win)
   startHudGameOverlayFeed(win)
+  startHudFollow(win)
 
   wireWindowReveal(win, {
     show: () => {
+      if (external) {
+        // Summoned from another app: appear WITHOUT taking focus, so the user
+        // stays in the app they were working in. showInactive keeps
+        // always-on-top; the composer takes focus only when clicked.
+        win.showInactive()
+
+        return
+      }
+
       win.show()
       win.focus()
     },
     onRevealed: () => {
-      // Step the app aside: the HUD IS the surface now.
-      if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
+      // Step the app aside: the HUD IS the surface now. Not for an external
+      // summon — the user asked for a companion over their current app, and
+      // hiding Hermes' main window behind it is neither wanted nor visible.
+      if (!external && hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.hide()
       }
 
@@ -13876,6 +14407,8 @@ function spawnHudWindow(sessionId, profile) {
     if (hudWindow === win) {
       hudWindow = null
     }
+
+    stopHudFollow()
 
     // Closed from its own side (⌘W) — closeHudWindow()'s dispose() never ran,
     // so the global snap shortcut would otherwise stay registered (and stuck
@@ -13911,8 +14444,11 @@ function restoreMainWindowFromHud() {
   }
 }
 
-function openHudWindow(sessionId, profile) {
+function openHudWindow(sessionId, profile, options: { summon?: 'external' | 'in-app' } = {}) {
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
+  // 'external' = summoned by the global chord while another app had focus.
+  // Everything else (titlebar, in-app keybind, pet launcher, IPC) is 'in-app'.
+  const summon = options.summon === 'external' ? 'external' : 'in-app'
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     // Pointed at another PROFILE: the live renderer is bound to the old
@@ -13927,7 +14463,7 @@ function openHudWindow(sessionId, profile) {
 
       hudSessionId = sessionId || null
       hudProfile = profileKey
-      hudWindow = spawnHudWindow(sessionId, profileKey)
+      hudWindow = spawnHudWindow(sessionId, profileKey, summon)
       broadcastHudState(true)
       registerHudSnapShortcut()
 
@@ -13945,15 +14481,29 @@ function openHudWindow(sessionId, profile) {
       broadcastHudState(true)
     }
 
-    focusWindow(hudWindow)
+    if (summon === 'external') {
+      // Companion summon onto an already-open HUD: raise it without stealing
+      // focus from the app the user is in.
+      if (!hudWindow.isVisible()) {
+        hudWindow.showInactive()
+      }
+
+      hudWindow.moveTop?.()
+    } else {
+      focusWindow(hudWindow)
+    }
 
     return hudWindow
   }
 
-  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  // An external summon never hides the main window (there is nothing to
+  // "step aside" from — the user is in another app), so there is nothing to
+  // restore when the HUD closes either.
+  hudRestoreMainWindow =
+    summon !== 'external' && Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
   hudSessionId = sessionId || null
   hudProfile = profileKey
-  hudWindow = spawnHudWindow(sessionId, profileKey)
+  hudWindow = spawnHudWindow(sessionId, profileKey, summon)
   broadcastHudState(true)
   registerHudSnapShortcut()
 
@@ -14316,6 +14866,7 @@ function createWindow() {
   })
 
   streamThrottle.register(mainWindow)
+  holdRendererForBoot(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
@@ -14707,6 +15258,27 @@ ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getSta
 ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
   wakeIndicatorController.setState(state)
 })
+ipcMain.handle('hermes:screen-tutor:capture', event => {
+  const caller = BrowserWindow.fromWebContents(event.sender)
+
+  if (!caller || caller.isDestroyed() || caller.webContents.getURL().includes('win=screen-tutor')) {
+    throw new Error('Screen Tutor capture is unavailable from this window.')
+  }
+
+  return screenTutorController.capture()
+})
+ipcMain.on('hermes:screen-tutor:point', (_event, payload) => {
+  screenTutorController.showPoint(payload)
+})
+ipcMain.on('hermes:screen-tutor:annotations', (_event, payload) => {
+  screenTutorController.showAnnotations(payload)
+})
+ipcMain.on('hermes:screen-tutor:freeze', (_event, frozen) => {
+  screenTutorController.setFrozen(frozen === true)
+})
+ipcMain.on('hermes:screen-tutor:dismiss', () => {
+  screenTutorController.dismiss()
+})
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
@@ -14746,7 +15318,14 @@ const hudIpc = registerHudIpc({
   resetHudLayout: resetHudWindowLayout,
   setHudSessionId: value => {
     hudSessionId = value
-  }
+  },
+  getHudPrefs: hudPrefsStatus,
+  updateHudPrefs,
+  takePendingAsk: takePendingHudAsk,
+  getLaunchOptions: hudLaunchOptions,
+  openRoom: openRoomInMainWindow,
+  runCommand: runHudCommand,
+  getMainWindow: () => mainWindow
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
@@ -16717,6 +17296,55 @@ const activeWorkByWebContents = new Map<number, ActiveWork>()
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
 const streamThrottle = createStreamThrottle()
 
+const lastWindowQuitWatchdog = createLastWindowQuitWatchdog({
+  hasWindows: () => BrowserWindow.getAllWindows().some(win => !win.isDestroyed()),
+  onForcedExit: () => {
+    rememberLog('[shutdown] Graceful last-window teardown timed out; forcing exit to release the single-instance lock')
+    flushDesktopLogBufferSync()
+  },
+  forceExit: () => app.exit(0)
+})
+
+const RENDERER_BOOT_HOLD_MAX_MS = 240_000
+const rendererBootThrottleReleases = new Map<number, () => void>()
+
+function holdRendererForBoot(win: BrowserWindow) {
+  const contentsId = win.webContents.id
+  const releaseThrottle = streamThrottle.hold()
+  let released = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+
+    if (rendererBootThrottleReleases.get(contentsId) === release) {
+      rendererBootThrottleReleases.delete(contentsId)
+    }
+
+    releaseThrottle()
+  }
+
+  rendererBootThrottleReleases.set(contentsId, release)
+  win.webContents.once('destroyed', release)
+  timer = setTimeout(() => {
+    rememberLog('[boot] Renderer boot hold expired before readiness acknowledgement')
+    release()
+  }, RENDERER_BOOT_HOLD_MAX_MS)
+}
+
+ipcMain.on('hermes:renderer-boot-complete', event => {
+  rendererBootThrottleReleases.get(event.sender.id)?.()
+})
+
 function updateStreamThrottleFromActiveWork() {
   streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
 }
@@ -16946,6 +17574,25 @@ ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
     target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
     text
   })
+})
+
+// Quick Entry has no gateway of its own. Relay Prompt Coach requests to the
+// primary renderer, which owns the live Hermes/Codex connection, then relay the
+// unsent result back to the quick window. Neither leg submits a chat message.
+ipcMain.on('hermes:quick-entry:prompt-coach-request', (_event, payload) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  mainWindow.webContents.send('hermes:quick-entry:prompt-coach-request', payload)
+})
+
+ipcMain.on('hermes:quick-entry:prompt-coach-result', (_event, payload) => {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
+    return
+  }
+
+  quickEntryWindow.webContents.send('hermes:quick-entry:prompt-coach-result', payload)
 })
 
 // Primary renderer → main → quick window: gateway connection state + the
@@ -17505,10 +18152,16 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
+
+const HERMES_PROTOCOL = DEV_SERVER ? 'team-hermes-dev' : TEAM_HERMES_PROTOCOL
+
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
+const DEEPLINK_SCHEMES = DEV_SERVER
+  ? ['team-hermes-dev', TEAM_HERMES_PROTOCOL, 'hermes-dev', 'hermes']
+  : [TEAM_HERMES_PROTOCOL, 'hermes']
+
 let _pendingDeepLink = null
+
 let _rendererReadyForDeepLink = false
 
 function _extractDeepLink(argv) {
@@ -17704,6 +18357,19 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+  // HUD summon chord — same lifetime as Quick Entry's: the whole app run, so
+  // the HUD is reachable from any app without visiting Hermes first.
+  registerHudSummonShortcut()
+  // HUD prefs: the ask-at-cursor chord (same lifetime again) and follow mode.
+  // The optional right-click hook loads lazily; Settings reads its outcome.
+  applyHudPrefs(readHudPrefs())
+  void createHudInputHook(() =>
+    loadUiohook(path.join(app.getAppPath(), 'dist', 'node_modules', 'uiohook-napi'))
+  ).then(hook => {
+    hudInputHook = hook
+    applyHudInputHook()
+    broadcastHudPrefs()
+  })
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()
@@ -17910,12 +18576,17 @@ app.on('before-quit', event => {
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
   wakeIndicatorController.close()
+  screenTutorController.close()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a
   // floating composer with nothing behind it. Close it directly rather than via
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
   hudSnapShortcut.dispose()
+  hudSummonShortcut.dispose()
+  hudAskShortcut.dispose()
+  hudInputHook?.stop()
+  stopHudFollow()
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     hudWindow.removeAllListeners('closed')
@@ -17960,6 +18631,11 @@ app.on('window-all-closed', () => {
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
+    lastWindowQuitWatchdog.arm()
     app.quit()
   }
+})
+
+app.on('quit', () => {
+  lastWindowQuitWatchdog.cancel()
 })

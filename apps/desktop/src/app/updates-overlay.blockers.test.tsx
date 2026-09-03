@@ -117,6 +117,28 @@ describe('BlockerView', () => {
     expect(screen.queryByText('Update didn’t finish')).toBeNull()
   })
 
+  it('presents the protected custom edition as preserved instead of a retryable failure', async () => {
+    $updateOverlayTarget.set('client')
+    $updateOverlayOpen.set(true)
+    $updateStatus.set({ supported: true, updateAvailable: true, behind: 1, commits: [] } as DesktopUpdateStatus)
+    $updateApply.set({
+      applying: false,
+      stage: 'error',
+      message: 'Team Hermes is a protected custom edition and cannot replace itself with the official desktop build.',
+      percent: null,
+      error: 'protected-custom-edition',
+      command: null,
+      blockers: null,
+      log: []
+    })
+
+    await renderUpdatesOverlay()
+
+    expect(screen.getByText('Custom interface preserved')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy()
+  })
+
   it('identifies foreign blockers without offering automatic termination', async () => {
     const onStopAndUpdate = vi.fn()
 

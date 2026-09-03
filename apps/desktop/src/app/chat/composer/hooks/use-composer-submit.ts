@@ -3,11 +3,13 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { analyzePromptDraft } from '@/lib/prompt-coach'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
+import { consumePromptCoachOriginal, openPromptCoachWithAI } from '@/store/prompt-coach'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -157,6 +159,27 @@ export function useComposerSubmit({
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
+    // The delayed suggestion is useful while typing, but Enter can beat that
+    // debounce. Guard the actual text-only submit as well so an unclear prompt
+    // opens the preview without clearing, queueing, steering, or sending it.
+    // Send original installs a matching one-shot bypass in the preview card.
+    if (
+      text.trim() &&
+      !queueEdit &&
+      attachments.length === 0 &&
+      !SLASH_COMMAND_RE.test(text.trim()) &&
+      !consumePromptCoachOriginal(sessionId, text)
+    ) {
+      const promptCoachAnalysis = analyzePromptDraft(text)
+
+      if (promptCoachAnalysis) {
+        openPromptCoachWithAI(sessionId, text, promptCoachAnalysis)
+        focusInput()
+
+        return
+      }
+    }
 
     // A clarify card parked on this session owns the turn: the agent is blocked
     // inside its tool batch waiting on `clarify.respond`, so a follow-up routed

@@ -23,6 +23,7 @@ import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/st
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
+import { prepareScreenTutorDraft } from '@/store/screen-tutor'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -65,6 +66,7 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { PromptCoachPanel } from './prompt-coach-panel'
 import { QueuePanel } from './queue-panel'
 import {
   beginComposerComposition,
@@ -76,6 +78,8 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope } from './scope'
+import { ScreenGuideCard } from './screen-guide-card'
+import { ScreenTutorAction } from './screen-tutor-action'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { SuggestionPills } from './suggestion-pills'
@@ -115,6 +119,10 @@ export function ChatBar({
   const hudWindowing = window.hermesDesktop?.hud?.windowing
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
+  // Which live composer this instance IS (main | tile) — its attachment set,
+  // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
+  const scope = useComposerScope()
+
   const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
     controlDrag: hudWindowing?.controlDrag === true,
     workspaceTransfer: hudWindowing?.workspaceTransfer === true
@@ -146,20 +154,31 @@ export function ChatBar({
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const contributedDraft = await runComposerMiddleware({
+        text: value,
+        attachments: options?.attachments,
+        displayText: options?.displayText
+      })
+
+      if (!contributedDraft) {
+        return false
+      }
+
+      const draft = await prepareScreenTutorDraft(scope.target, contributedDraft)
 
       if (!draft) {
         return false
       }
 
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
+      return onSubmitProp(draft.text, {
+        ...options,
+        attachments: draft.attachments,
+        displayText: draft.displayText ?? options?.displayText
+      })
     },
-    [onSubmitProp]
+    [onSubmitProp, scope.target]
   )
 
-  // Which live composer this instance IS (main | tile) — its attachment set,
-  // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
-  const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
@@ -1190,6 +1209,14 @@ export function ChatBar({
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
           </div>
+          <PromptCoachPanel
+            onApply={text => {
+              loadIntoComposer(text, attachments)
+              focusInput()
+            }}
+            onSendOriginal={submitDraft}
+            sessionId={statusSessionId}
+          />
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
               grows upward over the thread and the dock's own measurement covers
@@ -1372,6 +1399,7 @@ export function ChatBar({
                     </div>
                   )}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  <ScreenGuideCard busy={busy} disabled={inputDisabled} onSubmit={onSubmit} target={scope.target} />
                   <div
                     className={cn(
                       'grid w-full',
@@ -1386,6 +1414,7 @@ export function ChatBar({
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
                     <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
+                      <ScreenTutorAction disabled={inputDisabled} target={scope.target} />
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}
                     </div>

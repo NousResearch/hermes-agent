@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// set-exe-identity.mjs — stamp the Hermes icon + version metadata onto the
-// built Hermes.exe using rcedit, completely decoupled from electron-builder's
+// set-exe-identity.mjs — stamp the Team Hermes icon + version metadata onto the
+// built executable using rcedit, completely decoupled from electron-builder's
 // signing path.
 //
 // WHY THIS EXISTS
@@ -62,14 +62,15 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
   await rcedit(exe, {
     icon,
     'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
-      CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+      ProductName: 'Team Hermes Desktop',
+      FileDescription: 'Team Hermes Desktop',
+      CompanyName: 'Team Hermes Contributors',
+      LegalCopyright: 'Copyright (c) 2026 Team Hermes Contributors',
+      OriginalFilename: 'Team Hermes Desktop.exe'
     }
   })
 
-  console.log('[set-exe-identity] done — Hermes icon + identity stamped')
+  console.log('[set-exe-identity] done — Team Hermes icon + identity stamped')
 }
 
 export { stampExeIdentity }

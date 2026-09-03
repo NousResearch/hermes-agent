@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import {
   initialQuickComposerState,
+  QUICK_ENTRY_FALLBACK_AGENTS,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
+  quickEntryAgentDisplayName,
+  type QuickEntryAgentOption,
   type QuickEntrySubmitPayload
 } from './quick-entry'
 
@@ -29,8 +32,15 @@ function run(events: QuickComposerEvent[], from: QuickComposerState = initialQui
 
 // Most flows only make sense once the primary renderer has reported a live
 // gateway — this is the push the quick window receives on open.
+const agents: QuickEntryAgentOption[] = [
+  { displayName: 'Hermes', profile: 'default', reachable: true },
+  { displayName: 'Fizz', profile: 'fizz', reachable: true }
+]
+
 const connect: QuickComposerEvent = {
+  agents,
   connected: true,
+  groups: [{ displayName: 'Research Team', groupId: 'room-research', memberCount: 3, reachable: true }],
   sessions: [
     { id: 's1', title: 'Fix the build' },
     { id: 's2', title: 'Research trip' }
@@ -39,10 +49,22 @@ const connect: QuickComposerEvent = {
 }
 
 describe('quickComposerReducer', () => {
-  it('starts visible, empty, DISCONNECTED, and targeting the current chat', () => {
+  it('ships only the default profile as a fallback and names agents by their own display name', () => {
+    expect(QUICK_ENTRY_FALLBACK_AGENTS.map(agent => [agent.displayName, agent.profile])).toEqual([['Hermes', 'default']])
+    expect(quickEntryAgentDisplayName('repokeeper', 'Linus')).toBe('Linus')
+    expect(quickEntryAgentDisplayName('custom-agent', 'McCloud')).toBe('McCloud')
+    expect(quickEntryAgentDisplayName('custom-agent', '  ')).toBe('custom-agent')
+  })
+
+  it('starts visible with fallback agents, DISCONNECTED, and targeting the current chat', () => {
     expect(initialQuickComposerState).toEqual({
+      activeAgentIndex: 0,
+      agents: QUICK_ENTRY_FALLBACK_AGENTS,
       connected: false,
       draft: '',
+      groups: [],
+      launchError: null,
+      pendingRequestId: null,
       sessions: [],
       submitting: false,
       target: QUICK_TARGET_CURRENT,
@@ -87,7 +109,7 @@ describe('quickComposerReducer', () => {
     const { sent, state } = run([
       connect,
       { draft: 'almost done', type: 'edit' },
-      { connected: false, sessions: [], type: 'state' },
+      { agents: [], connected: false, groups: [], sessions: [], type: 'state' },
       { type: 'submit' }
     ])
 
@@ -125,11 +147,112 @@ describe('quickComposerReducer', () => {
     expect(sent).toEqual([{ target: QUICK_TARGET_NEW, text: 'fresh start' }])
   })
 
+  it('opens a fresh HUD for a reachable selected agent without requiring prompt text', () => {
+    const { sent, state } = run([connect, { profile: 'fizz', requestId: 'request-fizz-1', type: 'open-agent' }])
+
+    expect(sent).toEqual([{ action: 'open-agent', profile: 'fizz', requestId: 'request-fizz-1' }])
+    expect(state.submitting).toBe(true)
+    expect(state.visible).toBe(true)
+  })
+
+  it('opens the selected group room without requiring prompt text', () => {
+    const { sent, state } = run([connect, { groupId: 'room-research', requestId: 'request-group-1', type: 'open-group' }])
+
+    expect(sent).toEqual([{ action: 'open-group', groupId: 'room-research', requestId: 'request-group-1' }])
+    expect(state.submitting).toBe(true)
+    expect(state.visible).toBe(true)
+  })
+
+  it('previews a reachable agent without launching it', () => {
+    const { sent, state } = run([connect, { index: 1, type: 'select-agent' }])
+
+    expect(sent).toEqual([])
+    expect(state.activeAgentIndex).toBe(1)
+    expect(state.submitting).toBe(false)
+  })
+
+  it('does not preview an unreachable or out-of-range agent', () => {
+    const unreachable = {
+      ...connect,
+      agents: [...agents, { displayName: 'Offline', profile: 'offline', reachable: false }]
+    } as QuickComposerEvent
+
+    const connected = run([unreachable]).state
+
+    expect(quickComposerReducer(connected, { index: 2, type: 'select-agent' }).state.activeAgentIndex).toBe(0)
+    expect(quickComposerReducer(connected, { index: 99, type: 'select-agent' }).state.activeAgentIndex).toBe(0)
+  })
+
+  it('keeps the launcher open for an unknown or unreachable agent', () => {
+    expect(run([connect, { profile: 'missing', requestId: 'request-missing-1', type: 'open-agent' }]).sent).toEqual([])
+
+    const unreachable: QuickComposerEvent = {
+      agents: [{ displayName: 'Remote', profile: 'remote', reachable: false }],
+      connected: true,
+      groups: [],
+      sessions: [],
+      type: 'state'
+    }
+
+    expect(run([unreachable, { profile: 'remote', requestId: 'request-remote-1', type: 'open-agent' }]).sent).toEqual(
+      []
+    )
+  })
+
+  it('lets a fallback agent initiate its own connection while the prompt gateway is disconnected', () => {
+    const result = run([{ profile: 'default', requestId: 'request-default-1', type: 'open-agent' }])
+
+    expect(result.sent).toEqual([{ action: 'open-agent', profile: 'default', requestId: 'request-default-1' }])
+    expect(result.state.visible).toBe(true)
+    expect(result.state.submitting).toBe(true)
+  })
+
+  it('hides only after the matching launch succeeds and keeps a failed launch retryable', () => {
+    const pending = run([connect, { profile: 'fizz', requestId: 'request-fizz-2', type: 'open-agent' }]).state
+
+    const stale = run(
+      [{ result: { ok: true, profile: 'fizz', requestId: 'older-request' }, type: 'launch-result' }],
+      pending
+    ).state
+
+    expect(stale).toEqual(pending)
+
+    const failed = run(
+      [
+        {
+          result: { error: 'Gateway unavailable', ok: false, profile: 'fizz', requestId: 'request-fizz-2' },
+          type: 'launch-result'
+        }
+      ],
+      pending
+    ).state
+
+    expect(failed.visible).toBe(true)
+    expect(failed.launchError).toBe('Gateway unavailable')
+    expect(failed.submitting).toBe(false)
+
+    const retry = run([connect, { profile: 'fizz', requestId: 'request-fizz-3', type: 'open-agent' }], failed).state
+
+    const succeeded = run(
+      [{ result: { ok: true, profile: 'fizz', requestId: 'request-fizz-3' }, type: 'launch-result' }],
+      retry
+    ).state
+
+    expect(succeeded.visible).toBe(false)
+    expect(succeeded.launchError).toBeNull()
+  })
+
   it('a picked session that vanishes from the pushed list falls back to current', () => {
     const { state } = run([
       connect,
       { target: 's2', type: 'target' },
-      { connected: true, sessions: [{ id: 's1', title: 'Fix the build' }], type: 'state' }
+      {
+        agents,
+        connected: true,
+        groups: [],
+        sessions: [{ id: 's1', title: 'Fix the build' }],
+        type: 'state'
+      }
     ])
 
     expect(state.target).toBe(QUICK_TARGET_CURRENT)

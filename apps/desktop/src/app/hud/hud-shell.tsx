@@ -3,17 +3,22 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from 're
 import { useNavigate } from 'react-router'
 
 import { chatMessageText } from '@/lib/chat-messages'
+import { $hudPrefs, loadHudPrefs, watchHudAsk, watchHudPrefs, watchHudRoomFeed } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
 import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 
+import { HudAskSheet } from './ask-sheet'
 import { useHudClickThrough } from './click-through'
+import { useHudEscape } from './escape'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
+import { HUD_PET_HEADROOM, HudPets } from './pets'
 import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
+import { HudRoomPanel } from './room-panel'
 import { useHudThreadFocus } from './thread-focus'
 import { useHudTranscriptBand } from './transcript-band'
 
@@ -217,6 +222,21 @@ export function HudShell() {
   useReportHudSession()
   useHudGoto(useNavigate())
 
+  // Follow / ask: mirror main's prefs and collect ask payloads (the one
+  // parked before this renderer existed, then live pushes).
+  useEffect(() => {
+    void loadHudPrefs()
+    const offPrefs = watchHudPrefs()
+    const offAsk = watchHudAsk()
+    const offRoom = watchHudRoomFeed()
+
+    return () => {
+      offPrefs()
+      offAsk()
+      offRoom()
+    }
+  }, [])
+
   // Which screen EDGE the window is parked against. Parked tight to the top,
   // the composer flips to the window's top edge and the thread grows DOWN
   // (data-hud-edge). Computed here from window.screenY — no IPC: the renderer
@@ -279,11 +299,21 @@ export function HudShell() {
   // a grey slab hanging under the bar with nothing in it. Now that the band is
   // capped it almost never covers the window, so this is almost always false —
   // which is correct, and asking anything looser paints the slab back.
-  const filled = useHudTranscriptBand(rootRef)
+  // Headroom above the bar while the pixel pets are on (see pets.tsx). Read
+  // through a ref inside the hook's measurement so it never re-subscribes.
+  const petsOn = useStore($hudPrefs)?.pets !== false
+  const petInset = petsOn ? HUD_PET_HEADROOM : 0
+  const petInsetRef = useRef(petInset)
+  petInsetRef.current = petInset
+  const filled = useHudTranscriptBand(rootRef, () => petInsetRef.current)
 
   useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
+  // Escape puts the HUD away — the gesture people reach for first, and the one
+  // dismissal the HUD lacked (it was ⌘W or the exit button). Defers to any
+  // portalled overlay that owns the press (see `hudEscapeAction`).
+  useHudEscape(rootRef)
 
   // Edge/corner resize frame. The window is created non-resizable so dragging can
   // never be misread as a resize gesture (the Windows transparent-frameless
@@ -318,6 +348,7 @@ export function HudShell() {
       data-hud-game={gameUnder ? '' : undefined}
       data-hud-held={held ? '' : undefined}
       data-hud-input={hudInput}
+      data-hud-pets={petsOn ? '' : undefined}
       data-hud-recent={recent || held ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
@@ -330,7 +361,8 @@ export function HudShell() {
           '--hud-fade': `${HUD_FADE_MS}ms`,
           '--hud-collapse': `${HUD_COLLAPSE_MS}ms`,
           '--hud-dim': `${HUD_DIM_MS}ms`,
-          '--hud-reveal': `${HUD_REVEAL_MS}ms`
+          '--hud-reveal': `${HUD_REVEAL_MS}ms`,
+          '--hud-top-inset': `${petInset}px`
         } as CSSProperties
       }
     >
@@ -340,6 +372,10 @@ export function HudShell() {
       <div aria-hidden data-hud-glass />
 
       <WiredPane part="chatRoutes" />
+
+      <HudPets />
+      <HudRoomPanel />
+      <HudAskSheet />
 
       {/* CanvasTTY-style resize frame. Windows/macOS/X11 get every edge and
           corner; native Wayland gets the right/bottom handles it can honour

@@ -18,7 +18,7 @@ import {
   mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
-import { $hudMode } from '@/store/hud'
+import { $hudMode, $hudRoom, postHudRoom } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
@@ -122,6 +122,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = sanitizeComposerInput(rawText).trim()
       const usingComposerAttachments = !options?.attachments
+
+      // HUD room mode: the line goes to the room in the app window, not to
+      // this renderer's agent session. Attachments do not travel (a room post
+      // is text), and a delivery failure leaves the draft in place.
+      if ($hudMode.get() && $hudRoom.get()) {
+        return visibleText ? await postHudRoom(visibleText) : false
+      }
 
       // Drop undefined/null holes a session switch or draft restore can leave in
       // the attachments array (same bug class as AttachmentList #49624). Without

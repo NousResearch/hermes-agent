@@ -54,6 +54,7 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { bindGroupLaunchBridge } from './group-launch-bridge'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
@@ -67,6 +68,12 @@ import {
   selectedRosterBot,
   sessionOwnsWorkspace
 } from './roster-pane'
+import {
+  $collapsedRosterSections,
+  $collapsedRosterSectionsHydrated,
+  parseCollapsedSections,
+  ROSTER_COLLAPSE_KEY
+} from './roster-section-collapse'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
@@ -105,6 +112,9 @@ export default {
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()
+    // Quick Entry's group tiles and the HUD's room switcher ask this window
+    // for its rooms and to open one; answer from the room store.
+    const disposeGroupLaunchBridge = bindGroupLaunchBridge()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -112,6 +122,7 @@ export default {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(disposeGroupLaunchBridge)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -199,6 +210,27 @@ export default {
     } catch {
       /* no storage — this window starts with no restored selection */
       $selectedRosterHydrated.set(true)
+    }
+
+    // Which roster sections were folded last time. Same settle contract as the
+    // selection above: the flag flips on every path so a storage quirk cannot
+    // strand the pane, and an unreadable value degrades to "nothing folded"
+    // rather than hiding TEAM or GROUP CHATS on launch.
+    try {
+      // @ts-expect-error same PluginStorage.get(key, fallback) typing note as above.
+      Promise.resolve(ctx.storage?.get?.(ROSTER_COLLAPSE_KEY))
+        .then(value => {
+          const restored = parseCollapsedSections(value)
+
+          if (restored.size) {
+            $collapsedRosterSections.set(restored)
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => $collapsedRosterSectionsHydrated.set(true))
+    } catch {
+      /* no storage — this window starts with every section expanded */
+      $collapsedRosterSectionsHydrated.set(true)
     }
 
     // Bot Mode sessions are always hidden now — the old "hide Bot Chats"

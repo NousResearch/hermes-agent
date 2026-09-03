@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { HudSwitchers } from '@/app/hud/switchers'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -183,6 +184,7 @@ function HudWindowButtons() {
 
   return (
     <>
+      <HudSwitchers />
       <Tip label={t.titlebar.resetHudLayout}>
         <Button
           aria-label={t.titlebar.resetHudLayout}

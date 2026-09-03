@@ -10,6 +10,7 @@ import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indic
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
+import { runHudVoiceCommand } from '@/store/hud'
 import { notify, notifyError } from '@/store/notifications'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
@@ -119,6 +120,15 @@ export function useComposerVoice({
 
   const submitVoiceTurn = async (text: string) => {
     if (busy) {
+      return
+    }
+
+    // "HUD top left" and friends are commands to the desktop, not turns for
+    // the agent — same seam as the stop word, one step later.
+    if (runHudVoiceCommand(text)) {
+      triggerHaptic('submit')
+      clearDraft()
+
       return
     }
 

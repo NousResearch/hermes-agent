@@ -1,6 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { HudAskPayload, HudLaunchOptions, HudPrefs, HudPrefsStatus, HudRoomFeed } from './lib/hud-prefs'
+import type { HudVoiceCommand } from './lib/hud-voice-command'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -8,7 +10,16 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
-import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type {
+  QuickEntryLaunchResult,
+  QuickEntryMode,
+  QuickEntryPromptCoachRequest,
+  QuickEntryPromptCoachResult,
+  QuickEntryShownPayload,
+  QuickEntryStatePush,
+  QuickEntryStatus,
+  QuickEntrySubmitPayload
+} from './store/quick-entry'
 
 export {}
 
@@ -80,6 +91,16 @@ declare global {
         setState: (state: WakeIndicatorState) => void
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
+      screenTutor?: {
+        capture: () => Promise<ScreenTutorCaptureResult>
+        dismiss: () => void
+        onAnnotations: (callback: (payload: ScreenTutorAnnotationsPayload) => void) => () => void
+        onPoint: (callback: (point: ScreenTutorPoint) => void) => () => void
+        onState: (callback: (state: ScreenTutorOverlayState) => void) => () => void
+        setFrozen: (frozen: boolean) => void
+        showAnnotations: (payload: ScreenTutorAnnotationsPayload) => void
+        showPoint: (point: ScreenTutorPoint) => void
+      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -118,16 +139,43 @@ declare global {
         resetLayout: () => Promise<{ ok: boolean }>
         setFrost: (showing: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
-        onGoto: (callback: (sessionId: string) => void) => () => void
+        onGoto: (callback: (sessionId: null | string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
+        // Follow-the-pointer + ask-at-cursor prefs (main-owned; see hud-ask.ts).
+        getPrefs?: () => Promise<HudPrefsStatus>
+        setPrefs?: (patch: Partial<HudPrefs>) => Promise<HudPrefsStatus>
+        onPrefs?: (callback: (status: HudPrefsStatus) => void) => () => void
+        // "Ask about this" payloads for the HUD renderer.
+        takePendingAsk?: () => Promise<HudAskPayload | null>
+        onAsk?: (callback: (payload: HudAskPayload) => void) => () => void
+        // Switchers: agents + rooms, and the remote-controlled room open.
+        launchOptions?: () => Promise<HudLaunchOptions>
+        openRoom?: (groupId: string) => Promise<{ ok: boolean }>
+        command?: (command: HudVoiceCommand) => Promise<{ ok: boolean }>
+        // Room mode (HUD side).
+        roomFeed?: (groupId: string) => Promise<HudRoomFeed | null>
+        roomPost?: (groupId: string, text: string) => Promise<{ ok: boolean }>
+        watchRoom?: (groupId: null | string) => Promise<{ groupId: null | string }>
+        onRoomFeed?: (callback: (feed: HudRoomFeed) => void) => () => void
+        // Room mode (app-window side).
+        onRoomFeedRequest?: (callback: (request: { groupId: string; requestId: string }) => void) => () => void
+        reportRoomFeed?: (reply: { feed: HudRoomFeed | null; requestId: string }) => void
+        onRoomPost?: (callback: (request: { groupId: string; requestId: string; text: string }) => void) => () => void
+        reportRoomPost?: (reply: { ok: boolean; requestId: string }) => void
+        onWatchRoom?: (callback: (request: { groupId: null | string }) => void) => () => void
+        pushRoomFeed?: (feed: HudRoomFeed) => void
+        // Main → primary renderer.
+        onOpenRoom?: (callback: (request: { groupId: string }) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
       quickEntry: {
+        /** Show the pointer-adjacent agent launcher after an explicit pet click. */
+        show: (mode?: QuickEntryMode) => void
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
@@ -137,6 +185,8 @@ declare global {
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
         submit: (payload: QuickEntrySubmitPayload) => void
+        /** Primary renderer → main → quick window: authoritative agent launch result. */
+        reportLaunchResult: (result: QuickEntryLaunchResult) => void
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +
@@ -147,11 +197,19 @@ declare global {
         onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
         // Primary renderer subscribes to submits captured by the quick window.
         onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        onLaunchResult: (callback: (result: QuickEntryLaunchResult) => void) => () => void
+        /** Quick window → primary renderer: ask the active Hermes model to coach this draft. */
+        requestPromptCoach?: (request: QuickEntryPromptCoachRequest) => void
+        /** Primary renderer → quick window: return the AI-enhanced, unsent preview. */
+        reportPromptCoachResult?: (result: QuickEntryPromptCoachResult) => void
+        onPromptCoachRequest?: (callback: (request: QuickEntryPromptCoachRequest) => void) => () => void
+        onPromptCoachResult?: (callback: (result: QuickEntryPromptCoachResult) => void) => () => void
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
-        onShown: (callback: () => void) => () => void
+        onShown: (callback: (payload: QuickEntryShownPayload) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      signalRendererBootComplete?: () => void
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -1036,6 +1094,59 @@ export interface DesktopAuthProvider {
   // OAuth redirect. The session/cookie/ws-ticket machinery is identical;
   // only the login-page form and the desktop's button copy differ.
   supportsPassword?: boolean
+}
+
+export interface ScreenTutorPoint {
+  displayId: string
+  label?: string
+  x: number
+  y: number
+}
+
+export interface ScreenTutorAnnotation {
+  color?: 'amber' | 'cyan' | 'emerald' | 'rose' | 'white'
+  kind: 'arrow' | 'circle' | 'label' | 'line' | 'point' | 'rect'
+  label?: string
+  x: number
+  x2?: number
+  y: number
+  y2?: number
+}
+
+export interface ScreenTutorAnnotationsPayload {
+  annotations: ScreenTutorAnnotation[]
+  displayId: string
+  frozen?: boolean
+  guide?: ScreenTutorGuideStep
+  mode?: 'append' | 'replace'
+  ttlMs?: number
+}
+
+export interface ScreenTutorGuideStep {
+  id: string
+  instruction: string
+  step: number
+  successCheck?: string
+  title: string
+  total: number
+}
+
+export interface ScreenTutorOverlayState {
+  count: number
+  frozen: boolean
+  guide?: ScreenTutorGuideStep
+  visible: boolean
+}
+
+export interface ScreenTutorCaptureResult {
+  display: {
+    bounds: { height: number; width: number; x: number; y: number }
+    id: string
+    label: string
+    scaleFactor: number
+  }
+  image: { height: number; width: number }
+  path: string
 }
 
 export interface DesktopConnectionProbeResult {

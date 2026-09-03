@@ -150,3 +150,36 @@ test('closed and destroyed windows drop out without throwing', () => {
   // Only the registration-time call landed; nothing after close.
   assert.deepEqual(closedWin.calls, [true])
 })
+
+test('a boot hold keeps an idle renderer runnable until release', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  throttle.register(win)
+
+  const release = throttle.hold()
+  assert.deepEqual(win.calls, [true, false])
+  assert.equal(throttle.isUnthrottled(), true)
+
+  release()
+  release()
+  assert.equal(timers.pendingCount, 1)
+
+  timers.fire()
+  assert.deepEqual(win.calls, [true, false, true])
+})
+
+test('releasing a boot hold does not throttle a turn that started meanwhile', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  throttle.register(win)
+
+  const release = throttle.hold()
+  throttle.update(true)
+  release()
+
+  assert.equal(timers.pendingCount, 0)
+  assert.equal(throttle.isUnthrottled(), true)
+  assert.deepEqual(win.calls, [true, false])
+})

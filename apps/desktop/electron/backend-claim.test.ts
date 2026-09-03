@@ -10,6 +10,7 @@ import {
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
+  processLiveness,
   processStartMarker
 } from './backend-claim'
 
@@ -72,6 +73,29 @@ test('a missing PID is classified as ESRCH so reapOrphans can drop the record', 
   // the identity matchers treated as "unknown" and kept forever. The native
   // gate throws ESRCH — the errno those catch blocks already map to gone.
   await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
+})
+
+test('processLiveness rejects dead PIDs without launching a marker probe', () => {
+  const dead = processLiveness(4242, () => {
+    const error = new Error('missing') as NodeJS.ErrnoException
+
+    error.code = 'ESRCH'
+    throw error
+  })
+
+  assert.equal(dead, false)
+})
+
+test('processLiveness treats permission refusal as alive and unknown errors as inconclusive', () => {
+  const failing = (code: string) => {
+    const error = new Error(code) as NodeJS.ErrnoException
+
+    error.code = code
+    throw error
+  }
+
+  assert.equal(processLiveness(1, () => failing('EPERM')), true)
+  assert.equal(processLiveness(1, () => failing('EIO')), undefined)
 })
 
 // --- PID-only marker helpers --------------------------------------------------

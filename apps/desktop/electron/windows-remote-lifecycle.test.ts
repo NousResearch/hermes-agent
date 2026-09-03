@@ -11,6 +11,7 @@ import {
   detectRemotePlatform,
   encodedPowerShell,
   helperCommand,
+  listWindowsRemoteHermesProfiles,
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,
@@ -222,6 +223,36 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
       })
     ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
+  )
+})
+
+test('Windows profile inventory uses a literal Windows Hermes home and filters rollback directories', async () => {
+  const calls: string[] = []
+  const ssh = sshWith(async command => {
+    calls.push(command)
+    const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+
+    if (script.includes('ConvertTo-Json')) {
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: "C:\\Users\\O'Brien\\AppData\\Local\\hermes",
+        hermesPath: "C:\\Users\\O'Brien\\AppData\\Local\\hermes\\hermes.exe",
+        python: "C:\\Users\\O'Brien\\AppData\\Local\\hermes\\python.exe"
+      })
+    }
+
+    assert.match(script, /-LiteralPath/)
+    assert.doesNotMatch(script, /\$home\s*=/i)
+    assert.match(script, /O''Brien/)
+
+    return 'jarvis\nrepokeeper\njarvis.rollback-old\n'
+  })
+
+  assert.deepEqual(await listWindowsRemoteHermesProfiles(ssh), ['default', 'jarvis', 'repokeeper'])
+  assert.equal(
+    calls.some(command => command.includes('ls -1') || command.includes('if [ -d')),
+    false
   )
 })
 

@@ -21,12 +21,122 @@ const DEFAULT_QUICK_ENTRY_SHORTCUT = 'CommandOrControl+Shift+Space'
 // Compact capture surface: wide enough for a sentence, short enough to read as
 // a HUD rather than a second app window. Height covers the composer row plus
 // the session-target picker row; the renderer never grows the OS window in v1.
-const QUICK_ENTRY_WINDOW_WIDTH = 640
-const QUICK_ENTRY_WINDOW_HEIGHT = 168
+const QUICK_ENTRY_WINDOW_WIDTH = 760
+const QUICK_ENTRY_WINDOW_HEIGHT = 420
+// The agent launcher is a dropdown, not a second HUD panel. Keep the native
+// window tight so its transparent hit area and shadow never read as a large
+// floating box after a cold restart.
+const QUICK_ENTRY_AGENT_WINDOW_WIDTH = 224
+const QUICK_ENTRY_AGENT_WINDOW_HEIGHT = 238
 
-// Spotlight-ish placement: horizontally centered on the active display, a
-// comfortable fraction down from the top rather than dead center.
+const QUICK_ENTRY_FALLBACK_PROFILES = new Set(['default'])
+
+export type QuickEntryMode = 'agents' | 'composer'
+
+export interface QuickEntryAnchorRect {
+  height: number
+  viewportHeight?: number
+  viewportWidth?: number
+  width: number
+  x: number
+  y: number
+}
+
+export function quickEntryScreenAnchorRect(
+  contentBounds: { height?: number; width?: number; x: number; y: number } | undefined,
+  anchorRect: QuickEntryAnchorRect | undefined
+): QuickEntryAnchorRect | undefined {
+  if (
+    !contentBounds ||
+    !anchorRect ||
+    !Number.isFinite(anchorRect.x) ||
+    !Number.isFinite(anchorRect.y) ||
+    !Number.isFinite(anchorRect.width) ||
+    !Number.isFinite(anchorRect.height) ||
+    anchorRect.width <= 0 ||
+    anchorRect.height <= 0
+  ) {
+    return undefined
+  }
+
+  const hasViewportScale =
+    Number.isFinite(contentBounds.width) &&
+    Number.isFinite(contentBounds.height) &&
+    Number.isFinite(anchorRect.viewportWidth) &&
+    Number.isFinite(anchorRect.viewportHeight) &&
+    (contentBounds.width ?? 0) > 0 &&
+    (contentBounds.height ?? 0) > 0 &&
+    (anchorRect.viewportWidth ?? 0) > 0 &&
+    (anchorRect.viewportHeight ?? 0) > 0
+
+  const scaleX = hasViewportScale ? (contentBounds.width ?? 1) / (anchorRect.viewportWidth ?? 1) : 1
+  const scaleY = hasViewportScale ? (contentBounds.height ?? 1) / (anchorRect.viewportHeight ?? 1) : 1
+
+  return {
+    height: anchorRect.height * scaleY,
+    width: anchorRect.width * scaleX,
+    x: contentBounds.x + anchorRect.x * scaleX,
+    y: contentBounds.y + anchorRect.y * scaleY
+  }
+}
+
+export function isQuickEntryFallbackProfile(profile: string): boolean {
+  return QUICK_ENTRY_FALLBACK_PROFILES.has(profile.trim().toLowerCase())
+}
+
+/**
+ * Fallback agents exist only for the brief pre-roster loading state. Once Main
+ * has received any roster array, that live result is authoritative—even when
+ * empty or when a shipped fallback profile is explicitly unreachable.
+ */
+export function isQuickEntryAgentOffered(
+  profile: string,
+  agents: Array<{ profile?: unknown; reachable?: unknown }> | undefined
+): boolean {
+  if (!Array.isArray(agents)) {
+    return isQuickEntryFallbackProfile(profile)
+  }
+
+  return agents.some(agent => agent?.profile === profile && agent?.reachable === true)
+}
+
+export function quickEntryRejectedLaunchResult(
+  payload: unknown,
+  error: string
+): { error: string; ok: false; profile: string; requestId: string } | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined
+  }
+
+  const candidate = payload as { action?: unknown; groupId?: unknown; profile?: unknown; requestId?: unknown }
+  const requestId = typeof candidate.requestId === 'string' ? candidate.requestId.trim() : ''
+
+  if (!requestId) {
+    return undefined
+  }
+
+  const profile =
+    candidate.action === 'open-agent' && typeof candidate.profile === 'string'
+      ? candidate.profile.trim()
+      : candidate.action === 'open-group' && typeof candidate.groupId === 'string'
+        ? `group:${candidate.groupId.trim()}`
+        : ''
+
+  if (!profile) {
+    return undefined
+  }
+
+  return { error: error.trim().slice(0, 240), ok: false, profile, requestId }
+}
+
+// Spotlight-ish fallback placement when a cursor point is unavailable.
 const QUICK_ENTRY_TOP_FRACTION = 0.22
+// Keep the capture surface close enough to read as pointer-adjacent without
+// covering the control directly under the cursor.
+const QUICK_ENTRY_POINTER_GAP = 18
+// The pet picker is a visually attached menu, so it sits closer than the
+// general-purpose quick composer without covering the mascot itself.
+const QUICK_ENTRY_AGENT_GAP = 10
 
 // Electron accelerator vocabulary (electronjs.org/docs/latest/api/accelerator).
 // Kept as data so validation and the settings UI agree on one list.
@@ -319,6 +429,19 @@ export interface QuickEntryShortcutController {
   apply(settings: QuickEntrySettings): QuickEntryRegistration
 }
 
+interface QuickEntryShowHost {
+  isDestroyed: () => boolean
+  webContents: unknown
+}
+
+/** Only an explicit click in a declared, live host may summon Quick Entry. */
+export function canShowQuickEntryFrom(
+  sender: unknown,
+  hosts: Array<null | QuickEntryShowHost | undefined>
+): boolean {
+  return hosts.some(host => Boolean(host && !host.isDestroyed() && host.webContents === sender))
+}
+
 /**
  * Owns the one live global accelerator. Single resolver so every caller — boot,
  * the settings write, quit — gets the same answer and we can never leak two
@@ -394,21 +517,99 @@ export function createQuickEntryShortcut(
 }
 
 /**
- * Where the quick window opens on a given display work area. Centered
- * horizontally, a fraction down from the top, and clamped so it stays fully
- * inside the work area on small/odd displays.
+ * Where the quick window opens on a given display work area.
+ *
+ * The compact pet chooser opens ABOVE the summon point, horizontally centred on
+ * it, so it reads as attached to the pet it was launched from instead of as a
+ * popup that happened to land near the mouse. It drops below only when there is
+ * genuinely no room above; when neither side fits it takes the roomier one, so
+ * the unavoidable overlap on a very short work area is as small as the display
+ * allows. The composer keeps its original lower-right adjacent placement.
+ *
+ * Both modes clamp to the active display's work area. Without a pointer the
+ * original Spotlight placement is used.
  */
-export function quickEntryWindowBounds(workArea?: { height: number; width: number; x: number; y: number }): {
+export function quickEntryWindowBounds(
+  workArea?: { height: number; width: number; x: number; y: number },
+  cursor?: { x: number; y: number },
+  mode: QuickEntryMode = 'composer',
+  anchorRect?: QuickEntryAnchorRect
+): {
   height: number
   width: number
   x: number
   y: number
 } {
-  const width = Math.min(QUICK_ENTRY_WINDOW_WIDTH, workArea?.width ?? QUICK_ENTRY_WINDOW_WIDTH)
-  const height = Math.min(QUICK_ENTRY_WINDOW_HEIGHT, workArea?.height ?? QUICK_ENTRY_WINDOW_HEIGHT)
+  const requestedWidth = mode === 'agents' ? QUICK_ENTRY_AGENT_WINDOW_WIDTH : QUICK_ENTRY_WINDOW_WIDTH
+  const requestedHeight = mode === 'agents' ? QUICK_ENTRY_AGENT_WINDOW_HEIGHT : QUICK_ENTRY_WINDOW_HEIGHT
+  const width = Math.min(requestedWidth, workArea?.width ?? requestedWidth)
+  let height = Math.min(requestedHeight, workArea?.height ?? requestedHeight)
 
   if (!workArea) {
     return { height, width, x: 0, y: 0 }
+  }
+
+  if (mode === 'agents' && anchorRect) {
+    const minX = workArea.x
+    const maxX = workArea.x + workArea.width - width
+    const minY = workArea.y
+    const workBottom = workArea.y + workArea.height
+    const anchorBottom = anchorRect.y + anchorRect.height
+    const roomAbove = Math.max(0, anchorRect.y - QUICK_ENTRY_AGENT_GAP - minY)
+    const roomBelow = Math.max(0, workBottom - anchorBottom - QUICK_ENTRY_AGENT_GAP)
+    const above = requestedHeight <= roomAbove || (requestedHeight > roomBelow && roomAbove >= roomBelow)
+    const availableHeight = above ? roomAbove : roomBelow
+
+    if (availableHeight > 0) {
+      height = Math.min(height, availableHeight)
+    }
+
+    const maxY = workBottom - height
+    const centeredX = anchorRect.x + anchorRect.width / 2 - width / 2
+    const aboveY = anchorRect.y - QUICK_ENTRY_AGENT_GAP - height
+    const belowY = anchorBottom + QUICK_ENTRY_AGENT_GAP
+
+    return {
+      height,
+      width,
+      x: Math.round(Math.min(Math.max(minX, centeredX), maxX)),
+      y: Math.round(Math.min(Math.max(minY, above ? aboveY : belowY), maxY))
+    }
+  }
+
+  if (cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y)) {
+    const minX = workArea.x
+    const maxX = workArea.x + workArea.width - width
+    const minY = workArea.y
+    const maxY = workArea.y + workArea.height - height
+
+    if (mode === 'agents') {
+      const centeredX = cursor.x - width / 2
+      const aboveY = cursor.y - height - QUICK_ENTRY_AGENT_GAP
+      const belowY = cursor.y + QUICK_ENTRY_AGENT_GAP
+      const roomAbove = cursor.y - QUICK_ENTRY_AGENT_GAP - minY
+      const roomBelow = maxY + height - (cursor.y + QUICK_ENTRY_AGENT_GAP)
+      const above = aboveY >= minY || roomAbove >= roomBelow
+
+      return {
+        height,
+        width,
+        x: Math.round(Math.min(Math.max(minX, centeredX), maxX)),
+        y: Math.round(Math.min(Math.max(minY, above ? aboveY : belowY), maxY))
+      }
+    }
+
+    const preferredX = cursor.x + QUICK_ENTRY_POINTER_GAP
+    const preferredY = cursor.y + QUICK_ENTRY_POINTER_GAP
+    const flippedX = cursor.x - width - QUICK_ENTRY_POINTER_GAP
+    const flippedY = cursor.y - height - QUICK_ENTRY_POINTER_GAP
+
+    return {
+      height,
+      width,
+      x: Math.round(Math.min(Math.max(minX, preferredX <= maxX ? preferredX : flippedX), maxX)),
+      y: Math.round(Math.min(Math.max(minY, preferredY <= maxY ? preferredY : flippedY), maxY))
+    }
   }
 
   const x = Math.round(workArea.x + (workArea.width - width) / 2)
@@ -418,4 +619,12 @@ export function quickEntryWindowBounds(workArea?: { height: number; width: numbe
   return { height, width, x, y }
 }
 
-export { DEFAULT_QUICK_ENTRY_SHORTCUT, QUICK_ENTRY_TOP_FRACTION, QUICK_ENTRY_WINDOW_HEIGHT, QUICK_ENTRY_WINDOW_WIDTH }
+export {
+  DEFAULT_QUICK_ENTRY_SHORTCUT,
+  QUICK_ENTRY_AGENT_WINDOW_HEIGHT,
+  QUICK_ENTRY_AGENT_WINDOW_WIDTH,
+  QUICK_ENTRY_POINTER_GAP,
+  QUICK_ENTRY_TOP_FRACTION,
+  QUICK_ENTRY_WINDOW_HEIGHT,
+  QUICK_ENTRY_WINDOW_WIDTH
+}

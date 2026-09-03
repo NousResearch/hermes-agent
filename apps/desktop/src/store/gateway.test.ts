@@ -305,9 +305,10 @@ describe('secondary connection timeout (#93454)', () => {
 
     const pending = expect(ensureGatewayForProfile('work')).rejects.toThrow('Timed out connecting to profile "work"')
 
-    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
-    // await must reject instead of hanging forever.
-    await vi.advanceTimersByTimeAsync(20_000)
+    // A first profile open can cold-start its backend, so it gets the existing
+    // 45s helper-backend budget. It must still reject instead of hanging
+    // forever when the main-process descriptor lookup is genuinely wedged.
+    await vi.advanceTimersByTimeAsync(45_000)
     await pending
   })
 

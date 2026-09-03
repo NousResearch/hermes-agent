@@ -7,7 +7,12 @@ import { triggerHaptic } from '@/lib/haptics'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $composerSuggestionsBySession, markSuggestionInvoked, suggestionKey } from '@/store/composer-suggestions'
+import {
+  $composerSuggestionsBySession,
+  markSuggestionInvoked,
+  suggestionKey,
+  suggestionSessionKey
+} from '@/store/composer-suggestions'
 
 /**
  * The composer suggestion strip — generic pills fed by the suggestion bus
@@ -45,7 +50,7 @@ export function SuggestionPills({ sessionId }: { sessionId: null | string }) {
 }
 
 function SessionSuggestionPills({ sessionId }: { sessionId: null | string }) {
-  const suggestions = useSessionSlice($composerSuggestionsBySession, sessionId)
+  const suggestions = useSessionSlice($composerSuggestionsBySession, suggestionSessionKey(sessionId))
   const [phases, setPhases] = useState<Record<string, PillPhase>>({})
   // Cancel flags outlive renders but never trigger them (poll-boundary abort).
   const [cancels] = useState(() => new Map<string, boolean>())

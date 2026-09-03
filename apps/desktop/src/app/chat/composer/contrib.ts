@@ -37,12 +37,15 @@ export const COMPOSER_AREAS = {
   middleware: 'composer.middleware',
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
-  atCompletions: 'composer.atCompletions'
+  atCompletions: 'composer.atCompletions',
+  slashCompletions: 'composer.slashCompletions'
 } as const
 
 export interface ComposerDraft {
   text: string
   attachments?: ComposerAttachment[]
+  /** What the transcript shows when model-facing context is appended to text. */
+  displayText?: string
 }
 
 /** Payload of a `composer.middleware` data contribution. */
@@ -70,6 +73,37 @@ export interface ComposerAtCompletionItem {
  *  lookups belong behind the source's own cache. */
 export interface ComposerAtCompletionSource {
   provide: (query: string) => ComposerAtCompletionItem[]
+}
+
+/** One plugin-owned row in the `/` completion popover. */
+export interface ComposerSlashCompletionItem {
+  /** Full command inserted into the draft (for example `/unfollowers`). */
+  insert: string
+  /** Row label; defaults to `insert`. */
+  display?: string
+  /** Short explanation shown under the command. */
+  meta?: string
+  /** Optional section heading; defaults to `Plugin commands`. */
+  group?: string
+}
+
+/** Payload of a `composer.slashCompletions` contribution. Sources are local,
+ * synchronous, and filter their own rows against `query` (without `/`). */
+export interface ComposerSlashCompletionSource {
+  provide: (query: string) => ComposerSlashCompletionItem[]
+}
+
+/** Plugin-provided slash completion sources, reactive to registry edits. */
+export function useComposerSlashCompletionSources(): ComposerSlashCompletionSource[] {
+  const contributions = useContributions(COMPOSER_AREAS.slashCompletions)
+
+  return useMemo(
+    () =>
+      contributions
+        .map(c => c.data as ComposerSlashCompletionSource)
+        .filter(source => typeof source?.provide === 'function'),
+    [contributions]
+  )
 }
 
 export interface ComposerAttachmentContext {

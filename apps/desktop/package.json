@@ -1,13 +1,13 @@
 {
-  "name": "hermes",
-  "productName": "Hermes",
+  "name": "team-hermes-desktop",
+  "productName": "Team Hermes Desktop",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
-  "author": "Nous Research",
+  "description": "Team Hermes desktop shell, built on Hermes Agent.",
+  "author": "Team Hermes Contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+    "url": "git+https://github.com/BkashJEE/hermes-agent.git"
   },
   "type": "module",
   "main": "dist/electron-main.mjs",
@@ -152,7 +152,8 @@
     "web-haptics": "0.0.6"
   },
   "optionalDependencies": {
-    "get-windows": "9.3.0"
+    "get-windows": "9.3.0",
+    "uiohook-napi": "1.5.5"
   },
   "devDependencies": {
     "@babel/core": "8.0.1",
@@ -186,18 +187,18 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "com.bkashjee.teamhermes.desktop",
+    "productName": "Team Hermes Desktop",
+    "executableName": "Team Hermes Desktop",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "Team Hermes Protocol",
         "schemes": [
-          "hermes"
+          "team-hermes"
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Team-Hermes-Desktop-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -233,9 +234,9 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
+        "CFBundleDisplayName": "Team Hermes Desktop",
+        "CFBundleExecutable": "Team Hermes Desktop",
+        "CFBundleName": "Team Hermes Desktop",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
         "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
@@ -255,7 +256,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Team Hermes Desktop",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -277,7 +278,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "Team Hermes",
       "target": [
         "nsis",
         "msi"
@@ -286,8 +287,8 @@
     },
     "linux": {
       "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "maintainer": "Team Hermes Contributors",
+      "synopsis": "Team Hermes desktop shell, built on Hermes Agent.",
       "target": [
         "AppImage",
         "deb",
@@ -298,8 +299,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Team Hermes Desktop",
+      "uninstallDisplayName": "Team Hermes Desktop",
       "warningsAsErrors": false
     }
   }

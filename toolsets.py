@@ -262,7 +262,7 @@ TOOLSETS = {
             "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "gui_tour", "show_tip",
+            "setup_mcp", "gui_tour", "show_tip", "screen_tutor_point", "screen_tutor_annotate",
         ],
         "includes": []
     },

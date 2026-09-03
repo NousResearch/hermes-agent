@@ -628,6 +628,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // into the member's session so the model sees the pixels, not just
         // the transcript's [attached image: …] marker.
         const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
+        const source = delta[delta.length - 1]?.from?.name
 
         // Surface WHO is on turn (runtime-only, like running/epoch) so the
         // room shows "Radar is thinking…" instead of a generic working line —
@@ -640,7 +641,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         let reply: null | string = null
 
         try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
+          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages, source)
 
           // Needs-attention hook (#93091 item 3): a turn that produced a real
           // reply (or an explicit pass) is a good turn — clear the badge.
@@ -654,6 +655,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           recordGroupActivity(group, {
             kind: 'failed',
             member: member.name,
+            source,
             thread,
             ...(reason
               ? {
@@ -695,6 +697,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           recordGroupActivity(group, {
             kind: 'cancelled',
             member: member.name,
+            source,
             thread
           })
 
@@ -702,8 +705,14 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         }
 
         // The member has now seen everything up to the pre-reply log length.
+        // Captured, not just written: the same bound is half of this turn's
+        // durable provenance (`saw`), and reading it back afterwards would
+        // race the append below.
+        let readTo = seen
+
         updateGroupChat(group, (r: GroupChatRoom) => {
-          r.watermarks[markKey] = r.log.length
+          readTo = r.log.length
+          r.watermarks[markKey] = readTo
 
           return r
         })
@@ -721,7 +730,12 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                 : {})
             },
             reply,
-            thread
+            thread,
+            undefined,
+            // Durable causal edge: who put this member on turn, and the log
+            // slice it actually read. The activity feed carries the same
+            // `source` but never survives the next send.
+            { by: source, saw: [seen, readTo] }
           )
           // Its own message counts as seen too.
           updateGroupChat(group, (r: GroupChatRoom) => {
@@ -799,6 +813,8 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
               })
 
+              const source = delta[delta.length - 1]?.from?.name
+
               updateGroupChat(group, (r: GroupChatRoom) => {
                 r.turn = member.name
 
@@ -807,7 +823,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               let continuationReply: null | string = null
 
               try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread, undefined, source)
 
                 if (continuationReply !== null) {
                   clearBotAttention(memberKey)
@@ -816,6 +832,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                 recordGroupActivity(group, {
                   kind: 'failed',
                   member: member.name,
+                  source,
                   thread
                 })
                 noteBotAttention(memberKey, error?.message || error)

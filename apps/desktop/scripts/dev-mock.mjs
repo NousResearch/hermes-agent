@@ -14,6 +14,7 @@
  * Usage:
  *   node scripts/dev-mock.mjs
  *   npm run dev:mock
+ *   HERMES_DESKTOP_DEV_MOCK_PROFILES=gary,jarvis npm run dev:mock
  *
  * The mock server listens on an ephemeral port and replies to every
  * chat completion with:
@@ -147,6 +148,14 @@ function createSandbox() {
   const userDataDir = path.join(root, 'electron-user-data')
   fs.mkdirSync(hermesHome, { recursive: true })
   fs.mkdirSync(userDataDir, { recursive: true })
+  // The installed Team Hermes build may already own Quick Entry's production
+  // shortcut. Give this isolated verification app a non-conflicting chord so
+  // both instances can run without changing the user's saved preference.
+  fs.writeFileSync(
+    path.join(userDataDir, 'quick-entry.json'),
+    JSON.stringify({ enabled: true, shortcut: 'Alt+Shift+F11' }, null, 2),
+    'utf8',
+  )
   return { root, hermesHome, userDataDir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) }
 }
 
@@ -172,11 +181,37 @@ providers:
   fs.writeFileSync(path.join(hermesHome, '.env'), 'MOCK_API_KEY=e2e-mock-key\n', 'utf8')
 }
 
+function writeMockProfiles(hermesHome, rawProfiles) {
+  const names = String(rawProfiles || '')
+    .split(',')
+    .map(name => name.trim().toLowerCase())
+    .filter((name, index, all) => /^[a-z0-9_-]+$/.test(name) && name !== 'default' && all.indexOf(name) === index)
+
+  if (names.length === 0) return
+
+  const config = fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')
+  const env = fs.readFileSync(path.join(hermesHome, '.env'), 'utf8')
+
+  for (const name of names) {
+    const profileHome = path.join(hermesHome, 'profiles', name)
+    fs.mkdirSync(profileHome, { recursive: true })
+    fs.writeFileSync(path.join(profileHome, 'config.yaml'), config, 'utf8')
+    fs.writeFileSync(path.join(profileHome, '.env'), env, 'utf8')
+  }
+
+  console.log(`  Mock profiles: default, ${names.join(', ')}`)
+}
+
 // ── Electron launch ────────────────────────────────────────────────────
 
 function findElectron() {
-  const local = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
-  if (fs.existsSync(local)) return local
+  const binary = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const candidates = [
+    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', binary),
+    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', binary),
+  ]
+  const local = candidates.find(candidate => fs.existsSync(candidate))
+  if (local) return local
   const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
   if (r.status === 0 && r.stdout.trim()) return r.stdout.trim()
   throw new Error('Electron binary not found. Run "npm install" from the repo root.')
@@ -204,6 +239,7 @@ async function main() {
 
   const sandbox = createSandbox()
   writeMockConfig(sandbox.hermesHome, mock.url)
+  writeMockProfiles(sandbox.hermesHome, process.env.HERMES_DESKTOP_DEV_MOCK_PROFILES)
   console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
 
   const electronBin = findElectron()

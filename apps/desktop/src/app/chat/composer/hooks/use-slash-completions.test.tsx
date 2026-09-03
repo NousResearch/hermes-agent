@@ -2,6 +2,8 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { COMPOSER_AREAS, type ComposerSlashCompletionSource } from '@/app/chat/composer/contrib'
+import { registry } from '@/contrib/registry'
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -41,6 +43,18 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
+const disposers: Array<() => void> = []
+
+function addSlashSource(id: string, provide: ComposerSlashCompletionSource['provide']) {
+  disposers.push(
+    registry.register({
+      id,
+      area: COMPOSER_AREAS.slashCompletions,
+      data: { provide } satisfies ComposerSlashCompletionSource
+    })
+  )
+}
+
 function harness(gateway: HermesGateway) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
@@ -72,11 +86,36 @@ async function completions(api: { search: (query: string) => readonly Unstable_T
 }
 
 afterEach(() => {
+  disposers.splice(0).forEach(dispose => dispose())
   cleanup()
   queryClient.clear()
 })
 
 describe('useSlashCompletions', () => {
+  it('merges local plugin commands into bare and filtered slash results', async () => {
+    addSlashSource('unfollowers', query =>
+      'unfollowers'.startsWith(query.toLowerCase())
+        ? [{ insert: '/unfollowers', meta: 'Open the stored follower brief' }]
+        : []
+    )
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, ''))).toContain('/unfollowers')
+    expect(commandsOf(await completions(api, 'unf'))).toContain('/unfollowers')
+  })
+
+  it('isolates a broken plugin slash source', async () => {
+    addSlashSource('broken', () => {
+      throw new Error('boom')
+    })
+    addSlashSource('healthy', () => [{ insert: '/unfollowers' }])
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, ''))).toContain('/unfollowers')
+  })
+
   it('serves the bare-slash catalog from cache instead of re-requesting it', async () => {
     const request = vi.fn().mockResolvedValue(CATALOG)
     const api = harness({ request } as unknown as HermesGateway)

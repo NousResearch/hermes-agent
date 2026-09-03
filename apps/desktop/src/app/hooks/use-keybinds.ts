@@ -28,7 +28,7 @@ import {
   findPrevious as findPreviousMatch,
   openFindBar
 } from '@/store/find-in-page'
-import { toggleHud } from '@/store/hud'
+import { hudCycleAgent, toggleHud, toggleHudFollow } from '@/store/hud'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -62,7 +62,7 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
-import { openNewWindow } from '@/store/windows'
+import { isHudWindow, openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
@@ -253,6 +253,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.showFiles': showFiles,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
+    'hud.toggleFollow': toggleHudFollow,
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
@@ -294,8 +295,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'profile.default': switchToDefaultProfile,
     ...profileSwitchHandlers,
-    'profile.next': () => cycleProfile(1),
-    'profile.prev': () => cycleProfile(-1),
+    // In the HUD the profile chords step the HUD's own agent (a respawn
+    // against that profile), never the app window's rail.
+    'profile.next': () => (isHudWindow() ? hudCycleAgent(1) : cycleProfile(1)),
+    'profile.prev': () => (isHudWindow() ? hudCycleAgent(-1) : cycleProfile(-1)),
     'profile.toggleAll': toggleShowAllProfiles,
     'profile.create': requestProfileCreate
   }

@@ -36,6 +36,34 @@ export function execText(command: string, args: string[], { timeout = 3000 } = {
   })
 }
 
+/** Cheap cross-platform existence probe used before an expensive start-marker
+ * lookup. On Windows a cold PowerShell process can take seconds, so running one
+ * for every long-dead ownership record made Desktop startup scale with the
+ * history of prior backends. `undefined` preserves fail-closed behavior for
+ * unexpected permission/platform errors. */
+export function processLiveness(
+  pid: number,
+  signal: (pid: number, signal: 0) => void = (target, value) => process.kill(target, value)
+): boolean | undefined {
+  try {
+    signal(pid, 0)
+
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+
+    if (code === 'ESRCH' || code === 'ENOENT') {
+      return false
+    }
+
+    if (code === 'EPERM') {
+      return true
+    }
+
+    return undefined
+  }
+}
+
 /**
  * Cross-platform process start marker: a value that changes when a PID is
  * reused, so `pid + marker` identifies one specific process incarnation.

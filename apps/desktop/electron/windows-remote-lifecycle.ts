@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { parseRemoteProfileListing } from './connection-registry'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -214,6 +215,25 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
     error.cause = cause
     throw error
   }
+}
+
+/** Inventory profiles on a native Windows SSH backend without passing its
+ * Windows HERMES_HOME through the POSIX path validator/listing commands. The
+ * home discovered by probeWindowsRemote is interpolated only as a PowerShell
+ * single-quoted literal and consumed through -LiteralPath. */
+async function listWindowsRemoteHermesProfiles(ssh, explicitHermesPath = '') {
+  const runtime = await probeWindowsRemote(ssh, explicitHermesPath)
+  const script = [
+    '$ErrorActionPreference="Stop"',
+    `$hermesRoot=${psLiteral(runtime.hermesHome)}`,
+    '$profiles=Join-Path $hermesRoot "profiles"',
+    'if(Test-Path -LiteralPath $profiles -PathType Container){',
+    'Get-ChildItem -LiteralPath $profiles -Directory|ForEach-Object{$_.Name}',
+    '}'
+  ].join(';')
+  const listing = await ssh.exec(powerShellCommand(script))
+
+  return parseRemoteProfileListing(listing)
 }
 
 function helperCommand(runtime, operation, args = []) {
@@ -774,6 +794,7 @@ export {
   encodedPowerShell,
   helper,
   helperCommand,
+  listWindowsRemoteHermesProfiles,
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,

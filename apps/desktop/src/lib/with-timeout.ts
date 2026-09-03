@@ -1,12 +1,16 @@
 /** Shared budget for any renderer await that rides out a primary backend
  * cold boot (initial getConnection(), the registry restore's descriptor
- * wait). Matches the main-process spawn budget
- * (DEFAULT_BACKEND_READY_TIMEOUT_MS in electron/backend-health.ts): a
- * healthy cold boot publishes well within this; anything longer means the
- * backend is not coming and the caller should fail instead of hanging.
+ * wait). This covers the complete main-process startup path: orphan cleanup,
+ * update clearance, runtime resolution, backend spawn, and its health probe.
+ * Those pre-spawn steps can make a healthy Windows cold start take materially
+ * longer than the backend health probe's own 45-second budget.
  * Reconnect-class awaits against an already-spawned backend use the shorter
  * RECONNECT_ATTEMPT_TIMEOUT_MS below instead. */
-export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 45_000
+export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 180_000
+
+/** A connection-mode switch may cold-spawn a helper backend, but must still
+ * release its UI barrier promptly if the main-process IPC round-trip wedges. */
+export const CONNECTION_SWITCH_WAIT_TIMEOUT_MS = 45_000
 
 // desktop.getConnection() / getConnectionFor() / revalidateConnection() /
 // resolveGatewayWsUrl() are IPC round-trips into the main process with no

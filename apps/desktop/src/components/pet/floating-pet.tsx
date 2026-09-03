@@ -2,12 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
+import { quickEntryAgentVisual } from '@/app/quick-entry/quick-entry-agent-visual'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
+import guardPetPose from '@/components/pet/assets/hud/hermes-agent-default-cane.png'
 import { persistString, storedString } from '@/lib/storage'
 import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
+  $petActivity,
   $petAtRest,
   $petInfo,
   $petRoam,
@@ -17,17 +19,18 @@ import {
   mergePetInfoMeta,
   type PetInfo,
   type PetInfoMeta,
-  petProfile,
   setPetInfo
 } from '@/store/pet'
-import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
+import { $desktopPetAgentProfile, listenForDesktopPetAgentProfile } from '@/store/pet-agent'
+import { setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { openPetAgentPicker, petAgentMotion } from './pet-agent-picker-hover'
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
-import { PetSprite, roamWalkRow } from './pet-sprite'
+import { didPetPointerMove } from './pet-pointer-gesture'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
@@ -35,9 +38,14 @@ import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 // which dragged inverted). Bumping the key discards stale v1 coordinates.
 const POSITION_KEY = 'hermes.desktop.pet-position.v2'
 
+// The full-character launcher is desktop-global, not a per-agent pet. Its
+// enabled/scale source stays with the primary profile so switching to Jarvis,
+// Gary, or another agent cannot make the launcher disappear merely because
+// that agent has no separate Petdex installation.
+export const DESKTOP_AGENT_OWNER_PROFILE = 'default'
+
 // Stand-in pet size for the pre-load clamp (real size flows in with `info`).
 const NOMINAL_PET_PX = 96
-
 interface Point {
   x: number
   y: number
@@ -109,25 +117,50 @@ export function FloatingPet() {
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
+  const petActivity = useStore($petActivity)
   const roamDir = useStore($petRoamDir)
+  const desktopAgentProfile = useStore($desktopPetAgentProfile)
   const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
+  const [hovered, setHovered] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.
   const spriteWrapRef = useRef<HTMLDivElement | null>(null)
-  const petW = (info.frameW ?? 192) * (info.scale ?? 0.33)
-  const petH = (info.frameH ?? 208) * (info.scale ?? 0.33)
+  const activeVisual = quickEntryAgentVisual(desktopAgentProfile)
+  // The source poses are full-body portraits rather than tiny sprite frames.
+  // Give them enough height to remain recognizable while retaining the pet's
+  // existing scale control and draggable footprint.
+  const petH = Math.round(Math.min(220, Math.max(76, 360 * (info.scale ?? 0.33))))
+  const petW = Math.round(petH * 0.72)
   // Soft contact shadow, sized off the pet so every scale/species grounds the
   // same way (cf. lairp's per-actor feet ellipse). Lighter on light backgrounds.
   const shadowW = Math.round(petW * 0.55)
   const shadowH = Math.max(3, Math.round(shadowW * 0.28))
   const shadowAlpha = resolvedMode === 'light' ? 0.2 : 0.55
+  const motion = petAgentMotion(hovered, petActivity)
+
+  const onPetPointerEnter = useCallback(() => {
+    setHovered(true)
+  }, [])
+
+  const onPetPointerLeave = useCallback(() => {
+    setHovered(false)
+  }, [])
+
   // Live drag offset (pointer → element top-left). Drag updates the DOM
   // directly to avoid a React re-render (and canvas reflow) per pointermove —
   // state is only committed on release.
-  const dragRef = useRef<{ dx: number; dy: number; x: number; y: number } | null>(null)
+  const dragRef = useRef<{
+    dx: number
+    dy: number
+    moved: boolean
+    startX: number
+    startY: number
+    x: number
+    y: number
+  } | null>(null)
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
@@ -148,17 +181,11 @@ export function FloatingPet() {
     // broadcast clears the mascot with zero round-trips, and an unchanged
     // revision (scale-only move still changes the sig) short-circuits below
     // via hasPetSpriteForMeta + mergePetInfoMeta.
-    if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
-      setPetInfo({ enabled: false })
-
-      return
-    }
-
     const pull = async () => {
       try {
         if (active) {
           try {
-            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: DESKTOP_AGENT_OWNER_PROFILE })
 
             if (cancelled || !meta) {
               return
@@ -194,7 +221,7 @@ export function FloatingPet() {
 
         const next = await requestGateway<PetInfo & { spritesheetUnchanged?: boolean }>('pet.info', {
           knownRevision,
-          profile: petProfile()
+          profile: DESKTOP_AGENT_OWNER_PROFILE
         })
 
         if (!cancelled && next) {
@@ -268,14 +295,6 @@ export function FloatingPet() {
     }
   }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
 
-  // Pets are per-profile. When the active profile changes, drop the previous
-  // profile's mascot + gallery cache so the poll above refetches the new
-  // profile's pet (its config + pets dir resolve per-profile on the backend).
-  useOnProfileSwitch(() => {
-    setPetInfo({ enabled: false })
-    resetPetGallery()
-  })
-
   // Wire the overlay control channel once, only in the primary window — the
   // pop-out overlay belongs to it (main.ts positions it against the main
   // window and routes control messages back to it).
@@ -285,6 +304,16 @@ export function FloatingPet() {
     }
 
     return initPetOverlayBridge()
+  }, [])
+
+  // Quick Entry is a separate renderer. Mirror its hovered/focused agent so
+  // the small desktop character changes at the same moment as the large card.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return listenForDesktopPetAgentProfile()
   }, [])
 
   // Returning to the app (by any route, not just the mail icon) clears the pet's
@@ -355,7 +384,15 @@ export function FloatingPet() {
       return
     }
 
-    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, x: rect.left, y: rect.top }
+    dragRef.current = {
+      dx: e.clientX - rect.left,
+      dy: e.clientY - rect.top,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: rect.left,
+      y: rect.top
+    }
     el.setPointerCapture(e.pointerId)
     el.style.cursor = 'grabbing'
   }, [])
@@ -367,6 +404,10 @@ export function FloatingPet() {
 
       if (!drag || !el) {
         return
+      }
+
+      if (didPetPointerMove(drag.startX, drag.startY, e.clientX, e.clientY)) {
+        drag.moved = true
       }
 
       const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
@@ -393,6 +434,10 @@ export function FloatingPet() {
       const committed = { x: drag.x, y: drag.y }
       setPosition(committed)
       persistString(POSITION_KEY, JSON.stringify(committed))
+
+      if (!drag.moved) {
+        openPetAgentPicker(window.hermesDesktop?.quickEntry?.show, containerRef.current)
+      }
     }
 
     const el = containerRef.current
@@ -428,10 +473,8 @@ export function FloatingPet() {
 
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
-  // Commit a roamed-to position back to React state + storage when the wander
-  // loop settles, so the inline style matches the DOM once the loop stops
-  // driving it imperatively. Stable identity keeps the roam effect from
-  // restarting every render.
+  // Preserve the original pet's opt-in roaming behavior. The full-body agent
+  // travels as one portrait rather than swapping sprite rows.
   const commitRoamPosition = useCallback((point: Point) => {
     setPosition(point)
     persistString(POSITION_KEY, JSON.stringify(point))
@@ -439,9 +482,6 @@ export function FloatingPet() {
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 
-  // Roam only the in-window pet, only while it's idle (agent at rest) and not
-  // popped out into the OS overlay. Activity pauses the wander; the pet reacts
-  // in place, then resumes strolling when the turn ends.
   usePetRoam({
     commit: commitRoamPosition,
     containerRef,
@@ -453,10 +493,6 @@ export function FloatingPet() {
     petW
   })
 
-  // While roaming, drive the directional run row + mirror from the travel
-  // direction; at rest, fall back to the inward-facing static mascot.
-  const walk = roamWalkRow(roamDir, info.stateRows)
-
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
   if (!info.enabled || !info.spritesheetBase64 || overlayActive) {
@@ -466,6 +502,8 @@ export function FloatingPet() {
   return (
     <div
       onPointerDown={onPointerDown}
+      onPointerEnter={onPetPointerEnter}
+      onPointerLeave={onPetPointerLeave}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       ref={containerRef}
@@ -499,11 +537,25 @@ export function FloatingPet() {
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          transform: roamDir < 0 ? 'scaleX(-1)' : roamDir > 0 ? 'none' : facing(position.x, petW),
           zIndex: 1
         }}
       >
-        <PetSprite info={info} rowOverride={walk.row} />
+        <div className={`hermes-agent-motion hermes-agent-motion--${motion}`} style={{ lineHeight: 0 }}>
+          <img
+            alt={`${desktopAgentProfile} desktop agent`}
+            draggable={false}
+            src={guardPetPose}
+            style={{
+              filter: `drop-shadow(0 0 ${atRest ? 12 : 18}px ${activeVisual.glow})`,
+              height: petH,
+              objectFit: 'contain',
+              transform: atRest ? 'scale(1)' : 'scale(1.035)',
+              transition: 'filter 160ms ease, height 160ms ease, transform 160ms ease, width 160ms ease',
+              width: petW
+            }}
+          />
+        </div>
       </div>
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}

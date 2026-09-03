@@ -4,7 +4,11 @@ import { atom } from 'nanostores'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  CONNECTION_SWITCH_WAIT_TIMEOUT_MS,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 
@@ -515,6 +519,13 @@ async function openSecondary(entry: Secondary): Promise<void> {
     // outranks the single local-module microtask this adds to a reconnect.
     const openedScopes = openedSecondaryScopes()
     const reopening = entry.openedOnce || entry.connection !== null || openedScopes.has(entry.scope)
+    // A profile's first descriptor lookup cold-starts its isolated backend.
+    // On Windows that path can legitimately exceed the 20-second reconnect
+    // budget while plugins are discovered and the health probe comes up (the
+    // observed Gary startup completed just after 20s). Give only that first
+    // launch the existing 45-second helper-backend budget; reconnects remain
+    // fail-fast so a genuinely wedged backend does not hold the UI hostage.
+    const descriptorTimeoutMs = reopening ? RECONNECT_ATTEMPT_TIMEOUT_MS : CONNECTION_SWITCH_WAIT_TIMEOUT_MS
     let reconcileBusyAfterOpen: null | (() => void) = null
 
     if (reopening) {
@@ -544,12 +555,12 @@ async function openSecondary(entry: Secondary): Promise<void> {
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
             desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile }),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            descriptorTimeoutMs,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withTimeout(
             desktop.getConnection(entry.profile),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            descriptorTimeoutMs,
             `Timed out connecting to profile "${entry.profile}"`
           )
 

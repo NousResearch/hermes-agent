@@ -42,6 +42,7 @@ import {
   setNested,
   voiceFieldVisible
 } from './helpers'
+import { HudSettings } from './hud-settings'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -406,6 +407,7 @@ function ConfigSettingsInner({
             onChange={setDisableF12}
           />
           <QuickEntrySettings />
+          <HudSettings />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is

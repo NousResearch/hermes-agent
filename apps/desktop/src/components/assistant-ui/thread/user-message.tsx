@@ -2,6 +2,7 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { AgentExchangeCard } from '@/components/assistant-ui/thread/agent-exchange-card'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -9,10 +10,12 @@ import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/type
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { StopFilled } from '@/lib/icons'
+import { Clipboard, StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -53,6 +56,50 @@ export function StickyHumanMessageContainer({
   )
 }
 
+export function MessageAttachmentIndicator({
+  attachmentRefs,
+  label
+}: {
+  attachmentRefs: string[]
+  label: string
+}) {
+  if (attachmentRefs.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="-mt-3 mb-2 flex w-full justify-end px-1" data-slot="aui_user-message-attachments">
+      <Popover>
+        <Tip label={label}>
+          <PopoverTrigger asChild>
+            <button
+              aria-label={label}
+              className="relative grid size-7 place-items-center rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) text-(--ui-text-secondary) transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--ui-accent)"
+              data-slot="aui_user-message-attachment-trigger"
+              type="button"
+            >
+              <Clipboard className="size-3.5" />
+              <span className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full border border-(--ui-chat-surface-background) bg-(--ui-accent,#6e9fc5) px-1 text-[0.58rem] font-semibold leading-none text-white shadow-xs">
+                {attachmentRefs.length}
+              </span>
+            </button>
+          </PopoverTrigger>
+        </Tip>
+        <PopoverContent
+          align="end"
+          className="w-72 p-2"
+          data-slot="aui_user-message-attachment-popover"
+          side="top"
+        >
+          <div className="max-h-72 overflow-y-auto">
+            <DirectiveContent text={attachmentRefs.join(' ')} />
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  )
+}
+
 // Shared "user bubble" base. Both the read-only message and the inline
 // edit composer render the same bubble surface (rounded glass card);
 // they only differ in border weight, cursor, and padding-right (the
@@ -64,7 +111,11 @@ export function StickyHumanMessageContainer({
 // so without the carve-out, clicking a stuck bubble drags the window instead of
 // opening the edit composer.
 export const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border border-r-4 border-r-(--ui-accent,#6e9fc5) bg-(--dt-user-bubble) px-3 py-2 text-left transition-shadow hover:shadow-[0_0_20px_color-mix(in_srgb,var(--ui-accent,#6e9fc5)_22%,transparent)] [-webkit-app-region:no-drag]'
+
+const USER_MESSAGE_CARD_STYLE = {
+  boxShadow: '0 0 10px color-mix(in srgb, var(--ui-accent,#6e9fc5) 9%, transparent)'
+} as const
 
 export const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
@@ -197,66 +248,73 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
     }
   }, [handle])
 
-  // Grok-bots shape: an inter-agent delivery is a timeline EVENT, not a
-  // conversation bubble — a subtle centered notice ("Message from 🤖 X"),
-  // with the delivered text one click away instead of shouting in the
-  // transcript. The recipient's reply below it stays a normal assistant
-  // message, so the exchange still reads in order.
+  // Keep transport framing out of the transcript. The handoff identity and a
+  // one-line preview remain visible; the exact delivered text stays one click
+  // away in the same cohesive card.
   return (
-    <div
-      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
-      data-slot="aui_agent-message-note"
-    >
-      <span className="flex items-center justify-center gap-1.5">
-        {avatar ? (
-          <img alt="" aria-hidden className="size-4 shrink-0 rounded-full object-cover" src={avatar} />
+    <AgentExchangeCard
+      agent={sender}
+      avatar={
+        avatar ? (
+          <img alt="" aria-hidden className="size-full object-cover" src={avatar} />
         ) : (
-          <span aria-hidden className="text-[0.8125rem] leading-none">
+          <span aria-hidden className="text-[0.875rem] leading-none">
             🤖
           </span>
-        )}
-        <span className="wrap-anywhere">Message from {sender}</span>
-      </span>
-      {body && (
-        <details className="self-center">
-          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
-            show message
-          </summary>
-          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-            <UserMessageText text={body} />
-          </div>
-        </details>
-      )}
-    </div>
+        )
+      }
+      body={body ? <UserMessageText text={body} /> : undefined}
+      bodyText={body}
+      kind="handoff"
+      replyProfile={handle}
+      slot="aui_agent-message-note"
+    />
   )
 }
 
-const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
+export const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
   const newline = body.indexOf('\n')
   const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
   const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
 
+  const summary = /completed normally|exit code 0/i.test(headline) ? 'Agent work completed' : 'Background agent update'
+
   return (
-    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
-      <span className="flex items-center gap-1.5">
-        <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
-        <span className="wrap-anywhere">{headline}</span>
-      </span>
-      {detail && (
-        <details className="pl-[1.3125rem]">
-          <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
-            output
+    <article className="w-full min-w-0 overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-widget-surface-background) text-[0.75rem] text-foreground/90 shadow-sm">
+      {detail ? (
+        <details className="group/process">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 transition-colors hover:bg-(--ui-control-hover-background) [&::-webkit-details-marker]:hidden">
+            <Codicon className="shrink-0 text-(--ui-accent,#6e9fc5)" name="terminal" size="0.875rem" />
+            <span className="min-w-0 flex-1">
+              <span className="block font-semibold">{summary}</span>
+              <span className="wrap-anywhere block truncate text-[0.6875rem] text-(--ui-text-tertiary)">{headline}</span>
+            </span>
+            <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-secondary)">
+              <span className="group-open/process:hidden">Show details</span>
+              <span className="hidden group-open/process:inline">Hide details</span>
+            </span>
+            <Codicon
+              className="shrink-0 text-(--ui-text-tertiary) transition-transform duration-150 group-open/process:rotate-90"
+              name="chevron-right"
+              size="0.75rem"
+            />
           </summary>
           <pre
-            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            className="max-h-44 overflow-auto whitespace-pre-wrap border-t border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-3 py-2.5 font-mono text-[0.6875rem] leading-5 text-foreground/75"
             data-selectable-text="true"
           >
             {detail}
           </pre>
         </details>
+      ) : (
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Codicon className="shrink-0 text-(--ui-accent,#6e9fc5)" name="terminal" size="0.875rem" />
+          <span className="font-semibold">{summary}</span>
+          <span className="wrap-anywhere min-w-0 truncate text-[0.6875rem] text-(--ui-text-tertiary)">{headline}</span>
+        </div>
       )}
-    </div>
+    </article>
   )
 }
 
@@ -432,13 +490,11 @@ export const UserMessage: FC<{
     <MessagePrimitive.Root asChild>
       <StickyHumanMessageContainer
         attachments={
-          // Attachments live BELOW the sticky bubble in normal flow, so they
-          // scroll away behind the pinned bubble instead of riding along with
-          // it. Image refs render as thumbnails, file refs as chips; no border.
           attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
-              <DirectiveContent text={attachmentRefs.join(' ')} />
-            </div>
+            <MessageAttachmentIndicator
+              attachmentRefs={attachmentRefs}
+              label={t.composer.attachments(attachmentRefs.length)}
+            />
           ) : null
         }
         messageId={messageId}
@@ -490,6 +546,7 @@ export const UserMessage: FC<{
                       triggerHaptic('selection')
                       setExpanded(value => !value)
                     }}
+                    style={USER_MESSAGE_CARD_STYLE}
                     title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
                     type="button"
                   >
@@ -521,6 +578,7 @@ export const UserMessage: FC<{
 
                         notifyThreadEditOpen()
                       }}
+                      style={USER_MESSAGE_CARD_STYLE}
                       type="button"
                     >
                       {bubbleContent}

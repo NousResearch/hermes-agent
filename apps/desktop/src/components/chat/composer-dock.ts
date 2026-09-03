@@ -7,6 +7,15 @@ import { cn } from '@/lib/utils'
  */
 export const composerFill = 'bg-(--composer-fill)'
 
+/** The reply field itself is intentionally quieter than the cards docked to
+ * it. It carries a faint powder-blue tint over the live chat canvas without a
+ * backdrop blur, so on the matching light-blue field it visually disappears
+ * while text, controls, and the focus border remain crisp. */
+export const composerReplySurface = cn(
+  'bg-(--composer-reply-fill)',
+  'transition-[background-color] duration-150 ease-out'
+)
+
 /** Backdrop treatment for the composer input surface. Harmless when the fill
  *  goes opaque (drawer open) — nothing shows through to blur. */
 export const composerSurfaceGlass = cn(

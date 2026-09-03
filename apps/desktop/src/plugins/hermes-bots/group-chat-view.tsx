@@ -51,6 +51,7 @@ import {
 } from './data'
 import {
   $groupActivity,
+  clearGroupAgentActivity,
   currentGroupActivity,
   GROUP_ACTIVITY_GLYPHS,
   groupActivityLabel,
@@ -97,11 +98,26 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
+import { hasRecordedCause, nextOpenTrail } from './provenance'
+import { ProvenanceTrail } from './provenance-trail'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+
+export function groupMessageCardPresentation(isUser: boolean) {
+  return isUser
+    ? {
+        className: 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover)',
+        slot: 'bot-group-user-card'
+      }
+    : {
+        className:
+          'border-(--ui-stroke-tertiary) border-l-4 border-l-(--ui-stroke-secondary) bg-(--ui-chat-bubble-opaque-background) hover:shadow-[0_0_18px_color-mix(in_srgb,var(--ui-accent,#6e9fc5)_14%,transparent)]',
+        slot: 'bot-group-agent-card'
+      }
+}
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -177,6 +193,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   delete needs[group]
   $groupNeedsYou.set(needs)
   clearGroupClarify(group)
+  clearGroupAgentActivity(group, prior.roomId)
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
@@ -524,6 +541,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
+  // Which message is showing its causal trail. One at a time: the question
+  // is always about a specific line, and two open trails read as noise.
+  const [openTrail, setOpenTrail] = useState<null | string>(null)
   // Threads, the Slack/Discord shape: entries carry a thread id. The most
   // recently active thread renders open; older ones collapse to summary rows.
   // `openThreads` is the user's explicit expand/collapse overrides, and
@@ -935,7 +955,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </Button>
   )
 
-  // One log entry, rendered exactly as before conversation folding existed.
+  // One room entry. Member replies use the same quiet, bordered flashcard
+  // language as the main assistant transcript so a long group conversation
+  // remains scannable; user prompts keep their stronger selected tint.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
     const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
@@ -980,13 +1002,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null
     const photo = Boolean(image && !isBackfilledFacePng(image))
+    const card = groupMessageCardPresentation(isUser)
 
     return (
       <div
         className={cn(
-          'group flex items-start gap-2',
-          isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
+          'group flex items-start gap-2 rounded-xl border px-2.5 py-2 shadow-sm transition-shadow',
+          card.className
         )}
+        data-slot={card.slot}
         key={entryKey}
       >
         {appearance ? (
@@ -1017,7 +1041,19 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
             {entry.text.trim() ? (
-              <div className="ml-auto shrink-0 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+                {hasRecordedCause(entry) ? (
+                  <Button
+                    aria-expanded={openTrail === entryKey}
+                    className="text-[0.625rem] text-(--ui-text-quaternary)"
+                    onClick={() => setOpenTrail(nextOpenTrail(openTrail, entryKey))}
+                    size="inline"
+                    title={openTrail === entryKey ? 'Hide what caused this' : 'Show what caused this'}
+                    variant="text"
+                  >
+                    why
+                  </Button>
+                ) : null}
                 <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} />
               </div>
             ) : null}
@@ -1029,6 +1065,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           >
             {Streamdown ? <Streamdown>{entry.text}</Streamdown> : entry.text}
           </div>
+          {openTrail === entryKey && entry.id ? (
+            <ProvenanceTrail
+              labelFor={name => displayName(members.find(b => b.name === name) || { name }, allMeta[name])}
+              messageId={entry.id}
+              room={room}
+            />
+          ) : null}
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */
           /* PDFs/files. */}

@@ -17,7 +17,9 @@ const HUD_SHEET_OVERHANG_PX = 12
  * transcript's rows may not change size, but the available scrollback must, so
  * observing the rows alone cannot update the band.
  */
-export function useHudTranscriptBand(rootRef: RefObject<HTMLDivElement | null>): boolean {
+/** `topInset` is read on every measure: room reserved above the bar (the pixel
+ *  pets' headroom) that the transcript band cannot use. */
+export function useHudTranscriptBand(rootRef: RefObject<HTMLDivElement | null>, topInset: () => number = () => 0): boolean {
   const [filled, setFilled] = useState(false)
 
   useEffect(() => {
@@ -67,7 +69,7 @@ export function useHudTranscriptBand(rootRef: RefObject<HTMLDivElement | null>):
       const visible = hudTranscriptHeight({
         barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
         contentHeight: contentSpan,
-        viewportHeight: window.innerHeight
+        viewportHeight: window.innerHeight - topInset()
       })
 
       root.style.setProperty('--hud-band-height', `${visible}px`)

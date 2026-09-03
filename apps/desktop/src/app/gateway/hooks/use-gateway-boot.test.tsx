@@ -1213,6 +1213,28 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // here too, same as attemptReconnect() and softSwitch().
     const desktop = fakeDesktop()
     desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    desktop.getBootProgress = vi
+      .fn()
+      .mockResolvedValueOnce({
+        error: null,
+        fakeMode: false,
+        message: 'Waiting for Hermes backend to become ready',
+        phase: 'backend.wait',
+        progress: 90,
+        retryable: false,
+        running: true,
+        timestamp: Date.now()
+      })
+      .mockResolvedValue({
+        error: 'Hermes backend did not become ready',
+        fakeMode: false,
+        message: 'Desktop boot failed',
+        phase: 'backend.error',
+        progress: 90,
+        retryable: false,
+        running: false,
+        timestamp: Date.now()
+      })
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
     render(<Harness />)
@@ -1220,14 +1242,46 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the shared backend-boot budget (45s) — the
+    // Advance past the shared backend-boot budget (180s) — the
     // stalled await must reject on its own so boot()'s catch runs instead of
     // waiting indefinitely on main.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(180_000)
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('allows a healthy slow local backend to finish inside the full Windows cold-start budget', async () => {
+    const desktop = fakeDesktop()
+
+    desktop.getConnection = vi.fn(
+      () => new Promise(resolve => setTimeout(() => resolve(primaryConn), 120_000))
+    )
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: null,
+      fakeMode: false,
+      message: 'Waiting for Hermes backend to become ready',
+      phase: 'backend.wait',
+      progress: 90,
+      retryable: false,
+      running: true,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000)
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
   })
 
   it('softSwitch(): a getConnection() that hangs on a connection-apply switch does not latch $gatewaySwitching forever (#93454)', async () => {

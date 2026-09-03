@@ -295,6 +295,40 @@ export interface Translations {
     layoutEditorTitle: (modifier: string) => string
   }
 
+  hud: {
+    follow: string
+    followOn: string
+    followOff: string
+    followUnsupported: string
+    agent: string
+    switchAgent: string
+    room: string
+    switchRoom: string
+    inRoom: (room: string) => string
+    leaveRoom: string
+    openRoomInApp: string
+    roomEmpty: string
+    roomThinking: (name: string) => string
+    you: string
+    noAgents: string
+    noRooms: string
+    busyWarning: string
+    askTitle: string
+    viaShortcut: string
+    viaRightClick: string
+    explain: string
+    summarize: string
+    doIt: string
+    ask: string
+    dismiss: string
+    screenAtCursor: string
+    petThinking: string
+    petWorking: string
+    petWaiting: string
+    petDone: string
+    petError: string
+  }
+
   keybinds: {
     title: string
     subtitle: (open: string) => string
@@ -620,6 +654,24 @@ export interface Translations {
       enabledDesc: string
       shortcutTitle: string
       shortcutDesc: string
+      active: string
+      takenBy: string
+      invalidShortcut: string
+    }
+    hud: {
+      followTitle: string
+      followDesc: string
+      followUnsupported: string
+      petsTitle: string
+      petsDesc: string
+      petByAgentTitle: string
+      petByAgentDesc: string
+      petChoice: { hank: string; mina: string; avatar: string; none: string }
+      askShortcutTitle: string
+      askShortcutDesc: string
+      rightClickTitle: string
+      rightClickDesc: string
+      rightClickUnavailable: (reason: string) => string
       active: string
       takenBy: string
       invalidShortcut: string

@@ -51,6 +51,31 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
     }
   },
+  screenTutor: {
+    capture: () => ipcRenderer.invoke('hermes:screen-tutor:capture'),
+    showPoint: payload => ipcRenderer.send('hermes:screen-tutor:point', payload),
+    showAnnotations: payload => ipcRenderer.send('hermes:screen-tutor:annotations', payload),
+    dismiss: () => ipcRenderer.send('hermes:screen-tutor:dismiss'),
+    setFrozen: frozen => ipcRenderer.send('hermes:screen-tutor:freeze', frozen),
+    onPoint: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:screen-tutor:point', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screen-tutor:point', listener)
+    },
+    onAnnotations: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:screen-tutor:annotations', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screen-tutor:annotations', listener)
+    },
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:screen-tutor:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screen-tutor:state', listener)
+    }
+  },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
@@ -137,6 +162,75 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:hud:game-overlay', listener)
 
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
+    },
+    // Follow-the-pointer + ask-at-cursor prefs. Main is authoritative (it
+    // owns the OS chord and the optional input hook); every window gets the
+    // status broadcast so Settings and the HUD's toggle never disagree.
+    getPrefs: () => ipcRenderer.invoke('hermes:hud:prefs:get'),
+    setPrefs: patch => ipcRenderer.invoke('hermes:hud:prefs:set', patch),
+    onPrefs: callback => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('hermes:hud:prefs', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:prefs', listener)
+    },
+    // "Ask about this": main → HUD, what was under the cursor when the chord
+    // (or Ctrl+right-click) fired. A renderer spawned BY the ask pulls the
+    // payload once it is mounted; a live one hears it pushed.
+    takePendingAsk: () => ipcRenderer.invoke('hermes:hud:ask-pending'),
+    onAsk: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:hud:ask', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:ask', listener)
+    },
+    // Agents + rooms for the HUD's switchers (cached from the primary
+    // renderer's Quick Entry push), and the room open the HUD asks the main
+    // window to perform on its behalf.
+    launchOptions: () => ipcRenderer.invoke('hermes:hud:launch-options'),
+    openRoom: groupId => ipcRenderer.invoke('hermes:hud:open-room', { groupId }),
+    // A parsed HUD command (voice or typed) for main to carry out.
+    command: command => ipcRenderer.invoke('hermes:hud:command', command),
+    // HUD side of room mode: read a room's recent log, post a line into it,
+    // say which room to keep fed, and hear the feed grow.
+    roomFeed: groupId => ipcRenderer.invoke('hermes:hud:room-feed', { groupId }),
+    roomPost: (groupId, text) => ipcRenderer.invoke('hermes:hud:room-post', { groupId, text }),
+    watchRoom: groupId => ipcRenderer.invoke('hermes:hud:watch-room', { groupId }),
+    onRoomFeed: callback => {
+      const listener = (_event, feed) => callback(feed)
+      ipcRenderer.on('hermes:hud:room-feed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:room-feed', listener)
+    },
+    // App-window side: main relays the HUD's room requests here, Bot Mode
+    // answers, and the answers go back by request id.
+    onRoomFeedRequest: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:hud:room-feed-request', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:room-feed-request', listener)
+    },
+    reportRoomFeed: reply => ipcRenderer.send('hermes:hud:room-feed-reply', reply),
+    onRoomPost: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:hud:room-post', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:room-post', listener)
+    },
+    reportRoomPost: reply => ipcRenderer.send('hermes:hud:room-post-reply', reply),
+    onWatchRoom: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:hud:watch-room', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:watch-room', listener)
+    },
+    pushRoomFeed: feed => ipcRenderer.send('hermes:hud:room-feed-push', feed),
+    // Main → primary renderer: open this room (the HUD asked).
+    onOpenRoom: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:hud:open-room', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:open-room', listener)
     }
   },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
@@ -144,9 +238,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // and hands it back, and the primary renderer submits it through the normal
   // prompt path.
   quickEntry: {
+    // Primary renderer / pet overlay → main: a deliberate pet click summons
+    // the same pointer-adjacent agent launcher as the global shortcut.
+    show: mode => ipcRenderer.send('hermes:quick-entry:show', mode),
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
     submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    reportLaunchResult: result => ipcRenderer.send('hermes:quick-entry:launch-result', result),
+    requestPromptCoach: request => ipcRenderer.send('hermes:quick-entry:prompt-coach-request', request),
+    reportPromptCoachResult: result => ipcRenderer.send('hermes:quick-entry:prompt-coach-result', result),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest
@@ -166,15 +266,34 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:submit', listener)
     },
+    onLaunchResult: callback => {
+      const listener = (_event, result) => callback(result)
+      ipcRenderer.on('hermes:quick-entry:launch-result', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:launch-result', listener)
+    },
+    onPromptCoachRequest: callback => {
+      const listener = (_event, request) => callback(request)
+      ipcRenderer.on('hermes:quick-entry:prompt-coach-request', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:prompt-coach-request', listener)
+    },
+    onPromptCoachResult: callback => {
+      const listener = (_event, result) => callback(result)
+      ipcRenderer.on('hermes:quick-entry:prompt-coach-result', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:prompt-coach-result', listener)
+    },
     // Main → quick window: you were just summoned (reset draft + refocus).
     onShown: callback => {
-      const listener = () => callback()
+      const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:quick-entry:shown', listener)
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  signalRendererBootComplete: () => ipcRenderer.send('hermes:renderer-boot-complete'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

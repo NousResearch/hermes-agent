@@ -597,7 +597,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const threadContentTopPad = secondaryWindow
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
-    : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
+    : 'pt-[calc(var(--titlebar-height)+0.25rem)]'
 
   useEffect(() => publishThreadAtBottom(isAtBottom, { paneVisible }), [isAtBottom, paneVisible])
   useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])

@@ -205,6 +205,9 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # xKiro's /v1/messages endpoint accepts the same Bearer key as its
+        # OpenAI-compatible routes.
+        or base_url_host_matches(normalized, "api.xkiro.com")
         # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
         # not Anthropic's native x-api-key header. Hostname match for the
         # same reason as above.

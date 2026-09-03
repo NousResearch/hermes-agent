@@ -70,6 +70,11 @@ TOOL_CALL_NAME = "tool_call"
 
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
 
+# The only keys ``tool_call`` itself accepts. Anything else in the invocation is
+# a tool argument that was spread instead of nested — see
+# ``resolve_underlying_call``, which refuses rather than dropping it.
+_TOOL_CALL_ENVELOPE_KEYS = frozenset({"name", "arguments"})
+
 # When estimating tokens from char count without a real tokenizer, this is
 # the cheap rule of thumb that's stable across providers. Roughly 4 chars
 # per token for English+JSON. Underestimating leads to false negatives
@@ -1469,6 +1474,28 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
         return None, {}, "tool_call requires a 'name' argument"
     if name in BRIDGE_TOOL_NAMES:
         return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
+    # Everything the tool actually receives travels inside ``arguments``. A
+    # model that spreads some of the tool's own parameters alongside it —
+    # ``{"name": ..., "arguments": {"argv": [...]}, "cwd": "...")`` — used to
+    # have those keys silently dropped here, and the call went out missing
+    # them. Nothing downstream can notice: the underlying tool's schema sees a
+    # payload that is merely incomplete, and if the lost parameters were
+    # OPTIONAL it validates clean and runs with the wrong inputs.
+    #
+    # That is a silent-wrong-answer bug, and an expensive one — a real MCP tool
+    # lost its `cwd`, ran in the wrong directory, and the resulting
+    # file-not-found error was misread by the agent as a permissions failure it
+    # then reported to the user. Refuse instead, and name the keys: the model
+    # gets a turn back and re-sends them nested.
+    stray = sorted(k for k in args if k not in _TOOL_CALL_ENVELOPE_KEYS)
+    if stray:
+        return None, {}, (
+            "tool_call got " + ", ".join(repr(k) for k in stray) + " alongside "
+            "'arguments'. Every argument for the tool being invoked belongs "
+            "INSIDE the 'arguments' object; tool_call itself takes only 'name' "
+            "and 'arguments'. Re-send with " + ", ".join(repr(k) for k in stray) +
+            " nested inside 'arguments'."
+        )
     raw_args = args.get("arguments")
     if raw_args is None:
         raw_args = {}

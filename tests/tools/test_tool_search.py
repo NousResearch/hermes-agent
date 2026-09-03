@@ -400,6 +400,8 @@ class TestBridgeDispatch:
         })
         # Will fail classification because unknown_xxx isn't deferrable.
         assert err is not None
+        # ...and NOT because the bare envelope was mistaken for stray keys.
+        assert "alongside" not in err
 
 
     def test_resolve_underlying_call_rejects_recursion(self):
@@ -411,6 +413,31 @@ class TestBridgeDispatch:
         })
         assert err is not None
         assert "bridge tool" in err.lower()
+
+
+    def test_resolve_underlying_call_refuses_spread_tool_arguments(self):
+        """Arguments spread beside 'arguments' are refused, not dropped.
+
+        A model that emits some of the tool's own parameters as siblings of
+        'arguments' used to have them silently discarded, so the underlying
+        tool ran with an incomplete payload. When the lost parameters were
+        optional, nothing downstream could tell — the call simply did the
+        wrong thing.
+        """
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": {"argv": ["/usr/bin/sqlite3", "chat.db", "select 1;"]},
+            "cwd": "~/Library/Messages",
+            "read_paths": ["~/Library/Messages"],
+        })
+        assert name is None
+        assert args == {}
+        assert err is not None
+        # The message has to name the keys, or the model cannot act on it.
+        assert "cwd" in err
+        assert "read_paths" in err
+        assert "arguments" in err
 
 
 # ---------------------------------------------------------------------------

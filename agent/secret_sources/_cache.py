@@ -180,7 +180,12 @@ class DiskCache(Generic[K]):
             # mkdir's mode is umask-subject; chmod the dir to 0700 so cache
             # metadata isn't exposed if HERMES_HOME is ever made traversable.
             try:
-                os.chmod(cache_dir, 0o700)
+                if os.name == "nt":
+                    from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+                    restrict_path_to_current_user(cache_dir)
+                else:
+                    os.chmod(cache_dir, 0o700)
             except OSError:
                 pass
             payload = {
@@ -198,6 +203,10 @@ class DiskCache(Generic[K]):
                     json.dump(payload, f)
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, path)
+                if os.name == "nt":
+                    from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+                    restrict_path_to_current_user(path)
             except BaseException:
                 try:
                     os.unlink(tmp)

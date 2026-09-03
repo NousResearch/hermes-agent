@@ -356,6 +356,21 @@ class TokenMapping:
 # ---------------------------------------------------------------------------
 
 
+def _secure_owner_only(path: Path, mode: int) -> None:
+    """Apply the platform-native owner-only boundary to ``path``.
+
+    POSIX modes do not express a Windows trust boundary: CPython's chmod only
+    toggles the read-only attribute there.  Native Windows therefore uses the
+    same protected-DACL policy as Hermes credentials and restored secrets.
+    """
+    if os.name == "nt":
+        from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+        restrict_path_to_current_user(path)
+    else:
+        os.chmod(path, mode)
+
+
 def _hermes_bin_dir() -> Path:
     from hermes_constants import get_hermes_home
 
@@ -385,13 +400,17 @@ def _proxy_state_dir() -> Path:
     """
     d = _proxy_state_dir_ro()
     d.mkdir(parents=True, exist_ok=True)
-    try:
-        d.chmod(0o700)
-    except OSError:
-        # On Windows the chmod is a no-op for POSIX modes; on shared
-        # filesystems we may not own the dir.  Don't fail here — the
-        # individual files still get explicit perms.
-        pass
+    if os.name == "nt":
+        # The directory holds the CA signing key and management token.  A
+        # failed DACL application is a failed security boundary, not a warning.
+        _secure_owner_only(d, 0o700)
+    else:
+        try:
+            _secure_owner_only(d, 0o700)
+        except OSError:
+            # On shared POSIX filesystems we may not own the directory.  The
+            # individual files below still get explicit permissions.
+            pass
     return d
 
 
@@ -811,6 +830,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
                 pass
             raise
         os.replace(key_staged, ca_key)
+        _secure_owner_only(ca_key, 0o600)
 
         # Cert is public — 0o644 is fine and matches typical PEM layout.
         ca_crt.write_bytes(crt_bytes)
@@ -873,6 +893,7 @@ def ensure_management_token(*, force: bool = False) -> str:
         os.write(fd, token.encode("utf-8"))
     finally:
         os.close(fd)
+    _secure_owner_only(p, 0o600)
     return token
 
 
@@ -1345,10 +1366,12 @@ def ensure_audit_log(audit_path: Path) -> None:
         try:
             # Tighten perms even if the file already existed under a
             # slacker umask.
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
         finally:
             os.close(fd)
-    except OSError as exc:
+        _secure_owner_only(audit_path, 0o600)
+    except (OSError, RuntimeError) as exc:
         raise RuntimeError(
             f"Refusing to start: could not pre-create audit log "
             f"{audit_path} with restrictive permissions ({exc}).  "
@@ -1380,7 +1403,7 @@ def write_proxy_config(config: Dict) -> Path:
     # (the config embeds proxy token values).  chmod-after-replace would
     # leave a TOCTOU window; the 0o700 state dir mitigates but same-uid
     # processes could still race.
-    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    _secure_owner_only(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
     os.replace(tmp_path, out)
     return out
 
@@ -1414,7 +1437,7 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
     # chmod before the atomic replace — see write_proxy_config.  The
     # mappings file holds proxy token values, so close the TOCTOU window
     # rather than chmod-ing after the file is already at its final path.
-    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    _secure_owner_only(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
     os.replace(tmp_path, out)
     return out
 
@@ -1845,7 +1868,9 @@ def start_proxy(
             "Remove that path manually and retry."
         ) from exc
     try:
-        os.fchmod(log_fd, 0o600)  # tighten if file pre-existed
+        if hasattr(os, "fchmod"):
+            os.fchmod(log_fd, 0o600)  # tighten if file pre-existed
+        _secure_owner_only(log_path, 0o600)
     except OSError:
         pass
     # Verify ownership — same st_uid check the pidfile uses.

@@ -693,7 +693,15 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory to owner-only access (0700 or a protected Windows DACL)."""
+    if os.name == "nt":
+        try:
+            from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+            restrict_path_to_current_user(path)
+        except Exception:
+            logger.warning("Failed to restrict Windows ACL on cron directory %s", path)
+        return
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
@@ -701,7 +709,17 @@ def _secure_dir(path: Path):
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600 or a protected Windows DACL)."""
+    if os.name == "nt":
+        if not path.exists():
+            return
+        try:
+            from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+            restrict_path_to_current_user(path)
+        except Exception:
+            logger.warning("Failed to restrict Windows ACL on cron file %s", path)
+        return
     try:
         if path.exists():
             os.chmod(path, 0o600)

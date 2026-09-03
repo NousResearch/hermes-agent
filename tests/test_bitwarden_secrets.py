@@ -94,7 +94,7 @@ def test_platform_asset_name(system, machine, libc_text, expected):
 def _make_fake_zip(binary_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("bws", binary_bytes)
+        zf.writestr(bw._platform_binary_name(), binary_bytes)
     return buf.getvalue()
 
 
@@ -370,8 +370,13 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     assert not bw._disk_cache_path(home).exists()
     cache_path = bw._encrypted_disk_cache_path(home)
     assert cache_path.exists()
-    mode = stat.S_IMODE(os.stat(cache_path).st_mode)
-    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+    if os.name == "nt":
+        from hermes_cli.windows_permissions import path_is_restricted_to_current_user
+
+        assert path_is_restricted_to_current_user(cache_path)
+    else:
+        mode = stat.S_IMODE(os.stat(cache_path).st_mode)
+        assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
     text = cache_path.read_text()
     assert "secret-value" not in text
     assert "0.t" not in text
@@ -517,7 +522,6 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
-
 
 
 

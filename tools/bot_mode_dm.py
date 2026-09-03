@@ -459,7 +459,14 @@ def _dm_dir() -> Path:
         raise PermissionError(f"DM temp path is not a directory: {path}")
     if uid is not None and info.st_uid != uid:
         raise PermissionError(f"DM temp directory is owned by another user: {path}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
+    if os.name == "nt":
+        # chmod has no owner-only directory semantics on Windows and may raise
+        # WinError 5 for a temp directory. Use the same DACL implementation as
+        # every other Hermes secret directory.
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(path)
+    elif stat.S_IMODE(info.st_mode) != 0o700:
         path.chmod(0o700)
     return path
 

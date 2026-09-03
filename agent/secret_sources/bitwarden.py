@@ -405,7 +405,12 @@ def _write_encrypted_disk_cache(
         cache_dir = path.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(cache_dir, 0o700)
+            if os.name == "nt":
+                from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+                restrict_path_to_current_user(cache_dir)
+            else:
+                os.chmod(cache_dir, 0o700)
         except OSError:
             pass
         salt = os.urandom(16)
@@ -434,6 +439,10 @@ def _write_encrypted_disk_cache(
                 json.dump(payload, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, path)
+            if os.name == "nt":
+                from hermes_cli.windows_permissions import restrict_path_to_current_user
+
+                restrict_path_to_current_user(path)
             # A successful encrypted write completes migration; remove the
             # legacy plaintext cache so stale secrets cannot remain on disk.
             try:

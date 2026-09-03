@@ -48,6 +48,48 @@ __all__ = [
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
+def _open_exclusive_fd(path: Path, mode: int) -> int:
+    """Create ``path`` atomically without following a Windows reparse point."""
+    if os.name != "nt":
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, mode)
+
+    # Windows' os.open(O_EXCL) can follow a dangling symlink and create its
+    # target. CreateFileW + FILE_FLAG_OPEN_REPARSE_POINT applies CREATE_NEW to
+    # the link itself, preserving the same no-follow guarantee as O_NOFOLLOW.
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0x40000000,  # GENERIC_WRITE
+        0,
+        None,
+        1,  # CREATE_NEW
+        0x00000080 | 0x00200000,  # FILE_ATTRIBUTE_NORMAL | OPEN_REPARSE_POINT
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        raise ctypes.WinError()
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY)
+    except Exception:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        raise
+
+
 def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
     """Create ``path`` (and parents) as a directory, refusing symlinks.
 
@@ -94,7 +136,7 @@ def open_exclusive(
                 raise OSError(f"refusing to overwrite a directory: {path}")
             os.unlink(path)
     mode = 0o600 if private else 0o666  # non-private honors umask
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, mode)
+    fd = _open_exclusive_fd(path, mode)
     try:
         return os.fdopen(fd, "w", encoding=encoding, errors=errors)
     except Exception:

@@ -20,7 +20,11 @@ from tools import bot_mode_dm, bot_mode_probe
 
 
 @pytest.fixture(autouse=True)
-def _fresh_probe_cache():
+def _fresh_probe_cache(tmp_path, monkeypatch):
+    # Never touch the live per-user DM cache from a unit test. On Windows its
+    # owner-only DACL can belong to a differently scoped process token and a
+    # security repair attempt is both slow and irrelevant to these fixtures.
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     bot_mode_probe._reset_cache_for_tests()
     yield
     bot_mode_probe._reset_cache_for_tests()
@@ -689,6 +693,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     assert unrelated.exists()
 
 
+@pytest.mark.linux_only
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -701,6 +706,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.linux_only
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None

@@ -10,12 +10,22 @@ fleet with no api_server and every scheduled cron fire silently lost.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# ``docker/stage2-hook.sh`` boots a Linux container.  Its permission
+# contract is only observable on a POSIX filesystem: under Git Bash on
+# NTFS a ``chmod 600`` reports back as ``0o666`` and a ``chmod 444`` does
+# not stop the owner writing, so these two cases would assert nothing.
+POSIX_FILE_MODES = pytest.mark.skipif(
+    os.name == "nt",
+    reason="container .env permission contract needs POSIX file modes",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
@@ -83,6 +93,16 @@ def test_keygen_creates_env_when_missing(stage2_text: str, tmp_path: Path) -> No
     env_path = home / ".env"
     assert env_path.is_file(), "keygen must create .env when it is missing"
     assert KEY_LINE_RE.search(env_path.read_text()), "generated key missing/malformed"
+
+
+@POSIX_FILE_MODES
+def test_keygen_creates_env_owner_only(stage2_text: str, tmp_path: Path) -> None:
+    """The .env the keygen creates carries the API key — it must be 0600."""
+    home = tmp_path / "home"
+    home.mkdir()
+    result = _run_keygen(stage2_text, home)
+    assert result.returncode == 0, result.stderr
+    env_path = home / ".env"
     mode = env_path.stat().st_mode & 0o777
     assert mode == 0o600, f".env must be owner-only, got {oct(mode)}"
 
@@ -198,6 +218,7 @@ def _sed_is_gnu() -> bool:
     return probe.returncode == 0 and "GNU sed" in probe.stdout
 
 
+@POSIX_FILE_MODES
 def test_keygen_readonly_env_degrades_to_warning_not_boot_abort(
     stage2_text: str, tmp_path: Path
 ) -> None:
@@ -207,8 +228,6 @@ def test_keygen_readonly_env_degrades_to_warning_not_boot_abort(
     whole cont-init phase and the container boot. It must instead warn that
     the api_server will be unavailable and exit 0.
     """
-    import os
-
     if os.geteuid() == 0:
         pytest.skip("running as root — file write perms are not enforced")
     home = tmp_path / "home"

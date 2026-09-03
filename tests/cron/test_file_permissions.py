@@ -20,6 +20,14 @@ class TestCronFilePermissions(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def assertPrivate(self, path: Path, posix_mode: int):
+        if os.name == "nt":
+            from hermes_cli.windows_permissions import path_is_restricted_to_current_user
+
+            self.assertTrue(path_is_restricted_to_current_user(path))
+        else:
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), posix_mode)
+
     @patch("cron.jobs.CRON_DIR")
     @patch("cron.jobs.OUTPUT_DIR")
     @patch("cron.jobs.JOBS_FILE")
@@ -34,10 +42,8 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import ensure_dirs
             ensure_dirs()
 
-            cron_mode = stat.S_IMODE(os.stat(cron_dir).st_mode)
-            output_mode = stat.S_IMODE(os.stat(output_dir).st_mode)
-            self.assertEqual(cron_mode, 0o700)
-            self.assertEqual(output_mode, 0o700)
+            self.assertPrivate(cron_dir, 0o700)
+            self.assertPrivate(output_dir, 0o700)
 
     @patch("cron.jobs.CRON_DIR")
     @patch("cron.jobs.OUTPUT_DIR")
@@ -53,8 +59,7 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import save_jobs
             save_jobs([{"id": "test", "prompt": "hello"}])
 
-            file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            self.assertPrivate(jobs_file, 0o600)
 
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
@@ -65,13 +70,11 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import save_job_output
             output_file = save_job_output("test-job", "test output content")
 
-            file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            self.assertPrivate(output_file, 0o600)
 
             # Job output dir should also be 0700
             job_dir = output_dir / "test-job"
-            dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
-            self.assertEqual(dir_mode, 0o700)
+            self.assertPrivate(job_dir, 0o700)
 
 
 class TestConfigFilePermissions(unittest.TestCase):
@@ -84,6 +87,14 @@ class TestConfigFilePermissions(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def assertPrivate(self, path: Path, posix_mode: int):
+        if os.name == "nt":
+            from hermes_cli.windows_permissions import path_is_restricted_to_current_user
+
+            self.assertTrue(path_is_restricted_to_current_user(path))
+        else:
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), posix_mode)
+
     def test_save_config_sets_0600(self):
         config_path = Path(self.tmpdir) / "config.yaml"
         with patch("hermes_cli.config.get_config_path", return_value=config_path), \
@@ -91,8 +102,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import save_config
             save_config({"model": "test/model"})
 
-            file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            self.assertPrivate(config_path, 0o600)
 
     def test_save_env_value_sets_0600(self):
         env_path = Path(self.tmpdir) / ".env"
@@ -101,8 +111,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import save_env_value
             save_env_value("TEST_KEY", "test_value")
 
-            file_mode = stat.S_IMODE(os.stat(env_path).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            self.assertPrivate(env_path, 0o600)
 
     def test_ensure_hermes_home_sets_0700(self):
         home = Path(self.tmpdir) / ".hermes"
@@ -110,12 +119,10 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import ensure_hermes_home
             ensure_hermes_home()
 
-            home_mode = stat.S_IMODE(os.stat(home).st_mode)
-            self.assertEqual(home_mode, 0o700)
+            self.assertPrivate(home, 0o700)
 
             for subdir in ("cron", "sessions", "logs", "memories"):
-                subdir_mode = stat.S_IMODE(os.stat(home / subdir).st_mode)
-                self.assertEqual(subdir_mode, 0o700, f"{subdir} should be 0700")
+                self.assertPrivate(home / subdir, 0o700)
 
 
 class TestSecureHelpers(unittest.TestCase):

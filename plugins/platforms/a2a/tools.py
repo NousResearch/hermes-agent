@@ -74,6 +74,21 @@ def _auth_header(auth: dict) -> dict:
     return {}
 
 
+def _identity_headers() -> dict:
+    """Asserted identity header for outbound peer requests (fleet task #322).
+
+    X-A2A-Identity: '{profile}-{hostname}' (e.g. 'librarian-kimchi'), reusing
+    the adapter's outbound_identity(). Loopback receivers may surface it as a
+    display identity — asserted provenance, never authentication. Best-effort:
+    a failure here must never block a dispatch.
+    """
+    try:
+        from .adapter import outbound_identity
+        return {"X-A2A-Identity": outbound_identity()}
+    except Exception:
+        return {}
+
+
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
@@ -153,7 +168,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     outbound redaction, audit, persistence, and metrics.
     """
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **_identity_headers()}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
 
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.

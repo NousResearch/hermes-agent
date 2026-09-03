@@ -15487,15 +15487,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key, entry in list(self.session_store._entries.items()):
                     if entry.expiry_finalized:
                         continue
-                    if not await self.async_session_store._is_session_expired(entry):
+                    expiry_reason = await self.async_session_store._session_expiry_reason(entry)
+                    if not expiry_reason:
                         continue
-                    _expired_entries.append((key, entry))
+                    _expired_entries.append((key, entry, expiry_reason))
 
                 if _expired_entries:
                     # Extract platform names from session keys for a compact summary.
                     # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
                     _platforms: dict[str, int] = {}
-                    for _k, _e in _expired_entries:
+                    for _k, _e, _reason in _expired_entries:
                         _parts = _k.split(":")
                         _plat = _parts[2] if len(_parts) > 2 else "unknown"
                         _platforms[_plat] = _platforms.get(_plat, 0) + 1
@@ -15507,7 +15508,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         len(_expired_entries), _plat_summary,
                     )
 
-                for key, entry in _expired_entries:
+                for key, entry, expiry_reason in _expired_entries:
                     try:
                         try:
                             _parts = key.split(":")
@@ -15562,7 +15563,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # state.db (single write-path, #9006) — also drops
                         # the persisted /model override, since finalization
                         # is a conversation boundary.
-                        await self.async_session_store.set_expiry_finalized(entry)
+                        await self.async_session_store.set_expiry_finalized(
+                            entry, end_reason=expiry_reason
+                        )
                         logger.debug(
                             "Session expiry finalized for %s",
                             entry.session_id,
@@ -15578,7 +15581,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 failures, entry.session_id, e,
                             )
                             await self.async_session_store.set_expiry_finalized(
-                                entry, clear_model_override=False
+                                entry,
+                                clear_model_override=False,
+                                end_reason=expiry_reason,
                             )
                             _finalize_failures.pop(entry.session_id, None)
                         else:
@@ -15589,7 +15594,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 if _expired_entries:
                     _done = sum(
-                        1 for _, e in _expired_entries if e.expiry_finalized
+                        1 for _, e, _ in _expired_entries if e.expiry_finalized
                     )
                     _failed = len(_expired_entries) - _done
                     if _failed:

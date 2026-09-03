@@ -2581,7 +2581,11 @@ class SessionStore:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
 
     def set_expiry_finalized(
-        self, entry: SessionEntry, *, clear_model_override: bool = True
+        self,
+        entry: SessionEntry,
+        *,
+        clear_model_override: bool = True,
+        end_reason: str = "session_reset",
     ) -> None:
         """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
 
@@ -2590,7 +2594,9 @@ class SessionStore:
         survives sessions.json pruning/loss.
 
         ``clear_model_override=False`` preserves the give-up path's original
-        behavior (flag only, no override drop).
+        behavior (flag only, no override drop). ``end_reason`` preserves the
+        policy cause so lifecycle consumers can distinguish automatic expiry
+        from an explicit user reset.
         """
         with self._lock:
             entry.expiry_finalized = True
@@ -2624,26 +2630,25 @@ class SessionStore:
                 # live rows or rows ended with ``agent_close``.  Explicit
                 # boundaries (compression, session_reset, new_command, etc.)
                 # are preserved — the first writer wins.
-                _db.promote_to_session_reset(entry.session_id)
+                _db.promote_to_session_reset(entry.session_id, end_reason)
             except Exception as exc:
                 logger.debug(
                     "Session DB promote_to_session_reset failed for %s: %s",
                     entry.session_id, exc,
                 )
     
-    def _is_session_expired(self, entry: SessionEntry) -> bool:
-        """Check if a session has expired based on its reset policy.
-        
-        Works from the entry alone — no SessionSource needed.
-        Used by the background expiry watcher to proactively flush memories.
-        Sessions with active background processes are never considered expired.
+    def _session_expiry_reason(self, entry: SessionEntry) -> Optional[str]:
+        """Return the policy reason when a session has expired, else ``None``.
+
+        Works from the entry alone — no SessionSource needed. Sessions with
+        active background processes are never considered expired.
         """
         if self._has_active_processes_safe(entry.session_key, context="expiry"):
             logger.debug(
                 "Session %s not expired — active background processes",
                 entry.session_key,
             )
-            return False
+            return None
 
         policy = self.config.get_reset_policy(
             platform=entry.platform,
@@ -2651,14 +2656,14 @@ class SessionStore:
         )
 
         if policy.mode == "none":
-            return False
+            return None
 
         now = _now()
 
         if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
-                return True
+                return "idle"
 
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
@@ -2668,9 +2673,13 @@ class SessionStore:
             if now.hour < policy.at_hour:
                 today_reset -= timedelta(days=1)
             if entry.updated_at < today_reset:
-                return True
+                return "daily"
 
-        return False
+        return None
+
+    def _is_session_expired(self, entry: SessionEntry) -> bool:
+        """Backward-compatible boolean wrapper around expiry classification."""
+        return self._session_expiry_reason(entry) is not None
 
     def is_session_finalizable(self, entry: SessionEntry) -> bool:
         """Return True if the expiry watcher will *ever* finalize this session.

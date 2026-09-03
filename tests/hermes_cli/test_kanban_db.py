@@ -570,6 +570,293 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
     assert f"branch refs/heads/{branch}" in listed
 
 
+def test_create_worktree_task_rejects_branch_checked_out_elsewhere(
+    kanban_home, tmp_path,
+):
+    """A repository anchor cannot silently create a second branch checkout."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/shared-implementation"
+    occupied = repo / ".worktrees" / "implementation"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(occupied)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="already checked out"):
+            kb.create_task(
+                conn,
+                title="verify implementation",
+                workspace_kind="worktree",
+                workspace_path=str(repo),
+                branch_name=branch,
+            )
+
+
+def test_create_worktree_task_allows_explicit_linked_worktree_reuse(
+    kanban_home, tmp_path,
+):
+    """An exact linked-worktree path is an intentional reuse request."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/shared-implementation"
+    occupied = repo / ".worktrees" / "implementation"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(occupied)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="verify implementation",
+            workspace_kind="worktree",
+            workspace_path=str(occupied),
+            branch_name=branch,
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert kb.resolve_workspace(task) == occupied
+
+
+def test_create_worktree_task_rejects_reuse_when_branch_has_duplicate_checkout(
+    kanban_home, tmp_path,
+):
+    """Explicit reuse is unsafe when `--force` created another checkout too."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/duplicate-checkout"
+    first = repo / ".worktrees" / "first"
+    second = repo / ".worktrees" / "second"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(first)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--force", str(second), branch],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="already checked out"):
+            kb.create_task(
+                conn,
+                title="reuse first checkout",
+                workspace_kind="worktree",
+                workspace_path=str(first),
+                branch_name=branch,
+            )
+
+
+def test_create_worktree_task_rejects_primary_checkout_branch_reuse(
+    kanban_home, tmp_path,
+):
+    """A repository root is an anchor, never implicit branch reuse."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="already checked out"):
+            kb.create_task(
+                conn,
+                title="verify primary checkout",
+                workspace_kind="worktree",
+                workspace_path=str(repo),
+                branch_name="main",
+            )
+
+
+@pytest.mark.parametrize("branch", ["bad..name", "bad~name", "bad^name", "bad name"])
+def test_create_worktree_task_rejects_invalid_branch_name(
+    kanban_home, tmp_path, branch,
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="invalid branch name"):
+            kb.create_task(
+                conn,
+                title="invalid branch",
+                workspace_kind="worktree",
+                workspace_path=str(repo),
+                branch_name=branch,
+            )
+
+
+def test_worktree_inspection_failure_is_logged_and_fails_closed(
+    tmp_path, monkeypatch, caplog,
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    def fail_worktree_list(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("git worktree list", 30)
+
+    monkeypatch.setattr(kb.subprocess, "run", fail_worktree_list)
+
+    with pytest.raises(kb.WorktreeInspectionError, match="could not inspect Git worktrees"):
+        kb._git_worktrees_for_branch(repo, "wt/inspection-failure")
+
+    assert "could not inspect Git worktrees" in caplog.text
+
+
+@pytest.mark.parametrize("status", ["ready", "review"])
+def test_dispatch_blocks_worktree_branch_collision_without_retry(
+    kanban_home, tmp_path, monkeypatch, status,
+):
+    """A legacy collision is terminal in either dispatch lane."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/legacy-task"
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="verify implementation",
+            assignee="coder",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name=branch,
+        )
+        if status == "review":
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+            conn.commit()
+
+    occupied = repo / ".worktrees" / "implementation"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(occupied)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+
+    with kb.connect() as conn:
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_args, **_kwargs: 123)
+        task = kb.get_task(conn, task_id)
+
+    assert result.spawned == []
+    assert result.auto_blocked == [task_id]
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 1
+    assert task.last_failure_error is not None
+    assert "already checked out" in task.last_failure_error
+
+    assert kb.unblock_task(conn, task_id)
+    unblocked = kb.get_task(conn, task_id)
+    assert unblocked is not None
+    assert unblocked.status == status
+    assert unblocked.consecutive_failures == 0
+    assert unblocked.last_failure_error is None
+
+
+def test_dispatch_blocks_worktree_inspection_failure_without_retry(
+    kanban_home, tmp_path, monkeypatch,
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/inspection-failure"
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="verify inspection failure",
+            assignee="coder",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name=branch,
+        )
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        kb,
+        "_git_worktrees_for_branch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            kb.WorktreeInspectionError(
+                "could not inspect Git worktrees: git worktree list timed out"
+            )
+        ),
+    )
+
+    with kb.connect() as conn:
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: 123,
+            failure_limit=99,
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert result.spawned == []
+    assert result.auto_blocked == [task_id]
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 1
+    assert task.last_failure_error is not None
+    assert "could not inspect Git worktrees" in task.last_failure_error
+
+
+def test_dispatch_blocks_branch_collision_created_during_worktree_add(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """A checkout that wins the add-time race is terminal on the first try."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    branch = "wt/raced-task"
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="verify implementation",
+            assignee="coder",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name=branch,
+        )
+
+    occupied = repo / ".worktrees" / "racing-worker"
+    original_run = kb.subprocess.run
+    raced = False
+
+    def race_worktree_add(command, *args, **kwargs):
+        nonlocal raced
+        if (
+            not raced
+            and isinstance(command, list)
+            and "worktree" in command
+            and "add" in command
+        ):
+            raced = True
+            original_run(
+                ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(occupied)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(kb.subprocess, "run", race_worktree_add)
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+
+    with kb.connect() as conn:
+        result = kb.dispatch_once(conn, spawn_fn=lambda *_args, **_kwargs: 123)
+        task = kb.get_task(conn, task_id)
+
+    assert raced
+    assert result.spawned == []
+    assert result.auto_blocked == [task_id]
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 1
+
+
 # ---------------------------------------------------------------------------
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------

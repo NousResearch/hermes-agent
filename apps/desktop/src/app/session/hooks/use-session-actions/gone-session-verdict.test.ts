@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+
 import { goneSessionVerdict } from './utils'
 
 describe('goneSessionVerdict', () => {

@@ -815,6 +815,38 @@ def init_agent(
     except Exception:
         pass
 
+    # Bedrock load-time repair: bare foundation-model IDs persisted by older
+    # pickers/config flows (``anthropic.claude-fable-5``) fail every call on
+    # on-demand accounts with HTTP 400 "on-demand throughput isn't supported"
+    # (#58185). Discovery/picker fixes stop NEW bare IDs, but IDs already
+    # persisted in config files and session rows keep failing on every resume.
+    # Upgrade to the covering inference profile when live discovery confirms
+    # one exists — the same model, invokable ID form. No-ops instantly (pure
+    # string check, no AWS call) for already-prefixed IDs; fails open when
+    # discovery is unavailable.
+    if agent.provider == "bedrock" or agent.api_mode == "bedrock_converse":
+        try:
+            from agent.bedrock_adapter import repair_bedrock_model_id
+
+            _region_match = re.search(
+                r"bedrock-runtime\.([a-z0-9-]+)\.", agent._base_url_lower or ""
+            )
+            _repaired = repair_bedrock_model_id(
+                agent.model,
+                region=_region_match.group(1) if _region_match else "",
+            )
+            if _repaired != agent.model:
+                logger.warning(
+                    "bedrock: repaired bare foundation-model ID %r -> inference "
+                    "profile %r (bare IDs are not invokable on on-demand "
+                    "accounts; update the persisted config/session value).",
+                    agent.model,
+                    _repaired,
+                )
+                agent.model = _repaired
+        except Exception:
+            pass
+
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
     # uses chat completions). Also auto-upgrade for direct OpenAI URLs

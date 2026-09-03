@@ -594,6 +594,94 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
     return None
 
 
+# Full inference-profile prefix roster for repair checks: repair must never
+# re-prefix an already-prefixed ID from ANY geography.
+_REPAIR_PROFILE_PREFIXES = (
+    "global.", "us.", "eu.", "ap.", "apac.", "au.", "jp.", "ca.", "sa.", "me.",
+    "af.",
+)
+
+
+def repair_bedrock_model_id(model_id: str, region: str = "") -> str:
+    """Upgrade a bare foundation-model ID to its covering inference profile.
+
+    Older ``/model`` pickers and setup flows persisted bare foundation-model
+    IDs (``anthropic.claude-fable-5``) into config files and session rows.
+    On on-demand Bedrock accounts those IDs are not invokable — every call
+    fails with HTTP 400 "Invocation of model ID ... with on-demand throughput
+    isn't supported" (#58185). The picker/discovery fixes stop NEW bare IDs
+    from being offered, but IDs already persisted keep failing on every
+    resumed session until repaired.
+
+    This helper is the load-time repair: given a model ID, return the
+    inference-profile ID that covers it when live discovery confirms one
+    exists, preferring the region's own geo prefix, then ``global.``, then
+    the first covering profile that is routable from the endpoint's
+    geography. The result is the SAME model —
+    only the ID form changes — so applying it silently at load is a repair,
+    not a model substitution.
+
+    Fail-open: returns *model_id* unchanged when it is already
+    profile-prefixed or an ARN, does not look like a Bedrock foundation-model
+    ID, discovery is unavailable (no IAM ``bedrock:ListInferenceProfiles``,
+    no network), no covering profile exists, or every covering profile
+    belongs to a foreign geography AWS would reject from this endpoint
+    (a broken bare ID is better than a differently-broken foreign one).
+    Discovery results are cached
+    (1h per region), and already-prefixed IDs return without any AWS call.
+    """
+    mid = (model_id or "").strip()
+    if (
+        not mid
+        or mid.startswith(_REPAIR_PROFILE_PREFIXES)
+        or mid.startswith("arn:")
+        or "." not in mid
+    ):
+        return model_id
+
+    region = (region or "").strip() or resolve_bedrock_region()
+    try:
+        discovered = discover_bedrock_models(region)
+    except Exception:
+        return model_id
+    if not discovered:
+        return model_id
+
+    candidates = [
+        m["id"] for m in discovered
+        if m["id"].startswith(_REPAIR_PROFILE_PREFIXES)
+        and m["id"].split(".", 1)[1] == mid
+    ]
+    if not candidates:
+        return model_id
+
+    geo = ""
+    routable = candidates
+    try:
+        from hermes_cli.model_setup_flows import (
+            bedrock_model_routable_from_region,
+            bedrock_region_geo_prefix,
+        )
+        geo = bedrock_region_geo_prefix(region)
+        routable = [
+            c for c in candidates
+            if bedrock_model_routable_from_region(c, region)
+        ]
+    except Exception:
+        pass
+    for preferred in (geo, "global."):
+        if not preferred:
+            continue
+        for candidate in routable:
+            if candidate.startswith(preferred):
+                return candidate
+    # Never repair onto a profile AWS would reject from this endpoint's
+    # geography (e.g. jp.* from a us-east-1 endpoint) — fail open instead.
+    if routable:
+        return routable[0]
+    return model_id
+
+
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection
 # ---------------------------------------------------------------------------

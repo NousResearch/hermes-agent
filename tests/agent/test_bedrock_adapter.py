@@ -1533,3 +1533,202 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+# ---------------------------------------------------------------------------
+# repair_bedrock_model_id — load-time bare-ID repair (#58185)
+# ---------------------------------------------------------------------------
+
+class TestRepairBedrockModelId:
+    """Load-time repair of persisted bare foundation-model IDs."""
+
+    def _discovered(self, *ids):
+        return [{"id": i} for i in ids]
+
+    def test_repairs_bare_id_to_global_profile(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered(
+                "global.anthropic.claude-fable-5",
+                "anthropic.claude-fable-5",
+            ),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="us-east-1"
+            )
+        assert result == "global.anthropic.claude-fable-5"
+
+    def test_prefers_region_geo_prefix_over_global(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered(
+                "global.anthropic.claude-fable-5",
+                "eu.anthropic.claude-fable-5",
+            ),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="eu-west-1"
+            )
+        assert result == "eu.anthropic.claude-fable-5"
+
+    def test_fails_open_instead_of_foreign_geo_profile(self):
+        """A US endpoint must not be repaired onto a jp.* profile.
+
+        AWS rejects geo-prefixed profiles invoked from endpoints outside
+        their geography, so swapping a broken bare ID for a foreign profile
+        trades one failure for another. Fail open instead.
+        """
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered("jp.anthropic.claude-fable-5"),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="us-east-1"
+            )
+        assert result == "anthropic.claude-fable-5"
+
+    def test_falls_back_to_routable_candidate_without_geo_or_global(self):
+        """jp.* IS routable from ap-* endpoints, so fallback may use it."""
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered("jp.anthropic.claude-fable-5"),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="ap-northeast-1"
+            )
+        assert result == "jp.anthropic.claude-fable-5"
+
+    def test_already_prefixed_id_is_untouched_without_aws_call(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            side_effect=AssertionError("must not call discovery"),
+        ):
+            for mid in (
+                "global.anthropic.claude-fable-5",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "apac.anthropic.claude-fable-5",
+                "au.anthropic.claude-fable-5",
+                "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-v2",
+            ):
+                assert bedrock_adapter.repair_bedrock_model_id(
+                    mid, region="us-east-1"
+                ) == mid
+
+    def test_non_bedrock_shapes_are_untouched(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            side_effect=AssertionError("must not call discovery"),
+        ):
+            assert bedrock_adapter.repair_bedrock_model_id("", region="x") == ""
+            assert bedrock_adapter.repair_bedrock_model_id(
+                "gpt-4o", region="us-east-1"
+            ) == "gpt-4o"
+
+    def test_fails_open_when_discovery_raises(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            side_effect=RuntimeError("AccessDenied"),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="us-east-1"
+            )
+        assert result == "anthropic.claude-fable-5"
+
+    def test_fails_open_when_no_covering_profile(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered(
+                "global.anthropic.claude-opus-5",
+                "amazon.titan-text-express-v1",
+            ),
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="us-east-1"
+            )
+        assert result == "anthropic.claude-fable-5"
+
+    def test_fails_open_when_discovery_empty(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models", return_value=[]
+        ):
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5", region="us-east-1"
+            )
+        assert result == "anthropic.claude-fable-5"
+
+    def test_resolves_region_when_not_supplied(self):
+        from agent import bedrock_adapter
+
+        with patch.object(
+            bedrock_adapter, "resolve_bedrock_region", return_value="eu-central-1"
+        ) as mock_region, patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered("eu.anthropic.claude-fable-5"),
+        ) as mock_discover:
+            result = bedrock_adapter.repair_bedrock_model_id(
+                "anthropic.claude-fable-5"
+            )
+        assert result == "eu.anthropic.claude-fable-5"
+        mock_region.assert_called_once()
+        mock_discover.assert_called_once_with("eu-central-1")
+
+    def test_agent_init_repairs_bare_bedrock_pin(self, monkeypatch):
+        """A persisted bare Bedrock ID is upgraded during AIAgent init."""
+        from agent import bedrock_adapter
+
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            return_value=self._discovered(
+                "global.anthropic.claude-fable-5",
+            ),
+        ), patch("run_agent.ContextCompressor") as mock_compressor:
+            mock_compressor.return_value = MagicMock(
+                context_length=200000, threshold_tokens=100000
+            )
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                model="anthropic.claude-fable-5",
+                provider="bedrock",
+                api_key="unused",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            )
+        assert agent.model == "global.anthropic.claude-fable-5"
+
+    def test_agent_init_leaves_prefixed_pin_alone(self, monkeypatch):
+        from agent import bedrock_adapter
+
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models",
+            side_effect=AssertionError("must not call discovery"),
+        ), patch("run_agent.ContextCompressor") as mock_compressor:
+            mock_compressor.return_value = MagicMock(
+                context_length=200000, threshold_tokens=100000
+            )
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                model="global.anthropic.claude-fable-5",
+                provider="bedrock",
+                api_key="unused",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            )
+        assert agent.model == "global.anthropic.claude-fable-5"

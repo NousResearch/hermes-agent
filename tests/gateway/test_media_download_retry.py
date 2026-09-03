@@ -14,6 +14,7 @@ in this environment.
 import asyncio
 import socket
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -105,6 +106,56 @@ class TestCacheImageFromBytes:
         from gateway.platforms.base import cache_image_from_bytes
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
+
+    def test_caches_heic_ftyp_brand(self, tmp_path, monkeypatch):
+        """iPhone HEIC containers must pass the image sniffer and cache."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes, _looks_like_heic_heif
+
+        heic = (24).to_bytes(4, "big") + b"ftypheic" + b"\x00\x00\x00\x00" + b"mif1heic"
+        assert _looks_like_heic_heif(heic) is True
+        path = cache_image_from_bytes(heic, ".heic")
+        assert path.endswith(".heic")
+        assert Path(path).read_bytes() == heic
+
+    def test_caches_heif_via_compatible_brand(self, tmp_path, monkeypatch):
+        """mif1 major brand with heic compatible brand (common iOS still layout)."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        # major brand mif1, compatible brand heic at offset 16
+        heif = (24).to_bytes(4, "big") + b"ftypmif1" + b"\x00\x00\x00\x00" + b"heic"
+        path = cache_image_from_bytes(heif + b"\x00" * 8, ".heif")
+        assert path.endswith(".heif")
+
+    def test_rejects_unrelated_ftyp(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        mp4 = (24).to_bytes(4, "big") + b"ftypisom" + b"\x00\x00\x00\x00" + b"isom"
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(mp4, ".heic")
+
+    def test_ftyp_scan_does_not_read_past_declared_box(self):
+        """A 'heic' token in the *next* box must not classify as HEIC."""
+        from gateway.platforms.base import _looks_like_heic_heif
+
+        # Declared size 16: box ends after minor version; 'heic' is the next box.
+        raw = (16).to_bytes(4, "big") + b"ftypisom" + b"\x00\x00\x00\x00" + b"heicxxxx"
+        assert _looks_like_heic_heif(raw) is False
+
+    def test_mif1_plus_avif_is_not_heic(self):
+        from gateway.platforms.base import _looks_like_heic_heif
+
+        raw = (24).to_bytes(4, "big") + b"ftypmif1" + b"\x00\x00\x00\x00" + b"avif"
+        assert _looks_like_heic_heif(raw) is False
+
+    def test_undersized_ftyp_does_not_scan_compat_brands(self):
+        from gateway.platforms.base import _looks_like_heic_heif
+
+        # Declared size 12 cannot hold a compatible list.
+        raw = (12).to_bytes(4, "big") + b"ftypisom" + b"\x00\x00\x00\x00" + b"heic"
+        assert _looks_like_heic_heif(raw) is False
 
 
 # ---------------------------------------------------------------------------

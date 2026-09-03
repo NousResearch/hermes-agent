@@ -466,6 +466,69 @@ class TestFormatCompatibility:
 
 
 
+    def test_heif_major_brand_sniffed(self):
+        """ftypheif must not fall through to JPEG (review alignment with base cache)."""
+        from agent.image_routing import _guess_mime, _sniff_mime_from_bytes
+        from pathlib import Path
+
+        heif_header = b"\x00\x00\x00\x20ftypheif\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(heif_header) == "image/heic"
+        # Full guess path used by vision attachment building.
+        assert _guess_mime(Path("photo.heif"), raw=heif_header) == "image/heic"
+
+    def test_hevm_hevs_brands_sniffed(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+
+        assert _sniff_mime_from_bytes(b"\x00\x00\x00\x20ftyphevm\x00\x00\x00\x00") == "image/heic"
+        assert _sniff_mime_from_bytes(b"\x00\x00\x00\x20ftyphevs\x00\x00\x00\x00") == "image/heic"
+
+    def test_heif_extension_without_magic_defaults_heic_mime(self):
+        """Suffix-only guess must not map .heif/.heic → image/jpeg."""
+        from agent.image_routing import _guess_mime
+        from pathlib import Path
+
+        heif_mime = _guess_mime(Path("IMG_0001.heif"), raw=None)
+        heic_mime = _guess_mime(Path("IMG_0001.HEIC"), raw=None)
+        assert heif_mime in {"image/heic", "image/heif"}
+        assert heic_mime in {"image/heic", "image/heif"}
+        assert heif_mime != "image/jpeg"
+        assert heic_mime != "image/jpeg"
+
+    def test_ftypheif_enters_non_universal_path_not_jpeg(self):
+        """Through image routing: a ftypheif payload must classify as HEIC
+        (not JPEG) and fall outside the universally-supported set, so it
+        takes the transcode branch in _file_to_data_url rather than being
+        declared image/jpeg to the provider. Matches the reviewer ask
+        without depending on the optional pillow-heif codec.
+        """
+        from pathlib import Path
+
+        from agent.image_routing import (
+            _UNIVERSALLY_SUPPORTED_MIMES,
+            _guess_mime,
+        )
+
+        for brand in (b"heif", b"hevm", b"hevs", b"heic"):
+            raw = b"\x00\x00\x00\x20ftyp" + brand + b"\x00\x00\x00\x00"
+            mime = _guess_mime(Path("photo.heif"), raw=raw)
+            assert mime == "image/heic", f"{brand!r} classified as {mime}"
+            assert mime != "image/jpeg"
+            # Non-universal -> _file_to_data_url transcodes instead of
+            # declaring the raw bytes with a mislabeled media_type.
+            assert mime not in _UNIVERSALLY_SUPPORTED_MIMES
+
+    def test_ftyp_scan_does_not_read_past_declared_box(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+
+        raw = (16).to_bytes(4, "big") + b"ftypisom" + b"\x00\x00\x00\x00" + b"heicxxxx"
+        assert _sniff_mime_from_bytes(raw) is None
+
+    def test_mif1_plus_avif_sniffs_as_avif_not_heic(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+
+        raw = (24).to_bytes(4, "big") + b"ftypmif1" + b"\x00\x00\x00\x00" + b"avif"
+        assert _sniff_mime_from_bytes(raw) == "image/avif"
+
     def test_svg_sniffed_correctly(self):
         from agent.image_routing import _sniff_mime_from_bytes
         assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"

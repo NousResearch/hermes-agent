@@ -246,7 +246,7 @@ from plugins.platforms.telegram.telegram_network import (
 )
 from utils import atomic_replace, env_float, env_int
 
-_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"}
 
 # Max seconds a send/edit coroutine may sleep inline on a Telegram
 # flood-control RetryAfter. Longer server penalties fail closed with a
@@ -266,12 +266,17 @@ def _flood_cap_result(wait: float) -> "SendResult":
     )
 
 
+
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+    "image/heic-sequence": ".heic",
+    "image/heif-sequence": ".heif",
 }
 _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".png": "image/png",
@@ -279,6 +284,8 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
 }
 
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
@@ -10452,11 +10459,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
                     file_obj = await doc.get_file()
                     image_bytes = await file_obj.download_as_bytearray()
-                    image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    image_ext = (
+                        ext
+                        if ext in _TELEGRAM_IMAGE_EXTENSIONS
+                        else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    )
                     try:
                         cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
                     except ValueError as e:
-                        logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
+                        logger.warning(
+                            "[Telegram] Failed to cache image document: %s",
+                            _redact_telegram_error_text(e),
+                            exc_info=True,
+                        )
                         event.text = (
                             f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
                             "could not be read as an image."
@@ -10466,7 +10481,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
                     event.message_type = MessageType.PHOTO
                     event.media_urls = [cached_path]
-                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
+                    event.media_types = [
+                        doc_mime
+                        if doc_mime.startswith("image/")
+                        else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")
+                    ]
                     logger.info("[Telegram] Cached user image-document at %s", cached_path)
 
                     media_group_id = getattr(msg, "media_group_id", None)

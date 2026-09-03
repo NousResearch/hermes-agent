@@ -59,7 +59,8 @@ _VALID_MODES = frozenset({"auto", "native", "text"})
 # them differently (send_document), and we don't want to attach a PDF as a
 # vision part.
 _IMAGE_EXTS = (
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+    ".heic", ".heif",
 )
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 
@@ -650,6 +651,39 @@ def decide_image_input_mode(
 # The shrink-on-reject path loses 1 API call + maybe 1s of Pillow work when
 # it fires, which is cheaper than permanent quality loss.
 
+_AVIF_FTYP_BRANDS = frozenset({b"avif", b"avis", b"av01"})
+_HEIF_FTYP_BRANDS = frozenset(
+    {
+        b"heic",
+        b"heix",
+        b"hevc",
+        b"hevx",
+        b"heim",
+        b"heis",
+        b"hevm",
+        b"hevs",
+        b"heif",
+        b"mif1",
+        b"msf1",
+    }
+)
+
+
+def _isobmff_ftyp_brands(raw: bytes) -> tuple[bytes, ...]:
+    """Return major + compatible brands from a ``ftyp`` box, or empty.
+
+    Compatible brands are scanned only inside the declared box size.
+    """
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        return ()
+    brands = [raw[8:12]]
+    declared = int.from_bytes(raw[:4], "big")
+    if declared >= 16:
+        end = min(len(raw), declared)
+        for i in range(16, end - 3, 4):
+            brands.append(raw[i : i + 4])
+    return tuple(brands)
+
 
 def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     """Detect image MIME from magic bytes. Returns None if unrecognised.
@@ -678,15 +712,14 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     # BMP: "BM"
     if raw.startswith(b"BM"):
         return "image/bmp"
-    # ISO-BMFF family (HEIC/HEIF/AVIF): bytes 4..8 == 'ftyp', major brand at 8..12
+    # ISO-BMFF family (HEIC/HEIF/AVIF): bytes 4..8 == 'ftyp', major brand at 8..12.
+    # Brand set stays aligned with gateway.platforms.base. Scan only inside
+    # the declared ftyp box; AVIF brands win when both families appear.
     if len(raw) >= 12 and raw[4:8] == b"ftyp":
-        brand = raw[8:12]
-        if brand in {b"avif", b"avis"}:
+        brands = set(_isobmff_ftyp_brands(raw))
+        if brands & _AVIF_FTYP_BRANDS:
             return "image/avif"
-        if brand in {
-            b"heic", b"heix", b"hevc", b"hevx",
-            b"mif1", b"msf1", b"heim", b"heis",
-        }:
+        if brands & _HEIF_FTYP_BRANDS:
             return "image/heic"
     # TIFF: II*\0 (little-endian) or MM\0* (big-endian)
     if raw[:4] in {b"II*\x00", b"MM\x00*"}:
@@ -793,6 +826,8 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
         ".gif": "image/gif",
         ".webp": "image/webp",
         ".bmp": "image/bmp",
+        ".heic": "image/heic",
+        ".heif": "image/heic",
     }.get(suffix, "image/jpeg")
 
 

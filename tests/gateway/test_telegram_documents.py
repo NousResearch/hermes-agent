@@ -207,6 +207,54 @@ class TestDocumentDownloadBlock:
         assert "file text" in event.text
         assert "Please summarize" in event.text
 
+    @pytest.mark.asyncio
+    async def test_heic_document_is_routed_as_image(self, adapter, tmp_path, monkeypatch):
+        """iOS HEIC sent as a Telegram document must not be dropped."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        # Minimal ISO-BMFF ftyp box with major brand 'heic'.
+        heic_bytes = (24).to_bytes(4, "big") + b"ftypheic" + b"\x00\x00\x00\x00" + b"mif1heic"
+        file_obj = _make_file_obj(heic_bytes)
+        doc = _make_document(
+            file_name="IMG_0001.HEIC",
+            mime_type="image/heic",
+            file_size=len(heic_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-heic"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_called_once()
+        event = enqueue_mock.call_args.args[1]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls and event.media_urls[0].endswith(".heic")
+        assert event.media_types == ["image/heic"]
+        assert adapter.handle_message.call_count == 0
+        # Must not surface the old "could not be read as an image" dead-end.
+        assert not (event.text or "").lower().startswith("image document")
+
+    @pytest.mark.asyncio
+    async def test_spoofed_heic_document_falls_back_with_error(self, adapter):
+        """A .heic filename with non-image bytes must not become a PHOTO event."""
+        file_obj = _make_file_obj(b"not-a-real-image")
+        doc = _make_document(
+            file_name="spoofed.heic", mime_type="image/heic", file_size=16, file_obj=file_obj
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-spoof"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_not_called()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be read as an image" in event.text
 
     @pytest.mark.asyncio
     async def test_text_injection_capped(self, adapter):

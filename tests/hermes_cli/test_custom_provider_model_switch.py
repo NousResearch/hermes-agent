@@ -387,6 +387,41 @@ class TestCustomProviderModelSwitch:
         assert "Local Ollama" in active_label
         assert "currently active" in active_label
 
+    def test_picker_orders_primary_provider_before_fallback_providers(
+        self, config_home
+    ):
+        from hermes_cli.main import select_provider_and_model
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5.6-sol\n"
+            "fallback_providers:\n"
+            "- provider: anthropic\n"
+            "  model: claude-opus-5\n"
+            "- provider: alibaba\n"
+            "  model: qwen3.8-max\n"
+            "custom_providers: []\n",
+            encoding="utf-8",
+        )
+        captured = {}
+
+        def _capture_and_cancel(labels, default=0):
+            captured["labels"] = labels
+            return len(labels) - 1
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=_capture_and_cancel,
+        ), patch("builtins.print"):
+            select_provider_and_model()
+
+        labels = captured["labels"]
+        openai_index = next(i for i, label in enumerate(labels) if label.startswith("OpenAI ▸"))
+        anthropic_index = next(i for i, label in enumerate(labels) if label.startswith("Anthropic"))
+        assert openai_index < anthropic_index
+
     def test_key_env_providers_dict_preserves_existing_api_key(
         self, config_home, monkeypatch
     ):

@@ -4135,6 +4135,12 @@ def select_provider_and_model(args=None):
         ]
     else:
         _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    from hermes_cli.inventory import configured_model_order, order_provider_slugs
+
+    _visible_slugs = order_provider_slugs(
+        _visible_slugs,
+        configured_model_order(config),
+    )
     grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group

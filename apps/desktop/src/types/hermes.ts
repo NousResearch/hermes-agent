@@ -452,6 +452,7 @@ export interface ModelCapabilities {
 
 export interface ModelOptionsResponse {
   model?: string
+  preferred_models?: Array<{ model: string; provider: string }>
   provider?: string
   providers?: ModelOptionProvider[]
 }

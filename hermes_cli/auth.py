@@ -8518,6 +8518,21 @@ def _prompt_model_selection(
             return None
         return mid
 
+    # Reorder the catalog from the configured primary/fallback chain first.
+    # The current-model pin below remains the final interaction affordance.
+    if confirm_provider:
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.inventory import configured_model_order, order_models_for_provider
+
+            model_ids = order_models_for_provider(
+                list(model_ids),
+                confirm_provider,
+                configured_model_order(load_config()),
+            )
+        except Exception:
+            pass
+
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:

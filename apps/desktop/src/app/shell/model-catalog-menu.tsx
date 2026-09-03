@@ -239,6 +239,11 @@ export function ModelCatalogMenu({
 
   const providers = modelOptions.data?.providers
 
+  const preferredModels = useMemo(
+    () => modelOptions.data?.preferred_models ?? [],
+    [modelOptions.data?.preferred_models]
+  )
+
   // The catalog carries MoA presets as a virtual `moa` provider row. Keep it
   // out of the main groups so presets never show up twice.
   const moaPresets = useMemo(
@@ -277,8 +282,15 @@ export function ModelCatalogMenu({
   )
 
   const groups = useMemo(
-    () => groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys),
-    [pickerProviders, search, current.model, current.provider, shownKeys]
+    () =>
+      groupModels(
+        pickerProviders,
+        search,
+        { model: current.model, provider: current.provider },
+        shownKeys,
+        preferredModels
+      ),
+    [pickerProviders, search, current.model, current.provider, shownKeys, preferredModels]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -709,6 +721,30 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
   )
 }
 
+function preferredFamilyRank(
+  preferredRanks: ReadonlyMap<string, number>,
+  provider: string,
+  family: ModelFamily
+): number | undefined {
+  let rank: number | undefined
+
+  // A rendered row represents both the base model and its optional -fast
+  // sibling. Rank the row by whichever configured member appears first.
+  for (const model of [family.id, family.fastId]) {
+    if (!model) {
+      continue
+    }
+
+    const candidate = preferredRanks.get(modelVisibilityKey(provider, normalize(model)))
+
+    if (candidate !== undefined && (rank === undefined || candidate < rank)) {
+      rank = candidate
+    }
+  }
+
+  return rank
+}
+
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
@@ -716,10 +752,28 @@ function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
-  visible: Set<string> | null
+  visible: Set<string> | null,
+  preferredModels: NonNullable<ModelOptionsResponse['preferred_models']> = []
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
+
+  const preferredRanks = new Map(
+    preferredModels.map((entry, index) => [
+      modelVisibilityKey(normalize(entry.provider), normalize(entry.model)),
+      index
+    ])
+  )
+
+  const providerRanks = new Map<string, number>()
+
+  preferredModels.forEach((entry, index) => {
+    const provider = normalize(entry.provider)
+
+    if (!providerRanks.has(provider)) {
+      providerRanks.set(provider, index)
+    }
+  })
 
   for (const provider of providers) {
     const allFamilies = collapseModelFamilies(provider.models ?? [])
@@ -756,15 +810,52 @@ function groupModels(
         : undefined
 
     const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+    const providerId = normalize(provider.slug)
+
+    families.sort((a, b) => {
+      const aRank = preferredFamilyRank(preferredRanks, providerId, a)
+      const bRank = preferredFamilyRank(preferredRanks, providerId, b)
+
+      if (aRank === undefined && bRank === undefined) {
+        return 0
+      }
+
+      if (aRank === undefined) {
+        return 1
+      }
+
+      if (bRank === undefined) {
+        return -1
+      }
+
+      return aRank - bRank
+    })
 
     if (families.length > 0) {
       groups.push({ families, provider })
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Configured primary/fallback order is stable across session switches. Older
+  // backends omit it, so keep the historical alphabetical order as fallback.
+  groups.sort((a, b) => {
+    const aRank = providerRanks.get(normalize(a.provider.slug))
+    const bRank = providerRanks.get(normalize(b.provider.slug))
+
+    if (aRank === undefined && bRank === undefined) {
+      return a.provider.name.localeCompare(b.provider.name)
+    }
+
+    if (aRank === undefined) {
+      return 1
+    }
+
+    if (bRank === undefined) {
+      return -1
+    }
+
+    return aRank - bRank
+  })
 
   return groups
 }

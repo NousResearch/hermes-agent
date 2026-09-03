@@ -46,6 +46,131 @@ _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] 
 # ─── Public types ───────────────────────────────────────────────────────
 
 
+def configured_model_order(config: dict | None) -> tuple[tuple[str, str], ...]:
+    """Return the configured primary model followed by fallbacks, deduplicated."""
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    cfg = config if isinstance(config, dict) else {}
+    entries: list[tuple[str, str]] = []
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        entries.append(
+            (
+                str(model_cfg.get("provider") or "").strip(),
+                str(
+                    model_cfg.get("default")
+                    or model_cfg.get("model")
+                    or model_cfg.get("name")
+                    or ""
+                ).strip(),
+            )
+        )
+
+    entries.extend(
+        (
+            str(entry.get("provider") or "").strip(),
+            str(entry.get("model") or "").strip(),
+        )
+        for entry in get_fallback_chain(cfg)
+    )
+
+    ordered: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for provider, model in entries:
+        provider = _provider_order_identity(provider)
+        if not provider or not model:
+            continue
+        identity = (provider, model.lower())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        ordered.append((provider, model))
+    return tuple(ordered)
+
+
+def _provider_order_identity(provider: str) -> str:
+    raw = str(provider or "").strip().lower()
+    if not raw:
+        return ""
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(raw) or raw
+    except Exception:
+        return raw
+
+
+def order_provider_slugs(
+    slugs: list[str],
+    preferred_models: tuple[tuple[str, str], ...],
+) -> list[str]:
+    """Move configured providers first while preserving every other order."""
+    ranks: dict[str, int] = {}
+    for index, (provider, _model) in enumerate(preferred_models):
+        ranks.setdefault(_provider_order_identity(provider), index)
+    return [
+        slug
+        for _index, slug in sorted(
+            enumerate(slugs),
+            key=lambda item: (
+                ranks.get(_provider_order_identity(item[1]), len(preferred_models) + item[0]),
+                item[0],
+            ),
+        )
+    ]
+
+
+def order_models_for_provider(
+    models: list[str],
+    provider: str,
+    preferred_models: tuple[tuple[str, str], ...],
+) -> list[str]:
+    """Move configured models for one provider first, preserving the rest."""
+    provider_id = _provider_order_identity(provider)
+    ranks = {
+        model.lower(): index
+        for index, (candidate_provider, model) in enumerate(preferred_models)
+        if _provider_order_identity(candidate_provider) == provider_id
+    }
+    return [
+        model
+        for _index, model in sorted(
+            enumerate(models),
+            key=lambda item: (ranks.get(item[1].lower(), len(preferred_models) + item[0]), item[0]),
+        )
+    ]
+
+
+def _apply_configured_model_order(
+    rows: list[dict],
+    preferred_models: tuple[tuple[str, str], ...],
+) -> list[dict]:
+    if not preferred_models:
+        return rows
+
+    slugs = [str(row.get("slug") or "") for row in rows]
+    ordered_slugs = order_provider_slugs(slugs, preferred_models)
+    slug_ranks = {slug: index for index, slug in enumerate(ordered_slugs)}
+    ordered_rows = [
+        row
+        for original_index, row in sorted(
+            enumerate(rows),
+            key=lambda item: (
+                slug_ranks.get(str(item[1].get("slug") or ""), len(rows) + item[0]),
+                item[0],
+            ),
+        )
+    ]
+    for row in ordered_rows:
+        models = list(row.get("models") or [])
+        row["models"] = order_models_for_provider(
+            models,
+            str(row.get("slug") or ""),
+            preferred_models,
+        )
+    return ordered_rows
+
+
 @dataclass(frozen=True)
 class ConfigContext:
     """Snapshot of the model + provider config every inventory caller
@@ -59,6 +184,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    preferred_models: tuple[tuple[str, str], ...] = ()
 
     def with_overrides(
         self,
@@ -117,6 +243,7 @@ def load_picker_context() -> ConfigContext:
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        preferred_models=configured_model_order(cfg),
     )
 
 
@@ -313,6 +440,7 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    rows = _apply_configured_model_order(rows, ctx.preferred_models)
     if pricing:
         _apply_pricing(
             rows,
@@ -329,6 +457,10 @@ def build_models_payload(
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
+        "preferred_models": [
+            {"provider": provider, "model": model}
+            for provider, model in ctx.preferred_models
+        ],
     }
 
 

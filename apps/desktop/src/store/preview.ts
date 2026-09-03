@@ -424,6 +424,7 @@ export function closeRightRailTab(tabId: string) {
 
   const next = current.filter(tab => tab.id !== tabId)
 
+  forgetBrowserPage(tabId)
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
@@ -440,17 +441,69 @@ export function closePreviewForSource(source: string): boolean {
   return closePreviewMatching(source)
 }
 
-/** Close the first tab whose source, url, or label matches any candidate.
- *  Empty candidates are a no-op so a missed match cannot wipe the rail —
- *  closing the whole pane is `closeRightRail`. */
-export function closePreviewMatching(...candidates: string[]): boolean {
+/** Close the first docked Browser tab whose current page URL matches.
+ *  Browsers keep navigation state outside their persisted target so matching
+ *  only target.url misses redirects and in-page navigation. */
+export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boolean {
+  const queries = new Set(
+    candidates
+      .map(value => {
+        try {
+          const url = new URL(value.trim())
+
+          return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+        } catch {
+          return ''
+        }
+      })
+      .filter(Boolean)
+  )
+
+  if (queries.size === 0) {
+    return false
+  }
+
+  const pages = $browserPages.get()
+  const popped = $poppedBrowserTabIds.get()
+  const tabs = $previewTabs.get()
+  const activeId = $rightRailActiveTabId.get()
+  const ordered = [...tabs.filter(tab => tab.id === activeId), ...tabs.filter(tab => tab.id !== activeId)]
+
+  const tab = ordered.find(item => {
+    if (item.target.kind !== 'url' || popped.has(item.id)) {
+      return false
+    }
+
+    const liveUrl = pages[item.id]?.url
+
+    if (!liveUrl) {
+      return false
+    }
+
+    try {
+      return queries.has(new URL(liveUrl).href)
+    } catch {
+      return false
+    }
+  })
+
+  if (!tab) {
+    return false
+  }
+
+  closeRightRailTab(tab.id)
+
+  return true
+}
+
+function closePreviewMatchingTabs(tabs: PreviewTab[], candidates: string[]): boolean {
   const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
 
   if (queries.length === 0) {
     return false
   }
 
-  const tab = $previewTabs.get().find(item => {
+  const tab = tabs.find(item => {
     const fields = [item.target.source, item.target.url, item.target.label]
 
     return queries.some(query => fields.includes(query))
@@ -463,6 +516,22 @@ export function closePreviewMatching(...candidates: string[]): boolean {
   closeRightRailTab(tab.id)
 
   return true
+}
+
+/** Close the first tab whose source, url, or label matches any candidate.
+ *  Empty candidates are a no-op so a missed match cannot wipe the rail —
+ *  closing the whole pane is `closeRightRail`. */
+export function closePreviewMatching(...candidates: string[]): boolean {
+  return closePreviewMatchingTabs($previewTabs.get(), candidates)
+}
+
+/** Agent-driven close is scoped to the docked rail; an independent Browser
+ *  window owns popped tabs and must not lose its backing state here. */
+export function closeDockedPreviewMatching(...candidates: string[]): boolean {
+  const popped = $poppedBrowserTabIds.get()
+  const docked = $previewTabs.get().filter(tab => !popped.has(tab.id))
+
+  return closePreviewMatchingTabs(docked, candidates)
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it

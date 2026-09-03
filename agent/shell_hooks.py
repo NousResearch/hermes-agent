@@ -64,7 +64,8 @@ message is taken from the stdout block JSON when present, then the first
 400 characters of stderr, then a generic default.  For events whose block
 directive is not honored, exit 2 is logged at warning like any other
 non-zero exit.  All other non-zero exits log a warning and stdout is still
-parsed normally.
+parsed normally; a ``fail_closed`` ``pre_tool_call`` hook blocks when parsing
+produces no recognized directive.
 
 **failure semantics**
 
@@ -72,7 +73,8 @@ Hooks fail *open* by default: a spawn error, timeout, or unparseable
 stdout logs a warning and contributes nothing.  A ``pre_tool_call`` entry
 can opt into fail-*closed* semantics with ``fail_closed: true``
 (``failClosed`` also accepted for Cursor/Claude-Code config compat) —
-spawn errors, timeouts, and malformed stdout then BLOCK the tool call
+spawn errors, timeouts, non-zero exits without a directive, and malformed
+stdout then BLOCK the tool call
 with ``hook <command> failed closed: <reason>``.  Use this for
 security-gating hooks (secret scanners, policy checks) where a crashed
 hook must not silently allow the action.  On non-blocking events
@@ -673,7 +675,8 @@ def _evaluate_result(
     * exit code 2 on a blocking-capable event — block, with the message
       taken from stdout block JSON, then stderr, then a default
       (Claude-Code / Cursor compatible);
-    * other non-zero exits — warn, then parse stdout normally;
+    * other non-zero exits — warn, then parse stdout normally; a
+      ``fail_closed`` hook blocks if no directive was produced;
     * non-JSON / unparseable stdout on a ``fail_closed`` blocking hook —
       block instead of silently contributing nothing.
 
@@ -735,6 +738,11 @@ def _evaluate_result(
 
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
+
+    if parsed is None and fail_closed and r["returncode"] != 0:
+        return _fail_closed_block(
+            spec, f"hook exited {r['returncode']} with no directive",
+        )
 
     if parsed is None and fail_closed and stdout:
         # The hook produced output we could not turn into a directive.

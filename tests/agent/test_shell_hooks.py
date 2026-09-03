@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -644,6 +645,14 @@ class TestEvaluateResult:
         assert r["action"] == "block"
         assert "unparseable stdout" in r["message"]
 
+    def test_nonzero_exit_without_directive_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stderr="Traceback: hook crashed"),
+        )
+        assert r["action"] == "block"
+        assert "hook exited 1 with no directive" in r["message"]
+
     def test_unparseable_stdout_fails_open_by_default(self):
         r = shell_hooks._evaluate_result(
             self._spec(),
@@ -678,6 +687,20 @@ class TestEvaluateResult:
 
 
 class TestFailSemanticsEndToEnd:
+    def test_fail_closed_crashed_process_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "crash.py", 'raise RuntimeError("hook crashed")\n',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f'"{sys.executable}" "{script}"',
+            fail_closed=True,
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
+        assert result is not None and result["action"] == "block"
+        assert "hook exited 1 with no directive" in result["message"]
+
     def test_exit_2_script_blocks(self, tmp_path):
         script = _write_script(
             tmp_path, "exit2.sh",

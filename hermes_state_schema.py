@@ -1262,10 +1262,27 @@ class SessionSchemaMixin:
         # active=1 explicitly; this idempotent repair un-hides rows written
         # before the fix.  It was previously gated at ``current_version <
         # 12`` which never re-ran for already-v12+ databases.
+        #
+        # The repair is still CONSIDERED on every startup; only the write is
+        # gated, on a read proving there is something to repair.  An UPDATE
+        # takes the database write lock even when it matches no rows, so the
+        # unconditional form made every read-write open block on a sibling
+        # process's write transaction for a full busy timeout.  The probe is
+        # served by ``idx_messages_active_null`` (created by the
+        # DEFERRED_INDEX_SQL executescript above) on legacy default-less
+        # columns, and short-circuits as an unsatisfiable constraint on the
+        # modern ``active INTEGER NOT NULL DEFAULT 1`` column: ~5us either
+        # way.  Deliberately NOT ``INDEXED BY`` — that hint raises
+        # OperationalError("no query solution") against the NOT NULL column
+        # and the handler below would silently swallow it, disabling the
+        # repair forever.
         try:
-            cursor.execute(
-                "UPDATE messages SET active = 1 WHERE active IS NULL"
-            )
+            if cursor.execute(
+                "SELECT 1 FROM messages WHERE active IS NULL LIMIT 1"
+            ).fetchone() is not None:
+                cursor.execute(
+                    "UPDATE messages SET active = 1 WHERE active IS NULL"
+                )
         except sqlite3.OperationalError:
             pass
 
@@ -1581,9 +1598,21 @@ class SessionSchemaMixin:
                 and not self._has_fts_trash(cursor)
                 and not self._fts_external_index_empty_with_messages(cursor)
             ):
-                self.set_meta(
-                    "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
-                )
+                # Stamp only when it would change something. On a
+                # fully-optimized DB every condition above is already true, so
+                # this used to re-write the same value on every single open —
+                # and a write takes the database write lock even when the value
+                # is unchanged, blocking behind any sibling process's write
+                # transaction for a full busy timeout. Reading the marker first
+                # is a primary-key seek on state_meta.
+                if cursor.execute(
+                    "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' "
+                    "AND value = ? LIMIT 1",
+                    (str(FTS_STORAGE_VERSION),),
+                ).fetchone() is None:
+                    self.set_meta(
+                        "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
+                    )
 
             # Advance schema_version to current for ALL non-FTS-layout
             # migrations. This is deliberately NOT gated on the FTS opt-in —

@@ -613,6 +613,77 @@ class TestMessageStorage:
 
 
 
+    def test_open_does_not_take_the_write_lock_when_nothing_needs_writing(self, tmp_path):
+        """A read-write open must not block on a sibling's write transaction.
+
+        Opening used to issue two unconditional writes — the generation
+        stamp's ``INSERT OR IGNORE`` and the NULL-``active`` repair ``UPDATE``
+        — and a write statement takes the database write lock even when it
+        changes nothing. With another process holding that lock, each one
+        blocked for a full busy timeout, so a plain open cost ~2s on a
+        database that needed no repair at all. Both are now gated on a read.
+        """
+        db_path = tmp_path / "state.db"
+        # Open until the file has settled: the first opens legitimately mint
+        # the generation stamp and the FTS layout marker. From then on a
+        # healthy DB needs no writes at all to be opened.
+        SessionDB(db_path=db_path).close()
+        SessionDB(db_path=db_path).close()
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("PRAGMA busy_timeout=60000")
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        try:
+            started = time.perf_counter()
+            session_db = SessionDB(db_path=db_path)
+            elapsed = time.perf_counter() - started
+            session_db.close()
+        finally:
+            holder.rollback()
+            holder.close()
+
+        # One busy timeout is ~1s (the connection is opened with timeout=1.0);
+        # on the pre-fix code this took two of them. A generous bound keeps
+        # this from flaking on a loaded CI box while still failing loudly if a
+        # write creeps back onto the open path.
+        assert elapsed < 0.5, f"open blocked on the write lock for {elapsed:.3f}s"
+
+    def test_generation_stamp_survives_write_lock_contention(self, tmp_path):
+        """The stamp must be readable even when the write lock is held.
+
+        The stamp is minted once per file, so every later open only needs to
+        READ it. While the whole block was write-first, a held write lock made
+        it raise, the handler swallowed it, and the process ended up with no
+        generation token at all — losing the deleted-WAL/replaced-file guard
+        exactly when contention made it most likely to matter.
+        """
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()  # settle the FTS layout marker too
+        first = SessionDB(db_path=db_path)
+        try:
+            on_disk = first._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (hermes_state._STATE_DB_GENERATION_KEY,),
+            ).fetchone()[0]
+        finally:
+            first.close()
+        assert on_disk
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("PRAGMA busy_timeout=60000")
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        try:
+            session_db = SessionDB(db_path=db_path)
+            try:
+                assert session_db._db_file_generation_token == on_disk
+            finally:
+                session_db.close()
+        finally:
+            holder.rollback()
+            holder.close()
+
     def test_startup_heals_null_active_rows(self, tmp_path):
         """Rows written as active=NULL before the fix are un-hidden on startup.
 

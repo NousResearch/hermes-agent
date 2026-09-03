@@ -44,7 +44,12 @@ interface RemoteGateway {
 }
 
 function findHermesBinary(): string {
-  const venv = path.join(REPO_ROOT, '.venv', 'bin', 'hermes')
+  const venv = path.join(
+    REPO_ROOT,
+    '.venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'hermes.exe' : 'hermes'
+  )
 
   if (fs.existsSync(venv)) {
     return venv

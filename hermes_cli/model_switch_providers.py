@@ -1081,10 +1081,10 @@ def list_authenticated_providers(
     _lap_bare_custom_row(b, custom_providers)
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers, custom_providers, current_model)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
+def _finalize_picker_rows(results: list, user_providers, custom_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
@@ -1106,9 +1106,18 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     # picker (main and MoA slot pickers read these rows); inject it at the front of the current
     # provider's row.
     if current_model:
+        from hermes_cli.models import model_provider_compatibility_error
+
         for row in results:
             if not row.get("is_current") or row.get("native_catalog_empty"):
                 continue
+            if model_provider_compatibility_error(
+                current_model,
+                str(row.get("slug") or row.get("provider_id") or ""),
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            ):
+                break
             models = row.get("models") or []
             if current_model not in models:
                 row["models"] = [current_model, *models]

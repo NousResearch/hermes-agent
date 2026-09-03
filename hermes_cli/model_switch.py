@@ -1344,9 +1344,24 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     """COMMON PATH part 2: normalize the model name for the target provider, validate it, and
     accept config-declared models the remote catalog lacks."""
     from hermes_cli.models_local import _get_ollama_request_headers
+    from hermes_cli.models import model_provider_compatibility_error
     from hermes_cli.models_validate import validate_requested_model
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
     st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
+
+    compatibility_error = model_provider_compatibility_error(
+        st.new_model,
+        st.target_provider,
+        user_providers=st.user_providers,
+        custom_providers=st.custom_providers,
+    )
+    if compatibility_error:
+        return st.fail(
+            compatibility_error,
+            new_model=st.new_model,
+            target_provider=st.target_provider,
+            provider_label=st.provider_label,
+        )
 
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())

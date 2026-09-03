@@ -32,8 +32,6 @@ import {
   $cronSessions,
   $currentCwd,
   $currentFastMode,
-  $currentModel,
-  $currentProvider,
   $currentReasoningEffort,
   $messages,
   $messagingSessions,
@@ -49,6 +47,7 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setComposerSelection,
   setConnection,
   setCronSessions,
   setCurrentCwd,
@@ -723,6 +722,12 @@ describe('startFreshSessionDraft', () => {
 })
 
 describe('createBackendSessionForSend profile routing', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+    setComposerSelection({ model: '', provider: '', source: '' })
+  })
+
   afterEach(() => {
     cleanup()
     $newChatProfile.set(null)
@@ -732,11 +737,11 @@ describe('createBackendSessionForSend profile routing', () => {
     $projectTree.set([])
     $currentCwd.set('')
     $currentFastMode.set(false)
-    $currentModel.set('')
-    $currentProvider.set('')
-    setCurrentModelSource('')
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+    setComposerSelection({ model: '', provider: '', source: '' })
     $currentReasoningEffort.set('')
     setNewChatWorkspaceTarget(undefined)
+    window.localStorage.clear()
     vi.restoreAllMocks()
   })
 
@@ -810,6 +815,33 @@ describe('createBackendSessionForSend profile routing', () => {
       model: 'anthropic/claude-opus-5',
       provider: 'anthropic'
     })
+  })
+
+  it("does not send another profile's manual selection to the target profile", async () => {
+    let params: Record<string, unknown> | undefined
+
+    vi.mocked(requestGatewayForAgent).mockImplementationOnce(async (_connectionId, _profile, method, requestParams) => {
+      if (method === 'session.create') {
+        params = requestParams
+      }
+
+      return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+    })
+
+    await createWith(() => {
+      setConnection({
+        baseUrl: 'https://gateway.example',
+        connectionId: 'source-a',
+        mode: 'remote',
+        profile: 'default'
+      } as never)
+      setComposerSelection({ model: 'deepseek-v4-pro', provider: 'deepseek', source: 'manual' })
+      $newChatRoute.set({ connectionId: 'source-a', mode: 'remote', profile: 'analyst' })
+    })
+
+    expect(params).toMatchObject({ profile: 'analyst' })
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
   })
 
   // An unset source is the first-run/cleared state — nothing the user picked,

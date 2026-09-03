@@ -17,13 +17,12 @@ import {
   commitWorkspaceCwdForSelectedSession,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
+  setComposerSelection,
   setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -1600,12 +1599,12 @@ interface ApplyRuntimeInfoOptions {
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
  *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
-  if (state.model !== undefined) {
-    setCurrentModel(state.model)
-  }
-
-  if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
+  if (state.model !== undefined || state.provider !== undefined) {
+    setComposerSelection(current => ({
+      ...current,
+      model: state.model ?? current.model,
+      provider: state.provider ?? current.provider
+    }))
   }
 
   if (state.cwd !== undefined) {
@@ -1724,8 +1723,7 @@ export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
   storedSessionId: null | string
 ) {
-  setCurrentModel(stored?.model || '')
-  setCurrentProvider('')
+  setComposerSelection(current => ({ ...current, model: stored?.model || '', provider: '' }))
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
   setCurrentFastMode(false)

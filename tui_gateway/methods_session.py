@@ -293,8 +293,37 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
+def _session_create_model_provider_error(params: dict, profile_home) -> str | None:
+    """Reject only clear native-provider mismatches before session side effects."""
+    model = _str_param(params, "model")
+    provider = _str_param(params, "provider")
+    if not model or not provider:
+        return None
+
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.models import model_provider_compatibility_error
+
+    with _profile_build_scope(profile_home):
+        cfg = _load_cfg()
+    return model_provider_compatibility_error(
+        model,
+        provider,
+        user_providers=cfg.get("providers") if isinstance(cfg, dict) else None,
+        custom_providers=(
+            get_compatible_custom_providers(cfg)
+            if isinstance(cfg, dict)
+            else None
+        ),
+    )
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if compatibility_error := _session_create_model_provider_error(params, profile_home):
+        return _err(rid, 4002, compatibility_error)
+
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
@@ -306,7 +335,6 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
-    profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:

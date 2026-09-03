@@ -67,6 +67,15 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertIn("REPLACES", desc)
         self.assertIn("skill_view()", desc)
 
+    def test_absorbed_into_advertised_in_operations_schema(self):
+        """#97959 — absorbed_into must be advertised in operations[] properties
+        so structured-output and strict tool-following models can emit it
+        during curator consolidation passes."""
+        props = self._op_props()
+        self.assertIn("absorbed_into", props)
+        self.assertEqual(props["absorbed_into"]["type"], "string")
+        self.assertIn("umbrella", props["absorbed_into"]["description"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,7 +84,7 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
-import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
+import { chipTypedUrlOnSpace, linkifyUrls, markdownLinkFor, resolveExactLinkPaste, selectionLinkLabel } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -549,6 +549,24 @@ export function ChatBar({
     }
 
     event.preventDefault()
+
+    // Pasting exactly one link while composer text is selected turns that text
+    // into a markdown link instead of replacing it — the behavior every rich
+    // editor ships (ported from block/buzz#6684). Selections that span chips
+    // or lines fall through to the normal replace-with-chip path.
+    const exactLink = resolveExactLinkPaste(pastedText)
+
+    if (exactLink) {
+      const label = selectionLinkLabel(event.currentTarget)
+
+      if (label) {
+        recordUndoPoint()
+        insertComposerContentsAtCaret(event.currentTarget, markdownLinkFor(label, exactLink))
+        scheduleFlushEditorToDraft(event.currentTarget)
+
+        return
+      }
+    }
 
     // Links in the paste land as `@url:` chips rather than a wall of URL text —
     // the same reference the "Add URL" dialog inserts, parsed in place so a link

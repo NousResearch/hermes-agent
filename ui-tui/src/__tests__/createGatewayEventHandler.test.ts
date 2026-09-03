@@ -1052,7 +1052,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed', true))
     expect(newSession).not.toHaveBeenCalled()
     // One-shot: the ref is consumed so a later ordinary restart forges/resumes
     // per config instead of re-resuming the recovered session.

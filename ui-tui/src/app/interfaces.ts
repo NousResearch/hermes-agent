@@ -486,7 +486,7 @@ export interface GatewayEventHandlerContext {
     // respawn resumes that session instead of forging a fresh one.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => void
+    resumeById: (id: string, recovering?: boolean) => void
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
@@ -542,7 +542,7 @@ export interface SlashHandlerContext {
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
-    resumeById: (id: string) => void
+    resumeById: (id: string, recovering?: boolean) => void
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>
@@ -573,7 +573,7 @@ export interface AppLayoutActions {
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
-  resumeById: (id: string) => void
+  resumeById: (id: string, recovering?: boolean) => void
   setStickyPrompt: (value: string) => void
 }
 

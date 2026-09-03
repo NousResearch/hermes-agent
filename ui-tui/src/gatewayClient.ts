@@ -16,6 +16,7 @@ const MAX_BUFFERED_EVENTS = 2000
 const MAX_LOG_PREVIEW = 240
 const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
 const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
+const REPLAY_REQUEST_TIMEOUT_MS = 10_000
 const WS_CONNECTING = 0
 const WS_OPEN = 1
 const WS_CLOSING = 2
@@ -168,6 +169,10 @@ export class GatewayClient extends EventEmitter {
   private heartbeatSeq = 0
   private heartbeatPendingId: string | null = null
   private heartbeatSentAt = 0
+  private lastSeenSeq = new Map<string, number>()
+  private replayEpoch: null | string = null
+  private replayEpochChanged = false
+  private replayHold: Map<string, GatewayEvent[]> | null = null
   // Set on kill() so we never auto-reconnect after an intentional shutdown.
   private disposed = false
 
@@ -340,7 +345,11 @@ export class GatewayClient extends EventEmitter {
     // attached to a discarded child / socket.
     this.rejectPending(new Error('gateway restarting'))
     this.ready = false
-    this.subscribed = false
+    // `subscribed` describes the long-lived UI consumer, not the transport.
+    // Preserve it across WebSocket replacement so the reconnect's
+    // gateway.ready/session events reach the already-mounted app. Clearing it
+    // here buffered every post-reconnect event forever because drain() only
+    // runs once when the consumer mounts.
     // Invalidate any pending deferred drain() flush from a prior transport so
     // its queued microtask becomes a no-op (it captured the old generation).
     this.drainGeneration += 1
@@ -379,6 +388,13 @@ export class GatewayClient extends EventEmitter {
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
     this.rejectPending(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
+
+    // Park seq'd events from the replacement transport until the session has
+    // reattached and explicitly asks for its replay gap. This keeps terminal
+    // events emitted during the drop from racing ahead of session.resume.
+    if (this.lastSeenSeq.size > 0 && this.replayHold === null) {
+      this.replayHold = new Map([...this.lastSeenSeq.keys()].map(sid => [sid, []]))
+    }
 
     // Self-heal: a dropped transport (real close OR silent drop caught by the
     // heartbeat) should reconnect instead of stranding the UI on a dead socket
@@ -708,8 +724,141 @@ export class GatewayClient extends EventEmitter {
       const ev = asGatewayEvent(msg.params)
 
       if (ev) {
-        this.publish(ev)
+        if (ev.type === 'gateway.ready') {
+          const epoch = (ev.payload as { replay_epoch?: unknown } | undefined)?.replay_epoch
+
+          if (typeof epoch === 'string' && epoch) {
+            if (this.replayEpoch !== null && this.replayEpoch !== epoch) {
+              this.replayEpochChanged = true
+              this.lastSeenSeq.clear()
+              this.replayHold = null
+            }
+
+            this.replayEpoch = epoch
+          }
+        }
+
+        const sid = ev.session_id
+        const seq = (ev as { seq?: unknown }).seq
+
+        if (this.replayHold && sid && typeof seq === 'number' && this.replayHold.has(sid)) {
+          this.replayHold.get(sid)?.push(ev)
+
+          return
+        }
+
+        this.publishIfNewer(ev)
       }
+    }
+  }
+
+  private publishIfNewer(ev: GatewayEvent) {
+    const sid = ev.session_id
+    const seq = (ev as { seq?: unknown }).seq
+
+    if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
+      const previous = this.lastSeenSeq.get(sid) ?? 0
+
+      if (seq <= previous) {
+        return
+      }
+
+      this.lastSeenSeq.set(sid, seq)
+    }
+
+    this.publish(ev)
+  }
+
+  hasReplayWatermark(sessionId: string) {
+    if (this.replayEpochChanged) {
+      // The replacement backend owns a different seq namespace. Force the
+      // caller down the authoritative full-resume path once, then begin fresh
+      // watermarks from events emitted by this process.
+      this.replayEpochChanged = false
+
+      return false
+    }
+
+    return this.lastSeenSeq.has(sessionId)
+  }
+
+  async replaySessionEvents(sessionId: string): Promise<{ reconcile: boolean; terminal: boolean }> {
+    const lastSeen = this.lastSeenSeq.get(sessionId)
+
+    if (lastSeen === undefined) {
+      return { reconcile: true, terminal: false }
+    }
+
+    try {
+      const result = await this.request<{
+        epoch?: string
+        events?: GatewayEvent[]
+        latest_seq?: number
+        truncated?: boolean
+      }>('session.events.since', { last_seen: lastSeen, session_id: sessionId }, REPLAY_REQUEST_TIMEOUT_MS)
+
+      const epochChanged =
+        this.replayEpochChanged ||
+        (typeof result?.epoch === 'string' && this.replayEpoch !== null && result.epoch !== this.replayEpoch)
+
+      const reconcile = epochChanged || result?.truncated === true || !Array.isArray(result?.events)
+      const parked = this.replayHold?.get(sessionId) ?? []
+      const terminal = [...(result?.events ?? []), ...parked].some(ev => ev?.type === 'message.complete')
+
+      if (reconcile) {
+        // session.resume is the authoritative fallback for a replay gap. Move
+        // the watermark to the server snapshot so held frames already covered
+        // by that fallback do not append duplicate terminal messages.
+        if (typeof result?.latest_seq === 'number') {
+          this.lastSeenSeq.set(sessionId, result.latest_seq)
+        } else if (epochChanged) {
+          this.lastSeenSeq.delete(sessionId)
+        }
+      } else {
+        for (const ev of result.events!) {
+          if (ev?.type) {
+            this.publishIfNewer(ev)
+          }
+        }
+      }
+
+      this.replayEpochChanged = false
+      this.flushReplayHold(sessionId)
+
+      return { reconcile, terminal }
+    } catch {
+      this.flushReplayHold(sessionId)
+
+      return { reconcile: true, terminal: false }
+    }
+  }
+
+  finishReconnectRecovery(sessionId: string) {
+    this.flushReplayHold(sessionId)
+  }
+
+  private flushReplayHold(sessionId: string) {
+    const replayHold = this.replayHold
+
+    if (!replayHold) {
+      return
+    }
+
+    const parked = replayHold.get(sessionId) ?? []
+
+    replayHold.delete(sessionId)
+
+    // Only the focused session is reattached and replayed. Release events for
+    // every other live session too, otherwise their hold has no replay owner
+    // and continues swallowing future events after recovery completes.
+    for (const siblingEvents of replayHold.values()) {
+      parked.push(...siblingEvents)
+    }
+
+    this.replayHold = null
+
+    for (const ev of parked) {
+      this.publishIfNewer(ev)
     }
   }
 
@@ -836,12 +985,16 @@ export class GatewayClient extends EventEmitter {
     return this.ws
   }
 
-  private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  private requestOverWebSocket<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = REQUEST_TIMEOUT_MS
+  ): Promise<T> {
     return this.ensureAttachedWebSocket(method).then(
       ws =>
         new Promise<T>((resolve, reject) => {
           const id = `r${++this.reqId}`
-          const timeout = setTimeout(this.onTimeout, REQUEST_TIMEOUT_MS, id)
+          const timeout = setTimeout(this.onTimeout, timeoutMs, id)
 
           timeout.unref?.()
           this.pending.set(id, {
@@ -868,7 +1021,11 @@ export class GatewayClient extends EventEmitter {
     )
   }
 
-  request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = REQUEST_TIMEOUT_MS
+  ): Promise<T> {
     const attachUrl = resolveGatewayAttachUrl()
 
     if (attachUrl) {
@@ -881,7 +1038,7 @@ export class GatewayClient extends EventEmitter {
         this.start()
       }
 
-      return this.requestOverWebSocket<T>(method, params)
+      return this.requestOverWebSocket<T>(method, params, timeoutMs)
     }
 
     if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {

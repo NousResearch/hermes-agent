@@ -612,6 +612,288 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('keeps delivering gateway events after a subscribed websocket reconnect', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: string[] = []
+
+    try {
+      gw.on('event', event => events.push(event.type))
+      gw.on('exit', () => gw.start())
+      gw.start()
+
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.close(1006)
+
+      const second = FakeWebSocket.instances[1]!
+
+      second.open()
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: {} }
+        })
+      )
+
+      expect(events).toContain('gateway.ready')
+    } finally {
+      gw.kill()
+    }
+  })
+
+  it('replays a detached terminal event once after session reattach', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: Array<{ seq?: number; type: string }> = []
+
+    try {
+      gw.on('event', event => events.push(event as { seq?: number; type: string }))
+      gw.on('exit', () => gw.start())
+      gw.start()
+
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: {}, seq: 1, session_id: 's1', type: 'message.start' }
+        })
+      )
+      first.close(1006)
+
+      const second = FakeWebSocket.instances[1]!
+
+      second.open()
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+
+      const resume = gw.request('session.resume', { omit_messages: true, session_id: 's1' })
+
+      await vi.waitFor(() => expect(second.sent.some(raw => JSON.parse(raw).method === 'session.resume')).toBe(true))
+      const resumeFrame = second.sent.map(raw => JSON.parse(raw)).find(frame => frame.method === 'session.resume')!
+
+      second.message(JSON.stringify({ id: resumeFrame.id, jsonrpc: '2.0', result: { session_id: 's1' } }))
+      await resume
+
+      const replay = gw.replaySessionEvents('s1')
+
+      await vi.waitFor(() => expect(second.sent.some(raw => JSON.parse(raw).method === 'session.events.since')).toBe(true))
+      const replayFrame = second.sent.map(raw => JSON.parse(raw)).find(frame => frame.method === 'session.events.since')!
+
+      expect(replayFrame.params).toEqual({ last_seen: 1, session_id: 's1' })
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { text: 'done' }, seq: 3, session_id: 's1', type: 'message.complete' }
+        })
+      )
+      second.message(
+        JSON.stringify({
+          id: replayFrame.id,
+          jsonrpc: '2.0',
+          result: {
+            count: 2,
+            epoch: 'epoch-1',
+            events: [
+              { payload: { text: 'done' }, seq: 2, session_id: 's1', type: 'message.delta' },
+              { payload: { text: 'done' }, seq: 3, session_id: 's1', type: 'message.complete' }
+            ],
+            latest_seq: 3,
+            truncated: false
+          }
+        })
+      )
+
+      await expect(replay).resolves.toEqual({ reconcile: false, terminal: true })
+      expect(events.filter(event => event.type === 'message.complete')).toHaveLength(1)
+      expect(events.find(event => event.type === 'message.complete')).toMatchObject({ seq: 3, type: 'message.complete' })
+    } finally {
+      gw.kill()
+    }
+  })
+
+  it('releases sibling session events after focused session replay', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: Array<{ seq?: number; session_id?: string; type: string }> = []
+
+    try {
+      gw.on('event', event => events.push(event as { seq?: number; session_id?: string; type: string }))
+      gw.on('exit', () => gw.start())
+      gw.start()
+
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+
+      for (const sessionId of ['s1', 's2']) {
+        first.message(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { payload: {}, seq: 1, session_id: sessionId, type: 'message.start' }
+          })
+        )
+      }
+
+      first.close(1006)
+
+      const second = FakeWebSocket.instances[1]!
+
+      second.open()
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+
+      const replay = gw.replaySessionEvents('s1')
+
+      await vi.waitFor(() => expect(second.sent.some(raw => JSON.parse(raw).method === 'session.events.since')).toBe(true))
+      const replayFrame = second.sent.map(raw => JSON.parse(raw)).find(frame => frame.method === 'session.events.since')!
+
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { text: 'sibling parked' }, seq: 2, session_id: 's2', type: 'message.delta' }
+        })
+      )
+      second.message(
+        JSON.stringify({
+          id: replayFrame.id,
+          jsonrpc: '2.0',
+          result: { count: 0, epoch: 'epoch-1', events: [], latest_seq: 1, truncated: false }
+        })
+      )
+
+      await expect(replay).resolves.toEqual({ reconcile: false, terminal: false })
+
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { text: 'sibling live' }, seq: 3, session_id: 's2', type: 'message.complete' }
+        })
+      )
+
+      expect(events.filter(event => event.session_id === 's2' && event.seq === 2)).toHaveLength(1)
+      expect(events.filter(event => event.session_id === 's2' && event.seq === 3)).toHaveLength(1)
+    } finally {
+      gw.kill()
+    }
+  })
+
+  it('releases sibling events when the focused recovery has no watermark', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: Array<{ seq?: number; session_id?: string; type: string }> = []
+
+    try {
+      gw.on('event', event => events.push(event as { seq?: number; session_id?: string; type: string }))
+      gw.on('exit', () => gw.start())
+      gw.start()
+
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: {}, seq: 1, session_id: 'sibling', type: 'message.start' }
+        })
+      )
+      first.close(1006)
+
+      const second = FakeWebSocket.instances[1]!
+
+      second.open()
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { replay_epoch: 'epoch-1' }, type: 'gateway.ready' }
+        })
+      )
+
+      expect(gw.hasReplayWatermark('focused')).toBe(false)
+
+      const resume = gw.request('session.resume', { session_id: 'focused' })
+
+      await vi.waitFor(() => expect(second.sent.some(raw => JSON.parse(raw).method === 'session.resume')).toBe(true))
+      const resumeFrame = second.sent.map(raw => JSON.parse(raw)).find(frame => frame.method === 'session.resume')!
+
+      second.message(JSON.stringify({ id: resumeFrame.id, jsonrpc: '2.0', result: { session_id: 'focused' } }))
+      await resume
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { text: 'parked' }, seq: 2, session_id: 'sibling', type: 'message.delta' }
+        })
+      )
+
+      expect(events.filter(event => event.session_id === 'sibling' && event.seq === 2)).toHaveLength(0)
+      gw.finishReconnectRecovery('focused')
+
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { payload: { text: 'live' }, seq: 3, session_id: 'sibling', type: 'message.complete' }
+        })
+      )
+
+      expect(events.filter(event => event.session_id === 'sibling' && event.seq === 2)).toHaveLength(1)
+      expect(events.filter(event => event.session_id === 'sibling' && event.seq === 3)).toHaveLength(1)
+    } finally {
+      gw.kill()
+    }
+  })
+
   it('does not auto-reconnect after an intentional kill() (issue #32997)', async () => {
     vi.useFakeTimers()
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'

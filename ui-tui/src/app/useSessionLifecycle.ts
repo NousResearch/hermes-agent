@@ -327,7 +327,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
+    (id: string, recovering = false) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
@@ -336,13 +336,52 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
 
+          if (recovering) {
+            gw.finishReconnectRecovery(id)
+          }
+
           return
         }
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
+        const replayableRecovery = recovering && gw.hasReplayWatermark(id)
+
+        const applyResume = (r: SessionResumeResponse, replaceHistory: boolean, recoveryPending = false) => {
+          const info = r.info ?? null
+          const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+
+          if (replaceHistory) {
+            resetSession()
+            setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
+            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+
+            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
+          }
+
+          writeActiveSessionFile(r.resumed ?? r.session_id)
+          patchUiState({
+            busy: recoveryPending || running,
+            info,
+            sid: r.session_id,
+            status: recoveryPending ? 'recovering session…' : statusFromLiveSession(r.status, running),
+            usage: usageFrom(info)
+          })
+          hydrateLiveSessionInflight(r.inflight)
+          cancelResumeScrollRef.current?.()
+          cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
+
+          if (previousSid && previousSid !== r.session_id) {
+            void closeSession(previousSid)
+          }
+        }
+
+        gw.request<SessionResumeResponse>('session.resume', {
+          cols: colsRef.current,
+          omit_messages: replayableRecovery,
+          session_id: id
+        })
+          .then(async raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 
             if (!r) {
@@ -351,34 +390,37 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
-            const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+            applyResume(r, !replayableRecovery, replayableRecovery)
 
-            resetSession()
-            setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
+            if (replayableRecovery) {
+              const replay = await gw.replaySessionEvents(r.session_id)
 
-            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+              if (replay.reconcile) {
+                const fallbackRaw = await gw.request<SessionResumeResponse>('session.resume', {
+                  cols: colsRef.current,
+                  session_id: r.session_id
+                })
 
-            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
-            patchUiState({
-              busy: running,
-              info,
-              sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
-              usage: usageFrom(info)
-            })
-            hydrateLiveSessionInflight(r.inflight)
-            cancelResumeScrollRef.current?.()
-            cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
+                const fallback = asRpcResult<SessionResumeResponse>(fallbackRaw)
 
-            if (previousSid && previousSid !== r.session_id) {
-              void closeSession(previousSid)
+                if (!fallback) {
+                  throw new Error('invalid response: session.resume reconciliation')
+                }
+
+                applyResume(fallback, true)
+              } else if (!replay.terminal) {
+                applyResume(r, false)
+              }
             }
           })
           .catch((e: Error) => {
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
+          })
+          .finally(() => {
+            if (recovering) {
+              gw.finishReconnectRecovery(id)
+            }
           })
       })
     },

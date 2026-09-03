@@ -514,8 +514,10 @@ def _(rid, params: dict) -> dict:
                 # the profile, the open/send then resumes it, and this hard 404
                 # ("session not found") killed messaging for exactly the bots
                 # that had never spoken. Match the in-memory registry by stored
-                # key or pending title, scoped to the SAME profile home this
-                # resume targets, and hand the caller the live record.
+                # runtime id, stored key, or pending title, scoped to the SAME
+                # profile home this resume targets, and hand the caller the
+                # live record. Runtime-id lookup is required when a replacement
+                # WebSocket reattaches the session after a mid-turn drop.
                 # (Nested per method_ctx rebinding — module helpers are
                 # invisible from installed handlers.)
                 def _find_live_unpersisted(needle: str, home) -> str:
@@ -526,7 +528,8 @@ def _(rid, params: dict) -> dict:
                         if (record.get("profile_home") or None) != want_home:
                             continue
                         if (
-                            str(record.get("session_key") or "") == needle
+                            live_sid == needle
+                            or str(record.get("session_key") or "") == needle
                             or (record.get("pending_title") or "") == needle
                         ):
                             return live_sid

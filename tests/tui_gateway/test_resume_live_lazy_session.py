@@ -7,6 +7,7 @@ by stored key or pending title — which hard-404'd "session not found" for
 every bot that had never spoken (community + Teknium repro, Aug 2026).
 
 Contract:
+- resume by runtime id reattaches to the live in-memory record;
 - resume by stored session_key reattaches to the live in-memory record;
 - resume by pending title reattaches likewise;
 - the match is scoped to the SAME profile home — an unscoped resume of a
@@ -50,6 +51,14 @@ def live_lazy_session(home):
 
 def _resume(params):
     return srv._methods["session.resume"](1, params)
+
+
+def test_resume_by_runtime_id_reattaches(live_lazy_session):
+    sid, record = live_lazy_session
+    out = _resume({"profile": "ops", "session_id": sid, "omit_messages": True})
+    assert "error" not in out, out
+    assert out["result"]["session_id"] == sid
+    assert out["result"]["stored_session_id"] == record["session_key"]
 
 
 def test_resume_by_stored_key_reattaches(live_lazy_session):

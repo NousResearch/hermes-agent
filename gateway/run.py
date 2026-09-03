@@ -3380,13 +3380,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
-        "request_overrides": dict(runtime.get("request_overrides") or {}),
-        "max_tokens": max_tokens,
         # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
         # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
         # Must flow through to the per-turn route or the provider's configured
         # request body never reaches the model on the gateway path.
-        "request_overrides": runtime.get("request_overrides"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "max_tokens": max_tokens,
         "capabilities": capabilities,
     }
 
@@ -3603,7 +3602,6 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "credential_pool": runtime.get("credential_pool"),
                     "request_overrides": dict(runtime.get("request_overrides") or {}),
                     "model": entry.get("model"),
-                    "request_overrides": runtime.get("request_overrides"),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)

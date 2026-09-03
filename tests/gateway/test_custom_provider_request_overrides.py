@@ -305,3 +305,30 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     assert agent.request_overrides == {
         "extra_body": {"text": {"verbosity": "low"}},
     }
+
+
+def test_resolve_runtime_agent_kwargs_defaults_request_overrides_to_a_copy(monkeypatch):
+    """A provider without request_overrides must yield {}, and never the caller's dict."""
+    provider_overrides = {"extra_body": {"text": {"verbosity": "low"}}}
+    runtime = {
+        "api_key": "***",
+        "base_url": "https://example.test/v1",
+        "provider": "custom",
+        "api_mode": "codex_responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "request_overrides": None,
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda: runtime,
+    )
+
+    assert gateway_run._resolve_runtime_agent_kwargs()["request_overrides"] == {}
+
+    runtime["request_overrides"] = provider_overrides
+    result = gateway_run._resolve_runtime_agent_kwargs()["request_overrides"]
+    assert result == provider_overrides
+    result["service_tier"] = "priority"
+    assert "service_tier" not in provider_overrides

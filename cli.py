@@ -13605,6 +13605,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from tools.async_delegation import (
             claim_event_delivery,
             complete_event_delivery,
+            release_event_delivery,
         )
 
         session_key = getattr(self, "session_id", "") or ""
@@ -13621,26 +13622,67 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # old/no-persistence CLI embeddings only.
             db = getattr(self, "_session_db", None)
             append_delivery = getattr(db, "append_message", None)
-            if event.get("type") == "async_delegation" and callable(append_delivery):
-                append_delivery(
-                    session_key,
-                    "user",
-                    content=synthetic_message,
-                    display_kind="async_delegation_complete",
-                )
-                # The next CLI turn uses this live list rather than reloading
-                # SQLite. Keep the durable display event in the same transcript,
-                # without queueing a synthetic model turn.
-                conversation_history = getattr(self, "conversation_history", None)
-                if isinstance(conversation_history, list):
-                    conversation_history.append({
-                        "role": "user",
-                        "content": synthetic_message,
-                        "display_kind": "async_delegation_complete",
-                        "_db_persisted": True,
-                    })
+            append_once = getattr(db, "append_async_delegation_completion", None)
+            if event.get("type") == "async_delegation" and (
+                callable(append_once) or callable(append_delivery)
+            ):
+                metadata = {"delegation_id": str(event.get("delegation_id") or "")}
+                try:
+                    if callable(append_once):
+                        append_result = append_once(
+                            session_key, synthetic_message, metadata,
+                        )
+                        if not (
+                            isinstance(append_result, tuple)
+                            and len(append_result) == 2
+                        ):
+                            raise TypeError("invalid async completion append result")
+                        row_id = append_result[0]
+                    else:
+                        if not callable(append_delivery):
+                            raise TypeError("SessionDB cannot append completion delivery")
+                        # Compatibility only for lightweight embedded SessionDB
+                        # stand-ins. Production SessionDB uses the transactional
+                        # identity seam above.
+                        row_id = append_delivery(
+                            session_key,
+                            "user",
+                            content=synthetic_message,
+                            display_kind="async_delegation_complete",
+                            display_metadata=metadata,
+                        )
+                    # The next CLI turn uses this live list rather than reloading
+                    # SQLite. Keep this identity exactly once in the same
+                    # transcript, without queueing a synthetic model turn.
+                    conversation_history = getattr(self, "conversation_history", None)
+                    if isinstance(conversation_history, list) and not any(
+                        message.get("display_kind") == "async_delegation_complete"
+                        and isinstance(message.get("display_metadata"), dict)
+                        and message["display_metadata"].get("delegation_id") == metadata["delegation_id"]
+                        for message in conversation_history
+                        if isinstance(message, dict)
+                    ):
+                        completion = {
+                            "role": "user",
+                            "content": synthetic_message,
+                            "display_kind": "async_delegation_complete",
+                            "display_metadata": metadata,
+                            "_db_persisted": True,
+                        }
+                        if isinstance(row_id, int):
+                            completion["_row_id"] = row_id
+                        conversation_history.append(completion)
+                    # A completion is an immediate CLI-visible display event,
+                    # not a queued synthetic prompt/model turn.
+                    _cli_visible_print(synthetic_message)
+                except Exception:
+                    # Leave retryable failures pending.  Ack follows durable,
+                    # live-history, and visible-display acceptance only.
+                    release_event_delivery(event, claim)
+                    continue
             else:
                 self._pending_input.put(synthetic_message)
+                _cli_visible_print(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:

@@ -12929,13 +12929,11 @@ def _append_async_delegation_completion(
             if isinstance(message, dict)
         ):
             return False
-        row_id = db.append_message(
-            target_session_id,
-            "user",
-            content=text,
-            display_kind="async_delegation_complete",
-            display_metadata=metadata,
+        row_id, inserted = db.append_async_delegation_completion(
+            target_session_id, text, metadata,
         )
+        if not inserted:
+            return False
         completion = {
             "role": "user",
             "content": text,

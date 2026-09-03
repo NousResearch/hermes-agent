@@ -75,19 +75,22 @@ def test_cli_completion_is_durable_display_only_not_a_recursive_turn(monkeypatch
     monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: "claim")
     monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *_args: None)
+    monkeypatch.setattr("cli._cli_visible_print", lambda _text: None)
 
     cli._drain_process_notifications("cli-idle")
 
     assert cli._pending_input.empty()
     assert persisted == [(
         ("visible-session", "user"),
-        {"content": "completion payload", "display_kind": "async_delegation_complete"},
+        {"content": "completion payload", "display_kind": "async_delegation_complete",
+         "display_metadata": {"delegation_id": "deleg"}},
     )]
     # The immediate next authorized turn reads this live list, not SQLite.
     assert cli.conversation_history[-1] == {
         "role": "user",
         "content": "completion payload",
         "display_kind": "async_delegation_complete",
+        "display_metadata": {"delegation_id": "deleg"},
         "_db_persisted": True,
     }
 
@@ -115,6 +118,95 @@ def test_cli_duplicate_completion_is_persisted_once(monkeypatch):
 
     assert len(persisted) == 1
     assert not hasattr(cli, "conversation_history")
+    assert cli._pending_input.empty()
+
+
+def test_cli_stale_replay_after_crash_does_not_duplicate_durable_or_live_history(
+    monkeypatch, tmp_path,
+):
+    """A crash after durable append but before ack replays the same identity once."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("visible-session", source="cli")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-crash-window",
+        "session_key": "visible-session",
+    }
+    # Simulate the first process committing the row and dying before its ack.
+    db.append_async_delegation_completion(
+        "visible-session", "completion payload", {"delegation_id": "deleg-crash-window"},
+    )
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._session_db = db
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = db.get_messages_as_conversation("visible-session")
+    delivered = []
+    visible = []
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, "completion payload")]
+
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    # This token represents the stale-claim reclaim after restart.
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: "stale-claim")
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda *_args: delivered.append(_args),
+    )
+    monkeypatch.setattr("cli._cli_visible_print", visible.append)
+
+    cli._drain_process_notifications("cli-idle")
+
+    rows = db.get_messages("visible-session")
+    assert len(rows) == 1
+    assert sum(
+        message.get("display_metadata", {}).get("delegation_id") == "deleg-crash-window"
+        for message in cli.conversation_history
+    ) == 1
+    assert cli._pending_input.empty()
+    assert visible == ["completion payload"]
+    assert delivered == [(event, "stale-claim")]
+
+
+def test_cli_releases_claim_when_durable_delivery_fails(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = []
+    event = {"type": "async_delegation", "delegation_id": "deleg", "session_key": "visible-session"}
+    released = []
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, "completion payload")]
+
+    class FailingDb:
+        def append_message(self, *_args, **_kwargs):
+            raise AssertionError("legacy append must not run")
+
+        def append_async_delegation_completion(self, *_args):
+            raise OSError("database busy")
+
+    cli.__dict__["_session_db"] = FailingDb()
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: "claim")
+    monkeypatch.setattr("tools.async_delegation.release_event_delivery", lambda *args: released.append(args))
+    acknowledged = []
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda *args: acknowledged.append(args),
+    )
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert released == [(event, "claim")]
+    assert acknowledged == []
+    assert cli.conversation_history == []
     assert cli._pending_input.empty()
 
 

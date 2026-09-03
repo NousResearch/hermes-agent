@@ -12839,6 +12839,63 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
         )
 
+    def append_async_delegation_completion(
+        self,
+        session_id: str,
+        content: str,
+        display_metadata: Dict[str, Any],
+    ) -> tuple[int, bool]:
+        """Idempotently append one async-delegation completion display row.
+
+        The durable delegation ledger can replay after a process dies between
+        transcript commit and delivery acknowledgement.  The delegation id is
+        therefore the delivery identity, rather than the formatted completion
+        text.  The lookup and insert share a write transaction so competing
+        CLI, TUI, and gateway consumers cannot create duplicate rows.
+
+        Returns ``(message_id, inserted)``.  A false ``inserted`` result names
+        the existing durable row for callers rebuilding their live history.
+        """
+        metadata = dict(display_metadata or {})
+        delegation_id = str(metadata.get("delegation_id") or "")
+        if not delegation_id:
+            raise ValueError("async delegation completion requires delegation_id metadata")
+        metadata["delegation_id"] = delegation_id
+        metadata_json = self._encode_display_metadata(metadata)
+        stored_content = self._encode_content(content)
+        message_timestamp = time.time()
+
+        def _do(conn):
+            self._check_transcript_write_guards(conn, session_id, None)
+            existing = conn.execute(
+                """SELECT id FROM messages
+                   WHERE session_id = ? AND active = 1
+                     AND display_kind = 'async_delegation_complete'
+                     AND CASE WHEN json_valid(display_metadata)
+                              THEN json_extract(display_metadata, '$.delegation_id')
+                         END = ?
+                   ORDER BY id LIMIT 1""",
+                (session_id, delegation_id),
+            ).fetchone()
+            if existing is not None:
+                return int(existing[0]), False
+            cursor = conn.execute(
+                """INSERT INTO messages (session_id, role, content, timestamp, active,
+                   display_kind, display_metadata)
+                   VALUES (?, 'user', ?, ?, 1, 'async_delegation_complete', ?)""",
+                (session_id, stored_content, message_timestamp, metadata_json),
+            )
+            message_id = int(cursor.lastrowid)
+            conn.execute(
+                "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                (session_id,),
+            )
+            return message_id, True
+
+        return self._execute_write(
+            _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
+        )
+
     def append_messages_batch(
         self,
         session_id: str,

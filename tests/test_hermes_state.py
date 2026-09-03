@@ -5192,6 +5192,49 @@ class TestDisplayMetadataPersistence:
         assert conv[0]["display_kind"] == "async_delegation_complete"
         assert conv[0]["display_metadata"] == meta
 
+    def test_async_delegation_completion_append_is_idempotent_by_delegation_id(self, db):
+        db.create_session("s1", source="cli")
+        metadata = {"delegation_id": "deleg-1", "task_count": 1}
+
+        first_id, first_inserted = db.append_async_delegation_completion(
+            "s1", "first rendering", metadata,
+        )
+        replay_id, replay_inserted = db.append_async_delegation_completion(
+            "s1", "changed rendering must not define identity", metadata,
+        )
+
+        assert first_inserted is True
+        assert (replay_id, replay_inserted) == (first_id, False)
+        rows = db.get_messages("s1")
+        assert len(rows) == 1
+        assert rows[0]["content"] == "first rendering"
+        assert rows[0]["display_metadata"]["delegation_id"] == "deleg-1"
+
+    def test_async_delegation_completion_append_is_concurrent_exactly_once(self, db):
+        db.create_session("s1", source="cli")
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def append_from_competing_consumer():
+            try:
+                barrier.wait(timeout=2)
+                results.append(db.append_async_delegation_completion(
+                    "s1", "completion", {"delegation_id": "deleg-concurrent"},
+                ))
+            except Exception as exc:
+                errors.append(exc)
+
+        workers = [threading.Thread(target=append_from_competing_consumer) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        assert not errors
+        assert sorted(inserted for _row_id, inserted in results) == [False, True]
+        assert len(db.get_messages("s1")) == 1
+
     def test_replace_messages_preserves_display_metadata(self, db):
         db.create_session("s1", source="cli")
         meta = {"task_count": 3, "delegation_id": "del-2", "duration_seconds": 12.5}

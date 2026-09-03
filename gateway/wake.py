@@ -167,14 +167,25 @@ async def persist_delegation_delivery(
             "persist_delegation_delivery: api_server SessionDB unavailable — "
             f"cannot persist completion for session {session_id}"
         )
-    await asyncio.to_thread(
-        db.append_message,
-        session_id,
-        "user",
-        content=text,
-        display_kind="async_delegation_complete",
-        display_metadata=_delegation_display_metadata(evt or {}),
-    )
+    metadata = _delegation_display_metadata(evt or {})
+    if metadata["delegation_id"]:
+        await asyncio.to_thread(
+            db.append_async_delegation_completion,
+            session_id,
+            text,
+            metadata,
+        )
+    else:
+        # ``evt`` is optional for legacy API callers. It has no durable event
+        # identity to deduplicate, so retain the historical display-row path.
+        await asyncio.to_thread(
+            db.append_message,
+            session_id,
+            "user",
+            content=text,
+            display_kind="async_delegation_complete",
+            display_metadata=metadata,
+        )
     logger.info(
         "async delegation completion persisted as delivery row for "
         "api_server session %s (no wake turn)",

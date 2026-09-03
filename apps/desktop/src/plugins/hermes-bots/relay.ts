@@ -520,9 +520,24 @@ async function syncRelayRosters() {
           // roster never drops a live machine's agents — absence from a
           // fresh roster means offline to the gateway-side fail-fast.
           const cached = relayAgentsCache.get(connection.id) || []
+          const unionRows = unionByConnection.get(connection.id) || []
+          const declaredProfile = String(connection.route.targetProfile || connection.route.profile || 'default')
           agentsByConnection.set(
             connection.id,
-            cached.length > 0 ? cached : unionByConnection.get(connection.id) || []
+            cached.length > 0
+              ? cached
+              : unionRows.length > 0
+                ? unionRows
+                : [
+                    {
+                      profile: declaredProfile,
+                      handle: botHandle(declaredProfile, { name: declaredProfile }),
+                      connection_id: connection.id,
+                      connection_label: connection.id,
+                      title: '',
+                      description: ''
+                    }
+                  ]
           )
         } else {
           relayAgentsCache.set(connection.id, agents)

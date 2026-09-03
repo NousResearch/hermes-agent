@@ -405,19 +405,7 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
       { id: 'm5', kind: 'ssh' }
     ])
     hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
-    hostMock.agents = vi.fn(async () => ({
-      agents: [
-        {
-          connectionId: 'm5',
-          connectionKind: 'ssh',
-          connectionLabel: 'M5',
-          profile: 'default',
-          targetProfile: 'default',
-          handle: 'hermes-m5'
-        }
-      ],
-      sources: []
-    }))
+    hostMock.agents = vi.fn(async () => ({ agents: [], sources: [] }))
 
     const calls = respondWith(call => {
       if (call.method === 'profiles.list' && call.connectionId === 'm5') {

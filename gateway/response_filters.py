@@ -7,6 +7,7 @@ conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -145,3 +146,65 @@ def is_partial_silence_marker(text: Any) -> bool:
         if candidate and any(marker.startswith(candidate) for marker in LIVE_GATEWAY_SILENT_MARKERS):
             return True
     return False
+
+
+# ── DSML (DeepSeek markup language) control-tag leakage guard ────────────────
+# Real DeepSeek/oMLX tool-call markers use the U+FF5C bar character:
+#   <｜DSML｜tool_calls>, <｜DSML｜invoke …>, <｜DSML｜parameter …>
+# and their closers (</｜DSML｜…>). They are literal UTF-8 markers (NOT special
+# tokens), so skip_special_tokens / clean_special_tokens never remove them;
+# only a successful parse_tool_calls() strips them. If the tool-call envelope
+# is truncated (max_tokens cut-off mid-serialization), the server's content
+# recovery emits the withheld bytes as visible text and the tags leak to the
+# chat surface.
+#
+# This guard must be applied at EVERY chat-delivery chokepoint — not just the
+# final assembled response but also the STREAMING path (GatewayStreamConsumer
+# progressive edits), which previously leaked `</invoke>`/`</tool_calls>`
+# before the final-response sanitizer could run. See DSML-leakage fix
+# (2026-08-04, 2026-08-05). Marker literals from omlx
+# patches/deepseek_v4/tool_parser_v4.py.
+_DSML_MARKER = "\uFF5C" + "DSML" + "\uFF5C"  # ｜DSML｜
+
+# Matches a full DSML tag (opening or closing), e.g. <｜DSML｜invoke name="f">,
+# </｜DSML｜invoke>, <｜DSML｜parameter name="x">, </｜DSML｜tool_calls>.
+_DSML_TAG_RE = re.compile(
+    re.escape("</" + _DSML_MARKER) + r"[^>]*>?|" + re.escape("<" + _DSML_MARKER) + r"[^>]*>?"
+)
+
+# Matches a COMPLETE, balanced tool-call envelope — an opening <｜DSML｜tool_calls>
+# through its matching </｜DSML｜tool_calls>, including every nested invoke/
+# parameter tag and the serialized argument JSON in between. Everything inside
+# is model-internal tool-call serialization, never user-facing prose, so the
+# whole block is dropped. Non-greedy across the inner tags.
+_DSML_TOOL_CALLS_ENVELOPE_RE = re.compile(
+    re.escape("<" + _DSML_MARKER + "tool_calls>")
+    + r".*?"
+    + re.escape("</" + _DSML_MARKER + "tool_calls>"),
+    re.DOTALL,
+)
+
+
+def sanitize_dsml_markers(text: str) -> str:
+    """Strip DSML control-tag leakage from model text before chat delivery.
+
+    Removes every <｜DSML｜…> tag (opening and closing) and drops the entire
+    contents of any balanced <｜DSML｜tool_calls>…</｜DSML｜tool_calls> envelope
+    (its inner invoke/parameter tags AND the serialized argument JSON — none
+    of that is user-facing prose). If an orphaned <｜DSML｜tool_calls> opener is
+    present with no matching closer, drops everything from that opener to the
+    end of the string (the stream was cut off mid-envelope — the trailing
+    content is a partial tool call, not user-facing prose).
+    """
+    if not text:
+        return text
+    # Drop complete balanced envelopes first (tags + inner content).
+    text = _DSML_TOOL_CALLS_ENVELOPE_RE.sub("", text)
+    # Drop any orphaned opener with no closer, through end-of-string.
+    open_tag = "<" + _DSML_MARKER + "tool_calls>"
+    close_tag = "</" + _DSML_MARKER + "tool_calls>"
+    idx = text.find(open_tag)
+    if idx != -1 and close_tag not in text[idx:]:
+        text = text[:idx]
+    # Strip any remaining standalone tags (a lone invoke/parameter leak).
+    return _DSML_TAG_RE.sub("", text)

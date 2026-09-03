@@ -1246,6 +1246,7 @@ def _execute_remote(
     exec_start = time.monotonic()
     stop_event = threading.Event()
     rpc_thread = None
+    _scrub_note = ""
 
     try:
         # Verify Python is available on the remote
@@ -1338,6 +1339,14 @@ def _execute_remote(
         if tz:
             env_prefix += f" TZ={shlex.quote(tz)}"
 
+        # Remote backends run via env.execute on ssh/docker/etc. We do not ship
+        # Hermes gateway provider keys as shell env on the remote command, but
+        # we also do not model the remote process environment end-to-end (SSH
+        # remote bash keeps host env). Only emit credential_scrub_note from the
+        # local execute_code path where ``_scrub_child_env`` is the actual child
+        # env. Keep _scrub_note empty here.
+        _scrub_note = ""
+
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
@@ -1409,6 +1418,11 @@ def _execute_remote(
         "duration_seconds": duration,
     }
     result.update(stdout_metadata)
+    if _scrub_note:
+        # Surface as a dedicated field only. Never mutate ``output``: it must
+        # stay byte-for-byte equal to the child's stdout so callers can parse
+        # it (e.g. JSON dumps) without the DX note corrupting the payload.
+        result["credential_scrub_note"] = _scrub_note
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1774,6 +1788,20 @@ def execute_code(
             tmpdir=tmpdir,
             child_python=_child_python,
         )
+        try:
+            from tools.env_passthrough import (
+                format_scrubbed_provider_env_note,
+                list_scrubbed_provider_credentials,
+            )
+            _scrub_note = format_scrubbed_provider_env_note(
+                list_scrubbed_provider_credentials(os.environ, child_env)
+            )
+        except Exception:
+            logger.debug(
+                "Failed to compute credential scrub note (local path)",
+                exc_info=True,
+            )
+            _scrub_note = ""
 
         proc = subprocess.Popen(
             [_child_python, _script_path],
@@ -1940,6 +1968,10 @@ def execute_code(
             "duration_seconds": duration,
         }
         result.update(stdout_metadata)
+        if _scrub_note:
+            # Dedicated field only — do not append to ``output`` (see remote
+            # path above): callers parse ``output`` as the child's raw stdout.
+            result["credential_scrub_note"] = _scrub_note
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."

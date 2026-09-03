@@ -2770,6 +2770,106 @@ class TestRegisterMcpServers:
         _servers.pop("srv_a", None)
         _servers.pop("srv_b", None)
 
+    def test_skips_servers_disabled_in_config_yaml(self, monkeypatch, tmp_path):
+        """config.yaml ``mcp_servers.<name>.enabled: false`` is a hard override
+        for explicit registration calls carrying client-supplied configs (ACP
+        session ``mcpServers``, #71948)."""
+        from tools.mcp_tool import register_mcp_servers, _servers
+
+        (tmp_path / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  node_repl:\n"
+            "    command: /bin/false\n"
+            "    enabled: false\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        connect_calls = []
+
+        async def fake_register(name, cfg):
+            connect_calls.append(name)
+            server = _make_mock_server(name)
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            # ACP-style payload: no ``enabled`` key in the passed config.
+            result = register_mcp_servers({"node_repl": {"command": "/bin/false"}})
+
+        assert connect_calls == [], (
+            "Server disabled in config.yaml must not be spawned, even when "
+            "registration is requested with a client-supplied config"
+        )
+        assert "node_repl" not in _servers
+        assert result == []
+
+    def test_config_enabled_false_only_blocks_that_name(self, monkeypatch, tmp_path):
+        """A disabled name is skipped while other servers in the same
+        registration batch still connect."""
+        from tools.mcp_tool import register_mcp_servers, _servers
+
+        (tmp_path / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  node_repl:\n"
+            "    command: /bin/false\n"
+            "    enabled: false\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        connect_calls = []
+
+        async def fake_register(name, cfg):
+            connect_calls.append(name)
+            server = _make_mock_server(name)
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            result = register_mcp_servers({
+                "node_repl": {"command": "/bin/false"},
+                "ok-server": {"command": "npx", "args": ["test"]},
+            })
+
+        assert connect_calls == ["ok-server"]
+        assert "node_repl" not in _servers
+        assert "ok-server" in _servers
+        _servers.pop("ok-server", None)
+
+    def test_safe_mode_refuses_dynamic_registration(self, monkeypatch, tmp_path):
+        """HERMES_SAFE_MODE refuses client-supplied MCP servers outright —
+        the config lookup is empty in safe mode, so without this guard an ACP
+        injection would bypass the enabled:false override (#71948)."""
+        from tools.mcp_tool import register_mcp_servers, _servers
+
+        # Safe mode with NO config.yaml at all — the worst case for the
+        # config-priority lookup.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+        connect_calls = []
+
+        async def fake_register(name, cfg):
+            connect_calls.append(name)
+            server = _make_mock_server(name)
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            result = register_mcp_servers({
+                "node_repl": {"command": "/bin/false"},
+                "ok-server": {"command": "npx", "args": ["test"]},
+            })
+
+        assert connect_calls == [], "safe mode must refuse dynamic servers"
+        assert result == []
+        assert not _servers
+
 # ---------------------------------------------------------------------------
 # Tests for parallel tool call support (port from openai/codex#17667)
 # ---------------------------------------------------------------------------

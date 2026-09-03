@@ -116,6 +116,32 @@ class TestSetupLogging:
         content = agent_log.read_text()
         assert "test message for agent.log" in content
 
+    def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
+        """Desktop multiplex cron records are written to their owning profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-routing-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "profile-routed cron record" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+        assert "profile-routed cron record" not in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text()
+
 
 
 
@@ -676,5 +702,4 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging.rotating_file_handlers()
         )
-
 

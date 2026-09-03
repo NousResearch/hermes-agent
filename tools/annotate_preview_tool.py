@@ -89,7 +89,7 @@ def annotate_preview_tool(
 ANNOTATE_PREVIEW_SCHEMA = {
     "name": "annotate_preview",
     "description": (
-        "Leave a LASTING mark on the preview-pane page (drive_preview's own "
+        "Highlight elements on the preview-pane page, lastingly (drive_preview's own "
         "marks fade; annotations stay until removed) — point at findings, "
         "flag what you're about to change, keep your place. Use the refs "
         "from drive_preview action='elements'. add: outline one element "

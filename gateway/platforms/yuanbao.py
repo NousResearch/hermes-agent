@@ -56,9 +56,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
-    cache_video_from_bytes,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms.helpers import MessageDeduplicator
@@ -2522,7 +2522,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         if kind == "image":
             ext = cls._guess_image_ext_from_url(fetch_url)
             try:
-                local_path = cache_image_from_bytes(file_bytes, ext=ext)
+                local_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
             except ValueError as exc:
                 logger.warning(
                     "[%s] inbound image cache rejected: %s err=%s",
@@ -2537,7 +2537,7 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         if kind == "video":
             # Yuanbao video resources carry no reliable extension; default to mp4.
-            local_path = cache_video_from_bytes(file_bytes)
+            local_path = await cache_video_from_bytes_async(file_bytes)
             mime = guess_mime_type(local_path) or (
                 content_type if content_type.startswith("video/") else "video/mp4"
             )
@@ -2549,7 +2549,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             parsed = urllib.parse.urlparse(fetch_url)
             file_name = os.path.basename(parsed.path) or "file"
         try:
-            local_path = cache_document_from_bytes(file_bytes, file_name)
+            local_path = await cache_document_from_bytes_async(file_bytes, file_name)
         except Exception as exc:
             logger.warning(
                 "[%s] inbound file cache failed: %s err=%s",

@@ -587,6 +587,33 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
 
+    def test_oversized_root_skips_launchctl_prescan_and_fails_closed(
+        self, monkeypatch
+    ):
+        """#78398: an over-budget root must never reach shlex — not even via
+        the launchctl pre-scan that runs before the full guard."""
+        import cron.lifecycle_guard as lifecycle_guard
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 8, raising=False
+        )
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 8, raising=False
+        )
+
+        def explode_if_tokenized(*args, **kwargs):
+            raise AssertionError("over-budget root reached shlex")
+
+        monkeypatch.setattr(lifecycle_guard.shlex, "shlex", explode_if_tokenized)
+
+        result = json.loads(tt.terminal_tool(command="x" * 9))
+
+        assert result["exit_code"] == 1
+        assert "command or referenced script" in result["error"]
+        assert "KeepAlive" not in result["error"]
+
     @pytest.mark.parametrize("command", [
         # Neutral, non-hermes label: label-independent detection is the point
         # (#62891 second reproduction used `ai.hermes.svc-reload-tmp`).

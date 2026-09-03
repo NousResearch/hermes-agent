@@ -31,29 +31,44 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------
-# Bearer auth + peer identity
-# --------------------------------------------------------------------------
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
 
-def get_bearer_token() -> str:
-    """Return the configured shared inbound bearer token (empty if none)."""
-    return os.getenv("A2A_BEARER_TOKEN", "").strip()
-
-
-def get_peer_tokens() -> dict[str, str]:
-    """Parse A2A_PEER_TOKENS ("alice:tok1,bob:tok2") into {token: peer_name}.
-
-    Per-peer tokens give each remote agent its own credential, so the identity
-    used for rate limiting, trust, and audit is authenticated — not whatever
-    the request body claims.
+    Same discriminator as the Buzz/SimpleX/Raft adapters (#98738): secret
+    scope installed + multiplex active. The DEFAULT profile under
+    multiplexing (and every single-profile process) runs unscoped and keeps
+    its legacy ``os.environ`` precedence.
     """
-    raw = os.getenv("A2A_PEER_TOKENS", "").strip()
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
+def _startup_env(name: str) -> str:
+    """Read one A2A setting from the active profile's scope, else the env.
+
+    Inside a secondary profile's scope the scope is authoritative: a miss
+    yields "" and never falls through to ``os.environ`` (which holds the
+    default profile's tokens in a multiplexer).
+    """
+    if _profile_scoped():
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name) or "").strip()
+    return os.getenv(name, "").strip()
+
+
+def _parse_peer_tokens(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for pair in raw.split(","):
         pair = pair.strip()
@@ -64,6 +79,115 @@ def get_peer_tokens() -> dict[str, str]:
         if name and token:
             out[token] = name
     return out
+
+
+def _configured_trusted_peers() -> frozenset[str]:
+    raw = _startup_env("A2A_TRUSTED_PEERS")
+    if raw:
+        return frozenset(p.strip() for p in raw.split(",") if p.strip())
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        peers = (cfg.get("a2a") or {}).get("trusted_peers", [])
+        if isinstance(peers, list):
+            return frozenset(str(peer).strip() for peer in peers if str(peer).strip())
+    except Exception:
+        pass
+    return frozenset()
+
+
+@dataclass(frozen=True)
+class A2ASecurityContext:
+    """Immutable, profile-scoped security settings captured at adapter startup.
+
+    ``ThreadingHTTPServer`` handles requests on fresh threads that do not inherit
+    the gateway's profile ContextVars. Keeping the resolved settings on the
+    adapter prevents those threads from falling back to another profile's
+    process-global environment.
+    """
+
+    bearer_token: str
+    peer_tokens: tuple[tuple[str, str], ...]
+    trusted_peers: frozenset[str]
+    allow_all_users: bool
+    requested_host: str
+    push_secret: str
+
+    @classmethod
+    def capture(cls) -> "A2ASecurityContext":
+        bearer_token = _startup_env("A2A_BEARER_TOKEN")
+        return cls(
+            bearer_token=bearer_token,
+            peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
+            trusted_peers=_configured_trusted_peers(),
+            allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower()
+            in {"1", "true", "yes"},
+            requested_host=_startup_env("A2A_HOST") or "127.0.0.1",
+            push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token,
+        )
+
+    def localhost_only(self) -> bool:
+        return not (self.bearer_token or self.peer_tokens)
+
+    def resolve_bind_host(self) -> str:
+        loopback = {"127.0.0.1", "localhost", "::1"}
+        if self.requested_host in loopback:
+            return self.requested_host
+        if self.localhost_only():
+            logger.warning(
+                "A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or "
+                "A2A_PEER_TOKENS set; binding to 127.0.0.1. Configure a token "
+                "to expose A2A remotely.",
+                self.requested_host,
+            )
+            return "127.0.0.1"
+        return self.requested_host
+
+    def authenticate(self, auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
+        if self.localhost_only():
+            return f"ip:{client_ip or 'local'}"
+        presented = _parse_bearer(auth_header)
+        if presented is None:
+            return None
+        for token, name in self.peer_tokens:
+            if hmac.compare_digest(presented, token):
+                return name
+        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+            return f"ip:{client_ip or 'unknown'}"
+        return None
+
+    def is_trusted_peer(self, identity: str) -> bool:
+        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
+            return True
+        return identity in self.trusted_peers
+
+    def sign_push_payload(self, payload: dict) -> str:
+        if not self.push_secret:
+            return ""
+        body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hmac.new(
+            self.push_secret.encode("utf-8"), body, hashlib.sha256
+        ).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# Bearer auth + peer identity
+# --------------------------------------------------------------------------
+
+def get_bearer_token() -> str:
+    """Return the configured shared inbound bearer token (empty if none)."""
+    return _startup_env("A2A_BEARER_TOKEN")
+
+
+def get_peer_tokens() -> dict[str, str]:
+    """Parse A2A_PEER_TOKENS ("alice:tok1,bob:tok2") into {token: peer_name}.
+
+    Per-peer tokens give each remote agent its own credential, so the identity
+    used for rate limiting, trust, and audit is authenticated — not whatever
+    the request body claims.
+    """
+    return _parse_peer_tokens(_startup_env("A2A_PEER_TOKENS"))
 
 
 def _parse_bearer(auth_header: Optional[str]) -> Optional[str]:
@@ -85,24 +209,12 @@ def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[st
 
     Comparisons are constant-time (hmac.compare_digest).
     """
-    peer_tokens = get_peer_tokens()
-    shared = get_bearer_token()
-    if not peer_tokens and not shared:
-        return f"ip:{client_ip or 'local'}"
-    presented = _parse_bearer(auth_header)
-    if presented is None:
-        return None
-    for token, name in peer_tokens.items():
-        if hmac.compare_digest(presented, token):
-            return name
-    if shared and hmac.compare_digest(presented, shared):
-        return f"ip:{client_ip or 'unknown'}"
-    return None
+    return A2ASecurityContext.capture().authenticate(auth_header, client_ip)
 
 
 def localhost_only() -> bool:
     """True when we must refuse non-loopback binds (no token of any kind set)."""
-    return not (get_bearer_token() or get_peer_tokens())
+    return A2ASecurityContext.capture().localhost_only()
 
 
 def resolve_bind_host() -> str:
@@ -112,18 +224,7 @@ def resolve_bind_host() -> str:
     per-peer) AND explicitly asked for a wider host. A token alone does not
     widen the bind — opting into remote exposure must be deliberate.
     """
-    requested = os.getenv("A2A_HOST", "").strip() or "127.0.0.1"
-    loopback = {"127.0.0.1", "localhost", "::1"}
-    if requested in loopback:
-        return requested
-    if localhost_only():
-        logger.warning(
-            "A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or A2A_PEER_TOKENS "
-            "set; binding to 127.0.0.1. Configure a token to expose A2A remotely.",
-            requested,
-        )
-        return "127.0.0.1"
-    return requested
+    return A2ASecurityContext.capture().resolve_bind_host()
 
 
 # --------------------------------------------------------------------------
@@ -138,18 +239,7 @@ def get_trusted_peers() -> set[str]:
     names from ``authenticate()`` — peer-token names, or ``ip:<addr>`` for
     shared-token callers.
     """
-    env_peers = os.getenv("A2A_TRUSTED_PEERS", "").strip()
-    if env_peers:
-        return {p.strip() for p in env_peers.split(",") if p.strip()}
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config() or {}
-        peers_list = (cfg.get("a2a") or {}).get("trusted_peers", [])
-        if isinstance(peers_list, list):
-            return {str(p).strip() for p in peers_list if p}
-    except Exception:
-        pass
-    return set()
+    return set(_configured_trusted_peers())
 
 
 def is_trusted_peer(identity: str) -> bool:
@@ -160,14 +250,7 @@ def is_trusted_peer(identity: str) -> bool:
     otherwise any *authenticated* identity is allowed (authentication is the
     primary gate — the allow-list is an optional restriction on top).
     """
-    if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
-        return True
-    if localhost_only():
-        return True
-    trusted = get_trusted_peers()
-    if not trusted:
-        return True
-    return identity in trusted
+    return A2ASecurityContext.capture().is_trusted_peer(identity)
 
 
 # --------------------------------------------------------------------------
@@ -259,10 +342,7 @@ def get_push_secret() -> str:
     Falls back to the bearer token if no dedicated push secret is set.
     If neither is configured, push notifications are unsigned (localhost-only mode).
     """
-    secret = os.getenv("A2A_PUSH_SECRET", "").strip()
-    if secret:
-        return secret
-    return get_bearer_token()
+    return A2ASecurityContext.capture().push_secret
 
 
 def sign_push_payload(payload: dict) -> str:
@@ -304,12 +384,14 @@ _BLOCKED_PREFIXES = (
 )
 
 
-def is_safe_callback_url(url: str) -> bool:
+def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
     """Check if a push notification callback URL is safe from SSRF.
 
     Blocks internal/private/loopback/metadata addresses.
     Only allows http:// and https:// schemes.
     """
+    if localhost_mode is None:
+        localhost_mode = localhost_only()
     if not url or not isinstance(url, str):
         return False
     try:
@@ -324,16 +406,16 @@ def is_safe_callback_url(url: str) -> bool:
     hostname_lower = hostname.lower()
     if hostname_lower == "localhost":
         # Loopback callbacks only make sense for local testing.
-        return localhost_only()
+        return localhost_mode
     for prefix in _BLOCKED_PREFIXES:
         if hostname_lower.startswith(prefix.lower()):
-            if localhost_only() and prefix in ("127.", "::1"):
+            if localhost_mode and prefix in ("127.", "::1"):
                 return True
             return False
     try:
         ip = ipaddress.ip_address(hostname)
         if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            if localhost_only() and ip.is_loopback:
+            if localhost_mode and ip.is_loopback:
                 return True
             return False
     except ValueError:

@@ -133,7 +133,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
             return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability
 
         def _refresh_session_agent() -> None:
             """Rebuild THIS session's cached tool snapshot from the live
@@ -184,6 +184,7 @@ def _(rid, params: dict) -> dict:
             loaded = _compute_mcp_rev()
             for _ in range(_MCP_RELOAD_MAX_PASSES):
                 shutdown_mcp_servers()
+                reprobe_tool_availability()
                 discover_mcp_tools()
                 after = _compute_mcp_rev()
                 if after == loaded:
@@ -622,6 +623,14 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "plan":
+        # Plan mode: build the plan-mode prompt and submit it as a normal
+        # agent turn (same pattern as /learn). The live agent inspects the
+        # workspace read-only and saves the markdown plan under
+        # .hermes/plans/ via write_file. Works on any backend.
+        from agent.plan_prompt import build_plan_prompt
+
+        return _ok(rid, {"type": "send", "message": build_plan_prompt(arg)})
     if name == "init":
         # Generate-or-update AGENTS.md: build the guidance-laden prompt and
         # submit it as a normal agent turn (same pattern as /learn). The live
@@ -1049,12 +1058,31 @@ def _(rid, params: dict) -> dict:
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            _late_session = session
+
+            def _on_late_ack(late: dict, _sid=sid) -> None:
+                _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="slash.compress")
+
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compute_host_compress_wait_seconds(),
+                    on_late_ack=_on_late_ack,
+                )
+            except queue.Empty:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "status": "pending",
+                        "output": (
+                            "compression still running in the background; "
+                            "the transcript will refresh when it finishes"
+                        ),
+                    },
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")
@@ -2314,7 +2342,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Begin a session-backed OAuth flow for an MCP server in a profile.
 
-    Params: optional ``profile``, ``name`` (required). Result:
+    Params: optional ``profile``, ``name`` (required), optional
+    ``client_redirect_uri``. Result:
     ``{ok: true, session_id, auth_url, flow: "pkce"}``.
 
     The client (desktop) opens ``auth_url`` in the native browser
@@ -2326,12 +2355,21 @@ def _(rid, params: dict) -> dict:
     (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
     listener captures the browser redirect — no FastAPI request object needed.
 
+    ``client_redirect_uri`` (remote backends): a loopback URL the CLIENT hosts
+    on its own machine (``http://127.0.0.1:<port>/callback``). When supplied,
+    the gateway binds NO listener — the provider redirects to the client's
+    listener and the client relays the code via ``mcp.servers.oauth.callback``.
+    This is the only flow that works when the desktop app and the gateway run
+    on different machines (SSH/Tailscale remote backend), where the gateway's
+    own 127.0.0.1 listener is unreachable from the user's browser.
+
     Runs on the RPC thread pool (see _LONG_HANDLERS): start blocks briefly for
     the authorization URL to be published.
     """
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4063, "name required")
+    client_redirect_uri = str(params.get("client_redirect_uri") or "").strip() or None
     token, err = _mcp_resolve_profile(rid, params)
     if err:
         return err
@@ -2355,7 +2393,9 @@ def _(rid, params: dict) -> dict:
         cfg["auth"] = "oauth"
 
         hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
-        result = mcp_oauth_sessions.start_flow(hermes_home, name, cfg)
+        result = mcp_oauth_sessions.start_flow(
+            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri
+        )
         return _ok(
             rid,
             {
@@ -2365,6 +2405,8 @@ def _(rid, params: dict) -> dict:
                 "flow": result["flow"],
             },
         )
+    except ValueError as e:
+        return _err(rid, 4001, str(e))
     except Exception as e:
         return _err(rid, 5024, str(e))
     finally:
@@ -2398,6 +2440,44 @@ def _(rid, params: dict) -> dict:
 
         result = mcp_oauth_sessions.poll_flow(session_id, name)
         return _ok(rid, {"ok": True, **result})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.oauth.callback")
+def _(rid, params: dict) -> dict:
+    """Relay a client-captured OAuth redirect into a running MCP OAuth flow.
+
+    Remote-backend companion to ``mcp.servers.oauth.start`` with
+    ``client_redirect_uri``: the desktop app's local loopback listener caught
+    the provider redirect on the user's machine and forwards its query params
+    here. Params: optional ``profile``, ``name`` (required), ``session_id``
+    (required), ``code``, ``state``, ``error``. Result: ``{ok: true}`` once the
+    callback is accepted (state verified inside the flow bridge), or
+    ``{ok: false, error_message}`` on mismatch/expiry.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        return _err(rid, 4063, "session_id required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from tui_gateway import mcp_oauth_sessions
+
+        result = mcp_oauth_sessions.deliver_callback_flow(
+            session_id,
+            name,
+            code=str(params.get("code") or "") or None,
+            state=str(params.get("state") or "") or None,
+            error=str(params.get("error") or "") or None,
+        )
+        return _ok(rid, result)
     except Exception as e:
         return _err(rid, 5024, str(e))
     finally:

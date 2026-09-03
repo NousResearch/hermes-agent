@@ -102,6 +102,34 @@ try:
 except Exception:
     pass
 
+# Startup-liveness watchdog (OOF-298): for gateway runs, arm BEFORE the heavy
+# module-level import graph below — an import-time deadlock (native-extension
+# init, contended import lock) is exactly the "wedged before the event loop,
+# no logs, live PID" class this watchdog exists for. ``hermes_startup_watchdog``
+# is stdlib-only, so importing it here cannot itself wedge on application
+# code. The match requires the ADJACENT token pair ``gateway run`` (the
+# subcommand shape, wherever global flags like ``-p <profile>`` put it) so
+# unrelated commands that merely mention both words in different arguments
+# never arm a 300s hard-exit timer, while flag-carrying invocations still
+# do — under-arming recreates OOF-298. Foreground `hermes gateway run`
+# still arms — a pre-loop wedge is just as dead without a supervisor, and
+# the stack dump plus exit beats a silent hang; GatewayRunner disarms once
+# the event loop is confirmed live.
+def _argv_is_gateway_run(argv: list) -> bool:
+    return any(
+        a == "gateway" and b == "run" for a, b in zip(argv, argv[1:])
+    )
+
+
+if _argv_is_gateway_run(sys.argv[1:]):
+    try:
+        from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
+
+        _arm_sw()
+        del _arm_sw
+    except Exception:
+        pass
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
@@ -434,6 +462,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time as _time_mod
 from pathlib import Path
 from typing import Optional
 
@@ -471,7 +500,7 @@ from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
-from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
@@ -633,17 +662,55 @@ def _apply_profile_override() -> None:
 
     # 2. If no flag, check active_profile in the hermes root.
     #
-    # EXCEPTION: a supervised s6 gateway child (exported by the container
-    # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
-    # active_profile. Each supervised slot has a fixed profile identity: named
-    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
-    # reserved ``gateway-default`` slot runs bare ``hermes gateway run`` to mean
-    # "the root HERMES_HOME profile". If the reserved default child read
-    # active_profile here, switching the active profile (e.g. via the dashboard)
-    # would silently redirect the default gateway into that profile — yielding a
-    # duplicate gateway for the active profile and no real default gateway. See
-    # the "Docker & Profiles & Dashboard" report.
-    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+    # EXCEPTION: a supervisor-launched gateway child must NOT follow the
+    # sticky active_profile. Each supervised slot has a fixed profile
+    # identity: named slots pass ``-p <name>`` explicitly (handled in step 1
+    # above) or pin ``HERMES_HOME`` to the profile directory (step 1.5), and
+    # a bare invocation means "the root HERMES_HOME profile". If a supervised
+    # default-profile child read active_profile here, switching the active
+    # profile (e.g. via the dashboard or ``hermes profile use``) would
+    # silently redirect the default gateway into that profile — the default
+    # gateway then assumes the other profile's identity/credentials (logs
+    # under the other profile's tree, connects with its Telegram bot token)
+    # and double-polls a token already owned by that profile's own gateway.
+    # See issue #74872 and the "Docker & Profiles & Dashboard" report.
+    #
+    # Supervisor markers honored (see gateway/restart.py
+    # ``is_gateway_supervisor_process`` for the sibling detection used by
+    # restart routing):
+    #   - HERMES_SUPERVISED_CHILD: generalized marker exported by the
+    #     generated systemd unit, launchd plist, and Windows Scheduled-Task
+    #     launchers (#74872).
+    #   - HERMES_S6_SUPERVISED_CHILD: legacy s6 container marker (back-compat;
+    #     exported by S6ServiceManager's run-script).
+    #   - INVOCATION_ID: set by systemd for service children only (never in
+    #     interactive shells) — covers already-installed gateway units that
+    #     predate the HERMES_SUPERVISED_CHILD marker. Consulted ONLY for
+    #     gateway commands: INVOCATION_ID is inherited by every descendant of
+    #     a systemd-launched process (self-hosted CI runners, user services
+    #     running unrelated hermes commands), so honoring it globally would
+    #     silently disable the sticky active_profile for those.
+    #   - HERMES_GATEWAY_EXTERNAL_SUPERVISOR: explicit external-supervisor
+    #     opt-in (``hermes gateway run --external-supervisor``).
+    #
+    # XPC_SERVICE_NAME is deliberately NOT consulted here: interactive macOS
+    # terminals set it too, and a false positive would silently break the
+    # sticky active_profile for every interactive command.
+    def _under_gateway_supervisor() -> bool:
+        if os.environ.get("HERMES_SUPERVISED_CHILD"):
+            return True
+        if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+            return True
+        is_gateway_cmd = next(
+            (a for a in argv if not a.startswith("-")), None
+        ) == "gateway"
+        if is_gateway_cmd and os.environ.get("INVOCATION_ID"):
+            return True
+        return os.environ.get(
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+    if profile_name is None and not _under_gateway_supervisor():
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -987,8 +1054,14 @@ def _relative_time(ts) -> str:
     return relative_time(ts)
 
 
-def _has_any_provider_configured() -> bool:
-    """Check if at least one inference provider is usable."""
+def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
+    """Check if at least one inference provider is usable.
+
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
+    secret scope and wants an answer for that profile only — launch-process
+    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
+    make it appear ready. Unscoped callers keep the legacy behavior.
+    """
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
@@ -1031,7 +1104,13 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
-    if any(os.getenv(v) for v in provider_env_vars):
+    if strict_profile_scope:
+        from agent.secret_scope import current_secret_scope
+
+        read_provider_env = (current_secret_scope() or {}).get
+    else:
+        read_provider_env = os.getenv
+    if any(read_provider_env(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys
@@ -1063,7 +1142,10 @@ def _has_any_provider_configured() -> bool:
 
             auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
             active = auth.get("active_provider")
-            if active:
+            active_config = PROVIDER_REGISTRY.get(str(active or "").strip().lower())
+            if active and not (
+                strict_profile_scope and active_config and active_config.auth_type == "api_key"
+            ):
                 status = get_auth_status(active)
                 if status.get("logged_in"):
                     return True
@@ -1082,20 +1164,21 @@ def _has_any_provider_configured() -> bool:
             return True
 
     # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
-    try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
-    except Exception:
-        pass
+    if not strict_profile_scope:
+        try:
+            for provider_id, pconfig in PROVIDER_REGISTRY.items():
+                if pconfig.auth_type != "api_key":
+                    continue
+                status = get_auth_status(provider_id)
+                if status.get("logged_in"):
+                    return True
+        except Exception:
+            pass
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
     # Only count these if Hermes has been explicitly configured — Claude Code
     # being installed doesn't mean the user wants Hermes to use their tokens.
-    if _has_hermes_config:
+    if _has_hermes_config and not strict_profile_scope:
         try:
             from agent.anthropic_adapter import (
                 read_claude_code_credentials,
@@ -3124,9 +3207,10 @@ def _resolve_use_tui(args) -> bool:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = _resolve_use_tui(args)
-
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
+    use_tui = _resolve_use_tui(args)
 
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
@@ -3359,14 +3443,6 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
-    # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
-    # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
-    # import time). Credentials in .env are still loaded — this flag only
-    # ignores behavioral/config settings.
-    if getattr(args, "ignore_user_config", False):
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
     # (rules), memory entries, and any preloaded skills coming from user config.
     # Maps to AIAgent(skip_context_files=True, skip_memory=True).
@@ -3398,9 +3474,6 @@ def cmd_chat(args):
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
         )
-
-    # Import and run the CLI
-    from cli import main as cli_main
 
     # --query-file: read the single query from a file (or stdin via '-') so
     # callers never have to shell-quote message bodies. This is the transport
@@ -3453,10 +3526,23 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
+        from cli import main as cli_main
+
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except ImportError as e:
+        # Mixed-version installs (new cli.py, older hermes_cli.config) crash
+        # here — e.g. missing resolve_turn_limit / split_model_config_default
+        # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
+        # construction already failed. Fast-chat launch also goes through
+        # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
+        from hermes_constants import emit_partial_update_hint
+
+        if emit_partial_update_hint(e):
+            sys.exit(1)
+        raise
 
 
 def cmd_gateway(args):
@@ -5111,10 +5197,13 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_lockfile_changed",
         "_npm_manifest_paths",
         "_npm_manifests_digest",
+        "_ORPHAN_RESCUE_REF_MAX_AGE_DAYS",
+        "_ORPHAN_RESCUE_REFS_TO_KEEP",
         "_orphaned_desktop_backend_pids",
         "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
+        "_prune_orphan_rescue_refs",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
         "_print_parked_branch_kept_notice",
@@ -5147,6 +5236,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_sync_with_upstream_if_needed",
         "_update_node_dependencies",
         "_update_via_zip",
+        "_warn_orphaned_update_autostashes",
         "_upgrade_pip_before_lazy_refresh",
         "_validate_critical_files_syntax",
         "_validate_critical_modules_import",
@@ -6921,7 +7011,15 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
-    release_dir = desktop_dir / "release"
+    return _desktop_packaged_executable_in(desktop_dir / "release")
+
+
+def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
+    """Return the unpacked Electron app executable under *release_dir*.
+
+    *release_dir* is electron-builder's ``directories.output`` — the live
+    ``apps/desktop/release`` or a stage-and-swap staging dir (#86443).
+    """
     if sys.platform == "darwin":
         candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
@@ -6953,6 +7051,91 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── Desktop stage-and-swap pack (#86443) ───────────────────────────────────
+#
+# electron-builder packs IN PLACE: before-pack.mjs wipes ``release/<platform>-
+# unpacked`` (or the mac ``Hermes.app``) and the Electron unpack + asar + rename
+# then rebuild it. Any failure after that wipe — corrupt cached zip, blocked
+# download, missing dep, disk full — leaves the user with NO app, and
+# ``hermes update`` used to report "partially complete" over an empty
+# release/. Fix the class, not the predicate: build into a STAGING output
+# dir next to release/, verify the staged result, and only then swap it over
+# the live tree with renames. On any failure the live app is untouched.
+
+_DESKTOP_STAGING_PREFIX = ".staging-"
+_DESKTOP_PREVIOUS_SUFFIX = ".previous"
+
+
+def _desktop_staging_dir(desktop_dir: Path) -> Path:
+    """Fresh, unique staging output dir: ``apps/desktop/.staging-<pid>-<ts>``.
+
+    A sibling of ``release/`` (same filesystem → the swap is a rename, not a
+    copy) but NOT inside it, so nothing globbing ``release/*-unpacked`` or
+    ``release/mac*`` can mistake the half-built tree for the live app.
+    Leftovers from a killed earlier build are swept first (best-effort).
+    """
+    for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
+
+
+def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
+    """The directory directly under *release_dir* that holds *exe*
+    (``linux-unpacked``, ``win-unpacked``, ``mac-arm64``…) — electron-builder's
+    ``appOutDir``, the unit that gets swapped as a whole."""
+    unpacked = exe
+    while unpacked.parent != release_dir:
+        if unpacked.parent == unpacked:
+            raise ValueError(f"{exe} is not under {release_dir}")
+        unpacked = unpacked.parent
+    return unpacked
+
+
+def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+    """Promote a VERIFIED staged pack over the live ``release/`` app.
+
+    ``release/<unpacked>`` → ``release/<unpacked>.previous``,
+    ``<staging>/<unpacked>`` → ``release/<unpacked>``, then drop ``.previous``.
+    Two renames; the only window with no live app is between them, and a
+    failure there rolls ``.previous`` back. Returns the live executable, or
+    ``None`` (live app untouched or restored) when the swap could not happen.
+    Best-effort cleanup of the staging dir; never raises.
+    """
+    staged_exe = _desktop_packaged_executable_in(staging_dir)
+    if staged_exe is None:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None
+    release_dir = desktop_dir / "release"
+    try:
+        staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
+        live_root = release_dir / staged_root.name
+        previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
+        release_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(previous, ignore_errors=True)
+        moved_aside = False
+        if live_root.exists():
+            os.rename(live_root, previous)
+            moved_aside = True
+        try:
+            os.rename(staged_root, live_root)
+        except OSError:
+            if moved_aside:
+                os.rename(previous, live_root)  # restore; live app back as it was
+            raise
+        if moved_aside:
+            shutil.rmtree(previous, ignore_errors=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        return None
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return live_root / staged_exe.relative_to(staged_root)
+
+
+def _discard_desktop_staging(staging_dir: Path) -> None:
+    shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
@@ -7271,8 +7454,10 @@ def _ensure_desktop_exe_launchable(
 
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
     # zip and the content stamp so the next rebuild is a genuine re-download +
-    # re-stage rather than a replay of the same broken extraction.
-    _purge_electron_build_cache(desktop_dir)
+    # re-stage rather than a replay of the same broken extraction. Only the
+    # exe's OWN output dir is purged (a stage-and-swap staging dir, #86443),
+    # never the live release/ tree that still holds the last working app.
+    _purge_electron_build_cache(desktop_dir, release_dir=packaged_executable.parent.parent)
     try:
         _desktop_stamp_path().unlink()
     except OSError:
@@ -7328,7 +7513,9 @@ def _electron_download_cache_dirs() -> list[Path]:
     return out
 
 
-def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+def _purge_electron_build_cache(
+    desktop_dir: Path, release_dir: Optional[Path] = None
+) -> list[Path]:
     """Clear the cached Electron download + half-written unpacked dir so the
     next ``pack`` re-downloads and re-stages from scratch.
 
@@ -7374,8 +7561,11 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     # Drop the half-written unpacked dir too: an interrupted prior pack leaves
     # a partial tree that poisons the rename even after the zip is fixed.
     # (before-pack.cjs also handles this, but clearing it here makes the retry
-    # robust even if the hook is somehow skipped.)
-    release_dir = desktop_dir / "release"
+    # robust even if the hook is somehow skipped.) ``release_dir`` lets a
+    # stage-and-swap caller point this at its STAGING output so a mid-retry
+    # purge never touches the live app under ``release/`` (#86443).
+    if release_dir is None:
+        release_dir = desktop_dir / "release"
     if release_dir.is_dir():
         for unpacked in release_dir.glob("*-unpacked"):
             try:
@@ -7754,6 +7944,7 @@ def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path,
     *,
     publisher_signing_configured: Optional[bool] = None,
+    release_dir: Optional[Path] = None,
 ) -> bool:
     """Make a locally-built macOS desktop app survive in-place self-update
     without resetting the user's TCC permission grants.
@@ -7785,7 +7976,9 @@ def _desktop_macos_relaunchable_fixup(
         )
     if publisher_signing_configured:
         return True
-    exe = _desktop_packaged_executable(desktop_dir)
+    # ``release_dir`` (stage-and-swap, #86443): sign the STAGED bundle before
+    # it is promoted, so the live app is never touched mid-sign.
+    exe = _desktop_packaged_executable_in(release_dir or (desktop_dir / "release"))
     if exe is None:
         return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
@@ -8098,6 +8291,37 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+def _desktop_linux_userns_sandbox_available() -> bool:
+    """Return True when Chromium's unprivileged user-namespace sandbox works.
+
+    When an unprivileged process can create a user namespace, Chromium uses the
+    namespace sandbox and never consults the setuid ``chrome-sandbox`` helper,
+    so requiring the helper to be root-owned 4755 (and prompting for sudo) is
+    unnecessary. Probe the real capability with ``unshare`` instead of reading
+    distro-specific sysctls: the probe fails closed on hosts where user
+    namespaces are disabled or AppArmor-restricted, which then follow the
+    existing setuid-helper path.
+    """
+    if sys.platform != "linux":
+        return False
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [unshare, "--user", "--map-root-user", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
     """Return True when ``chrome-sandbox`` exists as a regular file."""
     if sys.platform != "linux":
@@ -8136,6 +8360,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
         return True
 
+    if _desktop_linux_userns_sandbox_available():
+        print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
+        return True
+
     sudo = shutil.which("sudo")
     if not sudo:
         print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
@@ -8146,6 +8374,29 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
+    return True
+
+
+def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:
+    """Return True when Chromium should skip the present-but-non-setuid helper.
+
+    A user-owned ``chrome-sandbox`` still makes Chromium abort with
+    ``setuid_sandbox_host`` even when the namespace sandbox works. Passing
+    ``--disable-setuid-sandbox`` keeps the userns sandbox and avoids sudo.
+    Call only after ``_desktop_linux_sandbox_fixup`` succeeded without making
+    the helper root-owned 4755 (the userns path). Does not re-probe userns.
+    """
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(sandbox_lstat.st_mode):
+        return False
+    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return False
     return True
 
 
@@ -8409,7 +8660,16 @@ def cmd_gui(args: argparse.Namespace):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
             npm_build_env = _npm_lifecycle_env(env)
+            # Stage-and-swap (#86443): electron-builder packs IN PLACE and
+            # before-pack.mjs wipes release/<unpacked> first, so a pack that
+            # fails afterwards used to leave the user with NO app. Build into
+            # a fresh staging output dir instead; the live release/ tree is
+            # only replaced — by rename — after the staged result verifies.
+            staging_dir: Optional[Path] = None
+            build_cmd = [npm, "run", build_script]
             if not source_mode:
+                staging_dir = _desktop_staging_dir(desktop_dir)
+                build_cmd += ["--", f"-c.directories.output={staging_dir}"]
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
                 # it ("Access is denied" / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE).
@@ -8418,13 +8678,17 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+
+            def _staged_exe() -> Optional[Path]:
+                return _desktop_packaged_executable_in(staging_dir) if staging_dir else None
+
             build_result = subprocess.run(
-                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
             )
             if (
                 build_result.returncode != 0
                 and not source_mode
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
                 # stdlib zipfile won't catch the common concat-junk case, so purge
@@ -8438,7 +8702,7 @@ def cmd_gui(args: argparse.Namespace):
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
-                    purged = _purge_electron_build_cache(desktop_dir)
+                    purged = _purge_electron_build_cache(desktop_dir, release_dir=staging_dir)
                     restored = _redownload_electron_dist(PROJECT_ROOT, env)
                 if restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
@@ -8448,13 +8712,13 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run(
-                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                        build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
                     )
             if (
                 build_result.returncode != 0
                 and not source_mode
                 and not env.get("ELECTRON_MIRROR")
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
@@ -8465,9 +8729,13 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
+                if staging_dir is not None:
+                    _discard_desktop_staging(staging_dir)
+                    if _desktop_packaged_executable(desktop_dir) is not None:
+                        print("  ↩ The previous desktop app was left untouched and still works.")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
@@ -8475,28 +8743,37 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
-            packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
+                assert staging_dir is not None
+                staged_executable = _staged_exe()
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
-                _desktop_macos_relaunchable_fixup(desktop_dir)
+                # Signs the STAGED bundle so the live app is never half-signed.
+                _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
 
                 # Windows integrity gate (#69179): never declare the rebuild a
                 # success on a Hermes.exe Windows cannot load (truncated PE from
                 # a corrupt cached Electron zip, wrong-arch tree, interrupted
-                # rcedit rewrite). Roll back to the .bak tree preserved by
-                # before-pack.mjs when possible, then fail loudly so the
-                # updater's retry-once rebuilds from a fresh Electron download
-                # instead of silently shipping the broken exe.
+                # rcedit rewrite). Verified on the STAGED exe: a failure here
+                # simply discards the staging dir — the live app was never
+                # touched — and fails loudly so the updater's retry-once
+                # rebuilds from a fresh Electron download.
                 verified_executable, rolled_back = _ensure_desktop_exe_launchable(
-                    desktop_dir, packaged_executable
+                    desktop_dir, staged_executable
                 )
-                if packaged_executable is not None and (
-                    rolled_back or verified_executable is None
-                ):
+                if staged_executable is None or rolled_back or verified_executable is None:
+                    _discard_desktop_staging(staging_dir)
+                    if staged_executable is None:
+                        print(f"✗ Desktop build produced no launchable app in {staging_dir}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
                     sys.exit(1)
-                packaged_executable = verified_executable
+                # Verified: swap the staged tree over the live one (rename).
+                packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+                if packaged_executable is None:
+                    print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
+                    sys.exit(1)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
@@ -8528,7 +8805,10 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        electron_argv = [npm, "exec", "--", "electron", "."]
+        if getattr(args, "local", False):
+            electron_argv.append("--local")
+        launch_result = subprocess.run(electron_argv, cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -8543,8 +8823,12 @@ def cmd_gui(args: argparse.Namespace):
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
+    elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
+        launch_command.append("--disable-setuid-sandbox")
 
     launch_command.extend(config_electron_flags)
+    if getattr(args, "local", False):
+        launch_command.append("--local")
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
@@ -11308,6 +11592,7 @@ def cmd_profile(args):
             profile_exists,
             _read_config_model,
             _check_gateway_running,
+            _served_by_running_multiplexer,
             _count_skills,
             _read_distribution_meta,
             _get_wrapper_dir,
@@ -11321,7 +11606,7 @@ def cmd_profile(args):
             sys.exit(1)
         profile_dir = get_profile_dir(name)
         model, provider = _read_config_model(profile_dir)
-        gw = _check_gateway_running(profile_dir)
+        gw = _check_gateway_running(profile_dir) or _served_by_running_multiplexer(name)
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
         alias_name = find_alias_for_profile(name)
@@ -11400,14 +11685,14 @@ def cmd_profile(args):
             sys.exit(1)
 
     elif action == "export":
-        from hermes_cli.profiles import export_profile
+        from hermes_cli.profiles import export_profile, get_profile_export_path
 
         name = args.profile_name
-        output = args.output or f"{name}.tar.gz"
         try:
+            output = args.output or str(get_profile_export_path(name))
             result_path = export_profile(name, output)
             print(f"✓ Exported '{name}' to {result_path}")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"Error: {e}")
             sys.exit(1)
 
@@ -11974,6 +12259,23 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
+    # config.yaml instead of silently starting on defaults where provider
+    # auto-detection can adopt unnamed .env credentials (issue #81952).
+    # Same policy + escape hatch as _guard_noninteractive_user_config.
+    if _headless_backend:
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config(
+                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
+            )
+        except InvalidUserConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
     if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
         raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
@@ -12230,18 +12532,29 @@ def cmd_dashboard(args):
     # this, a profile's configured MCP servers never connect, so desktop
     # sessions show no MCP tools.  Spawn discovery in the background here so a
     # slow/dead server can't block dashboard startup.
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+    #
+    # Desktop-spawned headless backends start it AFTER the socket binds
+    # instead (start_server's ready path): the thread's first act is the
+    # ~350ms `mcp` SDK import, which holds the GIL against the main thread's
+    # own web_server import and pushes the READY sentinel — and every
+    # renderer paint behind it — back by that much. The Desktop can't issue
+    # an agent turn until its WebSocket is up anyway, and _make_agent's
+    # bounded wait_for_mcp_discovery + the late-binding refresh cover a
+    # server that is still connecting when the first turn lands.
+    _mcp_discovery_after_bind = _headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
+    if not _mcp_discovery_after_bind:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
-        )
-    except Exception:
-        logger.debug(
-            "Background MCP tool discovery failed at dashboard startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at dashboard startup",
+                exc_info=True,
+            )
 
     from hermes_cli.web_server import start_server
 
@@ -12264,6 +12577,7 @@ def cmd_dashboard(args):
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
+        start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
     )
 
 
@@ -12477,7 +12791,19 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
-    return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        return True
+    # The chat path decides TUI-vs-classic via _resolve_use_tui (--cli/--tui
+    # flags, TTY gate, HERMES_TUI env, display.interface config). Bare
+    # `hermes`/`hermes chat` with a TUI display config was previously missed
+    # here, so the wrapper pre-warmed its own MCP discovery while the TUI
+    # gateway (spawned moments later) ran a second one — an idle stdio MCP
+    # server copy held dead for the whole session. Only chat commands can
+    # launch the TUI; other commands (mcp serve, gateway, acp, cron) keep
+    # their own discovery behavior untouched.
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    return _resolve_use_tui(args)
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
@@ -12508,6 +12834,8 @@ def _prepare_agent_startup(args) -> None:
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
@@ -12536,6 +12864,17 @@ def _prepare_agent_startup(args) -> None:
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )
+    # -t/--toolsets narrows which configured MCP servers get spawned, on
+    # every discovery path (inline below, background thread, TUI/desktop
+    # deferred start). Built-in toolset names never match a server key, so
+    # `-t terminal` simply spawns nothing; `-t all` keeps the full set.
+    try:
+        from hermes_cli.mcp_startup import set_mcp_server_filter
+
+        set_mcp_server_filter(getattr(args, "toolsets", None))
+    except Exception:
+        logger.debug("MCP server filter setup failed", exc_info=True)
+
     _run_inline_mcp_discovery = True
     if _is_tui_chat_launch(args):
         # The TUI launcher hands off to a dedicated startup path that already
@@ -12564,9 +12903,14 @@ def _prepare_agent_startup(args) -> None:
         try:
             # MCP tool discovery remains synchronous for entrypoints that do
             # not own a later bounded/executor startup path.
+            from hermes_cli.mcp_startup import get_mcp_server_filter
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            _mcp_filter = get_mcp_server_filter()
+            if _mcp_filter is None:
+                discover_mcp_tools()
+            else:
+                discover_mcp_tools(allowed_mcp_names=_mcp_filter)
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",
@@ -12599,6 +12943,43 @@ def _apply_safe_mode(args) -> None:
     os.environ["HERMES_IGNORE_RULES"] = "1"
 
 
+def _apply_user_config_bypass(args) -> None:
+    """Apply the explicit config bypass before any startup config reads."""
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+
+
+def _guard_noninteractive_user_config(args) -> None:
+    """Fail closed before a non-interactive invocation initializes providers."""
+    if getattr(args, "_noninteractive_config_validated", False):
+        return
+
+    is_noninteractive = (
+        bool(getattr(args, "oneshot", None))
+        or bool(getattr(args, "query", None))
+    )
+    if not is_noninteractive:
+        return
+
+    from hermes_cli.config import (
+        InvalidUserConfigError,
+        require_parseable_user_config,
+    )
+
+    try:
+        require_parseable_user_config(
+            ignore_user_config=bool(
+                getattr(args, "ignore_user_config", False)
+                or getattr(args, "safe_mode", False)
+            )
+        )
+    except InvalidUserConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    setattr(args, "_noninteractive_config_validated", True)
+
+
 def _set_chat_arg_defaults(args) -> None:
     for attr, default in [
         ("query", None),
@@ -12612,6 +12993,47 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
+
+
+def _try_fast_serve_launch() -> bool:
+    """Dispatch an unambiguous built-in ``serve`` without the full CLI tree.
+
+    Desktop launches this exact command on every cold start. Building parsers
+    for unrelated Hermes commands performs thousands of filesystem-backed
+    translation lookups on Windows even though none of those commands are
+    usable in this process. Unknown or globally-scoped arguments fall back to
+    normal parsing so compatibility and error reporting remain unchanged.
+    """
+    if os.environ.get("HERMES_DISABLE_FAST_SERVE_LAUNCH") == "1":
+        return False
+
+    argv = sys.argv[1:]
+    if not argv or argv[0] != "serve" or "-h" in argv or "--help" in argv:
+        return False
+
+    # Container routing is top-level policy and must run before host dispatch.
+    try:
+        from hermes_cli.config import get_container_exec_info
+
+        if get_container_exec_info():
+            return False
+    except Exception:
+        return False
+
+    parser = build_serve_parser(
+        cmd_dashboard=cmd_dashboard,
+        add_help=False,
+        exit_on_error=False,
+    )
+    try:
+        args, unknown = parser.parse_known_args(argv[1:])
+    except (argparse.ArgumentError, ValueError):
+        return False
+    if unknown:
+        return False
+
+    cmd_dashboard(args)
+    return True
 
 
 def _try_fast_chat_launch() -> bool:
@@ -13161,6 +13583,8 @@ def main():
         return
     if _try_termux_fast_cli_launch():
         return
+    if _try_fast_serve_launch():
+        return
     if _try_fast_chat_launch():
         return
 
@@ -13298,7 +13722,7 @@ def main():
     )
     browser_close.add_argument(
         "--browser",
-        help="Override detected default browser (chrome/edge/brave/chromium)",
+        help="Override detected default browser (chrome/edge/brave/brave-origin/chromium)",
     )
 
     def _dispatch_browser(_args):

@@ -303,8 +303,23 @@ def message_agent_tool(
             )
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         label = f"@{peer_profile or peer_name} on peer '{peer_name}'"
+        # Pin the registry-owning profile (#93935): `hermes peer` resolves
+        # bot_peers through load_config(), which is profile-scoped — an
+        # unpinned subprocess inherits THIS gateway's profile context, so a
+        # secondary-profile bot's peer DM ran against an empty registry and
+        # died with "No peer named". The tool-side roster above reads the
+        # machine-root config (the default profile's home), so the CLI must
+        # run in that same profile to see the same registry. Mirrors the
+        # local-teammate path's `-p <resolved>` pin below.
         return _start_delivery(
-            ["hermes", "peer", "dm", dm_target],
+            [
+                "hermes",
+                "-p",
+                _self_profile_name(root),
+                "peer",
+                "dm",
+                dm_target,
+            ],
             prefix + body,
             label,
             stdin_file=True,
@@ -572,6 +587,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
             proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
             )
@@ -587,11 +603,23 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                     proc = subprocess.run(
                         [*argv, "--query-file", dm_file],
                         check=False,
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                     )
             # Re-emit the transport's streams: stdout is the reply text the
             # completion notification carries back to the sending agent.
+            if proc.returncode != 0 and "already has a live owner" in (proc.stderr or ""):
+                # #100523: the target's Bot Chat is held live by another
+                # surface (Desktop). The turn never ran, so tell the sender
+                # plainly instead of leaking a raw lease error + exit code.
+                who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+                print(json.dumps({
+                    "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
+                             "surface right now, so your message was NOT delivered. Try again later.",
+                    "reason": "target_busy",
+                }))
+                return 1
             if proc.stdout:
                 sys.stdout.write(proc.stdout)
                 sys.stdout.flush()

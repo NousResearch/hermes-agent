@@ -84,6 +84,29 @@ def test_lifespan_warmup_is_synchronous():
     )
 
 
+def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):
+    from fastapi.testclient import TestClient
+    from tui_gateway import methods_groups
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_failure():
+        started.set()
+        release.wait(timeout=2.0)
+        raise RuntimeError("state.db is locked")
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(methods_groups, "start_hosted_room_service", blocked_failure)
+    monkeypatch.setattr(methods_groups, "stop_hosted_room_service", lambda **_kwargs: True)
+
+    before = time.perf_counter()
+    with TestClient(web_server_mod.app, raise_server_exceptions=False):
+        assert started.wait(timeout=1.0)
+        assert time.perf_counter() - before < 1.0
+        release.set()
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------

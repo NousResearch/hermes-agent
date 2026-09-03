@@ -140,6 +140,49 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_provider_replay_sidecars(self, transport):
+        """Native-provider replay channels must not cross a provider boundary.
+
+        ``bedrock_content_blocks`` intentionally remains in durable history so
+        Bedrock can restore signed/reasoning blocks in their original order.
+        Chat Completions providers do not recognize it, though, and strict
+        endpoints reject unknown keys in ``messages`` with HTTP 400/422.
+        """
+        msgs = [
+            {"role": "user", "content": "use a tool"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+                "anthropic_content_blocks": [{"thinking": "signed"}],
+                "bedrock_content_blocks": [
+                    {"reasoningContent": {"redactedContentBase64": "cmVhc29uaW5n"}},
+                    {
+                        "toolUse": {
+                            "toolUseId": "call_1",
+                            "name": "lookup",
+                            "input": {},
+                        }
+                    },
+                ],
+            },
+        ]
+
+        result = transport.convert_messages(msgs, model="gpt-4o")
+
+        assert "anthropic_content_blocks" not in result[1]
+        assert "bedrock_content_blocks" not in result[1]
+        assert result[1]["tool_calls"] == msgs[1]["tool_calls"]
+        # Durable history remains available if this conversation returns to Bedrock.
+        assert "anthropic_content_blocks" in msgs[1]
+        assert "bedrock_content_blocks" in msgs[1]
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""
@@ -297,8 +340,23 @@ class TestChatCompletionsBuildKwargs:
             model="qwen3", messages=msgs,
             provider_profile=profile,
             reasoning_config={"effort": "none"},
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_custom_omits_think_on_mistral(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="mistral-small-latest",
+            messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": False, "effort": "none"},
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert kw.get("extra_body", {}).get("think") is None
+        assert kw.get("reasoning_effort") == "none"
 
 
 

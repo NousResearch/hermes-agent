@@ -119,6 +119,60 @@ class TestPlatformHasBotCredential:
             Platform.TELEGRAM, PlatformConfig(enabled=True, token=None)
         ) is False
 
+    def test_matrix_password_login_is_a_credential(self):
+        """Matrix password auth has no .token but is fully reconnectable.
+
+        MATRIX_USER_ID + MATRIX_PASSWORD with no MATRIX_ACCESS_TOKEN is a
+        supported setup (build_config puts it on extra). Treating it as
+        credential-less evicted it from the reconnect queue on the first
+        transient failure, so a momentary DNS blip took Matrix down until
+        the gateway was restarted by hand.
+        """
+        from gateway.run import _platform_has_bot_credential
+
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra = {
+            "homeserver": "https://matrix.example.org",
+            "user_id": "@bot:matrix.example.org",
+            "password": "hunter2",
+        }
+        assert _platform_has_bot_credential(Platform.MATRIX, cfg) is True
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"homeserver": "https://matrix.example.org", "password": "hunter2"},
+            {"user_id": "@bot:matrix.example.org", "password": "hunter2"},
+            {"homeserver": "https://matrix.example.org", "user_id": "@bot:m.example.org"},
+            {"homeserver": "  ", "user_id": "  ", "password": "  "},
+        ],
+        ids=["empty", "no-user-id", "no-homeserver", "no-password", "blank"],
+    )
+    def test_matrix_incomplete_password_config_still_dropped(self, extra, monkeypatch):
+        """An incomplete Matrix config can never connect — keep evicting it.
+
+        Guards the #64674 intent, and specifically pins "read extra, not the
+        environment". A fully-populated MATRIX_* environment is set here on
+        purpose: on a real host those vars are present (build_config exports
+        them, and importing gateway.run loads ~/.hermes/.env), so an
+        implementation that falls back to os.getenv would report every Matrix
+        config as credentialed and never evict anything.
+
+        conftest sandboxes HERMES_HOME and scrubs MATRIX_* from the
+        environment, so without these explicit setenv calls this test would
+        pass against an env-reading implementation and guard nothing.
+        """
+        from gateway.run import _platform_has_bot_credential
+
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example.org")
+        monkeypatch.setenv("MATRIX_USER_ID", "@envbot:env.example.org")
+        monkeypatch.setenv("MATRIX_PASSWORD", "env-password")
+
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra = dict(extra)
+        assert _platform_has_bot_credential(Platform.MATRIX, cfg) is False
+
 
 class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
     @pytest.mark.asyncio

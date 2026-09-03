@@ -55,6 +55,11 @@ SESSION_MODEL_USAGE_NFIELD = 18
 _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
 
+# Title prefix of every session row this lane synthesises (legacy-layout rows
+# and stubbed parents). The recovery verifier keys on it to tell synthesised
+# rows from positionally mapped ones.
+STUB_TITLE_PREFIX = "[best-effort recovered"
+
 SQLITE3_CLI_GUIDANCE = (
     "A last-resort page-level salvage is available when a `.recover`-capable "
     "`sqlite3` command-line shell is installed: its `.recover` command can "
@@ -325,20 +330,25 @@ def _copy_direct_tables(
 ) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
 
+    # Lazy import: session_recovery imports this module inside a function, so
+    # a module-level import here would be circular.
+    from hermes_cli.session_recovery import (
+        _AUXILIARY_TABLE_SCHEMAS,
+        _AUXILIARY_TABLES,
+        _CANONICAL_TABLES,
+    )
+
     copied: dict[str, int] = {}
-    for table in (
-        "system_prompts",
-        "sessions",
-        "messages",
-        "session_model_usage",
-        "compression_locks",
-        "gateway_routing",
-        "async_delegations",
-    ):
+    for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
         source_columns = _table_columns(lf_conn, table)
         if not source_columns:
             continue
         dest_columns = _table_columns(dest, table)
+        if not dest_columns and table in _AUXILIARY_TABLE_SCHEMAS:
+            # Lazily-created gateway table: base SessionDB never made it on
+            # the fresh destination, so create it before copying.
+            _AUXILIARY_TABLE_SCHEMAS[table](dest)
+            dest_columns = _table_columns(dest, table)
         columns = [c for c in dest_columns if c in source_columns]
         if not columns:
             continue
@@ -451,7 +461,7 @@ def map_lost_and_found_rows(
                                     cells[1] if _looks_like_source(cells[1])
                                     else "recovered",
                                     _heuristic_started_at(cells),
-                                    "[best-effort recovered] legacy session "
+                                    f"{STUB_TITLE_PREFIX}] legacy session "
                                     "row (layout unknown)",
                                 ),
                             ).rowcount
@@ -520,7 +530,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
         for session_id, info in sorted(orphan_ids.items()):
             while True:
                 title = (
-                    f"[best-effort recovered {sequence}] session metadata "
+                    f"{STUB_TITLE_PREFIX} {sequence}] session metadata "
                     "was unreadable"
                 )
                 sequence += 1

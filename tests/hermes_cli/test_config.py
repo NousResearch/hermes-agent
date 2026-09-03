@@ -74,6 +74,51 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
+    # The pre-#95681 DEFAULT_SOUL_MD text, hardcoded (not read from the
+    # module) so this fixture keeps testing the OLD text regardless of any
+    # future change to _LEGACY_TEMPLATE_SOULS's length or ordering.
+    _PRE_REWRITE_DEFAULT_SOUL = (
+        "You are Hermes Agent, an intelligent AI assistant created by Nous "
+        "Research. You are helpful, knowledgeable, and direct. You assist "
+        "users with a wide range of tasks including answering questions, "
+        "writing and editing code, analyzing information, creative work, "
+        "and executing actions via your tools. You communicate clearly, "
+        "admit uncertainty when appropriate, and prioritize being "
+        "genuinely useful over being verbose unless otherwise directed "
+        "below. Be targeted and efficient in your exploration and "
+        "investigations."
+    )
+
+    def test_upgrades_pre_rewrite_default_soul_md(self, tmp_path):
+        # Every install seeded between the old DEFAULT_SOUL_MD's introduction
+        # and its #95681 rewrite got the old text auto-written on first run —
+        # not user-authored, so it's just as safe to upgrade in place as the
+        # comment-only scaffolds above. Regression test for that upgrade path.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert self._PRE_REWRITE_DEFAULT_SOUL != DEFAULT_SOUL_MD  # sanity: fixture predates the rewrite
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(self._PRE_REWRITE_DEFAULT_SOUL, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_does_not_upgrade_user_customized_soul_md(self, tmp_path):
+        # A SOUL.md that merely starts with the old default but was edited by
+        # the user carries real intent and must never be silently overwritten.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        customized = self._PRE_REWRITE_DEFAULT_SOUL + " Also: always answer in rhyming couplets."
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(customized, encoding="utf-8")
+            ensure_hermes_home()
+            content = soul_path.read_text(encoding="utf-8")
+            assert content == customized
+            assert content != DEFAULT_SOUL_MD
+
 
 
 
@@ -610,11 +655,21 @@ class TestSanitizeEnvLines:
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
+    def test_keenable_api_key_registered(self):
+        """KEENABLE_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "KEENABLE_API_KEY" in OPTIONAL_ENV_VARS
+
+
+    def test_keenable_api_key_has_url(self):
+        """KEENABLE_API_KEY has a URL."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
+
     def test_tavily_api_key_registered(self):
         """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
-
 
     def test_tavily_api_key_has_url(self):
         """TAVILY_API_KEY has a URL."""
@@ -841,7 +896,9 @@ class TestConfigSupportFloor:
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "model_catalog": {"ttl_hours": 1},
+        # v25 lowered the old 24h default to 1h; v40 drops that 1h default so
+        # the shipped ttl_minutes (20) applies.
+        "model_catalog": {},
         "plugins": {"enabled": []},
         "stt": {"provider": "local"},
     }
@@ -860,7 +917,7 @@ class TestConfigSupportFloor:
         # default (opt-in) so the write invariant strips it from disk.
         "agent": {},
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
-        "model_catalog": {"ttl_hours": 1},
+        "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
     }
 

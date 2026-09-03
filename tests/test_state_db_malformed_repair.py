@@ -840,3 +840,42 @@ def test_repair_honors_configured_delete_mode(tmp_path, monkeypatch):
 
     assert report["repaired"] is True
     assert _mode_of(db_path) == "delete"
+
+
+# ── #98924 companion: recovery surface beyond the probe fix (#98935) ───────
+
+# The probe itself is fixed in #98935; this test must not depend on it.
+def test_fts_recovery_includes_vtables_that_raise_decode_errors(tmp_path):
+    """Drop-and-recreate recovery must include corrupt vtables whose probe
+    raises UnicodeDecodeError, not only sqlite3.DatabaseError (#98924)."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    sid = db.create_session(session_id=str(uuid.uuid4()), source="cli")
+    db.append_message(sid, role="user", content="searchable needle")
+    cursor = db._conn.cursor()
+
+    original_probe = db._fts_table_probe
+
+    def _decode_boom(probe_cursor, table_name):
+        if table_name == "messages_fts_trigram":
+            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
+        return original_probe(probe_cursor, table_name)
+
+    db._fts_table_probe = _decode_boom
+    try:
+        assert db._recover_stale_fts(cursor, legacy=False) is True
+    finally:
+        db.close()
+
+    check = sqlite3.connect(str(db_path))
+    try:
+        names = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts%'"
+            )
+        }
+    finally:
+        check.close()
+    assert "messages_fts" in names
+    assert "messages_fts_trigram" in names

@@ -21,8 +21,14 @@ Source file: `hermes_state.py`
 ├── gateway_routing       — Gateway routing metadata
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
+├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
 └── schema_version        — Single-row table tracking migration state
 ```
+
+`hermes sessions recover` copies the row-bearing tables above into the
+recovered database (FTS indexes and `schema_version` are regenerated), including
+the lazily-created `delivery_obligations` ledger when the source has one — its
+row count is verified like `sessions`/`messages`.
 
 Key design decisions:
 - **WAL mode** for concurrent readers + one writer (gateway multi-platform)

@@ -473,7 +473,7 @@ class TestRunChromeFallbackCommandNpxResolution:
             captured_cmds.append(cmd)
             return mock_proc
 
-        url_result = {"success": True, "data": {"result": "https://example.com"}}
+        url_result = {"success": True, "data": {"url": "https://example.com"}}
 
         with patch("tools.browser_tool._run_browser_command", return_value=url_result), \
              patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \

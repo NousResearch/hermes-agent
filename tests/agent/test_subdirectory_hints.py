@@ -1,9 +1,12 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import time
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from agent.subdirectory_hints import SubdirectoryHintTracker
 
 
@@ -114,6 +117,40 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+
+
+    def test_timeout_skips_slow_hint_files(self, project, monkeypatch, caplog):
+        """Slow hint reads time out instead of blocking the turn."""
+        backend = project / "backend"
+        (backend / "AGENTS.md").write_text("Backend-specific instructions")
+        import sys
+
+        from agent import subdirectory_hints as sh_mod
+
+        # Patch the module object the hint tracker's helper closes over.
+        pb_mod = sys.modules[sh_mod._read_text_with_timeout.__module__]
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name.lower() == "agents.md" and self.parent == backend:
+                time.sleep(0.6)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        start = time.monotonic()
+        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4, f"hint load blocked for {elapsed:.2f}s"
+        assert result is None
+        assert "timed out" in caplog.text.lower()
 
 
 class TestPermissionErrorHandling:
@@ -245,7 +282,7 @@ class TestExcludedDirectories:
 
     @pytest.mark.parametrize(
         "excluded",
-        ["backups", "node_modules", ".git", "venv", "site-packages", ".Trash", "vendor"],
+        sorted(SEARCH_PRUNE_DIR_NAMES),
     )
     def test_excluded_directory_skipped(self, tmp_path, excluded):
         target = tmp_path / excluded / "snapshot"

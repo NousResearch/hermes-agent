@@ -2111,11 +2111,18 @@ export interface ManagedFileWriteResponse {
 export interface AnalyticsDailyEntry {
   day: string;
   input_tokens: number;
+  new_input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_input_tokens: number;
+  prompt_tokens: number;
+  processed_tokens: number;
+  avg_prompt_tokens_per_call: number;
   reasoning_tokens: number;
   estimated_cost: number;
   actual_cost: number;
+  cost_unknown: boolean;
   sessions: number;
   api_calls: number;
 }
@@ -2123,7 +2130,15 @@ export interface AnalyticsDailyEntry {
 export interface AnalyticsModelEntry {
   model: string;
   input_tokens: number;
+  new_input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_input_tokens: number;
+  prompt_tokens: number;
+  processed_tokens: number;
+  avg_prompt_tokens_per_call: number;
+  cost_unknown: boolean;
   estimated_cost: number;
   sessions: number;
   api_calls: number;
@@ -2152,6 +2167,13 @@ export interface AnalyticsResponse {
     total_input: number;
     total_output: number;
     total_cache_read: number;
+    total_cache_write: number;
+    new_input_tokens: number;
+    cache_input_tokens: number;
+    prompt_tokens: number;
+    processed_tokens: number;
+    avg_prompt_tokens_per_call: number;
+    cost_unknown: boolean;
     total_reasoning: number;
     total_estimated_cost: number;
     total_actual_cost: number;
@@ -2200,6 +2222,12 @@ export interface ModelsAnalyticsModelEntry {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_input_tokens: number;
+  prompt_tokens: number;
+  processed_tokens: number;
+  avg_prompt_tokens_per_call: number;
+  cost_unknown: boolean;
   reasoning_tokens: number;
   estimated_cost: number;
   actual_cost: number;
@@ -2225,6 +2253,13 @@ export interface ModelsAnalyticsResponse {
     total_input: number;
     total_output: number;
     total_cache_read: number;
+    total_cache_write: number;
+    new_input_tokens: number;
+    cache_input_tokens: number;
+    prompt_tokens: number;
+    processed_tokens: number;
+    avg_prompt_tokens_per_call: number;
+    cost_unknown: boolean;
     total_reasoning: number;
     total_estimated_cost: number;
     total_actual_cost: number;

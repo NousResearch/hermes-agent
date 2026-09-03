@@ -1,0 +1,22 @@
+# Hermes 全局 Token 治理第一阶段配置示例
+# 默认不启用，保证现有行为向后兼容。经用户批准部署后再写入各 Profile config.yaml。
+token_governance:
+  enabled: true
+  contract_path: "C:/path/to/task-contract.r1.json"
+  budget:
+    api_call_limit: 25
+    prompt_token_limit: 1000000
+    absolute_prompt_limit: 5000000
+  preflight:
+    enabled: true
+    workspace: "C:/path/to/project"
+    required_files: []
+    test_commands: []
+    dependencies_complete: true
+    revision: 1
+    current_revision: 1
+    successful_artifact: false
+    active_run: false
+    require_git: true
+# 长工具输出外置复用Hermes现有 tools/tool_result_storage.py，
+# 由上下文窗口自动缩放预算，无需新增开关。

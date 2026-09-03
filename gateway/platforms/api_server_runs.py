@@ -879,10 +879,24 @@ async def _handle_runs(
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
                     }
-                    return r, u
+                    # The provider/model that actually served this turn. After a
+                    # fallback_providers switch the agent keeps the fallback
+                    # runtime until the next turn starts (turn_context restores
+                    # the primary), so this is the served pair, not the
+                    # requested one. Pollers of GET /v1/runs/{id} need it for
+                    # cost attribution: the ``model`` field on the run record
+                    # only echoes the request.
+                    served = {
+                        "provider": str(getattr(agent, "provider", "") or ""),
+                        "model": str(getattr(agent, "model", "") or ""),
+                    }
+                    return r, u, served
 
-            result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+            result, usage, served_runtime = await asyncio.get_running_loop().run_in_executor(
+                None, _run_sync
+            )
             if (
                 run_id in self._stopping_run_ids
                 and isinstance(result, dict)
@@ -927,6 +941,7 @@ async def _handle_runs(
                     "timestamp": time.time(),
                     "output": final_response,
                     "usage": usage,
+                    "runtime": served_runtime,
                 }
                 if pending_steer:
                     completed_event["pending_steer"] = pending_steer
@@ -936,6 +951,7 @@ async def _handle_runs(
                     "completed",
                     output=final_response,
                     usage=usage,
+                    runtime=served_runtime,
                     last_event="run.completed",
                     **({"pending_steer": pending_steer} if pending_steer else {}),
                 )

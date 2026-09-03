@@ -227,6 +227,9 @@ class TestStartRun:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.provider = ""
+                mock_agent.model = ""
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post(
@@ -334,6 +337,9 @@ class TestRunStatus:
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.provider = ""
+                mock_agent.model = ""
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post(
@@ -372,6 +378,9 @@ class TestRunEvents:
                 mock_agent.session_prompt_tokens = 10
                 mock_agent.session_completion_tokens = 5
                 mock_agent.session_total_tokens = 15
+                mock_agent.session_cache_read_tokens = 0
+                mock_agent.provider = ""
+                mock_agent.model = ""
                 mock_create.return_value = mock_agent
 
                 # Start run
@@ -615,6 +624,40 @@ class TestSteerRun:
 
         assert adapter._run_statuses[run_id]["status"] == "completed"
         assert adapter._run_statuses[run_id]["pending_steer"] == "tighten the ending"
+
+    @pytest.mark.asyncio
+    async def test_completed_run_reports_served_runtime_and_cache_tokens(self, adapter):
+        """After a fallback_providers switch the run record must carry the
+        runtime that actually served the turn (provider/model) plus
+        cache-read tokens — not just the requested model and full-price
+        token counts (#102101)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 774050
+                mock_agent.session_completion_tokens = 6286
+                mock_agent.session_total_tokens = 780336
+                mock_agent.session_cache_read_tokens = 650000
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+
+                for _ in range(40):
+                    status = adapter._run_statuses.get(run_id, {})
+                    if status.get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        completed = adapter._run_statuses[run_id]
+        assert completed["status"] == "completed"
+        assert completed["usage"]["cache_read_tokens"] == 650000
+        assert completed["usage"]["total_tokens"] == 780336
+        assert completed["runtime"] == {"provider": "openai-codex", "model": "gpt-5.6-luna"}
 
     @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):
@@ -1392,6 +1435,9 @@ class TestRunIdempotency:
                 agent.session_prompt_tokens = agent.session_completion_tokens = (
                     agent.session_total_tokens
                 ) = 0
+                agent.session_cache_read_tokens = 0
+                agent.provider = ""
+                agent.model = ""
                 create.return_value = agent
                 started = await cli.post(
                     "/v1/runs",
@@ -2101,6 +2147,9 @@ class TestHostedRoomRuns:
                 agent.session_prompt_tokens = agent.session_completion_tokens = (
                     agent.session_total_tokens
                 ) = 0
+                agent.session_cache_read_tokens = 0
+                agent.provider = ""
+                agent.model = ""
                 create.return_value = agent
                 started = await cli.post(
                     "/v1/runs",

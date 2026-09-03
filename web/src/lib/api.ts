@@ -373,6 +373,20 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
+  /**
+   * Revoke every dashboard session server-side (issue #76706).
+   *
+   * POSTs the auth-required `/api/auth/revoke` endpoint with `{"all": true}`.
+   * The server revokes the caller's own session too and clears the session
+   * cookies, so on success the caller should full-page-navigate to /login
+   * (this device is signed out along with every other one).
+   */
+  revokeAllSessions: () =>
+    fetchJSON<RevokeAllResponse>("/api/auth/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: true }),
+    }),
   getSessions: (
     limit = 20,
     offset = 0,
@@ -1350,6 +1364,12 @@ export interface AuthMeResponse {
   org_id: string;
   provider: string;
   expires_at: number;
+}
+
+export interface RevokeAllResponse {
+  ok: boolean;
+  revoked_all: boolean;
+  providers: Record<string, string>;
 }
 
 export interface ActionResponse {

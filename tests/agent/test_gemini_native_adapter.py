@@ -675,3 +675,45 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_sdk_object_messages_and_tool_calls_convert_cleanly():
+    """SimpleNamespace / SDK objects for messages and tool calls convert without dropping or crashing."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    tc_obj = SimpleNamespace(
+        id="call_sdk_gemini_1",
+        type="function",
+        function=SimpleNamespace(name="web_search", arguments='{"query": "hermes agent"}'),
+    )
+    msg_model = SimpleNamespace(
+        role="assistant",
+        content="",
+        tool_calls=[tc_obj],
+    )
+    msg_tool = SimpleNamespace(
+        role="tool",
+        tool_call_id="call_sdk_gemini_1",
+        name="web_search",
+        content="search results here",
+    )
+    messages = [
+        {"role": "user", "content": "search query"},
+        msg_model,
+        msg_tool,
+    ]
+
+    contents, _sys = _build_gemini_contents(messages, include_tool_call_ids=True, is_gemini3=True)
+    assert len(contents) == 3
+    assert contents[0]["role"] == "user"
+    assert contents[1]["role"] == "model"
+    fc = contents[1]["parts"][0]["functionCall"]
+    assert fc["name"] == "web_search"
+    assert fc["args"] == {"query": "hermes agent"}
+    assert fc["id"] == "call_sdk_gemini_1"
+
+    assert contents[2]["role"] == "user"
+    fr = contents[2]["parts"][0]["functionResponse"]
+    assert fr["name"] == "web_search"
+    assert fr["id"] == "call_sdk_gemini_1"
+    assert fr["response"] == {"output": "search results here"}

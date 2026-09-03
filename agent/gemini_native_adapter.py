@@ -302,8 +302,8 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
     return parts
 
 
-def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
-    extra = tool_call.get("extra_content") or {}
+def _tool_call_extra_signature(tool_call: Any) -> Optional[str]:
+    extra = tool_call.get("extra_content") if isinstance(tool_call, dict) else getattr(tool_call, "extra_content", None)
     if not isinstance(extra, dict):
         return None
     google = extra.get("google") or extra.get("thought_signature")
@@ -326,11 +326,12 @@ _INTERRUPTED_RESPONSE_PLACEHOLDER = (
 
 
 def _translate_tool_call_to_gemini(
-    tool_call: Dict[str, Any],
+    tool_call: Any,
     include_ids: bool = False,
 ) -> Dict[str, Any]:
-    fn = tool_call.get("function") or {}
-    args_raw = fn.get("arguments", "")
+    fn = tool_call.get("function") if isinstance(tool_call, dict) else getattr(tool_call, "function", None)
+    fn = fn or {}
+    args_raw = fn.get("arguments", "") if isinstance(fn, dict) else getattr(fn, "arguments", "")
     try:
         args = json.loads(args_raw) if isinstance(args_raw, str) and args_raw else {}
     except json.JSONDecodeError:
@@ -338,16 +339,21 @@ def _translate_tool_call_to_gemini(
     if not isinstance(args, dict):
         args = {"_value": args}
 
+    fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
     part: Dict[str, Any] = {
         "functionCall": {
-            "name": str(fn.get("name") or ""),
+            "name": str(fn_name or ""),
             "args": args,
         }
     }
     if include_ids:
         # Gemini 3+ requires explicit tool call IDs so replayed parallel tool
         # calls pair with their functionResponses (earendil-works/pi#7494).
-        tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
+        if isinstance(tool_call, dict):
+            raw_id = tool_call.get("id") or tool_call.get("call_id") or ""
+        else:
+            raw_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or ""
+        tool_call_id = str(raw_id)
         if tool_call_id:
             part["functionCall"]["id"] = tool_call_id
     thought_signature = _tool_call_extra_signature(tool_call)
@@ -388,25 +394,27 @@ def _looks_like_json_schema(node: Any) -> bool:
 
 
 def _translate_tool_result_to_gemini(
-    message: Dict[str, Any],
+    message: Any,
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
     include_ids: bool = False,
     *,
     is_gemini3: bool = False,
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
-    tool_call_id = str(message.get("tool_call_id") or "")
+    raw_call_id = message.get("tool_call_id") if isinstance(message, dict) else getattr(message, "tool_call_id", "")
+    tool_call_id = str(raw_call_id or "")
     # A tool result can carry the unwrapped internal tool name (for example,
     # an MCP tool invoked through the `tool_call` bridge). Gemini requires
     # functionResponse.name to echo the matching functionCall.name, so the
     # call-id mapping must take precedence over the internal result name.
+    msg_name = message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
     name = str(
         tool_name_by_call_id.get(tool_call_id)
-        or message.get("name")
+        or msg_name
         or tool_call_id
         or "tool"
     )
-    raw_content = message.get("content")
+    raw_content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
     content = _coerce_content_to_text(raw_content)
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
@@ -444,7 +452,7 @@ def _translate_tool_result_to_gemini(
 
 
 def _build_gemini_contents(
-    messages: List[Dict[str, Any]],
+    messages: List[Any],
     include_tool_call_ids: bool = False,
     *,
     is_gemini3: bool = False,
@@ -454,12 +462,11 @@ def _build_gemini_contents(
     tool_name_by_call_id: Dict[str, str] = {}
 
     for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "user")
+        role = str((msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "user")) or "user")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
 
         if role == "system":
-            system_text_parts.append(_coerce_content_to_text(msg.get("content")))
+            system_text_parts.append(_coerce_content_to_text(content))
             continue
 
         if role in {"tool", "function"}:
@@ -481,22 +488,27 @@ def _build_gemini_contents(
         gemini_role = "model" if role == "assistant" else "user"
         parts: List[Dict[str, Any]] = []
 
-        content_parts = _extract_multimodal_parts(msg.get("content"))
+        content_parts = _extract_multimodal_parts(content)
         parts.extend(content_parts)
 
-        tool_calls = msg.get("tool_calls") or []
+        tool_calls = (msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)) or []
         if isinstance(tool_calls, list):
             for tool_call in tool_calls:
                 if isinstance(tool_call, dict):
                     tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
-                    tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
-                    if tool_call_id and tool_name:
-                        tool_name_by_call_id[tool_call_id] = tool_name
-                    parts.append(
-                        _translate_tool_call_to_gemini(
-                            tool_call, include_ids=include_tool_call_ids
-                        )
+                    tool_fn = tool_call.get("function") or {}
+                    tool_name = str((tool_fn.get("name") if isinstance(tool_fn, dict) else getattr(tool_fn, "name", "")) or "")
+                else:
+                    tool_call_id = str(getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or "")
+                    tool_fn = getattr(tool_call, "function", None) or {}
+                    tool_name = str((tool_fn.get("name") if isinstance(tool_fn, dict) else getattr(tool_fn, "name", "")) or "")
+                if tool_call_id and tool_name:
+                    tool_name_by_call_id[tool_call_id] = tool_name
+                parts.append(
+                    _translate_tool_call_to_gemini(
+                        tool_call, include_ids=include_tool_call_ids
                     )
+                )
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})

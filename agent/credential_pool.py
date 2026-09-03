@@ -406,6 +406,15 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if delay_match:
         value = float(delay_match.group(1))
         return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+    # Deliberately NOT matching Gemini's "Please retry in 52.9s".  That value is
+    # the per-minute RPM window, so on a drained free-tier DAILY quota it bounds
+    # nothing: honouring it re-probes a bucket we have already proven empty
+    # about once a minute.  Falling through to the status TTL instead gives a
+    # rotating pool the full EXHAUSTED_TTL_429_SECONDS hour (a sole credential
+    # still gets the deliberately short EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
+    # since benching the only key for an hour is its own problem).  See the
+    # "re-probe during cooldown" PR closed for this reason in AGENTS.md.  Widen
+    # this only for a window that actually bounds the exhausted quota.
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))

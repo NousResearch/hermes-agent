@@ -16,6 +16,9 @@ from tools.delegate_tool import _batch_prefix, _build_child_progress_callback, f
 @pytest.fixture(autouse=True)
 def _fresh_ordinals(monkeypatch):
     monkeypatch.setattr(dt, "_BATCH_ORDINALS", {})
+    # Disable session children cap so batch attribution tests are not blocked
+    # by the session-total budget (tested separately in test_delegate.py).
+    monkeypatch.setattr(dt, "_get_max_children_per_session", lambda: 0)
 
 
 def test_format_batch_tag_assigns_stable_ordinals_per_batch():

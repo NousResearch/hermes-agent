@@ -4602,10 +4602,16 @@ def _run_job_script(
             f"({scripts_dir_resolved}): {script_path!r}"
         )
 
+    scope_hint = (
+        "Cron scripts are profile-scoped; ensure this resolved path is a script "
+        "file or update this job's script path to an existing file."
+    )
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, (
+            f"Script not found: {path}. {scope_hint}"
+        )
     if not path.is_file():
-        return False, f"Script path is not a file: {path}"
+        return False, f"Script path is not a file: {path}. {scope_hint}"
 
     script_timeout = _get_script_timeout()
 

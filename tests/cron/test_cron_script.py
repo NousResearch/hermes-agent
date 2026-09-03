@@ -107,6 +107,31 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_missing_script_error_explains_profile_scope(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("missing.py")
+
+        assert success is False
+        assert str(cron_env / "scripts" / "missing.py") in output
+        assert "profile-scoped" in output
+        assert "ensure this resolved path is a script file" in output
+        assert "update this job's script path to an existing file" in output
+
+    def test_non_file_script_error_explains_profile_scope(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        directory = cron_env / "scripts" / "monitor.py"
+        directory.mkdir()
+
+        success, output = _run_job_script("monitor.py")
+
+        assert success is False
+        assert str(directory) in output
+        assert "not a file" in output
+        assert "profile-scoped" in output
+        assert "update this job's script path to an existing file" in output
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
@@ -431,6 +456,9 @@ class TestBuildJobPromptWithScript:
         prompt = _build_job_prompt(job)
         assert "## Script Error" in prompt
         assert "not found" in prompt.lower()
+        assert "profile-scoped" in prompt
+        assert "ensure this resolved path is a script file" in prompt
+        assert "update this job's script path to an existing file" in prompt
         assert "Report status." in prompt
 
     def test_no_script_unchanged(self, cron_env):

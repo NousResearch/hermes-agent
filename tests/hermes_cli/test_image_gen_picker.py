@@ -170,3 +170,61 @@ class TestConfigWriting:
         assert tools_config._is_provider_active(openai_row, config) is True
         assert tools_config._is_provider_active(nous_row, config) is False
 
+
+class TestCodexPostSetupHook:
+    """The openai-codex image-gen row declares empty env_vars, so setup only
+    starts the OAuth flow when the schema's ``post_setup`` survives the
+    schema→row translation (#102144)."""
+
+    def test_post_setup_propagated_when_declared(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        image_gen_registry.register_provider(_FakeProvider("codexish", schema={
+            "name": "Codexish",
+            "badge": "free",
+            "tag": "",
+            "env_vars": [],
+            "post_setup": "openai_codex",
+        }))
+
+        rows = tools_config._plugin_image_gen_providers()
+        match = next(r for r in rows if r.get("image_gen_plugin_name") == "codexish")
+        assert match["post_setup"] == "openai_codex"
+
+    def test_logged_in_skips_login(self, monkeypatch):
+        from hermes_cli import auth, tools_config
+
+        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": True})
+        login_calls = []
+        monkeypatch.setattr(
+            auth, "_login_openai_codex", lambda *a, **kw: login_calls.append(a)
+        )
+
+        tools_config._run_post_setup("openai_codex")
+        assert login_calls == []
+
+    def test_not_logged_in_starts_login(self, monkeypatch):
+        from hermes_cli import auth, tools_config
+
+        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": False})
+        login_calls = []
+        monkeypatch.setattr(
+            auth, "_login_openai_codex", lambda *a, **kw: login_calls.append(a)
+        )
+
+        tools_config._run_post_setup("openai_codex")
+        assert len(login_calls) == 1
+
+    def test_login_failure_does_not_raise(self, monkeypatch):
+        from hermes_cli import auth, tools_config
+
+        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": False})
+
+        def _boom(*a, **kw):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(auth, "_login_openai_codex", _boom)
+        # Fail-soft: a failed login must not abort the picker write that
+        # follows the post-setup hook.
+        tools_config._run_post_setup("openai_codex")
+

@@ -188,7 +188,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309238025280
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -205,6 +205,7 @@ These are the minimum permissions your bot needs:
 
 ### Recommended Additional Permissions
 
+- **Create Public Threads** — create isolated conversations with `/thread` and auto-threading
 - **Send Messages in Threads** — respond in thread conversations
 - **Add Reactions** — react to messages for acknowledgment
 
@@ -213,7 +214,11 @@ These are the minimum permissions your bot needs:
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Recommended | `309238025280` | All of the above plus Embed Links, Create Public Threads, Send Messages in Threads, Add Reactions |
+
+Existing installations do not gain newly requested permissions automatically.
+If you used an older Recommended URL, re-invite the bot with the URL above to
+grant **Create Public Threads**.
 
 ## Step 6: Invite to Your Server
 
@@ -849,6 +854,12 @@ The gateway log should name the exact intent(s) Hermes requested. Until they are
 **Cause**: The bot is missing required permissions.
 
 **Fix**: Re-invite the bot with the correct permissions using the URL from Step 5, or manually adjust the bot's role permissions in Server Settings → Roles.
+
+If `/thread` reports Discord error `50001` (`Missing Access`), verify the bot's
+effective permissions in the parent channel. It needs **View Channel**, **Send
+Messages**, **Create Public Threads**, and **Send Messages in Threads**. Check
+the parent category and channel-specific permission overrides as well: an
+explicit deny there can override permissions granted by the server role.
 
 ### Bot is offline
 

@@ -193,6 +193,207 @@ class TestCreateProfile:
 
 
 
+    def test_clone_config_copies_source_skills(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "skills"
+            / "custom"
+            / "installed-skill"
+            / "SKILL.md"
+        ).read_text() == "---\nname: installed-skill\n---\n"
+
+    def test_clone_config_skills_with_external_symlink_does_not_chmod_target(
+        self, profile_env
+    ):
+        """Regression: the skills tree is cloned with ``symlinks=True`` so a
+        skill that is itself a symlink to something outside the profile (a
+        shared/vendored skill directory, a dev checkout) is copied as a
+        symlink rather than traversed into. The post-copy writable-mode
+        repair must not follow that symlink and chmod the external target —
+        doing so would mutate a file the clone has no business touching.
+        """
+        import os
+        import stat
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+
+        # An external skill directory living outside any profile, locked
+        # down read-only (e.g. a Nix-store-backed shared skill mount).
+        external_target = tmp_path / "external-shared-skill"
+        external_target.mkdir(parents=True)
+        (external_target / "SKILL.md").write_text("---\nname: shared\n---\n")
+        os.chmod(external_target / "SKILL.md", 0o444)
+        os.chmod(external_target, 0o555)
+
+        skills_dir = default_home / "skills" / "custom"
+        skills_dir.mkdir(parents=True)
+        link_path = skills_dir / "linked-skill"
+        link_path.symlink_to(external_target, target_is_directory=True)
+
+        try:
+            profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+            cloned_link = profile_dir / "skills" / "custom" / "linked-skill"
+            assert cloned_link.is_symlink(), (
+                "symlinks=True must copy the symlink itself, not its target's "
+                "contents"
+            )
+
+            # The external target's mode bits must be untouched by the
+            # clone's writable-mode repair sweep.
+            assert stat.S_IMODE(os.stat(external_target).st_mode) == 0o555
+            assert (
+                stat.S_IMODE(os.stat(external_target / "SKILL.md").st_mode)
+                == 0o444
+            )
+        finally:
+            os.chmod(external_target / "SKILL.md", 0o644)
+            os.chmod(external_target, 0o755)
+
+    def test_clone_all_copies_entire_tree(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        # Populate default with some content
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "note.md").write_text("remember this")
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        # Runtime files that should be stripped
+        (default_home / "gateway.pid").write_text("12345")
+        (default_home / "gateway_state.json").write_text("{}")
+        (default_home / "processes.json").write_text("[]")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        # Content should be copied
+        assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        # Runtime files should be stripped
+        assert not (profile_dir / "gateway.pid").exists()
+        assert not (profile_dir / "gateway_state.json").exists()
+        assert not (profile_dir / "processes.json").exists()
+
+    def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
+        """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        profiles_root = default_home / "profiles"
+        profiles_root.mkdir(exist_ok=True)
+        (profiles_root / "other").mkdir(parents=True, exist_ok=True)
+        (profiles_root / "other" / "marker.txt").write_text("sibling data")
+
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "note.md").write_text("remember this")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
+        assert not (profile_dir / "profiles").exists()
+
+    def test_clone_all_excludes_default_infrastructure(self, profile_env):
+        """--clone-all from default profile excludes hermes-agent, .worktrees,
+        bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
+        at any depth.  Profile data (config, env, skills, logs) must be
+        preserved — clone-all means "complete snapshot minus infrastructure
+        and per-profile history."
+        """
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        # Simulate infrastructure dirs that only the default profile has
+        (default_home / "hermes-agent" / ".git").mkdir(parents=True)
+        (default_home / "hermes-agent" / "venv" / "bin").mkdir(parents=True)
+        (default_home / "hermes-agent" / "README.md").write_text("repo")
+        (default_home / ".worktrees" / "some-tree").mkdir(parents=True)
+        (default_home / "profiles" / "other").mkdir(parents=True)
+        (default_home / "profiles" / "other" / "config.yaml").write_text("x")
+        (default_home / "bin").mkdir(exist_ok=True)
+        (default_home / "bin" / "tool").write_text("binary")
+        (default_home / "node_modules" / ".package-lock.json").mkdir(parents=True)
+        # Bytecode + temp files at nested depth (universal exclusion)
+        (default_home / "skills" / "my-skill" / "__pycache__").mkdir(parents=True)
+        (default_home / "skills" / "my-skill" / "__pycache__" / "module.cpython-311.pyc").write_text("stale")
+        (default_home / "skills" / "my-skill" / "module.pyc").write_text("stale")
+        (default_home / "skills" / "my-skill" / "module.pyo").write_text("stale")
+        (default_home / "data.sock").write_text("socket")
+        (default_home / "data.tmp").write_text("tmp")
+        # Profile data that SHOULD be copied
+        (default_home / "skills" / "my-skill").mkdir(parents=True, exist_ok=True)
+        (default_home / "skills" / "my-skill" / "SKILL.md").write_text("skill")
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        (default_home / ".env").write_text("KEY=val")
+        (default_home / "logs").mkdir(exist_ok=True)
+        (default_home / "logs" / "gateway.log").write_text("log")
+
+        profile_dir = create_profile("cloned", clone_all=True, no_alias=True)
+
+        # Infrastructure must be excluded
+        assert not (profile_dir / "hermes-agent").exists()
+        assert not (profile_dir / ".worktrees").exists()
+        assert not (profile_dir / "profiles").exists()
+        assert not (profile_dir / "bin").exists()
+        assert not (profile_dir / "node_modules").exists()
+        # Universal exclusions at any depth
+        assert not (profile_dir / "data.sock").exists()
+        assert not (profile_dir / "data.tmp").exists()
+        assert not (profile_dir / "skills" / "my-skill" / "__pycache__").exists()
+        assert not (profile_dir / "skills" / "my-skill" / "module.pyc").exists()
+        assert not (profile_dir / "skills" / "my-skill" / "module.pyo").exists()
+        # All profile data must be present
+        assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        assert (profile_dir / ".env").read_text() == "KEY=val"
+        assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
+
+    def test_clone_all_excludes_history_artifacts(self, profile_env):
+        """--clone-all excludes the source's session history, backups, and
+        snapshots — a clone is a fresh workspace, and these can reach tens
+        of GB.  Applies to ANY source profile, not just default.
+        """
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "state.db").write_text("sessions-data")
+        (default_home / "state.db-wal").write_text("wal")
+        (default_home / "state.db-shm").write_text("shm")
+        (default_home / "sessions" / "20260101_old").mkdir(parents=True)
+        (default_home / "backups").mkdir(exist_ok=True)
+        (default_home / "backups" / "backup.tar.gz").write_text("archive")
+        (default_home / "state-snapshots" / "snap1").mkdir(parents=True)
+        (default_home / "checkpoints" / "cp1").mkdir(parents=True)
+        # Data that should still copy
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        # Nested dirs with the same names must NOT be excluded (root-only)
+        (default_home / "workspace" / "backups").mkdir(parents=True)
+        (default_home / "workspace" / "backups" / "user-data.txt").write_text("mine")
+
+        profile_dir = create_profile("fresh", clone_all=True, no_alias=True)
+
+        for history in (
+            "state.db", "state.db-wal", "state.db-shm",
+            "sessions", "backups", "state-snapshots", "checkpoints",
+        ):
+            assert not (profile_dir / history).exists(), history
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        # Root-only: nested same-name dirs survive
+        assert (profile_dir / "workspace" / "backups" / "user-data.txt").read_text() == "mine"
+
+    def test_clone_config_missing_files_skipped(self, profile_env):
+        """Clone config gracefully skips files that don't exist in source."""
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        # No error; optional files just not copied
+        assert not (profile_dir / "config.yaml").exists()
+        # .env is always seeded (placeholder) so the profile has its own
+        # credentials file even when the clone source lacked one.
+        assert (profile_dir / ".env").exists()
+        # SOUL.md is always seeded with the default even when clone source lacks it
+        assert (profile_dir / "SOUL.md").exists()
 
 
 # ===================================================================

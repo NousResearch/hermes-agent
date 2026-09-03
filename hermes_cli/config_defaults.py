@@ -594,6 +594,7 @@ DEFAULT_CONFIG = {
         # localhost/private-IP URLs are always exempt automatically.
         #   cache_exempt_hosts: ["mysite.vercel.app", "*.ngrok-free.app"]
         "cache_exempt_hosts": [],
+        "failover": [],          # ordered list of backends to try when the primary returns a credit/quota error
     },
 
     "browser": {

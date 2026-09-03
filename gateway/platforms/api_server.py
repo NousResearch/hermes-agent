@@ -150,6 +150,7 @@ from gateway.platforms.base import (
 )
 # Re-exported here for existing imports and constructor monkeypatches.
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -7185,8 +7186,50 @@ class APIServerAdapter(BasePlatformAdapter):
         full_history.append({"role": "assistant", "content": final_response})
         return full_history
 
-    @staticmethod
+    # Fields the agent stamps onto live messages, or that survive only on one
+    # side of the store round-trip. None of them change what a message *says*,
+    # so none of them may decide whether a transcript already contains the
+    # prior history -- see _messages_semantically_equal.
+    _TRANSCRIPT_BOOKKEEPING_FIELDS = PERSISTENCE_ONLY_MESSAGE_FIELDS | frozenset({
+        "_db_persisted",
+        "_row_id",
+        "reasoning",
+        "reasoning_content",
+        "finish_reason",
+    })
+
+    @classmethod
+    def _messages_semantically_equal(cls, left: Any, right: Any) -> bool:
+        """Compare two transcript messages ignoring bookkeeping-only differences."""
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return left == right
+
+        lhs = {k: v for k, v in left.items() if k not in cls._TRANSCRIPT_BOOKKEEPING_FIELDS}
+        rhs = {k: v for k, v in right.items() if k not in cls._TRANSCRIPT_BOOKKEEPING_FIELDS}
+
+        # ``name`` is present on live tool messages but is dropped on the store
+        # round-trip, so the same message can carry "terminal" on one side and
+        # nothing on the other. Compare it only when both sides still have it;
+        # ``tool_call_id`` already disambiguates tool results.
+        left_name = lhs.pop("name", None)
+        right_name = rhs.pop("name", None)
+        if left_name is not None and right_name is not None and left_name != right_name:
+            return False
+
+        return lhs == rhs
+
+    @classmethod
+    def _messages_prefix_matches(cls, messages: List[Any], prefix: List[Any]) -> bool:
+        if len(messages) < len(prefix):
+            return False
+        return all(
+            cls._messages_semantically_equal(message, expected)
+            for message, expected in zip(messages, prefix)
+        )
+
+    @classmethod
     def _response_messages_turn_start_index(
+        cls,
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
         result: Dict[str, Any],
@@ -7199,9 +7242,9 @@ class APIServerAdapter(BasePlatformAdapter):
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
+        if cls._messages_prefix_matches(agent_messages, expected_prefix):
             return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+        if prior and cls._messages_prefix_matches(agent_messages, prior):
             return len(prior)
         return 0
 

@@ -1001,6 +1001,37 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         (time.monotonic() - scan_started) * 1000,
         file_count,
     )
+
+    if getattr(args, "dry_run", False):
+        total_bytes = sum(
+            abs_path.stat().st_size
+            for abs_path, _ in files_to_add
+            if abs_path.is_file()
+        )
+        total_bytes += sum(
+            abs_path.stat().st_size
+            for abs_path, _ in external_to_add
+            if abs_path.is_file()
+        )
+        print()
+        print(f"  Files:       {file_count}")
+        print(f"  Total size:  {_format_size(total_bytes)}")
+        if external_to_add:
+            print(f"  External:    {len(external_to_add)} memory-provider file(s)")
+        if skipped_dirs:
+            print("\n  Excluded directories:")
+            for d in sorted(skipped_dirs):
+                print(f"    {d}/")
+        if skipped_external:
+            print(
+                f"\n  Skipped {len(skipped_external)} memory-provider path(s) "
+                f"outside your home directory (not portable):"
+            )
+            for p in sorted(skipped_external)[:10]:
+                print(f"    {p}")
+        print()
+        print("  Dry run — no archive created.")
+        return
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
 

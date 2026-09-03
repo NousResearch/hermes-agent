@@ -1,4 +1,5 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { openExternalLink } from '@/lib/external-link'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
@@ -83,7 +84,7 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    return gatewayMediaDataUrlLocalFallback(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -198,6 +199,33 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
+// A screenshot/PDF taken by the preview panel is written by the LOCAL Electron
+// main process (app.getPath('userData')/composer-images), even while the agent
+// runs on a remote gateway. Asking the gateway for that path always 404s: the
+// file only ever existed on this machine. Try the gateway first (normal case:
+// the agent produced the file there), then fall back to this shell's own disk.
+export async function gatewayMediaDataUrlLocalFallback(path: string): Promise<string> {
+  const file = filePathFromMediaPath(path)
+
+  try {
+    const remote = await readDesktopFileDataUrl(file)
+
+    if (remote) {
+      return remote
+    }
+  } catch {
+    // Not on the gateway — the file may be a locally produced artifact.
+  }
+
+  const local = await window.hermesDesktop?.readFileDataUrl?.(file)
+
+  if (!local) {
+    throw new Error(`Media file not found on the gateway or this machine: ${file}`)
+  }
+
+  return local
+}
+
 // Remote-mode replacement for opening gateway-local file paths with file://.
 // The file lives on the gateway, so ask the Electron main process to fetch the
 // bytes through the authenticated backend connection and save them locally. This
@@ -211,6 +239,19 @@ export async function downloadGatewayMediaFile(
 
   if (!window.hermesDesktop?.saveGatewayFile) {
     throw new Error('Desktop file download bridge is unavailable')
+  }
+
+  // Locally produced artifacts (preview screenshots/PDFs land in this shell's
+  // userData, never on the gateway) must open with file:// instead of a gateway
+  // fetch that can only 404. Probe this disk before going over the wire.
+  try {
+    if (await window.hermesDesktop.readFileDataUrl?.(file)) {
+      openExternalLink(`file://${file}`)
+
+      return { path: file, saved: true }
+    }
+  } catch {
+    // Not on this machine — it really is a gateway-side file.
   }
 
   return window.hermesDesktop.saveGatewayFile({

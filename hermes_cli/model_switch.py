@@ -1919,11 +1919,28 @@ def switch_model(
     # =================================================================
     else:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import read_raw_config
+            from hermes_cli.inventory import raw_config_has_enabled_moa_preset
             from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
 
-            _moa_cfg = normalize_moa_config(load_config().get("moa") or {})
-            _moa_match = exact_moa_preset_name(_moa_cfg, raw_input)
+            # Only presets the user wrote into their own config.yaml are
+            # /model switch targets. DEFAULT_CONFIG ships an enabled preset
+            # literally named "default", and ``load_config()`` merges it in —
+            # so on a stock install "/model default", a user plainly asking
+            # for their default model, silently switched the session into MoA
+            # mode. ``inventory.raw_config_has_enabled_moa_preset()`` already
+            # draws exactly this line for the model pickers.
+            #
+            # The gate is load-bearing: reading from ``read_raw_config()``
+            # alone would not be enough, because ``normalize_moa_config({})``
+            # synthesizes a "default" preset for an empty config.
+            _moa_match = None
+            if raw_config_has_enabled_moa_preset():
+                _raw_moa = (read_raw_config() or {}).get("moa")
+                _moa_cfg = normalize_moa_config(
+                    _raw_moa if isinstance(_raw_moa, dict) else {},
+                )
+                _moa_match = exact_moa_preset_name(_moa_cfg, raw_input)
             if _moa_match:
                 target_provider = "moa"
                 new_model = _moa_match

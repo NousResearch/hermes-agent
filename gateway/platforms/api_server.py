@@ -119,11 +119,34 @@ def _hermes_version() -> str:
         return "dev"
 
 
+def _profile_capability_attestation() -> tuple[str, Optional[str]]:
+    """Return the active profile and the exact capabilities.json digest."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = _api_request_profile.get() or get_active_profile_name() or "default"
+    except Exception:
+        profile = _api_request_profile.get() or "default"
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        capability_path = get_hermes_home() / "capabilities.json"
+        digest = hashlib.sha256(capability_path.read_bytes()).hexdigest()
+    except (OSError, TypeError):
+        digest = None
+    return profile, digest
+
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+# Base64url expands the 8 KiB decoded MCP metadata allowance to about 10.7
+# KiB. aiohttp defaults to an 8 KiB header field, so the server needs a modest
+# explicit ceiling above that contract.
+MAX_REQUEST_HEADER_FIELD_BYTES = 16 * 1024
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -810,7 +833,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, X-Hermes-MCP-Metadata, "
+        "X-Hermes-Session-Id, X-Hermes-Session-Key"
+    ),
 }
 
 
@@ -942,14 +968,20 @@ def _admit_api_agent_request(handler):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        mcp_metadata, metadata_err = self._parse_mcp_run_metadata_header(request)
+        if metadata_err is not None:
+            return metadata_err
         draining = self._draining_response()
         if draining is not None:
             return draining
         reservation = {"active": True}
         token = _api_agent_request_reservation.set(reservation)
         self._pending_agent_requests += 1
+        from agent.mcp_run_context import mcp_run_metadata
+
         try:
-            return await handler(self, request, *args, **kwargs)
+            with mcp_run_metadata(mcp_metadata):
+                return await handler(self, request, *args, **kwargs)
         finally:
             if reservation["active"]:
                 reservation["active"] = False
@@ -1078,10 +1110,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    *,
+    mcp_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
-    return sha256(repr(subset).encode("utf-8")).hexdigest()
+    return sha256(repr((subset, mcp_metadata)).encode("utf-8")).hexdigest()
 
 
 def _derive_chat_session_id(
@@ -1854,6 +1891,37 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return raw, None
+
+    def _parse_mcp_run_metadata_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        """Decode private metadata for this run without exposing it to the model."""
+        from agent.mcp_run_context import (
+            MCP_RUN_METADATA_HEADER,
+            decode_mcp_run_metadata_header,
+        )
+
+        raw = request.headers.get(MCP_RUN_METADATA_HEADER, "").strip()
+        if not raw:
+            return None, None
+        if not self._api_key:
+            logger.warning(
+                "%s rejected: no API key configured", MCP_RUN_METADATA_HEADER
+            )
+            return None, web.json_response(
+                _openai_error(
+                    f"{MCP_RUN_METADATA_HEADER} requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+        try:
+            return decode_mcp_run_metadata_header(raw), None
+        except ValueError as exc:
+            return None, web.json_response(
+                _openai_error(str(exc), code="invalid_mcp_metadata"),
+                status=400,
+            )
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -2707,11 +2775,14 @@ class APIServerAdapter(BasePlatformAdapter):
             process_completion_queue_depth=process_depth,
             active_delegations=active_delegations,
         )
+        profile, capability_manifest_sha256 = _profile_capability_attestation()
         return web.json_response({
             "status": readiness["status"],
             "readiness": readiness,
             "platform": "hermes-agent",
             "version": _hermes_version(),
+            "profile": profile,
+            "capability_manifest_sha256": capability_manifest_sha256,
             "gateway_state": gw_state,
             "platforms": runtime.get("platforms", {}),
             "active_agents": gw_active,
@@ -2871,6 +2942,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "mcp_run_metadata_header": "X-Hermes-MCP-Metadata",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -3934,9 +4006,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            from agent.mcp_run_context import read_mcp_run_metadata
+
             fp = _make_request_fingerprint(
                 body,
                 keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                mcp_metadata=read_mcp_run_metadata(),
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -5056,6 +5131,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            from agent.mcp_run_context import read_mcp_run_metadata
+
             fp = _make_request_fingerprint(
                 body,
                 keys=[
@@ -5068,6 +5145,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "model_options",
                     "tools",
                 ],
+                mcp_metadata=read_mcp_run_metadata(),
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -5777,11 +5855,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # run_in_executor threads, so the profile scope must be re-entered
         # inside _run() from this explicit value.
         request_profile = _api_request_profile.get()
+        from agent.mcp_run_context import read_mcp_run_metadata
+
+        request_mcp_metadata = read_mcp_run_metadata()
 
         def _run():
             from gateway.session_context import clear_session_vars
 
-            with self._profile_scope(request_profile):
+            from agent.mcp_run_context import mcp_run_metadata
+
+            with self._profile_scope(request_profile), mcp_run_metadata(
+                request_mcp_metadata
+            ):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
@@ -5943,7 +6028,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
-
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -6055,21 +6139,35 @@ class APIServerAdapter(BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
+        provided_session_id, session_id_err = self._parse_session_id_header(request)
+        if session_id_err is not None:
+            return session_id_err
+
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
+        def _started_response(run_id: str) -> "web.Response":
+            response_headers = (
+                {"X-Hermes-Session-Key": gateway_session_key}
+                if gateway_session_key
+                else {}
+            )
+            return web.json_response(
+                {"run_id": run_id, "status": "started"},
+                status=202,
+                headers=response_headers,
+            )
 
         try:
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        from agent.mcp_run_context import read_mcp_run_metadata
+
+        request_mcp_metadata = read_mcp_run_metadata()
 
         raw_input = body.get("input")
         if not raw_input:
@@ -6119,8 +6217,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, Any]] = []
+        explicit_history_provided = "conversation_history" in body
         raw_history = body.get("conversation_history")
-        if raw_history:
+        if explicit_history_provided:
             if not isinstance(raw_history, list):
                 return web.json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
@@ -6141,7 +6240,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
-        if not conversation_history and previous_response_id:
+        if not explicit_history_provided and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
@@ -6222,7 +6321,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             effective_profile = _api_request_profile.get() or ""
-            idempotency_storage_key = f"{effective_profile}:{idempotency_key}" if effective_profile else idempotency_key
+            idempotency_scope = _make_request_fingerprint(
+                {
+                    "profile": effective_profile,
+                    "session_id": session_id,
+                    "session_key": gateway_session_key,
+                },
+                keys=["profile", "session_id", "session_key"],
+                mcp_metadata=request_mcp_metadata,
+            )
+            idempotency_storage_key = f"{effective_profile}:{idempotency_key}:{idempotency_scope}"
             fingerprint_body = dict(body)
             fingerprint_body["_resolved_session_id"] = session_id
             fingerprint_body["_gateway_session_key"] = gateway_session_key
@@ -6230,6 +6338,7 @@ class APIServerAdapter(BasePlatformAdapter):
             idempotency_fingerprint = _make_request_fingerprint(
                 fingerprint_body,
                 keys=sorted(fingerprint_body),
+                mcp_metadata=request_mcp_metadata,
             )
 
         def _cached_idempotency_response():
@@ -6275,6 +6384,9 @@ class APIServerAdapter(BasePlatformAdapter):
         cached_response = _cached_idempotency_response()
         if cached_response is not None:
             return cached_response
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
@@ -6325,7 +6437,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
-
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
@@ -6385,6 +6496,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
+                    from agent.mcp_run_context import mcp_run_metadata
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -6396,7 +6508,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
-                    with self._profile_scope(request_profile):
+                    with self._profile_scope(request_profile), mcp_run_metadata(
+                        request_mcp_metadata
+                    ):
                         try:
                             # Bind approval/session identity for this API run via
                             # contextvars so concurrent runs do not share process
@@ -6421,6 +6535,27 @@ class APIServerAdapter(BasePlatformAdapter):
                                 conversation_history=conversation_history,
                                 task_id=effective_task_id,
                             )
+                            if (
+                                explicit_history_provided
+                                and isinstance(r, dict)
+                                and isinstance(r.get("messages"), list)
+                            ):
+                                result_session_id = r.get("session_id")
+                                if not isinstance(result_session_id, str) or not result_session_id:
+                                    agent_session_id = getattr(agent, "session_id", None)
+                                    result_session_id = (
+                                        agent_session_id
+                                        if isinstance(agent_session_id, str)
+                                        and agent_session_id
+                                        else session_id
+                                    )
+                                session_db = getattr(agent, "_session_db", None)
+                                if session_db is not None and result_session_id:
+                                    session_db.replace_messages(
+                                        result_session_id,
+                                        r["messages"],
+                                        active_only=True,
+                                    )
                         finally:
                             try:
                                 unregister_gateway_notify(approval_session_key)
@@ -6473,18 +6608,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    effective_session_id = session_id
+                    if isinstance(result, dict):
+                        result_session_id = result.get("session_id")
+                        if isinstance(result_session_id, str) and result_session_id:
+                            effective_session_id = result_session_id
                     _put_event_if_active({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
+                        "session_id": effective_session_id,
                     })
                     self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
+                        session_id=effective_session_id,
                         last_event="run.completed",
                     )
             except asyncio.CancelledError:
@@ -6966,7 +7108,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         self.name, self._host,
                     )
 
-            self._runner = web.AppRunner(self._app)
+            self._runner = web.AppRunner(
+                self._app,
+                max_field_size=MAX_REQUEST_HEADER_FIELD_BYTES,
+            )
             await self._runner.setup()
             # Bind directly instead of probing 127.0.0.1 first — the old
             # single-family pre-probe raced the real bind and reported a

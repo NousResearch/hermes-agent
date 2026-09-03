@@ -20,6 +20,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+from contextvars import copy_context
 
 logger = logging.getLogger(__name__)
 import os
@@ -2183,7 +2184,10 @@ def _run_single_child(
                     stream_callback=_relay_child_text,
                 )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        child_context = copy_context()
+        _child_future = _timeout_executor.submit(
+            child_context.run, _run_with_thread_capture
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2984,7 +2988,9 @@ def delegate_task(
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
+                    child_context = copy_context()
                     future = executor.submit(
+                        child_context.run,
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],

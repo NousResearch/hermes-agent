@@ -3651,6 +3651,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     detail=next_args.get("detail", "adaptive"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    platform=getattr(agent, "platform", None),
                 ),
                 next_args,
             )

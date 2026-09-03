@@ -388,6 +388,40 @@ def _session_link(session_id: str, profile: str = None) -> str:
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
+def _adapt_session_links_for_platform(raw_result: str, platform: Any = None) -> str:
+    """Hide Desktop-only session refs on surfaces that cannot render them.
+
+    ``None`` preserves the historical payload for direct callers without
+    surface context; callers can pass a platform or let ``session_search``
+    infer it from the current session row.
+    """
+    platform_value = getattr(platform, "value", platform)
+    surface = str(platform_value or "").strip().lower()
+    if not surface or surface == "desktop":
+        return raw_result
+
+    try:
+        payload = json.loads(raw_result)
+    except (TypeError, ValueError):
+        return raw_result
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return raw_result
+
+    removed_ref = payload.pop("link", None) is not None
+    for entry in payload.get("results") or []:
+        if isinstance(entry, dict):
+            removed_ref = entry.pop("link", None) is not None or removed_ref
+
+    if removed_ref or payload.get("mode") in {"discover", "browse", "read"}:
+        payload["link_hint"] = (
+            f"Hermes @session references render only in Desktop, not on {surface}. "
+            "Refer to the result `title` (or `session_meta.title`) as plain text "
+            "when present; do not emit a session reference/id or format the title "
+            "as a Markdown link."
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _locate_session_db(session_id: str):
     """Scan every profile's ``state.db`` (read-only) for a session id.
 
@@ -1101,6 +1135,8 @@ def session_search(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    # Rendering surface (also appended; omitted by legacy/direct callers)
+    platform: Any = None,
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1116,8 +1152,19 @@ def session_search(
 
             return tool_error(format_session_db_unavailable(), success=False)
 
+    if platform is None and current_session_id:
+        try:
+            current_meta = db.get_session(current_session_id) or {}
+            platform = current_meta.get("source")
+        except Exception:
+            logging.debug(
+                "Could not resolve session_search rendering surface for %s",
+                current_session_id,
+                exc_info=True,
+            )
+
     try:
-        return _session_search_impl(
+        result = _session_search_impl(
             query=query,
             role_filter=role_filter,
             limit=limit,
@@ -1131,6 +1178,7 @@ def session_search(
             detail=detail,
             _owned_dbs=owned_dbs,
         )
+        return _adapt_session_links_for_platform(result, platform)
     finally:
         for owned_db in reversed(owned_dbs):
             try:
@@ -1162,9 +1210,10 @@ SESSION_SEARCH_SCHEMA = {
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
         "conclude 'not found' from history alone. Use for questions about past "
-        "conversations: 'what did we do about X', 'where did we leave Y'. When "
-        "referring the user to a session, write its `link` value verbatim "
-        "inline (it renders as a titled link)."
+        "conversations: 'what did we do about X', 'where did we leave Y'. "
+        "Results include clickable `link` references only on Hermes Desktop. "
+        "On other surfaces, refer to the returned `title` as plain text and "
+        "follow the response's `link_hint`."
     ),
     "parameters": {
         "type": "object",
@@ -1274,6 +1323,7 @@ registry.register(
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        platform=kw.get("platform"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

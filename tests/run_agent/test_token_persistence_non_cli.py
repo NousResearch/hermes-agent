@@ -91,6 +91,7 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
+    assert captured["platform"] == "acp"
     assert agent._session_db is sentinel_db
 
 
@@ -127,3 +128,4 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
     assert captured["db"] is session_db
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
+    assert captured["platform"] == "acp"

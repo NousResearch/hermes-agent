@@ -85,7 +85,7 @@ class TestSchema:
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
-    def test_detail_parameter_is_appended_for_positional_compatibility(self):
+    def test_new_parameters_are_appended_for_positional_compatibility(self):
         parameters = list(inspect.signature(session_search).parameters)
         historical_prefix = [
             "query",
@@ -99,7 +99,12 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "platform"]
+
+    def test_schema_scopes_session_links_to_desktop(self):
+        description = SESSION_SEARCH_SCHEMA["description"]
+        assert "Desktop" in description
+        assert "plain text" in description
 
 
 class TestFormatTimestamp:
@@ -502,6 +507,59 @@ class TestSessionLink:
     def test_link_carries_the_named_profile(self):
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 
+    def test_non_desktop_shapes_use_titles_without_desktop_refs(self, db):
+        _seed_modpack_sessions(db)
+        payloads = [
+            json.loads(session_search(query="modpack", db=db, platform="telegram")),
+            json.loads(session_search(db=db, platform="telegram")),
+            json.loads(session_search(session_id="s_oldest", db=db, platform="telegram")),
+        ]
+
+        for payload in payloads:
+            assert "link" not in payload
+            assert "plain text" in payload["link_hint"]
+            assert "Markdown link" in payload["link_hint"]
+            for entry in payload.get("results", []):
+                assert "link" not in entry
+                assert entry["title"]
+
+        assert payloads[-1]["session_meta"]["title"] == "Building the Modpack"
+
+        empty = json.loads(
+            session_search(query="no-such-session", db=db, platform="telegram")
+        )
+        assert "plain text" in empty["link_hint"]
+        assert "verbatim" not in empty["link_hint"]
+
+    def test_desktop_discovery_keeps_clickable_session_refs(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(
+            session_search(query="modpack", db=db, platform="desktop")
+        )
+
+        assert result["results"]
+        assert all(entry["link"].startswith("@session:") for entry in result["results"])
+        assert "verbatim" in result["link_hint"]
+
+    @pytest.mark.parametrize(
+        ("source", "expect_links"),
+        [("telegram", False), ("cli", False), ("desktop", True)],
+    )
+    def test_current_session_source_selects_link_contract(
+        self, db, source, expect_links
+    ):
+        _seed_modpack_sessions(db)
+        current_id = f"current_{source}"
+        db.create_session(current_id, source=source)
+        result = json.loads(
+            session_search(
+                query="modpack",
+                db=db,
+                current_session_id=current_id,
+            )
+        )
+
+        assert bool(result["results"] and "link" in result["results"][0]) is expect_links
 
     def test_every_discovery_result_links_to_its_own_session(self, db):
         _seed_modpack_sessions(db)

@@ -16,6 +16,7 @@ binds.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable
 
@@ -297,6 +298,10 @@ def _verify_bearer(request: Request, *, access_token: str):
     401, so the desktop retries instead of dropping the user to full re-login.
     Unlike the cookie path there is no server-side refresh — the desktop owns
     its refresh token and rotates via ``/auth/native/refresh``.
+
+    Blocking: performs provider IDP I/O (``verify_session`` may re-fetch the
+    IDP's JWKS). Callers on the event loop must invoke it through
+    ``asyncio.to_thread``.
     """
     unreachable_provider: str | None = None
     for provider in list_session_providers():
@@ -356,7 +361,9 @@ async def gated_auth_middleware(
     bearer = _extract_bearer(request)
     if bearer:
         try:
-            bearer_session = _verify_bearer(request, access_token=bearer)
+            bearer_session = await asyncio.to_thread(
+                _verify_bearer, request, access_token=bearer
+            )
         except ProviderError as e:
             # At least one provider's IDP/JWKS was unreachable and none
             # verified the token — transient outage, not bad credentials.
@@ -421,7 +428,9 @@ async def gated_auth_middleware(
         unreachable_provider: str | None = None
         for provider in _ordered_session_providers(provider_hint):
             try:
-                session = provider.verify_session(access_token=at)
+                session = await asyncio.to_thread(
+                    provider.verify_session, access_token=at
+                )
             except ProviderError as e:
                 _log.warning(
                     "dashboard-auth: provider %r unreachable during verify: %s",
@@ -454,7 +463,8 @@ async def gated_auth_middleware(
         # serve the request transparently; only after every provider rejects
         # the RT do we fall through to clear-and-relogin.
         try:
-            refreshed = _attempt_refresh(
+            refreshed = await asyncio.to_thread(
+                _attempt_refresh,
                 request,
                 refresh_token=_rt,
                 provider_hint=provider_hint,
@@ -555,6 +565,10 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
     no RT or every reachable provider rejects it. If no provider succeeds and
     at least one raised ``ProviderError``, re-raises with that provider's name
     so the caller can return 503 without clearing potentially valid cookies.
+
+    Blocking: performs provider IDP I/O (``refresh_session`` is a token-endpoint
+    round trip). Callers on the event loop must invoke it through
+    ``asyncio.to_thread``.
     """
     if not refresh_token:
         return None

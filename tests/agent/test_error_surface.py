@@ -137,6 +137,42 @@ def test_result_stream_drop_text_maps_to_streaming():
     assert surface["retryable"] is True
 
 
+@pytest.mark.parametrize(
+    "reason,message",
+    [
+        ("rate_limit", "Your request was not processed."),
+        ("server_error", "The request could not be processed at this time."),
+        ("rate_limit", "Monthly quota surpassed."),
+        ("content_policy_blocked", "The request was dismissed by the safety filter."),
+        ("server_error", "AssertionError: assert seq_len <= max_model_len"),
+    ],
+)
+def test_provider_prose_with_sse_substring_stays_provider(reason, message):
+    """"sse" must not match inside ordinary words (processed, surpassed, ...).
+
+    Matched as a bare substring it reroutes provider-layer failures to the
+    streaming layer, which relabels the error card and suppresses the
+    switch-provider action for exactly the errors it exists for.
+    """
+    surface = build_error_surface_from_result(_failed_result(reason, error=message))
+    assert surface["layer"] == LAYER_PROVIDER
+    assert surface["code"] == reason
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # agent/chat_completion_helpers.py builds this exact message.
+        "Provider stream returned non-JSON SSE data.",
+        "SSE stream aborted",
+    ],
+)
+def test_standalone_sse_token_still_maps_to_streaming(message):
+    surface = build_error_surface_from_result(_failed_result(error=message))
+    assert surface["layer"] == LAYER_STREAMING
+    assert surface["code"] == "stream_drop"
+
+
 def test_result_unclassified_failure_defaults_to_provider_unknown():
     surface = build_error_surface_from_result(_failed_result(error="something odd"))
     assert surface == {"layer": LAYER_PROVIDER, "code": "unknown", "retryable": True}

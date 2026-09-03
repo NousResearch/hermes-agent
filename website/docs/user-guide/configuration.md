@@ -2391,7 +2391,7 @@ Configure the `execute_code` tool:
 code_execution:
   mode: project                # project (default) | strict
   timeout: 300                 # Max execution time in seconds
-  max_tool_calls: 50           # Max tool calls within code execution
+  max_tool_calls: 50           # Max tool calls within code execution (0 = unlimited)
 ```
 
 **`mode`** controls the working directory and Python interpreter for scripts:

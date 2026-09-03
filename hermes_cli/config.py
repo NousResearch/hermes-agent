@@ -2400,6 +2400,21 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
 
+    # ── code_execution.max_tool_calls: non-negative integer ─────────────
+    code_execution_cfg = config.get("code_execution")
+    if isinstance(code_execution_cfg, dict) and "max_tool_calls" in code_execution_cfg:
+        max_tool_calls = code_execution_cfg.get("max_tool_calls")
+        if (
+            not isinstance(max_tool_calls, int)
+            or isinstance(max_tool_calls, bool)
+            or max_tool_calls < 0
+        ):
+            issues.append(ConfigIssue(
+                "error",
+                "code_execution.max_tool_calls must be a non-negative integer",
+                "Set a positive limit, or zero for unlimited tool calls",
+            ))
+
     # ── voice.submit_mode: direct | draft ────────────────────────────────
     voice_cfg = config.get("voice")
     if isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg:

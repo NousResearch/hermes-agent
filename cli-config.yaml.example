@@ -1643,7 +1643,7 @@ stt:
 # Intermediate tool results stay out of the LLM's context window.
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
-  max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
+  max_tool_calls: 50   # Max RPC tool calls per execution (default: 50; 0 = unlimited)
   # Local execution uses a persistent session kernel: variables, imports, and
   # loaded data survive across execute_code calls in one conversation, so
   # multi-step data work stops re-loading its inputs every call. Pass

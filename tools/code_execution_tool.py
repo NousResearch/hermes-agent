@@ -77,6 +77,21 @@ MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
 
+def _tool_call_limit_reached(current: int, maximum: int) -> bool:
+    """Return whether the RPC budget is exhausted (``maximum == 0`` is unlimited)."""
+    return maximum > 0 and current >= maximum
+
+
+def _configured_max_tool_calls(config: Dict[str, Any]) -> int:
+    """Return a valid RPC call budget; zero is the only unlimited sentinel."""
+    maximum = config.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    if not isinstance(maximum, int) or isinstance(maximum, bool):
+        raise ValueError("code_execution.max_tool_calls must be an integer")
+    if maximum < 0:
+        raise ValueError("code_execution.max_tool_calls cannot be negative")
+    return maximum
+
+
 def _assemble_stdout_result(
     head: bytes,
     tail: bytes = b"",
@@ -810,7 +825,7 @@ def _rpc_server_loop(
                     continue
 
                 # Enforce tool call limit
-                if tool_call_counter[0] >= max_tool_calls:
+                if _tool_call_limit_reached(tool_call_counter[0], max_tool_calls):
                     resp = tool_error(
                         f"Tool call limit reached ({max_tool_calls}). "
                         "No more tool calls allowed in this execution."
@@ -1089,7 +1104,7 @@ def _rpc_poll_loop(
                         f"Available: {available}"
                     )
                 # Enforce tool call limit
-                elif tool_call_counter[0] >= max_tool_calls:
+                elif _tool_call_limit_reached(tool_call_counter[0], max_tool_calls):
                     tool_result = tool_error(
                         f"Tool call limit reached ({max_tool_calls}). "
                         "No more tool calls allowed in this execution."
@@ -1225,7 +1240,7 @@ def _execute_remote(
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    max_tool_calls = _configured_max_tool_calls(_cfg)
 
     session_tools = set(enabled_tools) if enabled_tools else set()
     sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
@@ -1637,7 +1652,7 @@ def execute_code(
     # Resolve config
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    max_tool_calls = _configured_max_tool_calls(_cfg)
 
     # Determine which tools the sandbox can call
     session_tools = set(enabled_tools) if enabled_tools else set()

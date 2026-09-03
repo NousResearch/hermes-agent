@@ -542,7 +542,30 @@ class FactRetriever:
             return []
 
         if not rows:
-            return []
+            # Fallback: FTS5 trigram needs >=3 chars to match (2-char CJK
+            # queries like "飞书" match nothing), and pre-migration unicode61
+            # tables treat whole CJK runs as a single token. A plain LIKE
+            # scan catches both cases. Small table, so a full scan is cheap.
+            if len(query) >= 2:
+                like_params: list = [f"%{query}%", min_trust]
+                if category:
+                    like_params.append(category)
+                like_params.append(limit)
+                like_sql = f"""
+                    SELECT f.*, 0.0 as fts_rank_raw
+                    FROM facts f
+                    WHERE f.content LIKE ? COLLATE NOCASE
+                      AND f.trust_score >= ?
+                      {("AND f.category = ?" if category else "")}
+                    ORDER BY f.trust_score DESC
+                    LIMIT ?
+                """
+                try:
+                    rows = conn.execute(like_sql, like_params).fetchall()
+                except Exception:
+                    return []
+            if not rows:
+                return []
 
         # Normalize FTS5 rank: rank is negative, lower = better
         # Convert to positive score in [0, 1] range

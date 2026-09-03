@@ -17,7 +17,7 @@ from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_probe_run, windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -1096,7 +1096,7 @@ def _mandatory_aslr_enabled() -> "bool | None":
 
     try:
         powershell = shutil.which("powershell.exe") or "powershell.exe"
-        result = subprocess.run(
+        result = bounded_probe_run(
             [
                 powershell,
                 "-NoProfile",
@@ -1104,11 +1104,10 @@ def _mandatory_aslr_enabled() -> "bool | None":
                 "-Command",
                 "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
             ],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
             timeout=10,
-            creationflags=windows_hide_flags(),
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             return None
         value = (result.stdout or "").strip().upper()
@@ -1168,18 +1167,19 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        result = subprocess.run(
+        result = bounded_probe_run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
             timeout=15,
-            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
-        ok = result.returncode == 0
-        if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
-            _bash_probe_details_cache[bash] = combined.strip()[:2000]
-            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+        if result is None:
+            _bash_probe_details_cache[bash] = "probe timed out after 15s or failed to spawn"
+            ok = False
+        else:
+            ok = result.returncode == 0
+            if not ok:
+                combined = f"{result.stdout or ''}{result.stderr or ''}"
+                _bash_probe_details_cache[bash] = combined.strip()[:2000]
+                logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:
         _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)

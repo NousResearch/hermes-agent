@@ -135,24 +135,64 @@ class TestFindBashSkipsBrokenCustomPath:
 class TestGitBashExternalProgramProbe:
     """The Windows health check must exercise MSYS child-process creation."""
 
-    def test_probe_runs_external_msys_programs(self, monkeypatch):
+    def test_probe_runs_external_msys_programs_with_bounded_runner(self, monkeypatch):
         """``_bash_starts`` builds the same external-program probe argv on
-        every host, so this stays on the Linux runner with ``subprocess.run``
-        mocked — no platform faking needed."""
+        every host, so this stays on the Linux runner with the shared bounded
+        probe seam mocked — no platform faking needed."""
         import tools.environments.local as local_mod
 
         local_mod._bash_starts_cache.clear()
         local_mod._bash_probe_details_cache.clear()
         calls = []
 
-        def fake_run(argv, **kwargs):
+        def fake_probe(argv, **kwargs):
             calls.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod, "bounded_probe_run", fake_probe)
 
         assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+        assert calls[0][1]["timeout"] == 15
+
+    def test_probe_timeout_fails_closed_without_unbounded_run_cleanup(self, monkeypatch):
+        """A timed-out MSYS child probe must return instead of entering
+        subprocess.run's unbounded post-kill pipe drain on Windows."""
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        bash = r"C:\Git\bin\bash.exe"
+
+        monkeypatch.setattr(local_mod, "bounded_probe_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            local_mod.subprocess,
+            "run",
+            lambda *_a, **_kw: pytest.fail("unbounded subprocess.run probe used"),
+        )
+
+        assert local_mod._bash_starts(bash) is False
+        assert "timed out" in local_mod._bash_probe_details_cache[bash]
+
+    def test_aslr_probe_uses_bounded_runner(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        local_mod._mandatory_aslr_enabled_cache = None
+        calls = []
+
+        def fake_probe(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="NOTSET\n", stderr="")
+
+        monkeypatch.setattr(local_mod, "bounded_probe_run", fake_probe)
+        monkeypatch.setattr(
+            local_mod.subprocess,
+            "run",
+            lambda *_a, **_kw: pytest.fail("unbounded subprocess.run probe used"),
+        )
+
+        assert local_mod._mandatory_aslr_enabled() is False
+        assert calls[0][1]["timeout"] == 10
 
     @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(

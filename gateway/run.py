@@ -25456,26 +25456,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config: dict,
         source: "SessionSource",
         platform_key: str,
+        message: str | None = None,
     ) -> list:
         """Resolve enabled toolsets for an agent run, honoring per-source overrides.
 
-        Asks the receiving adapter for a ``toolsets_for_source()`` override
-        (e.g. per-route webhook toolsets). When present, the override list is
-        validated through the SAME ``_get_platform_tools`` path as normal
-        platform config — by substituting it as the platform's toolset list —
-        so unknown names and platform-restricted toolsets are dropped rather
-        than trusted. When absent, falls back to standard
-        ``platform_toolsets.<platform>`` resolution.
+        Sasha's Discord channel posture is resolved before agent construction
+        so Home stays lean, ``#proj-*`` channels get coding tools, and explicit
+        heavy requests can use a heavy toolset without mutating an existing
+        AIAgent's frozen prompt/tool schema. Adapter overrides (e.g. webhook
+        routes) still use the same validation path as platform config.
         """
         from hermes_cli.tools_config import _get_platform_tools
 
         override = None
         try:
-            adapter = self._adapter_for_source(source)
-            if adapter is not None:
-                override = adapter.toolsets_for_source(source)
+            from gateway.toolset_routing import route_toolsets_for_source_with_reason
+
+            routed = route_toolsets_for_source_with_reason(source, message=message)
+            if routed is not None:
+                override = routed.toolsets
+                logger.info(
+                    "Discord toolset route: reason=%s chat_id=%s parent_chat_id=%s chat_name=%s",
+                    routed.reason,
+                    getattr(source, "chat_id", None),
+                    getattr(source, "parent_chat_id", None),
+                    str(getattr(source, "chat_name", "") or "")[:80],
+                )
         except Exception:
             override = None
+
+        if override is None:
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter is not None:
+                    override = adapter.toolsets_for_source(source)
+            except Exception:
+                override = None
 
         if override and isinstance(override, list):
             cfg = dict(user_config)
@@ -25525,7 +25541,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform_key = _platform_config_key(source.platform)
 
             enabled_toolsets = self._resolve_enabled_toolsets_for_source(
-                user_config, source, platform_key
+                user_config, source, platform_key, message=prompt
             )
             agent_cfg = user_config.get("agent") or {}
             from agent.skill_utils import parse_config_string_list
@@ -31366,8 +31382,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
+        # Heavy routing changes the tool schema. Allow it only on the first
+        # turn of a session; later explicit heavy requests stay on the existing
+        # channel posture so prompt-cache invariants are preserved and the agent
+        # can ask for a new heavy-mode/session boundary instead.
+        _routing_message = message if not history else None
         enabled_toolsets = self._resolve_enabled_toolsets_for_source(
-            user_config, source, platform_key
+            user_config, source, platform_key, message=_routing_message
         )
         agent_cfg_local = user_config.get("agent") or {}
         from agent.skill_utils import parse_config_string_list

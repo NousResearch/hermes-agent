@@ -208,6 +208,13 @@ def _extract_structured_result(run) -> tuple[dict[str, Any], str]:
 
 
 def _emit_completion_event(result: ProfileDelegationResult, session_key: Optional[str]) -> None:
+    """Emit a profile_delegation completion event to the process registry.
+
+    This is the producer side of the async completion protocol. When a
+    delegation outlives the initial polling window (returns "queued"), this
+    function is called when the worker eventually finishes to enqueue the
+    completion event that the gateway's _async_delegation_watcher consumes.
+    """
     if not session_key:
         return
     try:
@@ -229,6 +236,75 @@ def _emit_completion_event(result: ProfileDelegationResult, session_key: Optiona
         })
     except Exception:
         pass
+
+
+def reconcile_queued_delegation(delegation_id: str, *, board: Optional[str] = None) -> Optional[ProfileDelegationResult]:
+    """Reconcile a queued delegation by checking its terminal state.
+
+    This is the durable reconciler for the async completion protocol. It:
+    1. Looks up the delegation row in SQLite
+    2. Checks if the underlying task has reached a terminal state (done/blocked)
+    3. Extracts the structured result from the latest run
+    4. Updates the delegation row (complete/fail)
+    5. Emits a completion event to the process registry
+
+    Returns the result if the delegation reached a terminal state, None if still running.
+    """
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=board) as conn:
+        deleg = kb.get_profile_delegation(conn, delegation_id)
+        if not deleg:
+            return None
+
+        # Already reconciled
+        if deleg.get("status") in ("completed", "failed", "blocked_approval"):
+            return None
+
+        task_id = deleg.get("task_id")
+        if not task_id:
+            return None
+
+        task = kb.get_task(conn, task_id)
+        if not task:
+            return None
+
+        if task.status not in {"done", "blocked"}:
+            return None  # Still running
+
+        requester_session_key = deleg.get("requester_session_key")
+        executor_profile = deleg.get("executor_profile", "")
+        capability = deleg.get("capability", "")
+        risk = deleg.get("risk", "READ")
+        requester_profile = deleg.get("requester_profile", "default")
+
+        runs = kb.list_runs(conn, task_id, include_active=False)
+        latest = runs[-1] if runs else None
+
+        if task.status == "done" and latest:
+            structured, summary = _extract_structured_result(latest)
+            kb.complete_profile_delegation(conn, delegation_id, result=structured)
+            conn.commit()
+            result = ProfileDelegationResult(
+                status="completed", delegation_id=delegation_id, task_id=task_id,
+                executor_profile=executor_profile, requester_profile=requester_profile,
+                capability=capability, risk=risk,
+                result=structured, summary=summary, audit_ref=f"profile_delegations:{delegation_id}",
+            )
+        else:
+            error = (latest.error or latest.summary) if latest else (task.result or "delegated task blocked")
+            kb.fail_profile_delegation(conn, delegation_id, status="failed", error=error or "delegated task blocked")
+            conn.commit()
+            result = ProfileDelegationResult(
+                status="failed", delegation_id=delegation_id, task_id=task_id,
+                executor_profile=executor_profile, requester_profile=requester_profile,
+                capability=capability, risk=risk,
+                error=error, audit_ref=f"profile_delegations:{delegation_id}",
+            )
+
+        # Emit the completion event for the gateway watcher to consume
+        _emit_completion_event(result, requester_session_key)
+        return result
 
 
 def delegate_to_profile(req: ProfileDelegationRequest, *, spawn_fn=None) -> ProfileDelegationResult:
@@ -360,6 +436,8 @@ def delegate_to_profile(req: ProfileDelegationRequest, *, spawn_fn=None) -> Prof
                     ranking=ranking, policy=decision.to_dict(),
                 )
             time.sleep(0.2)
+        # Timeout path: return queued status. The caller can later call
+        # reconcile_queued_delegation() to check for terminal state.
         result = ProfileDelegationResult(
             status="queued", delegation_id=delegation_id, task_id=task_id,
             executor_profile=executor, requester_profile=req.requester_profile,

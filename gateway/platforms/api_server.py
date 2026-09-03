@@ -1469,6 +1469,22 @@ try:
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
+# Same-parity imports for the richer job fields below.  These are the exact
+# helpers `hermes cron create/edit` runs through (tools/cronjob_tools.py), so a
+# job created over REST is validated identically to one created from the CLI.
+# Imported defensively like the scanner above — but unlike the scanner, a
+# missing helper FAILS THE REQUEST that needs it rather than skipping the
+# check: these fields select scripts and credential routing, so silently
+# accepting them unvalidated would be worse than rejecting them.
+try:
+    from tools.cronjob_tools import (
+        _apply_continuity as _cron_apply_continuity,
+        _validate_cron_script_path as _cron_validate_script_path,
+    )
+except Exception:  # pragma: no cover - helpers are optional at import time
+    _cron_apply_continuity = None
+    _cron_validate_script_path = None
+
 
 class _ProviderAuthResolutionError(RuntimeError):
     """Raised only when gateway.run._resolve_runtime_agent_kwargs() fails
@@ -6723,8 +6739,31 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
+    # Job fields beyond the basic create/update set that `hermes cron
+    # create/edit` and the `cronjob` tool have always been able to set.  They
+    # are accepted here so a REST client (dashboard, external control plane)
+    # does not have to shell out to the CLI to configure change detection,
+    # run-to-run continuity, a narrowed toolset, or a per-job model pin.
+    #
+    # Deliberately NOT included: `base_url`, `script`, `workdir`, `no_agent`
+    # and `attach_to_session`.  Those select a host filesystem path, a
+    # credential-routing endpoint, or a non-agent execution mode; the REST
+    # surface stays narrower than the CLI there on purpose.
+    _RICH_JOB_FIELDS = (
+        "enabled_toolsets",
+        "continuity",
+        "context_from",
+        "monitor_script",
+        "monitor_url",
+        "model",
+        "provider",
+        "reasoning_effort",
+    )
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled",
+        *_RICH_JOB_FIELDS,
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -6750,6 +6789,97 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": "Invalid job ID format"}, status=400,
             )
         return job_id, None
+
+    @staticmethod
+    def _coerce_job_string_list(value: Any, field: str) -> tuple:
+        """Normalize a str-or-list-of-str job field. Returns (items, error)."""
+        if isinstance(value, str):
+            return ([value.strip()] if value.strip() else []), None
+        if isinstance(value, list):
+            if not all(isinstance(item, str) for item in value):
+                return None, f"{field} entries must be strings"
+            return [item.strip() for item in value if item.strip()], None
+        return None, f"{field} must be a string or a list of strings"
+
+    def _normalize_rich_job_fields(
+        self,
+        body: Dict[str, Any],
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Validate the richer job fields from a REST body.
+
+        Returns ``(fields, error_message)``. ``fields`` is ready to pass to
+        ``create_job`` (``existing is None``) or to merge into an
+        ``update_job`` payload. Every rule here mirrors the create/update
+        branches of ``tools/cronjob_tools.py`` so the REST and CLI surfaces
+        cannot drift: same script-path containment, same context_from
+        existence check, same ``continuity`` → reserved ``"self"`` ref
+        translation, same "empty string clears the field" semantics.
+        """
+        fields: Dict[str, Any] = {}
+
+        for name in ("model", "provider", "reasoning_effort"):
+            value = body.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                return None, f"{name} must be a string"
+            # reasoning_effort spelling is validated at the storage choke
+            # point (cron.jobs._normalize_reasoning_effort), which raises
+            # ValueError — surfaced as a 400 by the handlers below.
+            fields[name] = value.strip() or None
+
+        for name in ("monitor_script", "monitor_url"):
+            value = body.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                return None, f"{name} must be a string"
+            value = value.strip()
+            if name == "monitor_script" and value:
+                if _cron_validate_script_path is None:
+                    return None, "monitor_script validation is unavailable"
+                script_error = _cron_validate_script_path(value)
+                if script_error:
+                    return None, script_error
+            fields[name] = value or None
+
+        if body.get("enabled_toolsets") is not None:
+            toolsets, error = self._coerce_job_string_list(
+                body["enabled_toolsets"], "enabled_toolsets",
+            )
+            if error:
+                return None, error
+            fields["enabled_toolsets"] = toolsets or None
+
+        continuity = body.get("continuity")
+        if continuity is not None and not isinstance(continuity, bool):
+            return None, "continuity must be a boolean"
+        context_from = body.get("context_from")
+        if context_from is not None or continuity is not None:
+            if context_from is None:
+                # continuity-only update: start from the job's stored refs so
+                # external chaining survives the toggle.
+                stored = (existing or {}).get("context_from") or []
+                refs = [str(item).strip() for item in stored if str(item).strip()]
+            else:
+                refs, error = self._coerce_job_string_list(context_from, "context_from")
+                if error:
+                    return None, error
+            if continuity is not None:
+                if _cron_apply_continuity is None:
+                    return None, "continuity is unavailable"
+                refs = _cron_apply_continuity(refs, continuity) or []
+            for ref_id in refs:
+                # "self" resolves to the job's own id at run time and cannot be
+                # looked up — on create the job does not exist yet.
+                if ref_id.lower() == "self":
+                    continue
+                if _cron_get is None or not _cron_get(ref_id):
+                    return None, f"context_from job '{ref_id}' not found"
+            fields["context_from"] = refs or None
+
+        return fields, None
 
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs — list all cron jobs."""
@@ -6802,6 +6932,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
+            rich_fields, rich_error = self._normalize_rich_job_fields(body)
+            if rich_error:
+                return web.json_response({"error": rich_error}, status=400)
+
             kwargs = {
                 "prompt": prompt,
                 "schedule": schedule,
@@ -6813,11 +6947,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            kwargs.update(rich_fields)
 
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except _CronSchedulerRegistrationError as e:
             return web.json_response(e.to_dict(), status=424)
+        except ValueError as e:
+            # create_job raises ValueError for spelling-level rejections it owns
+            # (reasoning_effort grammar, monitor_script/monitor_url mutual
+            # exclusion). Those are client mistakes, not server faults.
+            return web.json_response({"error": _redact_api_error_text(e)}, status=400)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -6870,11 +7010,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 scan_error = _scan_cron_prompt(sanitized["prompt"])
                 if scan_error:
                     return web.json_response({"error": scan_error}, status=400)
+            if set(self._RICH_JOB_FIELDS) & set(sanitized):
+                existing = _cron_get(job_id)
+                if not existing:
+                    return web.json_response({"error": "Job not found"}, status=404)
+                rich_fields, rich_error = self._normalize_rich_job_fields(
+                    sanitized, existing=existing,
+                )
+                if rich_error:
+                    return web.json_response({"error": rich_error}, status=400)
+                # `continuity` is REST/CLI sugar, not a stored field: it has
+                # already been folded into context_from. Drop every raw rich
+                # key and replace it with the normalized value.
+                for key in self._RICH_JOB_FIELDS:
+                    sanitized.pop(key, None)
+                sanitized.update(rich_fields)
+                # update_job() does not own the monitor mutual-exclusion rule
+                # that create_job() enforces, so check the EFFECTIVE pair here
+                # exactly as the cronjob tool does.
+                effective_script = sanitized.get(
+                    "monitor_script", existing.get("monitor_script"),
+                )
+                effective_url = sanitized.get(
+                    "monitor_url", existing.get("monitor_url"),
+                )
+                if effective_script and effective_url:
+                    return web.json_response({"error": (
+                        "monitor_script and monitor_url are mutually exclusive "
+                        "— clear one before setting the other."
+                    )}, status=400)
+                if not sanitized:
+                    return web.json_response({"error": "No valid fields to update"}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
+        except ValueError as e:
+            # update_job raises ValueError for immutable-field and
+            # reasoning_effort rejections — client mistakes, not server faults.
+            return web.json_response({"error": _redact_api_error_text(e)}, status=400)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 

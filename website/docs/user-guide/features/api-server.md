@@ -512,7 +512,28 @@ List all scheduled jobs.
 
 ### POST /api/jobs
 
-Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+Create a new scheduled job. `name` and `schedule` are required; every other field is optional.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Job name (≤ 200 chars). Required. |
+| `schedule` | string | Cron expression or natural-language schedule. Required. |
+| `prompt` | string | Prompt for the run (≤ 5000 chars, scanned for prompt injection). |
+| `deliver` | string | Delivery target. Defaults to `local`. |
+| `skills` | string \| string[] | Skills to preload. |
+| `repeat` | integer | Positive repeat count. |
+| `enabled_toolsets` | string \| string[] | Narrow the tool schema to these toolsets — fewer tools means fewer tokens on every run. |
+| `continuity` | boolean | Feed the job its own previous run's output back in, so a recurring monitor stops re-reporting an unchanged condition. Stored as the reserved `self` entry in `context_from` — see [Cron](./cron.md). |
+| `context_from` | string \| string[] | Job IDs whose last output is prepended as context. `self` is reserved for continuity. Every other ID must already exist. |
+| `monitor_script` | string | Path to a script whose output gates the run — unchanged output skips the LLM entirely. Path containment is validated exactly as `hermes cron` validates it. |
+| `monitor_url` | string | URL whose content gates the run the same way. Mutually exclusive with `monitor_script`. |
+| `model` | string | Per-job model override. |
+| `provider` | string | Per-job provider override. |
+| `reasoning_effort` | string | Per-job reasoning-effort override. |
+
+Sending `""` (or `[]` for a list field) clears that field. Bodies that the jobs store rejects as malformed — a bad `reasoning_effort` spelling, both monitors set at once — return `400`.
+
+`base_url`, `script`, `workdir`, `no_agent` and `attach_to_session` are **not** accepted over REST: they select a host filesystem path, a credential-routing endpoint, or a non-agent execution mode, and stay CLI-only. Unknown fields are ignored.
 
 ### GET /api/jobs/\{job_id\}
 
@@ -520,7 +541,7 @@ Fetch a single job's definition and last-run state.
 
 ### PATCH /api/jobs/\{job_id\}
 
-Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
+Update fields on an existing job. Partial updates are merged, and the body accepts the same fields as `POST /api/jobs` plus `enabled`. A `continuity`-only update is merged onto the job's stored `context_from`, so toggling it leaves any external chaining in place.
 
 ### DELETE /api/jobs/\{job_id\}
 

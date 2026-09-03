@@ -644,6 +644,7 @@ Messages in Telegram topics `31` and `42` are always ignored before the mention 
 - Patterns use Python regular expressions
 - Matching is case-insensitive
 - Patterns are checked against both text messages and media captions
+- In `require_mention` groups, captionless voice/audio notes are transcribed once so these patterns can match a spoken wake word; a note that does not contain a match is transcribed and dropped. The transcript is reused for the agent turn (no second STT pass)
 - Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
 - If you want a pattern to match only at the start of a message, anchor it with `^`
 

@@ -1,7 +1,10 @@
 import json
 from unittest.mock import AsyncMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.platforms.base import MessageType
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
@@ -228,5 +231,122 @@ def test_broadcast_filter_runs_before_allowlist():
         senderId="34612345678@s.whatsapp.net",
     )
     assert adapter._should_process_message(msg) is False
+
+
+def _voice_note(body="", **overrides):
+    return _group_message(
+        body,
+        hasMedia=True,
+        mediaType="ptt",
+        mediaUrls=[],
+        **overrides,
+    )
+
+
+def test_captionless_voice_does_not_match_mention_patterns_on_body():
+    """The spoken wake word is not in the body at gate time."""
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+
+    assert adapter._should_process_message(_group_message("hermes, what's on today?")) is True
+    assert adapter._should_process_message(_voice_note("")) is False
+    assert adapter._should_process_message(_voice_note("[ptt received]")) is False
+    assert adapter._should_process_message(
+        _voice_note("", quotedParticipant="15551230000@lid")
+    ) is True
+
+
+def test_needs_eager_voice_mention_gate_is_narrow():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+
+    assert adapter._needs_eager_voice_mention_gate(_voice_note("[ptt received]")) is True
+    assert adapter._needs_eager_voice_mention_gate(_voice_note("")) is True
+    assert adapter._needs_eager_voice_mention_gate(_group_message("hermes hi")) is False
+    assert adapter._needs_eager_voice_mention_gate(
+        _voice_note("", quotedParticipant="15551230000@lid")
+    ) is False
+    assert adapter._transcript_matches_mention_patterns("hermes, what's on today?") is True
+    assert adapter._transcript_matches_mention_patterns("no wake word here") is False
+
+    no_patterns = _make_adapter(require_mention=True, group_policy="open")
+    assert no_patterns._needs_eager_voice_mention_gate(_voice_note("")) is False
+
+    open_group = _make_adapter(
+        require_mention=False,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+    assert open_group._needs_eager_voice_mention_gate(_voice_note("")) is False
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_accepts_captionless_voice_via_transcript():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+
+    async def _fake_transcribe(data):
+        return "hermes, what's on today?", "/tmp/gate-audio.ogg"
+
+    adapter._eager_transcribe_for_gate = _fake_transcribe
+    event = await adapter._build_message_event(_voice_note("[ptt received]"))
+
+    assert event is not None
+    assert event.message_type == MessageType.VOICE
+    assert getattr(event, "_gateway_pending_stt_text") == '"hermes, what\'s on today?"'
+    assert getattr(event, "_gateway_pending_stt_transcripts") == ["hermes, what's on today?"]
+    assert event.media_urls == ["/tmp/gate-audio.ogg"]
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_drops_voice_when_transcript_has_no_wake_word():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+    transcribe_calls = []
+
+    async def _fake_transcribe(data):
+        transcribe_calls.append(data)
+        return "weather looks fine", None
+
+    adapter._eager_transcribe_for_gate = _fake_transcribe
+    event = await adapter._build_message_event(_voice_note(""))
+
+    assert event is None
+    assert transcribe_calls
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_skips_eager_stt_for_reply_to_bot_voice():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        group_policy="open",
+    )
+    transcribe_calls = []
+
+    async def _fake_transcribe(data):
+        transcribe_calls.append(data)
+        return "should not run", None
+
+    adapter._eager_transcribe_for_gate = _fake_transcribe
+    event = await adapter._build_message_event(
+        _voice_note("", quotedParticipant="15551230000@lid")
+    )
+
+    assert event is not None
+    assert transcribe_calls == []
+    assert not hasattr(event, "_gateway_pending_stt_text")
 
 

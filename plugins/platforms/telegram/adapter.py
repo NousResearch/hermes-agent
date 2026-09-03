@@ -9498,6 +9498,91 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _transcript_matches_mention_patterns(self, transcript: str) -> bool:
+        if not transcript or not self._mention_patterns:
+            return False
+        return any(pattern.search(transcript) for pattern in self._mention_patterns)
+
+    def _needs_eager_voice_mention_gate(self, message: Message) -> bool:
+        """True when only a spoken wake word could satisfy the group mention gate.
+
+        Captionless voice/audio in a ``require_mention`` group with
+        ``mention_patterns`` is dropped by ``_should_process_message`` because
+        the raw Telegram message has no ``text``/``caption``. Transcribe first
+        in that narrow case only.
+        """
+        if not getattr(self, "_mention_patterns", None):
+            return False
+        if not (getattr(message, "voice", None) or getattr(message, "audio", None)):
+            return False
+        if getattr(message, "text", None) or getattr(message, "caption", None):
+            return False
+        if not self._is_group_chat(message):
+            return False
+        if not self._telegram_require_mention():
+            return False
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+        allowed = self._telegram_allowed_chats()
+        if allowed and chat_id_str not in allowed:
+            return False
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            thread_id = self._effective_message_thread_id(message)
+            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+            if topic_id not in allowed_topics:
+                return False
+        thread_id = self._effective_message_thread_id(message)
+        if thread_id is not None:
+            try:
+                if int(thread_id) in self._telegram_ignored_threads():
+                    return False
+            except (TypeError, ValueError):
+                pass
+        if chat_id_str in self._telegram_free_response_chats():
+            return False
+        if self._telegram_is_free_response_topic(message):
+            return False
+        if self._is_reply_to_bot(message):
+            return False
+        if self._is_guest_mention(message):
+            return False
+        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
+            return False
+        return not self._message_matches_mention_patterns(message)
+
+    async def _eager_transcribe_voice(self, msg) -> tuple:
+        """Download voice/audio and run STT once for the mention gate.
+
+        Returns ``(transcript, cached_path)``. The path is reused by
+        ``_handle_media_message`` so the runner does not download twice.
+        """
+        try:
+            from tools.transcription_tools import transcribe_audio
+        except Exception as e:
+            logger.debug("[%s] STT module unavailable: %s", self.name, e)
+            return None, None
+        try:
+            if getattr(msg, "voice", None):
+                file_obj = await msg.voice.get_file()
+                ext = ".ogg"
+            elif getattr(msg, "audio", None):
+                file_obj = await msg.audio.get_file()
+                ext = ".mp3"
+            else:
+                return None, None
+            audio_bytes = await file_obj.download_as_bytearray()
+            cached_path = await cache_audio_from_bytes_async(bytes(audio_bytes), ext=ext)
+            result = await asyncio.to_thread(transcribe_audio, cached_path, None, "gateway")
+            if isinstance(result, dict) and result.get("success"):
+                text = (result.get("transcript") or result.get("text") or "").strip()
+                return (text or None), cached_path
+            return None, cached_path
+        except Exception as e:
+            logger.warning("[%s] Eager voice transcription failed: %s", self.name, e)
+            return None, None
+
     def _is_guest_mention(self, message: Message) -> bool:
         """Return True for the narrow guest-mode bypass: explicit bot mention.
 
@@ -9949,6 +10034,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # _message_mentions_bot above — skip the redundant second call.
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
+        if getattr(message, "_voice_accepted_by_transcript", False):
+            return True
         return self._message_matches_mention_patterns(message)
 
     async def _ensure_forum_commands(self, message) -> None:
@@ -10285,6 +10372,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(update.message, "chat", None), "id", None),
             )
             return
+        gate_transcript = None
+        gate_audio_path = None
+        if getattr(self, "_mention_patterns", None) and self._needs_eager_voice_mention_gate(update.message):
+            gate_transcript, gate_audio_path = await self._eager_transcribe_voice(update.message)
+            if gate_transcript and self._transcript_matches_mention_patterns(gate_transcript):
+                setattr(update.message, "_voice_accepted_by_transcript", True)
+                logger.info(
+                    "[%s] Voice accepted via transcript mention match: %r",
+                    self.name,
+                    gate_transcript[:80],
+                )
+            else:
+                logger.info(
+                    "[%s] Voice dropped: %s",
+                    self.name,
+                    "no mention-pattern match in transcript"
+                    if gate_transcript
+                    else "STT failed or empty transcript",
+                )
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message
@@ -10307,6 +10413,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+        if gate_transcript and getattr(msg, "_voice_accepted_by_transcript", False):
+            setattr(event, "_gateway_pending_stt_text", f'"{gate_transcript}"')
+            setattr(event, "_gateway_pending_stt_transcripts", [gate_transcript])
+            if gate_audio_path:
+                event.media_urls = [gate_audio_path]
+                event.media_types = ["audio/ogg"] if msg.voice else ["audio/mp3"]
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -10353,7 +10465,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._surface_media_cache_failure(msg, event, "photo", e)
 
         # Download voice/audio messages to cache for STT transcription
-        if msg.voice:
+        if msg.voice and not event.media_urls:
             try:
                 allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
                 if not allowed:
@@ -10370,7 +10482,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "voice message", e)
-        elif msg.audio:
+        elif msg.audio and not event.media_urls:
             try:
                 allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
                 if not allowed:

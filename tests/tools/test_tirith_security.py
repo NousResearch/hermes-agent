@@ -434,8 +434,23 @@ class TestUnsupportedPlatform:
         # could never execute honestly anyway — the second has no CI runner
         # on any lane.
         with patch("tools.tirith_security.platform.system", return_value=system), \
-             patch("tools.tirith_security.platform.machine", return_value=machine):
+             patch("tools.tirith_security.platform.machine", return_value=machine), \
+             patch("tools.tirith_security.is_termux", return_value=False):
             assert _tirith_mod.is_platform_supported() is expected
+
+    @pytest.mark.parametrize(
+        "machine, expected",
+        [
+            ("aarch64", "aarch64-unknown-linux-musl"),
+            ("arm64", "aarch64-unknown-linux-musl"),
+            ("x86_64", None),
+        ],
+    )
+    def test_termux_uses_only_published_musl_target(self, machine, expected):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value=machine), \
+             patch("tools.tirith_security.is_termux", return_value=True):
+            assert _tirith_mod._detect_target() == expected
 
 
     @patch("tools.tirith_security._load_security_config")

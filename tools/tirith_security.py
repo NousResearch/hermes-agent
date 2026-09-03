@@ -47,7 +47,7 @@ import time
 import urllib.request
 from typing import Protocol, TypedDict, cast
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -692,10 +692,19 @@ def _detect_target() -> str | None:
     system = platform.system()
     machine = platform.machine().lower()
 
-    # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
+    # Termux uses Android's Bionic libc, so Tirith's glibc Linux build cannot
+    # run there.  The release publishes a statically linked musl build for
+    # AArch64 Termux; no x86_64 Android artifact is currently published.
+    if is_termux():
+        return (
+            "aarch64-unknown-linux-musl"
+            if machine in {"aarch64", "arm64"}
+            else None
+        )
+
     if system == "Darwin":
         plat = "apple-darwin"
-    elif system in {"Linux", "Android"}:
+    elif system == "Linux":
         plat = "unknown-linux-gnu"
     else:
         return None
@@ -1390,6 +1399,30 @@ def _maintain_managed_tirith(path: str, *, log_failures: bool = True) -> str:
             "Hermes-managed release build"
         )
         return "skipped"
+
+    # Tirith 0.4.1 reports every AArch64 Linux build as the glibc release
+    # target.  On Termux, delegating to its self-updater would therefore fetch
+    # an unusable glibc binary over the working musl one.  Keep the same
+    # provenance gate, then use Hermes' checksum-verified, preimage-bound
+    # installer until Tirith can distinguish the musl target itself.
+    if (
+        _detect_target() == "aarch64-unknown-linux-musl"
+        and provenance.get("target") != "aarch64-unknown-linux-musl"
+    ):
+        try:
+            expected_sha256 = _sha256_file(path)
+        except OSError:
+            return "failed"
+        installed, install_reason = _install_tirith(
+            log_failures=log_failures,
+            expected_existing_sha256=expected_sha256,
+        )
+        if installed and _is_managed_tirith(installed):
+            return "updated"
+        if install_reason == "lazy_installs_disabled":
+            return "deferred"
+        return "failed"
+
     return _run_tirith_update(path)
 
 

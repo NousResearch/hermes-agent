@@ -744,11 +744,90 @@ class TestMaintenanceDecision:
         )
         update = MagicMock(return_value="current")
         monkeypatch.setattr(tirith, "_run_tirith_update", update)
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
 
         assert (
             tirith._maintain_managed_tirith(str(managed), log_failures=False)
             == "current"
         )
+        update.assert_called_once_with(str(managed))
+
+    def test_termux_release_build_uses_verified_musl_installer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        expected_sha256 = tirith._sha256_file(str(managed))
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: ((0, 4, 1), "")
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_probe_tirith_provenance",
+            lambda _path: (
+                {
+                    "version": "0.4.1",
+                    "binary_path": str(managed),
+                    "install_method": "hermes",
+                    "install_method_resolved": True,
+                    "dev_build": False,
+                },
+                "",
+            ),
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        install = MagicMock(return_value=(str(managed), ""))
+        update = MagicMock()
+        monkeypatch.setattr(tirith, "_install_tirith", install)
+        monkeypatch.setattr(tirith, "_run_tirith_update", update)
+
+        assert (
+            tirith._maintain_managed_tirith(str(managed), log_failures=False)
+            == "updated"
+        )
+        install.assert_called_once_with(
+            log_failures=False,
+            expected_existing_sha256=expected_sha256,
+        )
+        update.assert_not_called()
+
+    def test_termux_release_with_native_musl_provenance_uses_self_update(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        monkeypatch.setattr(
+            tirith, "_probe_tirith_version", lambda _path: ((0, 4, 2), "")
+        )
+        monkeypatch.setattr(
+            tirith,
+            "_probe_tirith_provenance",
+            lambda _path: (
+                {
+                    "version": "0.4.2",
+                    "binary_path": str(managed),
+                    "install_method": "hermes",
+                    "install_method_resolved": True,
+                    "dev_build": False,
+                    "target": "aarch64-unknown-linux-musl",
+                },
+                "",
+            ),
+        )
+        monkeypatch.setattr(
+            tirith, "_detect_target", lambda: "aarch64-unknown-linux-musl"
+        )
+        install = MagicMock()
+        update = MagicMock(return_value="current")
+        monkeypatch.setattr(tirith, "_install_tirith", install)
+        monkeypatch.setattr(tirith, "_run_tirith_update", update)
+
+        assert tirith._maintain_managed_tirith(str(managed)) == "current"
+        install.assert_not_called()
         update.assert_called_once_with(str(managed))
 
     @pytest.mark.parametrize(

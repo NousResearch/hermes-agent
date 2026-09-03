@@ -644,8 +644,27 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        # ``requested_provider`` comes back from a resumed session's row, where
+        # it was stored as the agent's provider KIND (see ``_persist``). For a
+        # named custom provider that kind is the bare string "custom", which is
+        # not the name of anything under ``providers:`` — feeding it back in
+        # resolves some other endpoint and, crucially, no api_key, since only
+        # base_url and api_mode have a stored value to fall back on below. The
+        # session then sends its model somewhere that has never heard of it and
+        # every turn answers with that endpoint's rejection, for good.
+        #
+        # So the kind is not treated as a request: the configured provider is,
+        # with the session's own endpoint passed alongside it so a session
+        # pinned to a different one keeps it.
+        requested_runtime_provider = requested_provider or config_provider
+        if str(requested_runtime_provider or "").strip().lower() == "custom":
+            requested_runtime_provider = config_provider or None
+
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            runtime = resolve_runtime_provider(
+                requested=requested_runtime_provider,
+                explicit_base_url=base_url or None,
+            )
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),

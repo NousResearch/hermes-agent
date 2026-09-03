@@ -1148,8 +1148,35 @@ _OS_MARKS = {
 }
 
 
+_CANONICAL_RUNNER_ENV = "HERMES_TEST_RUNNER"
+_BARE_PYTEST_ESCAPE_ENV = "HERMES_ALLOW_BARE_PYTEST"
+
+
+def _require_canonical_test_runner() -> None:
+    """Refuse collection unless launched by the canonical test runner.
+
+    Bare ``pytest tests/`` bypasses the hermetic env and per-file isolation
+    from ``scripts/run_tests.sh`` / ``run_tests_parallel.py`` and can mutate
+    the real working tree (git operations against the checkout).
+    """
+    if os.environ.get(_BARE_PYTEST_ESCAPE_ENV) == "1":
+        return
+    if os.environ.get(_CANONICAL_RUNNER_ENV):
+        return
+    raise pytest.UsageError(
+        "Refusing to run tests without the canonical runner.\n\n"
+        "Bare `pytest` can mutate your working tree (tests may trigger git "
+        "operations against the real checkout). Use the isolated runner "
+        "instead:\n\n"
+        "    scripts/run_tests.sh [paths...]\n\n"
+        "For deliberate one-off debugging only:\n\n"
+        "    HERMES_ALLOW_BARE_PYTEST=1 pytest ...\n"
+    )
+
+
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    _require_canonical_test_runner()
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "

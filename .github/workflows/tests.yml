@@ -189,7 +189,7 @@ jobs:
       - name: Run e2e tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/e2e/ -v --tb=short
+          scripts/run_tests.sh tests/e2e/ -v --tb=short
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

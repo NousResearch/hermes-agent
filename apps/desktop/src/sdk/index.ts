@@ -1408,6 +1408,12 @@ export {
   type ComposerAttachmentProvider,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
+export {
+  type ComposerVoiceAssistant,
+  type ComposerVoiceController,
+  type ComposerVoiceLease,
+  useComposerVoiceController
+} from '@/app/chat/composer/hooks/use-composer-voice'
 
 // -- ui: the design language --------------------------------------------------
 

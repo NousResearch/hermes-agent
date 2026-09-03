@@ -58,7 +58,7 @@ import { useComposerSubmit } from './hooks/use-composer-submit'
 import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
-import { useComposerVoice } from './hooks/use-composer-voice'
+import { ComposerVoiceControllerProvider, useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -971,6 +971,7 @@ export function ChatBar({
     endConversation,
     handleToggleAutoSpeak,
     startConversation,
+    voiceController,
     voiceActivityState,
     voiceConversationActive,
     voiceStatus
@@ -1386,7 +1387,9 @@ export function ChatBar({
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
                     <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
-                      <ContribSlot area={COMPOSER_AREAS.actions} />
+                      <ComposerVoiceControllerProvider controller={voiceController}>
+                        <ContribSlot area={COMPOSER_AREAS.actions} />
+                      </ComposerVoiceControllerProvider>
                       {controls}
                     </div>
                   </div>

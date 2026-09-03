@@ -401,6 +401,72 @@ def test_refresh_xai_oauth_pure_403_marked_tier_denied_not_relogin(monkeypatch):
     assert "tier" in message
 
 
+def test_refresh_xai_oauth_pure_wraps_network_errors(monkeypatch):
+    """DNS/connect failures raise AuthError instead of raw httpx crashes.
+
+    ``hermes model`` refreshes via get_xai_oauth_auth_status. An
+    httpx.ConnectError used to escape uncaught and dump a traceback.
+    """
+    import httpx
+
+    class _BoomClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **kw: _BoomClient())
+    with pytest.raises(AuthError) as exc:
+        refresh_xai_oauth_pure(
+            "at", "rt", token_endpoint="https://auth.x.ai/oauth2/token"
+        )
+    assert exc.value.code == "xai_refresh_network_error"
+    assert exc.value.relogin_required is False
+    assert "network error" in str(exc.value).lower()
+    assert "name resolution" in str(exc.value).lower()
+
+
+def test_get_xai_oauth_auth_status_network_error_does_not_raise(tmp_path, monkeypatch):
+    """get_xai_oauth_auth_status returns an error dict on DNS failure, no raise."""
+    import httpx
+
+    hermes_home = tmp_path / "hermes"
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    _setup_hermes_auth(
+        hermes_home,
+        access_token=expired,
+        refresh_token="rt",
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class _BoomClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **kw: _BoomClient())
+    # Force the auth-store path (skip pool).
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda *a, **kw: None,
+    )
+
+    status = get_xai_oauth_auth_status()
+    assert status["logged_in"] is False
+    assert "error" in status
+    assert "name resolution" in status["error"].lower() or "network" in status["error"].lower()
+
+
 def test_format_auth_error_tier_denied_does_not_suggest_relogin():
     """``xai_oauth_tier_denied`` must not append the re-authenticate hint.
 

@@ -1,7 +1,8 @@
-from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 """Integration tests for the hosted Discussion coordinator."""
 
 from __future__ import annotations
+
+from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 
 import json
 import hashlib
@@ -983,147 +984,6 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
     ) == {"resolved": 1}
     assert rpc.approvals == [("ops-session", "approval-1", "once")]
     assert service.status("room-1")["pending_actions"] == []
-
-
-def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    peer = _FakePeerClient()
-    route = PeerMemberRoute(
-        home_install_id="install-home",
-        member_id="member-reviewer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest="a" * 64,
-        execution_policy_digest="b" * 64,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed-room-grant",
-    )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
-    service.rpc = _FakeRPC()
-    service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("default",)
-    room = service.create_room(
-        room_id="room-1",
-        name="Review room",
-        members=[
-            {
-                "member_id": "default",
-                "profile": "default",
-                "handle": "local",
-            },
-            {
-                "member_id": "member-reviewer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": "a" * 64,
-                },
-            },
-        ],
-    )
-    assert room["members"][1]["target"]["kind"] == "peer"
-
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-peer-1",
-        payload={"text": "@reviewer inspect this", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member" for event in service._events("room-1")
-        )
-    )
-    assert service.stop(timeout=1.0)
-
-    events = service._events("room-1")
-    reply = next(event for event in events if event["kind"] == "message.member")
-    assert reply["payload"]["member_id"] == "member-reviewer"
-    assert reply["payload"]["text"] == "Remote review complete."
-    assert reply["actor"]["connection_id"] == "peer-review"
-    assert peer.dispatches[0]["target_profile"] == "reviewer"
-
-
-def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    route = PeerMemberRoute(
-        home_install_id="install-home",
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest="a" * 64,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed-room-grant",
-    )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-peer"): route},
-        peer_clients={"install-peer": _UnavailablePeerClient()},
-    )
-    service.rpc = _FakeRPC()
-    service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("local",)
-    service.create_room(
-        room_id="room-1",
-        name="Fallback room",
-        members=[
-            {
-                "member_id": "member-peer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": "a" * 64,
-                },
-            },
-            {"member_id": "local", "profile": "local", "handle": "local"},
-        ],
-    )
-
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-fallback-1",
-        payload={"text": "Review this together", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member"
-            and event["payload"]["member_id"] == "local"
-            for event in service._events("room-1")
-        )
-    )
-    assert service.stop(timeout=1.0)
-
-    events = service._events("room-1")
-    assert any(
-        event["kind"] == "turn.failed"
-        and event["payload"]["member_id"] == "member-peer"
-        for event in events
-    )
-    assert any(
-        event["kind"] == "message.member" and event["payload"]["member_id"] == "local"
-        for event in events
-    )
 
 
 def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):

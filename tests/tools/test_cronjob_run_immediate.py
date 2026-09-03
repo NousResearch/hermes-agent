@@ -39,8 +39,29 @@ class TestCronjobRunExecutesImmediately:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-run-1", return_job=True)
+        m_claim.assert_called_once_with(
+            "job-run-1", return_job=True, allow_provider_backoff=True
+        )
         m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
+
+    def test_manual_run_allows_backoff_added_during_atomic_claim(self):
+        """Manual intent, not a stale snapshot, authorizes backoff bypass."""
+        job = dict(_JOB)
+        claimed = {**job, "fire_claim": {"by": "manual-owner"}}
+        with patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+        ) as m_claim, patch(
+            "cron.scheduler.run_one_job", return_value=True
+        ), patch(
+            "tools.cronjob_tools.get_job",
+            return_value={"last_status": "ok", "last_error": None},
+        ):
+            result = _execute_job_now(job)
+
+        assert result["success"] is True
+        m_claim.assert_called_once_with(
+            "job-run-1", return_job=True, allow_provider_backoff=True
+        )
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
         """A direct run must re-arm Chronos after it advances next_run_at.

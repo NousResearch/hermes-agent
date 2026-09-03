@@ -138,15 +138,44 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- arming -----------------------------------------------------------
 
-    def _arm_one_shot(self, job: Dict[str, Any]) -> None:
-        """Ask NAS to arm exactly one one-shot at the job's next_run_at.
+    @staticmethod
+    def _effective_fire_at(job: Dict[str, Any]) -> str:
+        """Return the remote fire time without changing the stored cadence."""
+        fire_at = str(job.get("next_run_at") or "")
+        if not fire_at:
+            return ""
+        if (
+            job.get("manual_run_at")
+            and job.get("manual_run_at") == job.get("next_run_at")
+        ):
+            return fire_at
 
-        The agent computes the time; NAS+its scheduler are the dumb executor.
-        Idempotent per (job_id, fire_at) via dedup_key, so re-arming the same
-        fire is a no-op NAS-side.
+        from datetime import datetime
+        from cron.jobs import _ensure_aware, _hermes_now
+        from cron.rate_limit_backoff import provider_backoff_active
+
+        now = _hermes_now()
+        if not provider_backoff_active(job, now=now):
+            return fire_at
+        until = str((job.get("provider_backoff") or {}).get("until") or "")
+        try:
+            if _ensure_aware(datetime.fromisoformat(until)) > _ensure_aware(
+                datetime.fromisoformat(fire_at)
+            ):
+                return until
+        except (TypeError, ValueError):
+            pass
+        return fire_at
+
+    def _arm_one_shot(self, job: Dict[str, Any]) -> None:
+        """Ask NAS to arm exactly one one-shot at the effective fire time.
+
+        The stored ``next_run_at`` remains the user's cadence. A durable model-
+        provider backoff only moves the external wake-up to its expiry, so a
+        consumed callback cannot strand the job while inference is suppressed.
         """
         job_id = job["id"]
-        fire_at = job.get("next_run_at")
+        fire_at = self._effective_fire_at(job)
         if not fire_at:
             return
         dedup_key = f"{job_id}:{fire_at}"
@@ -197,7 +226,7 @@ class ChronosCronScheduler(CronScheduler):
         from cron.jobs import load_jobs
 
         desired: Dict[str, str] = {
-            j["id"]: j["next_run_at"]
+            j["id"]: self._effective_fire_at(j)
             for j in load_jobs()
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"
         }

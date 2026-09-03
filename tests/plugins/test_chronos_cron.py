@@ -9,6 +9,8 @@ All NAS calls are mocked — ZERO live network. These prove:
     (job gone) stops re-arming.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 
@@ -156,6 +158,48 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
 
     assert prov.fire_due("j1") is True
     assert [provision["job_id"] for provision in fake.provisions] == ["j1"]
+
+
+def test_failed_fire_rearms_at_provider_backoff_expiry(chronos, monkeypatch):
+    prov, fake = chronos
+    now = datetime.now(timezone.utc)
+    persisted = {
+        "id": "j1",
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": (now + timedelta(minutes=5)).isoformat(),
+        "provider_backoff": {"until": (now + timedelta(hours=1)).isoformat()},
+    }
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.fire_claimed",
+        lambda self, job, **kw: True,
+    )
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)
+
+    assert prov.fire_claimed({"id": "j1"}) is True
+    assert fake.provisions[0]["fire_at"] == persisted["provider_backoff"]["until"]
+
+
+def test_reconcile_after_restart_restores_backoff_expiry_fire(
+    temp_home,
+    chronos,
+    monkeypatch,
+):
+    prov, fake = chronos
+    now = datetime.now(timezone.utc)
+    job = {
+        "id": "j1",
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": (now + timedelta(minutes=5)).isoformat(),
+        "provider_backoff": {"until": (now + timedelta(hours=1)).isoformat()},
+    }
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [job])
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: job)
+
+    prov.reconcile()
+
+    assert fake.provisions[0]["fire_at"] == job["provider_backoff"]["until"]
 
 
 def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch):

@@ -260,6 +260,53 @@ class TestSessionOps:
         assert help_cmd.input is None
 
 
+    def test_prompt_response_usage_prefers_latest_request_over_session_totals(self, agent):
+        agent._last_turn_usage = {
+            "prompt_tokens": 180_000,
+            "completion_tokens": 2_000,
+            "total_tokens": 182_000,
+            "input_tokens": 180_000,
+            "output_tokens": 2_000,
+            "cache_read_tokens": 160_000,
+            "cache_write_tokens": 500,
+            "reasoning_tokens": 750,
+        }
+        cumulative_result = {
+            "prompt_tokens": 5_200_000,
+            "completion_tokens": 40_000,
+            "total_tokens": 5_240_000,
+            "cache_read_tokens": 4_800_000,
+            "cache_write_tokens": 9_000,
+            "reasoning_tokens": 22_300,
+        }
+
+        usage = agent._build_prompt_response_usage(cumulative_result, agent)
+
+        assert usage is not None
+        assert usage.input_tokens == 180_000
+        assert usage.output_tokens == 2_000
+        assert usage.total_tokens == 182_000
+        assert usage.cached_read_tokens == 160_000
+        assert usage.cached_write_tokens == 500
+        assert usage.thought_tokens == 750
+
+    def test_prompt_response_usage_ignores_session_totals_without_turn_usage(self, agent):
+        agent._last_turn_usage = None
+        cumulative_result = {
+            "prompt_tokens": 5_200_000,
+            "completion_tokens": 40_000,
+            "total_tokens": 5_240_000,
+            "cache_read_tokens": 4_800_000,
+            "reasoning_tokens": 22_300,
+        }
+
+        assert agent._build_prompt_response_usage(cumulative_result, agent) is None
+
+    def test_prompt_response_usage_absent_without_any_usage(self, agent):
+        agent._last_turn_usage = None
+
+        assert agent._build_prompt_response_usage({}, agent) is None
+
     def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
         state = mock_manager.create_session(cwd="/tmp")
         state.history = [{"role": "user", "content": "hello"}]

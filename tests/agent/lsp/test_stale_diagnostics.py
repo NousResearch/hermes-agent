@@ -118,6 +118,7 @@ def stale_repo(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / "pyproject.toml").write_text("")
     monkeypatch.chdir(str(repo))
     idx, original = _install_mock_server("stale")

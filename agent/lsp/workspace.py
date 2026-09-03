@@ -22,7 +22,13 @@ import os
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
+# The one non-stdlib import in this module. ``utils`` is itself stdlib + yaml
+# with no project imports, so this stays cycle-free and cheap even on the lint
+# hook path — worth it to keep git-root detection answered in exactly one place.
+from utils import find_git_root
+
 logger = logging.getLogger("agent.lsp.workspace")
+
 
 # Cache: cwd → (worktree_root, is_git) so repeated calls don't re-stat.
 # Cleared on shutdown.  Keyed by absolute resolved path so symlink
@@ -42,13 +48,20 @@ def normalize_path(path: str) -> str:
 
 
 def find_git_worktree(start: str) -> Optional[str]:
-    """Walk up from ``start`` looking for a ``.git`` entry (file or dir).
+    """Walk up from ``start`` looking for a git repo root.
 
-    Returns the directory containing ``.git``, or ``None`` if no git
-    root is found before hitting the filesystem root.
+    Returns the repo root as a string, or ``None`` if none is found before
+    hitting the filesystem root. A ``.git`` *file* (rather than directory)
+    means we're inside a worktree from ``git worktree add`` — both forms
+    count; an empty directory named ``.git`` does not.
 
-    A ``.git`` *file* (not directory) means we're inside a git
-    worktree set up via ``git worktree add`` — both forms count.
+    Resolution is delegated to :func:`utils.find_git_root`, the shared
+    chokepoint. This gate is what keeps a gateway user sitting in their home
+    directory from spawning language-server daemons, so a phantom root
+    directly defeats its purpose.
+
+    Kept local to this function: the result cache and the ``str`` return
+    contract that the rest of the LSP layer depends on.
     """
     try:
         start_path = Path(normalize_path(start))
@@ -65,27 +78,12 @@ def find_git_worktree(start: str) -> Optional[str]:
         root, _is_git = cached
         return root
 
-    cur = start_path
-    # Defensive cap: the deepest reasonable monorepo is well under 64
-    # levels.  Caps the walk so a pathological cwd or a symlink cycle
-    # we somehow traverse can't keep us looping.
-    for _ in range(64):
-        git_marker = cur / ".git"
-        try:
-            if git_marker.exists():
-                resolved = str(cur)
-                _workspace_cache[str(start_path)] = (resolved, True)
-                return resolved
-        except OSError:
-            # Permission error on a parent dir — bail out cleanly.
-            break
-        parent = cur.parent
-        if parent == cur:
-            break
-        cur = parent
-
-    _workspace_cache[str(start_path)] = (None, False)
-    return None
+    # resolve=False: normalize_path() above deliberately leaves symlinks
+    # unfolded, and the returned root must stay in those terms.
+    root_path = find_git_root(start_path, resolve=False)
+    resolved = str(root_path) if root_path is not None else None
+    _workspace_cache[str(start_path)] = (resolved, resolved is not None)
+    return resolved
 
 
 def is_inside_workspace(path: str, workspace_root: str) -> bool:

@@ -307,6 +307,16 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
                 print(f"⚠️  Unknown toolset: {name}")
             continue
         (tools.difference_update if disable else tools.update)(resolved)
+        if disable:
+            # Always record what was stripped, independent of quiet_mode.
+            # quiet_mode only governs the human-facing stdout stream; in
+            # -z/oneshot stdout is the machine-read payload, so the
+            # provenance of a disabled toolset must go to the log instead
+            # (#61184).
+            logger.info(
+                "%s '%s': stripped %s", label, name,
+                ", ".join(resolved) if resolved else "no tools",
+            )
         if not quiet_mode:
             print(f"{icon} {label} '{name}': {', '.join(resolved) if resolved else 'no tools'}")
 

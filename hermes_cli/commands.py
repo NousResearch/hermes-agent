@@ -2296,7 +2296,23 @@ class SlashCommandCompleter(Completer):
             # unbroken (see split_stacked_skill_commands in
             # agent/skill_commands.py).
             if self._is_skill_command(base_cmd):
-                yield from self._stacked_skill_completions(text)
+                skill_comps = list(self._stacked_skill_completions(text))
+                if skill_comps:
+                    yield from skill_comps
+                    return
+                # Stacked skill completions yielded nothing — the user has
+                # moved past the skill chain into instruction text. Fall
+                # through to @ context and path completion on the sub_text,
+                # mirroring the non-slash branch above. Without this, typing
+                # `/skill-name @file:...` or `/skill-name ./path` produced no
+                # completion menu at all.
+                ctx_word = self._extract_context_word(sub_text)
+                if ctx_word is not None:
+                    yield from self._context_completions(ctx_word)
+                    return
+                path_word = self._extract_path_word(sub_text)
+                if path_word is not None:
+                    yield from self._path_completions(path_word)
                 return
 
             # Dynamic completions for commands with runtime lists

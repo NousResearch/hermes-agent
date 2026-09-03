@@ -403,6 +403,35 @@ class TestStackedSkillCompletion:
         assert _completions(_stacked_completer(), "/skill-a do the") == []
         assert _completions(_stacked_completer(), "/skill-a ") == []
 
+    def test_at_context_completion_after_skill_command(self):
+        """``@`` context completions must fire after a skill slash command.
+
+        Regression: ``SlashCommandCompleter.get_completions`` early-returned
+        on the skill-command branch, so typing ``/skill-a @`` or
+        ``/skill-a @file:path`` produced no completion menu. The ``@``
+        reference itself still worked at submit time — only the Tab/menu
+        completion was broken.
+        """
+        completer = _stacked_completer()
+        comps = _completions(completer, "/skill-a @")
+        texts = [c.text for c in comps]
+        # Static context references should appear
+        assert "@diff" in texts
+        assert "@staged" in texts
+        assert "@file:" in texts
+        assert "@folder:" in texts
+        assert "@url:" in texts
+
+    def test_path_completion_after_skill_command(self):
+        """Path completions must fire after a skill slash command.
+
+        Same regression class as ``@`` context: the early ``return`` skipped
+        the path fallback so ``/skill-a ./src/`` produced nothing.
+        """
+        completer = _stacked_completer()
+        comps = _completions(completer, "/skill-a ./")
+        assert len(comps) > 0  # cwd should always have entries
+
 
     def test_cap_stops_completions(self):
         skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}

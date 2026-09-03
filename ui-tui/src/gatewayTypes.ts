@@ -208,6 +208,7 @@ export interface SessionActiveItem {
   model?: string
   preview?: string
   session_key?: string
+  source?: string
   started_at?: number
   status: LiveSessionStatus
   title?: string

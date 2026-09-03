@@ -300,8 +300,10 @@ describe('Lunar City asset manifest', () => {
         sourceQuality: string
       }>
       buildingPreview: string
+      foxLeaderCloseupPreview: string
       leaderPreview: string
       preview: string
+      researchLabCloseupPreview: string
       supportPreview: string
       validation: Record<string, boolean>
       workerChildPreview: string
@@ -341,12 +343,20 @@ describe('Lunar City asset manifest', () => {
       'lunar-city/master-assets/sources/lunar-city-sculpted-master-workers-children.png'
     )
     expect(masterMetadata.supportPreview).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-support.png')
+    expect(masterMetadata.researchLabCloseupPreview).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-research-lab-closeup.png'
+    )
+    expect(masterMetadata.foxLeaderCloseupPreview).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-fox-leader-closeup.png'
+    )
     for (const preview of [
       masterMetadata.preview,
       masterMetadata.buildingPreview,
       masterMetadata.leaderPreview,
       masterMetadata.workerChildPreview,
-      masterMetadata.supportPreview
+      masterMetadata.supportPreview,
+      masterMetadata.researchLabCloseupPreview,
+      masterMetadata.foxLeaderCloseupPreview
     ]) {
       expect(existsSync(join(process.cwd(), 'public', preview))).toBe(true)
     }
@@ -355,6 +365,7 @@ describe('Lunar City asset manifest', () => {
     expect(masterMetadata.validation.allRequiredAssetsPresent).toBe(true)
     expect(masterMetadata.validation.usesSculptedMeshSkins).toBe(true)
     expect(masterMetadata.validation.usesAnimationRigWiresForCharacters).toBe(true)
+    expect(masterMetadata.validation.usesReferenceGradeBuildingFinishing).toBe(true)
     expect(masterMetadata.validation.usesReferenceGradeLeaderFinishing).toBe(true)
     expect(masterMetadata.validation.usesRoleSpecificWorkerFinishing).toBe(true)
     expect(masterMetadata.validation.completesCroppedAndOccludedSilhouettes).toBe(true)
@@ -381,6 +392,9 @@ describe('Lunar City asset manifest', () => {
       expect(metadata?.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(metadata?.silhouetteCompletion).toBe('reference_mask_guided_plus_inferred_occluded_structure')
       expect(metadata?.evaluatedTriangleCount).toBeGreaterThanOrEqual(metadata?.minimumTriangleCount ?? 0)
+      if (metadata?.kind === 'building') {
+        expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(14)
+      }
       if (metadata?.kind === 'leader') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(12)
       }

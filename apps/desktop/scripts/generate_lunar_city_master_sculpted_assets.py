@@ -37,6 +37,8 @@ MASTER_BUILDINGS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-buildings.png"
 MASTER_LEADERS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-leaders.png"
 MASTER_WORKERS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-workers-children.png"
 MASTER_SUPPORT_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-support.png"
+MASTER_RESEARCH_LAB_CLOSEUP = OUT_DIR / "lunar-city-sculpted-master-research-lab-closeup.png"
+MASTER_FOX_LEADER_CLOSEUP = OUT_DIR / "lunar-city-sculpted-master-fox-leader-closeup.png"
 
 
 BUILDINGS = [
@@ -212,6 +214,86 @@ def add_occluded_silhouette_completion(asset_id, kind, role, collection, mats, m
             obj["silhouette_completion"] = "completed_from_reference_context_not_flat_crop_boundary"
 
 
+def add_reference_grade_building_finish(asset_id, role, title, accent, collection, mats):
+    accent_mat = mats[accent]
+
+    for obj in collection.objects:
+        if obj.get("component") == "retopology-source-wrap-skin":
+            obj["review_visibility"] = "hidden_in_preview_visible_as_retopology_source_in_blend"
+            obj.hide_render = True
+
+    # A readable cutaway room needs a foreground frame, interior back wall,
+    # floor pattern, and furniture silhouettes. Without these the building
+    # reads like a generic capsule.
+    for side in (-1, 1):
+        hero.ellipsoid(f"{asset_id}_finished_outer_arch_column_{side}", (side * 2.44, -1.3, 1.05), (0.18, 0.16, 0.92), mats["shell"], collection, asset_id, "building", role, "finished-outer-arch-column", 32, 16)
+        rail = lunar.curve(
+            f"{asset_id}_finished_front_safety_rail_{side}",
+            [(side * 0.55, -1.82, 0.38), (side * 1.2, -1.86, 0.44), (side * 2.05, -1.78, 0.54)],
+            0.025,
+            mats["gold"],
+            collection,
+        )
+        set_master_metadata(rail, asset_id, "building", role, "finished-front-safety-rail")
+    hero.chamfer(f"{asset_id}_finished_back_wall_deep_panel", (0, 1.5, 1.04), (1.85, 0.035, 0.58), mats["dark"], collection, asset_id, "building", role, "finished-back-wall-deep-panel")
+    hero.chamfer(f"{asset_id}_finished_entry_threshold", (0, -1.74, 0.24), (0.88, 0.08, 0.08), accent_mat, collection, asset_id, "building", role, "finished-entry-threshold")
+    hero.chamfer(f"{asset_id}_finished_sign_icon_plaque", (-1.02, -1.76, 1.38), (0.2, 0.022, 0.16), accent_mat, collection, asset_id, "building", role, "finished-sign-icon-plaque")
+    for col in range(5):
+        x = -1.55 + col * 0.78
+        hero.chamfer(f"{asset_id}_finished_wall_screen_{col}", (x, 1.43, 1.16), (0.22, 0.022, 0.16), mats["glass"], collection, asset_id, "building", role, "finished-wall-screen")
+        hero.ellipsoid(f"{asset_id}_finished_floor_tile_{col}", (x, -0.42, 0.18), (0.24, 0.38, 0.016), mats["panel"], collection, asset_id, "building", role, "finished-floor-tile", 20, 8)
+    for row in range(3):
+        rib = lunar.curve(
+            f"{asset_id}_finished_layered_roof_rib_{row}",
+            [(-2.05, 0.92, 1.64 + row * 0.16), (-0.8, 1.08, 1.78 + row * 0.16), (0.8, 1.08, 1.78 + row * 0.16), (2.05, 0.92, 1.64 + row * 0.16)],
+            0.018,
+            mats["shell"] if row % 2 else accent_mat,
+            collection,
+        )
+        set_master_metadata(rib, asset_id, "building", role, "finished-layered-roof-rib")
+
+    if role in {"knowledge", "archive"}:
+        for shelf in range(3):
+            x = -1.15 + shelf * 1.15
+            hero.chamfer(f"{asset_id}_finished_tall_library_shelf_{shelf}", (x, 1.18, 0.96), (0.34, 0.06, 0.68), mats["wood"], collection, asset_id, "building", role, "finished-library-shelf")
+            for book in range(5):
+                hero.chamfer(f"{asset_id}_finished_book_spine_{shelf}_{book}", (x - 0.13 + book * 0.065, 1.1, 0.66 + (book % 3) * 0.22), (0.022, 0.014, 0.09), accent_mat, collection, asset_id, "building", role, "finished-book-spine")
+        hero.ellipsoid(f"{asset_id}_finished_arcane_orb", (1.35, -0.36, 0.92), (0.22, 0.22, 0.22), accent_mat, collection, asset_id, "building", role, "finished-arcane-orb", 36, 18)
+    elif role == "research":
+        hero.cone(f"{asset_id}_finished_large_telescope_tube", (1.26, -0.42, 0.98), 0.16, 0.08, 1.0, mats["shell"], collection, asset_id, "building", role, "finished-large-telescope-tube", 32, rotation=(1.18, 0.16, -0.7))
+        for i in range(5):
+            hero.cylinder(f"{asset_id}_finished_sample_tank_{i}", (-1.45 + i * 0.36, 0.68, 0.72), 0.06, 0.46, mats["glass"], collection, asset_id, "building", role, "finished-sample-tank", 18)
+    elif role == "creative":
+        hero.chamfer(f"{asset_id}_finished_easel_canvas", (0.78, -0.52, 0.82), (0.28, 0.026, 0.36), mats["text"], collection, asset_id, "building", role, "finished-easel-canvas")
+        for i in range(8):
+            hero.ellipsoid(f"{asset_id}_finished_paint_pot_{i}", (-1.35 + i * 0.22, -0.74, 0.23), (0.04, 0.04, 0.04), accent_mat, collection, asset_id, "building", role, "finished-paint-pot", 12, 6)
+    elif role == "engineering":
+        for i in range(4):
+            hero.chamfer(f"{asset_id}_finished_engineering_bench_{i}", (-1.38 + i * 0.9, 0.18, 0.46), (0.32, 0.16, 0.11), mats["wood"], collection, asset_id, "building", role, "finished-engineering-bench")
+            hero.cylinder(f"{asset_id}_finished_power_coil_{i}", (-1.38 + i * 0.9, -0.02, 0.72), 0.075, 0.28, accent_mat, collection, asset_id, "building", role, "finished-power-coil", 18)
+    elif role == "operations":
+        for i in range(4):
+            hero.chamfer(f"{asset_id}_finished_storage_crate_{i}", (-1.15 + i * 0.72, -0.1, 0.38), (0.22, 0.18, 0.14), mats["panel"], collection, asset_id, "building", role, "finished-storage-crate")
+        hero.chamfer(f"{asset_id}_finished_loader_console", (1.35, 0.52, 0.72), (0.34, 0.12, 0.18), mats["glass"], collection, asset_id, "building", role, "finished-loader-console")
+    elif role == "release":
+        hero.chamfer(f"{asset_id}_finished_release_gate_frame", (0, -0.82, 0.88), (0.72, 0.055, 0.48), mats["gold"], collection, asset_id, "building", role, "finished-release-gate-frame")
+        hero.chamfer(f"{asset_id}_finished_ready_status_board", (1.2, -0.92, 0.96), (0.34, 0.03, 0.16), mats["green"], collection, asset_id, "building", role, "finished-ready-status-board")
+    elif role == "medical":
+        hero.chamfer(f"{asset_id}_finished_triage_bed", (-0.58, -0.18, 0.42), (0.68, 0.26, 0.1), mats["white"], collection, asset_id, "building", role, "finished-triage-bed")
+        hero.cylinder(f"{asset_id}_finished_scanner_column", (1.1, 0.28, 0.76), 0.14, 0.86, mats["glass"], collection, asset_id, "building", role, "finished-scanner-column", 28)
+    elif role == "governance":
+        hero.cylinder(f"{asset_id}_finished_council_holo_table", (0, -0.08, 0.42), 0.42, 0.12, mats["glass"], collection, asset_id, "building", role, "finished-council-holo-table", 40)
+        for i in range(3):
+            hero.chamfer(f"{asset_id}_finished_banner_{i}", (-0.48 + i * 0.48, 1.08, 1.34), (0.12, 0.016, 0.34), accent_mat, collection, asset_id, "building", role, "finished-council-banner")
+    elif role == "review":
+        for i in range(5):
+            hero.chamfer(f"{asset_id}_finished_review_monitor_{i}", (-1.4 + i * 0.7, 0.66, 0.9), (0.22, 0.024, 0.15), mats["glass"], collection, asset_id, "building", role, "finished-review-monitor")
+    elif role == "rest":
+        hero.ellipsoid(f"{asset_id}_finished_central_garden_dome", (0, -0.1, 0.72), (0.72, 0.48, 0.3), mats["glass"], collection, asset_id, "building", role, "finished-central-garden-dome", 40, 18)
+        for i in range(10):
+            hero.ellipsoid(f"{asset_id}_finished_garden_plant_{i}", (-1.2 + i * 0.27, -0.45 + 0.08 * (i % 3), 0.28), (0.045, 0.035, 0.11), mats["green"], collection, asset_id, "building", role, "finished-garden-plant", 10, 6)
+
+
 def add_reference_grade_leader_finish(asset_id, role, label_text, collection, mats, accent):
     """Add the visible anthropomorphic finish missing from rough blob passes."""
     lower = label_text.lower()
@@ -351,6 +433,7 @@ def make_master_building(parent, asset_id, role, title, accent, x, y, mats):
         hero.ellipsoid(f"{asset_id}_glass_biodome", (x, y + 0.15, 0.95), (1.2, 0.82, 0.46), mats["glass"], collection, asset_id, "building", role, "garden-biodome", 48, 24)
     add_wrapped_density_skin(asset_id, "building", role, collection, mats, scale=(1.8, 0.9, 1.2), material_key="shell")
     add_occluded_silhouette_completion(asset_id, "building", role, collection, mats, "shell")
+    add_reference_grade_building_finish(asset_id, role, title, accent, collection, mats)
     for obj in collection.objects:
         if obj.get("asset_id") == asset_id:
             set_master_metadata(obj, asset_id, "building", role, obj.get("component", "building-component"))
@@ -577,6 +660,16 @@ def render_review_previews(collections):
     aim_camera((0, -38, 24), (0, -22.8, 1.2), 36)
     scene.render.filepath = str(MASTER_SUPPORT_PREVIEW)
     bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, ["building-research-lab"])
+    aim_camera((-3.8, -13.0, 7.0), (-3.5, 8.0, 1.1), 5.8)
+    scene.render.filepath = str(MASTER_RESEARCH_LAB_CLOSEUP)
+    bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, ["leader-fox-scientist"])
+    aim_camera((-2.8, -15.0, 7.4), (-2.8, -8.6, 1.05), 3.4)
+    scene.render.filepath = str(MASTER_FOX_LEADER_CLOSEUP)
+    bpy.ops.render.render(write_still=True)
     show_all_collections(collections)
 
 
@@ -616,6 +709,8 @@ def build_metadata(collections):
         "leaderPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-leaders.png",
         "workerChildPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-workers-children.png",
         "supportPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-support.png",
+        "researchLabCloseupPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-research-lab-closeup.png",
+        "foxLeaderCloseupPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-fox-leader-closeup.png",
         "assetCount": len(assets),
         "assets": assets,
         "validation": {
@@ -628,6 +723,9 @@ def build_metadata(collections):
             ),
             "usesReferenceGradeLeaderFinishing": all(
                 asset["finishedSilhouetteComponentCount"] >= 12 for asset in assets if asset["kind"] == "leader"
+            ),
+            "usesReferenceGradeBuildingFinishing": all(
+                asset["finishedSilhouetteComponentCount"] >= 14 for asset in assets if asset["kind"] == "building"
             ),
             "usesRoleSpecificWorkerFinishing": all(
                 asset["finishedSilhouetteComponentCount"] >= 3 for asset in assets if asset["kind"] in {"worker", "child"}

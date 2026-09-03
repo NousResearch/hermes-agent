@@ -1039,6 +1039,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "cache will miss for this turn.",
                 agent.session_id, exc,
             )
+            stored_state = "read_error"
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         # Bot Chat capability epoch: an eternal bot session must adopt
@@ -1184,16 +1185,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
+    #
+    # By this point ``stored_state`` is one of: "missing" (no stored row
+    # was found — a genuine first turn, or a brand-new session that was
+    # handed parent history), "read_error" (the session DB lookup raised,
+    # so whether this session is new is UNKNOWN), "stale_runtime",
+    # "null", or "empty" ("present" returns early above).  Everything
+    # except "missing" is either a continuing session whose stored
+    # prompt merely needs a rebuild or an indeterminate lookup — firing
+    # the hook there would duplicate session-scoped plugin work
+    # mid-conversation, so only "missing" fires it.
+    if stored_state == "missing":
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
 
     # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
     # desktop build seeds at session OPEN (see seed_credits_at_session_start in

@@ -899,7 +899,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Fires:** In `run_agent.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
+**Fires:** In `agent/conversation_loop.py`, inside `_restore_or_build_system_prompt()`, after the system prompt is built but before the tool loop starts. The check is the stored-session lookup state: the hook fires only when the session classifies as *missing* — the conversation history is empty (the session DB is not consulted), the agent has no session DB attached, or `get_session` finds no row for this session. It does not fire on continuation rebuilds: stale runtime identity, a row whose stored prompt is NULL or empty, or a session-DB read error.
 
 **Return value:** Ignored.
 

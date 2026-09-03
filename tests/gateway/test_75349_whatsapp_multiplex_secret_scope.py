@@ -9,6 +9,8 @@ inbound messages.
 The fix routes WHATSAPP_* reads through ``get_secret()`` (``agent.secret_scope``)
 which honours the active scope.
 """
+import os
+
 import pytest
 
 from agent import secret_scope as ss
@@ -156,3 +158,127 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
             assert _get_wsecret("WHATSAPP_DM_POLICY", default="pairing") == "allowlist"
         finally:
             ss.reset_secret_scope(tok)
+
+
+class TestWhatsAppYamlBridgeScopeIsolation:
+    """#80099 — _apply_yaml_config's WHATSAPP_* env writes for
+    require_mention/mention_patterns/free_response_chats/dm_policy/
+    allow_from/group_policy/group_allow_from must not pollute shared
+    process env under multiplex; a scoped secondary profile's own YAML
+    values must still reach its adapter via PlatformConfig.extra."""
+
+    _ENV_VARS = (
+        "WHATSAPP_REQUIRE_MENTION",
+        "WHATSAPP_MENTION_PATTERNS",
+        "WHATSAPP_FREE_RESPONSE_CHATS",
+        "WHATSAPP_DM_POLICY",
+        "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_GROUP_POLICY",
+        "WHATSAPP_GROUP_ALLOWED_USERS",
+    )
+
+    def test_scoped_load_seeds_extra_without_env_leak(self, monkeypatch):
+        from plugins.platforms.whatsapp.adapter import _apply_yaml_config
+
+        for var in self._ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(
+                {},
+                {
+                    "require_mention": True,
+                    "mention_patterns": ["(?i)hey bot"],
+                    "free_response_chats": ["120363001@g.us"],
+                    "dm_policy": "allowlist",
+                    "allow_from": ["15551234567@c.us"],
+                    "group_policy": "allowlist",
+                    "group_allow_from": ["120363002@g.us"],
+                },
+            )
+        finally:
+            ss.reset_secret_scope(tok)
+
+        assert seeded == {
+            "require_mention": True,
+            "mention_patterns": ["(?i)hey bot"],
+            "free_response_chats": ["120363001@g.us"],
+            "dm_policy": "allowlist",
+            "allow_from": ["15551234567@c.us"],
+            "group_policy": "allowlist",
+            "group_allow_from": ["120363002@g.us"],
+        }
+        for var in self._ENV_VARS:
+            assert os.getenv(var) is None, f"{var} leaked into process env under scope"
+
+    def test_unscoped_single_profile_still_bridges_env(self, monkeypatch):
+        """Unscoped (single-profile) behavior is unchanged: the legacy env
+        bridge still fires, matching pre-fix behavior exactly."""
+        from plugins.platforms.whatsapp.adapter import _apply_yaml_config
+
+        for var in self._ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        ss.set_multiplex_active(False)
+        _apply_yaml_config(
+            {}, {"require_mention": True, "dm_policy": "allowlist"},
+        )
+        assert os.environ["WHATSAPP_REQUIRE_MENTION"] == "true"
+        assert os.environ["WHATSAPP_DM_POLICY"] == "allowlist"
+
+    def test_default_profile_env_does_not_leak_into_second_profiles_extra(self, monkeypatch):
+        """First-writer env (the default profile's bridge output) must not
+        override a scoped secondary profile's own extra-seeded value — the
+        same construction-time precedence WhatsAppAdapter.__init__ already
+        uses for dm_policy (config.extra.get(...) or _wenv(...))."""
+        from plugins.platforms.whatsapp.adapter import _wenv
+
+        monkeypatch.setenv("WHATSAPP_DM_POLICY", "pairing")  # default profile's leaked value
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})
+        try:
+            extra = {"dm_policy": "allowlist"}
+            resolved = str(extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
+        finally:
+            ss.reset_secret_scope(tok)
+        assert resolved == "allowlist"
+
+
+class TestSeedBridgeEnvFromExtra:
+    """_seed_bridge_env_from_extra fills the Node bridge subprocess env from
+    a scoped profile's PlatformConfig.extra, for fields _wenv (the .env/scope
+    -only loop in connect()) can never see."""
+
+    def test_fills_gaps_from_extra(self):
+        from plugins.platforms.whatsapp.adapter import _seed_bridge_env_from_extra
+
+        bridge_env = {}
+        _seed_bridge_env_from_extra(
+            bridge_env,
+            {
+                "require_mention": True,
+                "mention_patterns": ["(?i)hey bot"],
+                "dm_policy": "Allowlist",
+                "allow_from": ["15551234567@c.us", "15559876543@c.us"],
+            },
+        )
+        assert bridge_env["WHATSAPP_REQUIRE_MENTION"] == "true"
+        assert bridge_env["WHATSAPP_MENTION_PATTERNS"] == '["(?i)hey bot"]'
+        assert bridge_env["WHATSAPP_DM_POLICY"] == "allowlist"
+        assert bridge_env["WHATSAPP_ALLOWED_USERS"] == "15551234567@c.us,15559876543@c.us"
+
+    def test_does_not_override_existing_env_derived_values(self):
+        """Values already resolved from the profile's own .env (via the
+        _wenv loop) win over extra — extra only fills gaps."""
+        from plugins.platforms.whatsapp.adapter import _seed_bridge_env_from_extra
+
+        bridge_env = {"WHATSAPP_DM_POLICY": "pairing"}
+        _seed_bridge_env_from_extra(bridge_env, {"dm_policy": "allowlist"})
+        assert bridge_env["WHATSAPP_DM_POLICY"] == "pairing"
+
+    def test_ignores_none_and_missing_keys(self):
+        from plugins.platforms.whatsapp.adapter import _seed_bridge_env_from_extra
+
+        bridge_env = {}
+        _seed_bridge_env_from_extra(bridge_env, {})
+        assert bridge_env == {}

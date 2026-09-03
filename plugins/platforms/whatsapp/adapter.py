@@ -761,6 +761,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 _v = _wenv(_key)
                 if _v:
                     bridge_env[_key] = _v
+            # A scoped secondary profile that configured require_mention/
+            # mention_patterns/free_response_chats/dm_policy/allow_from/
+            # group_policy/group_allow_from via the top-level config.yaml
+            # whatsapp: block (not its own .env) has that value in
+            # self.config.extra (_apply_yaml_config seeds it there), but
+            # _wenv above only reads the secret scope/env — it never
+            # consults extra. Fill any gap the .env-derived loop above left,
+            # so the Node bridge sees this profile's own YAML config instead
+            # of silently reverting to bridge.js's built-in defaults (#80099).
+            _seed_bridge_env_from_extra(bridge_env, getattr(self.config, "extra", None) or {})
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
@@ -1887,38 +1897,114 @@ def interactive_setup() -> None:
             print_info("Home channel cleared.")
 
 
+def _profile_scoped_config_load() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed and connected inside
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active) —
+    the same discriminator the Buzz/Discord/Telegram adapters use for this
+    bug class (#98738 / #72348 / #80099). The DEFAULT profile under
+    multiplexing runs unscoped: ``os.environ`` holds its own bridge output
+    there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
+def _seed_bridge_env_from_extra(bridge_env: dict, extra: dict) -> None:
+    """Inject this profile's YAML-bridged whatsapp config into the Node
+    bridge subprocess environment, filling gaps the ``.env``-derived
+    ``_wenv`` loop above left. Values already present in ``bridge_env`` win.
+    """
+    if not isinstance(extra, dict):
+        return
+
+    def _seed(name: str, value, *, lower: bool = False) -> None:
+        if value is None or name in bridge_env:
+            return
+        if isinstance(value, list):
+            bridge_env[name] = ",".join(str(v) for v in value)
+        else:
+            text = str(value)
+            bridge_env[name] = text.lower() if lower else text
+
+    _seed("WHATSAPP_REQUIRE_MENTION", extra.get("require_mention"), lower=True)
+    mp = extra.get("mention_patterns")
+    if mp is not None and "WHATSAPP_MENTION_PATTERNS" not in bridge_env:
+        import json as _json
+
+        try:
+            bridge_env["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(mp)
+        except (TypeError, ValueError):
+            pass
+    _seed("WHATSAPP_FREE_RESPONSE_CHATS", extra.get("free_response_chats"))
+    _seed("WHATSAPP_DM_POLICY", extra.get("dm_policy"), lower=True)
+    _seed("WHATSAPP_ALLOWED_USERS", extra.get("allow_from"))
+    _seed("WHATSAPP_GROUP_POLICY", extra.get("group_policy"), lower=True)
+    _seed("WHATSAPP_GROUP_ALLOWED_USERS", extra.get("group_allow_from"))
+
+
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
-    """Translate config.yaml whatsapp: keys into WHATSAPP_* env vars.
+    """Translate config.yaml whatsapp: keys into WHATSAPP_* env vars and
+    PlatformConfig.extra entries.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML for single-profile deployments.
+
+    Returns the bridged values as a dict, merged into this profile's
+    PlatformConfig.extra by the caller — every one of these fields already
+    has an extra-first read path (WhatsAppAdapter.__init__'s dm_policy/
+    allow_from/group_policy/group_allow_from, and
+    gateway/platforms/whatsapp_common.py's _whatsapp_require_mention/
+    _whatsapp_free_response_chats/_compile_mention_patterns), so seeding
+    extra is both how a scoped secondary profile's own YAML value reaches
+    its adapter AND how the process-global env write below is made skippable
+    under multiplex (#80099) without losing single-profile behavior.
     """
     import json as _json
-    if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
-        os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
-    if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
-        os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
+
+    _skip_env_bridge = _profile_scoped_config_load()
+    seeded: dict = {}
+    if "require_mention" in whatsapp_cfg:
+        seeded["require_mention"] = whatsapp_cfg["require_mention"]
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
+            os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
+    if "mention_patterns" in whatsapp_cfg:
+        seeded["mention_patterns"] = whatsapp_cfg["mention_patterns"]
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
+            os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
     frc = whatsapp_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
-    if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
-        os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
+    if frc is not None:
+        seeded["free_response_chats"] = frc
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
+            _frc = ",".join(str(v) for v in frc) if isinstance(frc, list) else str(frc)
+            os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = _frc
+    if "dm_policy" in whatsapp_cfg:
+        seeded["dm_policy"] = whatsapp_cfg["dm_policy"]
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_DM_POLICY"):
+            os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
     af = whatsapp_cfg.get("allow_from")
-    if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
-        if isinstance(af, list):
-            af = ",".join(str(v) for v in af)
-        os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
-    if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
-        os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
+    if af is not None:
+        seeded["allow_from"] = af
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_ALLOWED_USERS"):
+            _af = ",".join(str(v) for v in af) if isinstance(af, list) else str(af)
+            os.environ["WHATSAPP_ALLOWED_USERS"] = _af
+    if "group_policy" in whatsapp_cfg:
+        seeded["group_policy"] = whatsapp_cfg["group_policy"]
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_GROUP_POLICY"):
+            os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
     gaf = whatsapp_cfg.get("group_allow_from")
-    if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
-        if isinstance(gaf, list):
-            gaf = ",".join(str(v) for v in gaf)
-        os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
-    return None
+    if gaf is not None:
+        seeded["group_allow_from"] = gaf
+        if not _skip_env_bridge and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
+            _gaf = ",".join(str(v) for v in gaf) if isinstance(gaf, list) else str(gaf)
+            os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = _gaf
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

@@ -682,6 +682,22 @@ class GatewaySlashCommandsMixin:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
+        # Between turns there may be no resident agent. In that state the
+        # persisted session override is the current routing decision and must
+        # win over lifetime-dominant usage. A long-running conversation can
+        # legitimately have more historical calls on its former provider;
+        # reporting that provider as current makes /status lie after a model
+        # switch even though the next turn is routed through the override.
+        session_override = getattr(session_entry, "model_override", None)
+        if not route_resolved and isinstance(session_override, dict):
+            override_model = _clean_str(session_override.get("model"))
+            override_provider = _clean_str(session_override.get("provider"))
+            if override_model and override_provider:
+                model_name = override_model
+                provider_name = override_provider
+                base_url = _clean_str(session_override.get("base_url"))
+                route_resolved = True
+
         persisted_model = _clean_str(persisted_route.get("model"))
         persisted_provider = _clean_str(persisted_route.get("billing_provider"))
         if not route_resolved and persisted_model and persisted_provider:

@@ -190,6 +190,53 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_status_command_prefers_current_session_override_over_historical_route(tmp_path):
+    """A provider switch must change /status without erasing usage history."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        model_override={
+            "model": "gpt-5.6-terra-900k",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="gpt-5.6-terra-900k")
+        db.update_token_counts(
+            "sess-1",
+            model="grok-4.6",
+            billing_provider="xai-oauth",
+            billing_base_url="https://api.x.ai/v1",
+            input_tokens=5_000_000,
+            api_call_count=100,
+        )
+        db.update_token_counts(
+            "sess-1",
+            model="gpt-5.6-terra-900k",
+            billing_provider="openai-codex",
+            billing_base_url="https://chatgpt.com/backend-api/codex",
+            input_tokens=100,
+            api_call_count=1,
+        )
+
+        result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `gpt-5.6-terra-900k` (openai-codex)" in result
+        assert "**Model:** `grok-4.6` (xai-oauth)" not in result
+        assert "**Lifetime tokens billed:** 5,000,100" in result
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

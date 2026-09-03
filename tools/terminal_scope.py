@@ -27,6 +27,7 @@ Two contracts distinguish this from a plain override dict:
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -172,7 +173,15 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
 
         env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
         if env_var:
-            scope[env_var] = str(value)
+            if isinstance(value, (list, dict, tuple)):
+                # JSON-consuming keys (docker_forward_env, docker_volumes,
+                # docker_env, docker_extra_args) are parsed downstream with
+                # ``json.loads`` (#101465); str() would emit Python repr,
+                # which fails to parse and disables the terminal tool.
+                scope[env_var] = json.dumps(list(value) if isinstance(
+                    value, tuple) else value)
+            else:
+                scope[env_var] = str(value)
 
     # 1) Defined defaults — the total baseline.
     for cfg_key, value in defaults.items():

@@ -142,6 +142,32 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
 
 
+def test_config_yaml_list_and_dict_values_serialize_as_json(tmp_path):
+    """#101465: config.yaml ``terminal:`` list/dict values must reach the
+    scope as valid JSON (what terminal_tool parses with ``json.loads``),
+    not Python ``repr`` from ``str()`` — which failed the parse and disabled
+    the terminal tool entirely for docker-backend profiles."""
+    import gateway.run as gw
+    import tools.terminal_tool as tt
+
+    home = _profile(
+        tmp_path, "bee",
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_forward_env:\n"
+        "    - EMAIL_HOME_ADDRESS\n"
+        "    - SHELL\n"
+        "  docker_env:\n"
+        "    FOO: bar\n"
+    )
+    with gw._profile_runtime_scope(home):
+        cfg = tt._get_env_config()
+        assert cfg["env_type"] == "docker"
+        assert cfg["docker_forward_env"] == ["EMAIL_HOME_ADDRESS", "SHELL"]
+        assert cfg["docker_env"] == {"FOO": "bar"}
+    assert get_terminal_scope() is None
+
+
 def test_malformed_profile_config_refuses_execution(tmp_path):
     """Unresolvable policy → refusal scope; terminal_tool refuses instead of
     running under the launch process's ambient policy (fail closed)."""

@@ -817,6 +817,31 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         venv_root = Path(sys.executable).parent.parent
         from tools.environments.local import hermes_subprocess_env
         uv_env = hermes_subprocess_env(inherit_credentials=False)
+        # Third-party UV_*/CONDA_* steering vars must not choose the install
+        # target here (#83264): UV_PYTHON in particular takes precedence over
+        # VIRTUAL_ENV, so an ambient value (set by unrelated software in the
+        # user's shell) makes uv resolve a non-venv interpreter and fail with
+        # "No virtual environment found" even though VIRTUAL_ENV is correct —
+        # while the core update install, which applies the same isolation via
+        # managed_python_env() (#83914), succeeds. PYTHONHOME/PYTHONPATH are
+        # stripped for the same reason: neither uv nor the venv's pip should
+        # inherit a foreign interpreter environment.
+        for key in (
+            "CONDA_DEFAULT_ENV",
+            "CONDA_PREFIX",
+            "UV_PROJECT_ENVIRONMENT",
+            "UV_NO_MANAGED_PYTHON",
+            "UV_PYTHON",
+            "UV_PYTHON_DOWNLOADS",
+            "UV_PYTHON_INSTALL_DIR",
+            "UV_SYSTEM_PYTHON",
+            "PYTHONHOME",
+            "PYTHONPATH",
+        ):
+            uv_env.pop(key, None)
+        # A user-level uv.toml (project or user scope) could steer resolution
+        # the same way; the core update install already disables it.
+        uv_env["UV_NO_CONFIG"] = "1"
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
@@ -840,9 +865,16 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 # the backend *and* its transitive deps (#100461). This covers
                 # the whole install; _warm_installed_bytecode below is the
                 # belt-and-braces pass for the spec's own roots on any tier.
+                # --python pins the target explicitly (venv-scoped installs
+                # only; --target mode already pins its destination) so the
+                # install lands in the running venv even if an unknown
+                # ambient variable were to survive the strip above (#83264).
+                python_args: list[str] = (
+                    [] if target is not None else ["--python", str(sys.executable)]
+                )
                 r = subprocess.run(
                     [uv_bin, "pip", "install", "--compile-bytecode",
-                     *target_args, *constraint_args, *specs],
+                     *python_args, *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),

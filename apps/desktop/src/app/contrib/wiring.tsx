@@ -72,6 +72,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
+  composerSelectionScopeToken,
   forgetSessionOwnerHintsForSession,
   requestSessionResume,
   sessionMatchesStoredId,
@@ -532,6 +533,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // `default` profile, so profile alone is not a sufficient identity.
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
   const lastGatewayScopeRef = useRef(gatewayScope)
+  const lastComposerScopeRef = useRef(composerSelectionScopeToken())
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -540,11 +542,25 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastGatewayScopeRef.current = gatewayScope
-    // The connection activation seam has already re-scoped the persisted
-    // composer selection to this exact source/profile owner. Preserve a manual
-    // pick from that scope; an empty or default-derived selection still seeds
-    // from the new profile default.
-    void refreshCurrentModel()
+
+    // Two shapes of scope change, told apart by whether the composer's storage
+    // namespace moved with it.
+    //
+    // Registry-scoped (remote / explicitly registry-routed): the connection
+    // activation seam published this owner's exact coordinate, so the composer
+    // already holds that owner's OWN persisted pick. Forcing here would destroy
+    // precisely the selection the scoped-persistence seam exists to restore.
+    //
+    // Local / non-registryScoped: composerScopeForConnection() collapses every
+    // local descriptor to the bare legacy namespace, so a profile switch leaves
+    // the token unchanged and the PREVIOUS profile's manual pick is still
+    // loaded. That pick is not this profile's, so reseed it from the new
+    // profile's default — the pre-existing forced behavior.
+    const composerScope = composerSelectionScopeToken()
+    const composerScopeChanged = composerScope !== lastComposerScopeRef.current
+    lastComposerScopeRef.current = composerScope
+
+    void refreshCurrentModel(!composerScopeChanged)
     void refreshHermesConfig(true)
     void refreshActiveProfile()
     resetProjectTreeState()

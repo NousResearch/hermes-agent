@@ -7840,11 +7840,27 @@ class DiscordAdapter(BasePlatformAdapter):
                 if clean_choices
                 else "\n\nReply in this channel with your answer."
             )
+            target_user_id = str((metadata or {}).get("user_id") or "").strip()
+            allowed_mentions = None
+            if target_user_id.isdigit() and int(target_user_id) > 0:
+                allowed_mentions = discord.AllowedMentions(
+                    users=[discord.Object(id=int(target_user_id))],
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                )
+            header = "❓ **Hermes needs your input**"
+            if allowed_mentions is not None:
+                header = f"<@{target_user_id}>\n{header}"
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(),
-                tail=clarify_tail,
+                header, str(question or "").strip(), tail=clarify_tail,
             )
-            msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)
+            send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
+            if view:
+                send_kwargs["view"] = view
+            if allowed_mentions is not None:
+                send_kwargs["allowed_mentions"] = allowed_mentions
+            msg = await channel.send(**send_kwargs)
             if view:
                 view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))

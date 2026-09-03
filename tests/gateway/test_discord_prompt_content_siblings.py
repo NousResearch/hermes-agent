@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.discord import adapter as discord_adapter
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -65,5 +66,57 @@ async def test_clarify_with_choices_mirrors_question_into_content():
     assert "Hermes needs your input" in sent["content"]
     assert "Which environment should I deploy to?" in sent["content"]
     assert "Pick one below" in sent["content"]
+
+
+@pytest.mark.asyncio
+async def test_clarify_mentions_only_the_target_user(monkeypatch):
+    class FakeAllowedMentions:
+        def __init__(self, *, users, roles, everyone, replied_user):
+            self.users = users
+            self.roles = roles
+            self.everyone = everyone
+            self.replied_user = replied_user
+
+    monkeypatch.setattr(discord_adapter.discord, "AllowedMentions", FakeAllowedMentions)
+    monkeypatch.setattr(
+        discord_adapter.discord,
+        "Object",
+        lambda *, id: SimpleNamespace(id=id),
+    )
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_clarify(
+        chat_id="555",
+        question="Choose one, not <@999>.",
+        choices=["first", "second"],
+        clarify_id="cl2",
+        session_key="discord:555",
+        metadata={"user_id": "123"},
+    )
+
+    assert result.success is True
+    assert sent["content"].startswith("<@123>\n")
+    assert [user.id for user in sent["allowed_mentions"].users] == [123]
+    assert sent["allowed_mentions"].everyone is False
+    assert sent["allowed_mentions"].roles is False
+
+
+@pytest.mark.asyncio
+async def test_clarify_without_target_user_stays_unmentioned():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_clarify(
+        chat_id="555",
+        question="Which environment should I deploy to?",
+        choices=None,
+        clarify_id="cl3",
+        session_key="discord:555",
+    )
+
+    assert result.success is True
+    assert sent["content"].startswith("❓ **Hermes needs your input**")
+    assert "allowed_mentions" not in sent
 
 

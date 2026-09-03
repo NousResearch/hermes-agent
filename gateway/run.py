@@ -1186,6 +1186,15 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     return response
 
 
+def _clarify_prompt_metadata(metadata: Optional[dict], source: Any) -> Optional[dict]:
+    """Add the initiating user to clarify-only delivery metadata."""
+    prompt_metadata = dict(metadata or {})
+    user_id = str(getattr(source, "user_id", None) or "").strip()
+    if user_id:
+        prompt_metadata["user_id"] = user_id
+    return prompt_metadata or None
+
+
 def _resolve_progress_thread_id(
     platform: Any,
     source_thread_id: Any,
@@ -6666,7 +6675,10 @@ class TurnRunner:
                     choices=list(choices) if choices else None,
                     clarify_id=clarify_id,
                     session_key=ctx.session_key or "",
-                    metadata=ctx._status_thread_metadata,
+                    metadata=_clarify_prompt_metadata(
+                        ctx._status_thread_metadata,
+                        ctx.source,
+                    ),
                 ),
                 ctx._loop_for_step,
                 logger=logger,

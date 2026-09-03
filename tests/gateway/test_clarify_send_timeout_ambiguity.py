@@ -15,9 +15,14 @@ today's teardown + sentinel behavior.
 """
 
 import concurrent.futures
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from gateway.run import _clarify_send_disposition, _clarify_send_then_wait
+from gateway.run import (
+    _clarify_prompt_metadata,
+    _clarify_send_disposition,
+    _clarify_send_then_wait,
+)
 
 SENTINEL = "[clarify prompt could not be delivered]"
 
@@ -173,3 +178,15 @@ def test_failed_send_result_error_detail_is_logged(caplog):
     with caplog.at_level("WARNING", logger="gateway.run"):
         _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
     assert "relay prompt op unavailable" in caplog.text
+
+
+def test_clarify_metadata_carries_the_initiating_user_without_mutating_routing():
+    routing = {"thread_id": "thread-1"}
+
+    metadata = _clarify_prompt_metadata(
+        routing,
+        SimpleNamespace(user_id="123"),
+    )
+
+    assert metadata == {"thread_id": "thread-1", "user_id": "123"}
+    assert routing == {"thread_id": "thread-1"}

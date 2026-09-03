@@ -10,12 +10,12 @@
 // and unit-testable (mirroring windows-sandbox-fallback.ts / session-windows.ts).
 //
 // Policy (matches the primary window's previous behavior, generalized):
-// - `render-process-gone` with reason `crashed`/`oom` → bounded reload (rolling
-//   crash-loop guard shared across ALL windows — one budget per process).
-// - `render-process-gone` with any other reason (`killed`, `launch-failed`,
-//   `clean-exit`, unknown) → log only. `killed` after an expected close/destroy
-//   is normal teardown, and blindly reloading it would loop windows back up
-//   after the user closed them.
+// - `render-process-gone` with reason `crashed`/`oom`/`killed` on a live window
+//   → bounded reload (rolling crash-loop guard shared across ALL windows).
+//   Live-window `killed` covers external SIGTERM / OOM watchdogs; user close
+//   still short-circuits via `isDestroyed` (expected teardown).
+// - `render-process-gone` with other reasons (`launch-failed`, `clean-exit`,
+//   unknown) → log only.
 // - `unresponsive` → log only (no reload; Chromium usually follows with
 //   render-process-gone, and forcing a reload while the main thread is wedged
 //   can make things worse).
@@ -118,7 +118,7 @@ export interface LifecycleWindowLike {
 const DEFAULT_RELOAD_WINDOW_MS = 60_000
 const DEFAULT_RELOAD_MAX = 3
 
-const RECOVERABLE_REASONS = new Set(['crashed', 'oom'])
+const RECOVERABLE_REASONS = new Set(['crashed', 'oom', 'killed'])
 
 function safeNow(now: (() => number) | undefined): number {
   return typeof now === 'function' ? now() : Date.now()
@@ -143,10 +143,10 @@ export function pushReloadTime(times: number[], now: number): number[] {
 /**
  * Decide whether a render-process-gone event should reload its window.
  *
- * Reload only for `crashed`/`oom` on a live window, bounded by the shared
- * rolling crash-loop budget. Anything else — expected teardown (`killed` after
- * close/destroy), unrecoverable reasons, unknown reasons — is log-only, exactly
- * like the primary window's previous behavior but now per window kind.
+ * Reload for `crashed`/`oom`/`killed` on a live window, bounded by the shared
+ * rolling crash-loop budget. Expected teardown still short-circuits first via
+ * `isDestroyed` (user close reports `killed` with a destroyed window). Other
+ * unrecoverable/unknown reasons remain log-only.
  */
 export function shouldReloadAfterRendererGone(details: {
   reason?: string

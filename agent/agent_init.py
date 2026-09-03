@@ -2455,11 +2455,29 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
-    # Read explicit context_length override from model config
-    if isinstance(_model_cfg, dict):
+    # Read an explicit context_length for the active agent model first. The
+    # keyed providers schema is shared by parent and child agents, so the
+    # model block below must not let the parent's window win for a child
+    # running a different model.
+    _config_context_length = None
+    _agent_model_context_length_configured = False
+    _providers_cfg = _agent_cfg.get("providers")
+    if isinstance(_providers_cfg, dict):
+        _provider_cfg = _providers_cfg.get(agent.provider)
+        if isinstance(_provider_cfg, dict):
+            _provider_models = _provider_cfg.get("models")
+            if isinstance(_provider_models, dict):
+                _agent_model_cfg = _provider_models.get(agent.model)
+                if isinstance(_agent_model_cfg, dict):
+                    _config_context_length = _agent_model_cfg.get("context_length")
+                    _agent_model_context_length_configured = (
+                        _config_context_length is not None
+                    )
+
+    # Fall back to the shared model block. Route scoping below retains this
+    # value only when the active agent is the configured default model.
+    if _config_context_length is None and isinstance(_model_cfg, dict):
         _config_context_length = _model_cfg.get("context_length")
-    else:
-        _config_context_length = None
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)
@@ -2496,7 +2514,11 @@ def init_agent(
     # live switch/fallback paths already clear this override; keep direct-start
     # overrides consistent with them and let provider metadata resolve the
     # active model's window instead.
-    if _config_context_length is not None and isinstance(_model_cfg, dict):
+    if (
+        _config_context_length is not None
+        and not _agent_model_context_length_configured
+        and isinstance(_model_cfg, dict)
+    ):
         _default = _model_cfg.get("default")
         if isinstance(_default, dict):
             from hermes_cli.config import split_model_config_default
@@ -3083,7 +3105,12 @@ def init_agent(
             agent._ollama_num_ctx = int(_ollama_num_ctx_override)
         except (TypeError, ValueError):
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
+    if (
+        agent._ollama_num_ctx is None
+        and _config_context_length is None
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
         try:
             # ``agent.api_key`` may be a callable (Entra token provider).
             # Ollama detection makes a manual HTTP request and expects a

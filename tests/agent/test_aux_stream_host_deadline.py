@@ -123,7 +123,9 @@ def test_commit_fence_publishes_its_shared_deadline():
     assert not fence.deadline_exceeded
 
     fence.set_total_ceiling_seconds(0.001)
-    time.sleep(0.01)
+    wait_deadline = time.monotonic() + 1.0
+    while not fence.deadline_exceeded and time.monotonic() < wait_deadline:
+        time.sleep(0.001)
     assert fence.deadline_exceeded
     assert fence.deadline_monotonic <= time.monotonic()
 

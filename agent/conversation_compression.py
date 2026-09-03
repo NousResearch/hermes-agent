@@ -724,6 +724,11 @@ class CompressionCommitFence:
         self._last_progress = time.monotonic()
         self._progress_observed = False
         self._deadline: float | None = None
+        # Set only when the compression transaction catches a worker-side
+        # cancellation caused by this route's wall-clock deadline. The host
+        # uses it to distinguish that failure from an ordinary unchanged
+        # result (safe no-op, deferred, would-grow), which must not fall back.
+        self._route_deadline_aborted = False
         self._retain_cancelled_lock_until_worker_done = False
         # #97963: set by the worker (mark_commit_watermark_fenced) once its
         # commit path is watermark-fenced — i.e. it captured the session's
@@ -779,6 +784,15 @@ class CompressionCommitFence:
         ``auxiliary_client.aux_stream_deadline``).
         """
         return self._deadline
+
+    def mark_route_deadline_abort(self) -> None:
+        """Publish that the worker unwound because this deadline expired."""
+        self._route_deadline_aborted = True
+
+    @property
+    def route_deadline_aborted(self) -> bool:
+        """Whether the worker observed this route's deadline cancellation."""
+        return self._route_deadline_aborted
 
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
@@ -1612,6 +1626,48 @@ def run_compress_context_with_progress_timeout(
             )
             try:
                 result = future.result(timeout=wait_slice)
+                if fence.route_deadline_aborted:
+                    # The worker can observe the shared hard deadline and
+                    # unwind just before Future.result() raises on the host.
+                    # Treat that scheduling order exactly like the timeout
+                    # branch below. The explicit marker is load-bearing: an
+                    # unchanged structural no-op alone never means the route
+                    # failed and must not consume a fallback candidate.
+                    waited = time.monotonic() - wait_started
+                    since_progress = fence.seconds_since_progress()
+                    if on_timeout_cause is not None:
+                        try:
+                            on_timeout_cause(True, fence.progress_observed)
+                        except Exception:
+                            logger.debug(
+                                "compress_context timeout-cause callback failed",
+                                exc_info=True,
+                            )
+                    if stall_fallback:
+                        recovered = _retry_compression_on_fallback_chain(
+                            worker=worker,
+                            messages=messages,
+                            system_prompt_fallback=system_prompt_fallback,
+                            idle_timeout_seconds=idle,
+                            total_ceiling_seconds=ceiling,
+                            on_commit_overrun=on_commit_overrun,
+                            on_timeout_cause=on_timeout_cause,
+                            telemetry_agent=telemetry_agent,
+                            new_fence=new_fence,
+                        )
+                        if recovered is not None:
+                            handled_exit = True
+                            return recovered
+                    if on_timeout is not None:
+                        try:
+                            on_timeout(idle, waited, since_progress)
+                        except Exception:
+                            logger.debug(
+                                "compress_context timeout callback failed",
+                                exc_info=True,
+                            )
+                    handled_exit = True
+                    return messages, _resolve_fallback_prompt()
                 handled_exit = True
                 return result
             except concurrent.futures.TimeoutError:
@@ -4312,6 +4368,20 @@ def compress_context(
                     agent.context_compressor, _attempt_generation
                 )
     except AuxiliaryExplicitCancellation:
+        # Freeze the route-deadline cause before returning an identity no-op to
+        # the waiting host. Without this attempt-local signal, a worker that
+        # unwinds a few milliseconds before Future.result() times out bypasses
+        # the configured fallback chain. Explicit user cancellation remains a
+        # distinct cause and never publishes this marker.
+        _hard_cancelled = bool(
+            _hard_cancel_event is not None and _hard_cancel_event.is_set()
+        )
+        if (
+            not _hard_cancelled
+            and commit_fence is not None
+            and commit_fence.deadline_exceeded
+        ):
+            commit_fence.mark_route_deadline_abort()
         try:
             _restore_compressor_attempt_state(
                 agent.context_compressor,
@@ -4364,9 +4434,13 @@ def compress_context(
             commit_status="aborted",
             split_status="aborted",
             failure_class=(
-                STALL_INTERRUPTED_FAILURE_CLASS
-                if _stall_backoff
-                else "explicit_interrupt"
+                "route_deadline"
+                if commit_fence is not None and commit_fence.route_deadline_aborted
+                else (
+                    STALL_INTERRUPTED_FAILURE_CLASS
+                    if _stall_backoff
+                    else "explicit_interrupt"
+                )
             ),
         )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)

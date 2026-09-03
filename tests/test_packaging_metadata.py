@@ -434,3 +434,58 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+def test_all_first_party_root_modules_declared_in_py_modules():
+    """Every root-level module imported by first-party code must be declared.
+
+    Regression for the 2026-09-03 ``hermes_state_holders`` /
+    ``hermes_state_registry`` packaging gap (gateway/WebUI startup broke
+    after the update that added them, because setuptools editable installs
+    only map the top-level single-file modules listed in
+    ``[tool.setuptools] py-modules`` into their import finder). A root
+    ``.py`` module that production code imports but packaging forgot to
+    declare is unimportable from an editable/wheel install unless the repo
+    root happens to be on ``sys.path``.
+
+    Rather than hard-coding filenames, this checks the invariant: any root
+    single-file module imported anywhere in first-party (non-test) code
+    must be present in ``py-modules``. Script-style utilities that nothing
+    imports (e.g. ``mini_swe_runner.py``) stay out of the requirement on
+    purpose, and every declared module is also verified to still exist.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    setuptools_cfg = data["tool"]["setuptools"]
+    declared = set(setuptools_cfg["py-modules"])
+
+    root_mods = {
+        p.stem for p in REPO_ROOT.glob("*.py") if p.stem not in ("setup", "conftest")
+    }
+
+    # Declared entries must actually exist (catches renames/typos in the list).
+    assert declared <= root_mods, (
+        "py-modules references root modules that do not exist: "
+        + ", ".join(sorted(declared - root_mods))
+    )
+
+    pkg_dirs = set(setuptools_cfg["packages"]["find"]["include"])
+    py_import = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+    imported: set[str] = set()
+    for path in REPO_ROOT.rglob("*.py"):
+        rel = path.relative_to(REPO_ROOT)
+        if any(part in ("tests", "test") for part in rel.parts):
+            continue  # test utilities are not a distributable requirement
+        if len(rel.parts) > 1 and rel.parts[0] not in pkg_dirs:
+            continue  # only packaged first-party code counts (no scripts/, venv/, ...)
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            m = py_import.match(line)
+            if m and m.group(1) in root_mods:
+                imported.add(m.group(1))
+
+    missing = sorted(imported - declared)
+    assert not missing, (
+        "root modules imported by first-party code are missing from "
+        "[tool.setuptools] py-modules — editable installs cannot import them "
+        "unless the repo root happens to be on sys.path: " + ", ".join(missing)
+    )

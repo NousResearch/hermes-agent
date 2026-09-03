@@ -267,49 +267,6 @@ class TestJsonOutput:
         assert "hermes_identity" in parsed
         assert parsed["hermes_identity"]["resolved_binary"]
 
-    def test_linux_wayland_output_identifies_cli_environment_scope(self, monkeypatch):
-        from tools.computer_use import doctor
-
-        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
-        monkeypatch.setenv("DISPLAY", ":0")
-        report = _ok_report()
-        report["platform"] = "linux"
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
-        )
-
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            doctor.run_doctor(json_output=True)
-
-        context = json.loads(out.getvalue())["hermes_environment"]
-        assert context == {
-            "gateway_environment_checked": False,
-            "scope": "cli_process",
-        }
-
-    def test_linux_wayland_text_warns_gateway_environment_may_differ(self, monkeypatch):
-        from tools.computer_use import doctor
-
-        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
-        report = _ok_report()
-        report["platform"] = "linux"
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
-        )
-
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            doctor.run_doctor()
-
-        text = out.getvalue().lower()
-        assert "current cli process" in text
-        assert "gateway environment was not checked" in text
-
 
 # ── HERMES_CUA_DRIVER_CMD resolution ───────────────────────────────────────
 

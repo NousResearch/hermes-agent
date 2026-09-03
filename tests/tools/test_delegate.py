@@ -1309,6 +1309,42 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_run_single_child_sets_delegated_context_flag(self):
+        """Batch submit copies context after construction's with-block exits.
+
+        The worker must re-enter delegated_child_context so session-key,
+        sudo, and kanban guards see a child rather than a parent turn (#96483).
+        """
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool import _run_single_child
+
+        seen = []
+        child = MagicMock()
+        child.session_id = "child-sid"
+        child._credential_pool = None
+        child._delegate_saved_tool_names = []
+
+        def run_conversation(**_kwargs):
+            seen.append(is_delegated_child_context())
+            return {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = run_conversation
+        result = _run_single_child(
+            task_index=0,
+            goal="Investigate",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(seen, [True])
+        self.assertFalse(is_delegated_child_context())
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 

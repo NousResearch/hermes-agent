@@ -4,7 +4,7 @@ import os
 import pytest
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
@@ -300,6 +300,27 @@ class TestShellFileOpsHelpers:
         assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
         assert normalize_read_pagination(offset="bad", limit="bad") == (1, 2000)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
+
+
+    def test_search_coerces_string_typed_context(self, file_ops):
+        """``offset``/``limit`` ride normalize_search_pagination, but
+        ``context`` did not — schema-loose callers (vLLM-hosted DeepSeek
+        emitting {"context": "3"}) died at ``context > 0`` with TypeError.
+        It must reach the content-search backend as a clamped int."""
+        with patch.object(file_ops, "_exec",
+                          return_value=MagicMock(stdout="exists")), \
+             patch.object(file_ops, "_macos_search_exclusions",
+                          return_value=[]), \
+             patch.object(file_ops, "_search_content",
+                          return_value=SearchResult()) as search_mock:
+            file_ops.search(pattern="x", target="content", context="3")
+            assert search_mock.call_args.args[-1] == 3
+
+            file_ops.search(pattern="x", target="content", context="bogus")
+            assert search_mock.call_args.args[-1] == 0
+
+            file_ops.search(pattern="x", target="content", context=-2)
+            assert search_mock.call_args.args[-1] == 0
 
 
     def test_escape_shell_arg_simple(self, file_ops):

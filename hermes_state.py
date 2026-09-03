@@ -13359,6 +13359,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             total_messages, total_tool_calls = self._insert_message_rows(
                 conn, session_id, messages
             )
+            if archive_dropped:
+                # The blanket soft-archive above also archived the RETAINED
+                # prefix, which was just reinserted as fresh active rows —
+                # every archive-mode rewind duplicated the whole prefix on
+                # disk (O(prefix x rewinds), #82956). Prune archived
+                # rewind-style rows duplicating a live row; genuinely dropped
+                # turns stay archived and recoverable, compacted=1 rows are
+                # never touched (#38763).
+                # ponytail: (role, content) match only; fuller fingerprint if
+                # sidecar-only duplicates ever matter.
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ? AND active = 0 "
+                    "AND compacted = 0 AND (role, content) IN "
+                    "(SELECT role, content FROM messages "
+                    "WHERE session_id = ? AND active = 1)",
+                    (session_id, session_id),
+                )
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, session_id),

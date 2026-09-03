@@ -321,3 +321,114 @@ class TestWebhookSignatureEnforcement:
         request = self._mock_request(oversized, content_length=None)
         resp = await adapter._handle_webhook(request)
         assert resp.status == 413
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__ and _standalone_send read TWILIO_PHONE_NUMBER via raw os.getenv,
+# right next to the already-scope-aware TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN
+# (_get_scoped_secret). Under multiplex, a secondary profile with its own
+# from-number would silently send replies from the default profile's
+# bridged TWILIO_PHONE_NUMBER instead — Twilio rejects a from-number not
+# owned by that profile's account, or misattributes the send. Mirrors the
+# Buzz fix for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC-default")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token-default")
+    monkeypatch.setenv("TWILIO_PHONE_NUMBER", "+15550000000")
+
+
+class TestMultiplexProfileScope:
+
+    def test_init_scoped_uses_own_from_number(self, multiplex_scope, default_profile_env):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        multiplex_scope(
+            {
+                "TWILIO_ACCOUNT_SID": "AC-profile",
+                "TWILIO_AUTH_TOKEN": "token-profile",
+                "TWILIO_PHONE_NUMBER": "+15551112222",
+            }
+        )
+        adapter = SmsAdapter(PlatformConfig(enabled=True))
+        assert adapter._from_number == "+15551112222"
+
+    def test_init_scoped_missing_own_number_fails_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """A secondary profile with its own account_sid/auth_token but no
+        from-number of its own must not silently borrow the default
+        profile's bridged TWILIO_PHONE_NUMBER."""
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        multiplex_scope(
+            {"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"}
+        )
+        adapter = SmsAdapter(PlatformConfig(enabled=True))
+        assert adapter._from_number == ""
+
+    def test_init_unscoped_keeps_env_precedence(self, monkeypatch, default_profile_env):
+        from agent.secret_scope import set_multiplex_active
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        set_multiplex_active(True)
+        try:
+            adapter = SmsAdapter(PlatformConfig(enabled=True))
+        finally:
+            set_multiplex_active(False)
+        assert adapter._from_number == "+15550000000"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_scoped_uses_own_from_number(self, default_profile_env):
+        """Scope is installed/reset inline (not via the multiplex_scope
+        fixture) so the ContextVar set/reset pair stays inside the same
+        asyncio task context as this coroutine."""
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        set_multiplex_active(True)
+        token = set_secret_scope(
+            {"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"}
+        )
+        try:
+            pconfig = PlatformConfig(enabled=True)
+            result = await _standalone_send(pconfig, "+15559998888", "hi")
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+        # No from-number in the profile's own scope: fails closed on the
+        # standard "not configured" error rather than sending from the
+        # default profile's leaked +15550000000.
+        assert result.get("error") == (
+            "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"
+        )

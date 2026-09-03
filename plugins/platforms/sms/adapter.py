@@ -93,7 +93,10 @@ class SmsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
         self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
-        self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
+        # Scope-aware, matching its sibling reads above: a secondary
+        # multiplex profile must not borrow the default profile's bridged
+        # TWILIO_PHONE_NUMBER (mirrors the Buzz fix for #98738).
+        self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
@@ -470,7 +473,11 @@ async def _standalone_send(
     import base64
 
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    # Scope-aware, matching account_sid/auth_token above: a secondary
+    # multiplex profile's cron/out-of-process delivery must not send from
+    # the default profile's bridged TWILIO_PHONE_NUMBER (mirrors the Buzz
+    # fix for #98738).
+    from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 

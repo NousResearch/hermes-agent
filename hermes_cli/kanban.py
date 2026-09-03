@@ -1052,6 +1052,85 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- os-users (profile_os_users host setup / check; dry-run first) ---
+    p_os = sub.add_parser(
+        "os-users",
+        help="Host setup/check for profile-to-Linux-user worker isolation",
+        description=(
+            "Dry-run-first setup, audit, sudoers snippet, and rollback "
+            "for kanban.profile_os_users. Never prints secrets. Does not "
+            "enable the mapping — that is a separate config change after "
+            "check passes."
+        ),
+    )
+    os_sub = p_os.add_subparsers(dest="os_users_action")
+    p_os_check = os_sub.add_parser(
+        "check",
+        help="Audit mapped users, sudo -n, board WAL, and cross-profile denial",
+    )
+    p_os_check.add_argument("--json", action="store_true")
+    p_os_setup = os_sub.add_parser(
+        "setup",
+        help="Print (default) or apply as root the host provisioning steps",
+    )
+    p_os_setup.add_argument(
+        "--apply", action="store_true",
+        help="Run steps (requires euid 0; never prompts for a password)",
+    )
+    p_os_setup.add_argument("--gateway-user", default=None)
+    p_os_setup.add_argument(
+        "--dev-workspace", default=None,
+        help="Optional extra workspace to ACL for hermes-dev only",
+    )
+    p_os_setup.add_argument(
+        "--migrate-profile-files",
+        action="store_true",
+        help=(
+            "With --apply, copy config.yaml/.env/SOUL.md/skills into mapped "
+            "HERMES_HOME via install(1) plus bounded copy-tree for skills. "
+            "Never prints file contents. Default is a manual gate."
+        ),
+    )
+    p_os_setup.add_argument(
+        "--migrate-shared-db",
+        action="store_true",
+        help=(
+            "Include sqlite backup of the live kanban.db into the dedicated "
+            "shared directory. Never raw-copies WAL/SHM. Does not stop the gateway."
+        ),
+    )
+    p_os_setup.add_argument("--flutter-sdk", default=None)
+    p_os_setup.add_argument("--android-sdk", default=None)
+    p_os_setup.add_argument("--jdk-home", default=None)
+    p_os_probe = os_sub.add_parser(
+        "probe",
+        help="Fail-closed target-UID probe (WAL lifecycle as the mapped user)",
+    )
+    p_os_probe.add_argument(
+        "--kind", dest="probe_kind", default="wal",
+        help="Probe kind (only 'wal' is supported)",
+    )
+    p_os_probe.add_argument(
+        "--path", dest="probe_path", required=True,
+        help="Absolute path to the shared kanban.db",
+    )
+    p_os_mig = os_sub.add_parser(
+        "migrate-db",
+        help="Online-safe sqlite backup into the dedicated shared directory",
+    )
+    p_os_mig.add_argument("--from", dest="migrate_from", required=True)
+    p_os_mig.add_argument("--to", dest="migrate_to", required=True)
+    p_os_copy = os_sub.add_parser(
+        "copy-tree",
+        help="Bounded directory copy that rejects symlinks and never prints contents",
+    )
+    p_os_copy.add_argument("--src", dest="copy_src", required=True)
+    p_os_copy.add_argument("--dst", dest="copy_dst", required=True)
+    p_os_copy.add_argument("--owner", dest="copy_owner", required=True)
+    p_os_copy.add_argument("--group", dest="copy_group", required=True)
+    os_sub.add_parser("sudoers", help="Print the sudoers drop-in")
+    os_sub.add_parser("rollback", help="Print rollback steps")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -1093,6 +1172,10 @@ def kanban_command(args: argparse.Namespace) -> int:
     # task-routing override; otherwise `/kanban --board beta boards show`
     # reports beta as the current board even when the on-disk pointer is
     # alpha.
+    if action == "os-users":
+        from hermes_cli.kanban_os_users import run_os_users_cli
+        return run_os_users_cli(args)
+
     if action == "boards":
         return _dispatch_boards(args)
 

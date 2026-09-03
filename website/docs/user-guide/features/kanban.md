@@ -229,6 +229,11 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  # Optional: map profile id -> Linux account. Empty/missing keeps today's
+  # trusted-local-user spawn (gateway UID). See docs/kanban/profile-os-users.md.
+  # profile_os_users:
+  #   dev: hermes-dev
+  #   sysadmin: hermes-sysadmin
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
@@ -795,6 +800,8 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+| `kanban.profile_os_users` | `{}` | Optional map of canonical profile id → POSIX username. Empty/missing preserves trusted-local-user spawn on the gateway UID. A mapped profile is launched with `sudo -n -H -E -u <user> --` (no shell) and never falls back to the gateway UID. Root and same-UID mappings are rejected. Host setup: `hermes kanban os-users`. |
+| `kanban.profile_os_homes` | `{}` | Optional map of profile id → Hermes runtime home **root** (not OS HOME). Default is `{passwd_dir}/.hermes`. |
 
 ```yaml
 kanban:

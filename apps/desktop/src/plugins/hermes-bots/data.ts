@@ -951,15 +951,28 @@ function mergeMultiSourceRoster(
 
 /** The @handle users tag a bot with. Multi-source rosters precompute the
  *  handle (bare name, or name-device when the profile exists on several
- *  registered sources) — prefer it when present. The primary profile's
- *  callable alias is 'hermes' — the mention middleware resolves it back to
- *  'default' — so the word 'default' never surfaces in the UI. */
+ *  registered sources) — prefer it when present. The primary profile uses
+ *  its friendly title/display name when available; 'hermes' remains fallback. */
 export function botHandle(name: string, bot?: Partial<RosterRow> | null): string {
   if (bot?.handle && bot.handle !== name) {
     return bot.handle
   }
 
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  if ((name || '').trim().toLowerCase() !== 'default') {
+    return name
+  }
+
+  const botMeta = bot?.ui_meta?.['hermes-bots']
+
+  for (const friendly of [botMeta?.title, bot?.title, bot?.display_name]) {
+    const forms = mentionNameForms(friendly)
+
+    if (forms.length) {
+      return forms[0]
+    }
+  }
+
+  return 'hermes'
 }
 
 /** Taggable @-forms derived from a bot's friendly names — the core profile

@@ -16,15 +16,11 @@ existing background-process notification path (fire-and-forget, never
 blocks the sender's turn).
 
 Containment contract (MUST hold — reviewers check all three):
-- The tool schema is injected ONLY into a bot's canonical "Bot Chat"
-  session on Bot-Mode-managed installs — the exact same gate as the
-  protocol section in ``tools/bot_mode_probe.py``. It is NOT registered in
-  the global tool registry, is NOT part of any toolset, and never appears
-  in CLI sessions, ordinary gateway chats, group-room member sessions
-  (titled "Group: …"), cron agents, or subagents.
-- Dispatch is title-gated again at execution time (defense in depth): a
-  forged call from a session that shouldn't have the tool returns a
-  structured error instead of delivering.
+- The tool schema is always available in a bot's canonical "Bot Chat". In
+  another session it is injected for one turn only when the Desktop's Bot
+  Mode middleware appended a resolved-roster mention note.
+- Dispatch repeats that gate and limits a non-canonical turn to the exact
+  agent target(s) named by the resolved mention note.
 - Everything here is additive. The legacy protocol transports
   (``hermes -p`` / ``hermes peer dm``) keep working for older prompts.
 
@@ -94,7 +90,8 @@ def message_agent_tool_schema() -> dict:
                 "clearly relevant teammate when it genuinely helps the user's goal; "
                 "don't fan out to several agents unless the user explicitly asked. "
                 "Use the teammate roster in your system prompt (names + roles) to pick "
-                "the right recipient; targets: a teammate name (e.g. 'researcher'), "
+                "the right recipient; targets: a teammate callable handle "
+                "(e.g. 'researcher'), "
                 "'<peer>/<agent>' for an agent on a registered peer gateway "
                 "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
                 "or an agent on another connected machine from your roster (use "
@@ -106,8 +103,8 @@ def message_agent_tool_schema() -> dict:
                     "target": {
                         "type": "string",
                         "description": (
-                            "Who to message: a teammate profile name from your roster "
-                            "('researcher', 'hermes' for the default agent), or "
+                            "Who to message: a teammate callable handle from your roster "
+                            "(for example, 'researcher'), or "
                             "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
                         ),
                     },
@@ -126,18 +123,66 @@ def message_agent_tool_schema() -> dict:
     }
 
 
-def ensure_message_agent_tool(agent: Any) -> bool:
-    """Inject the ``message_agent`` schema into a Bot Chat agent's tool list.
+_MENTION_NOTE_PREFIX = "[@mentions resolved from the Bot Mode roster — the user is referring to:"
+_MENTION_NOTE_SUFFIX = (
+    "If this session has no message_agent tool, agent messaging is unavailable here — say so.]"
+)
+_MENTION_PROFILE_RE = re.compile(r'agent profile "([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})"')
+_MENTION_REMOTE_TARGET_RE = re.compile(r'message_agent target: "([a-zA-Z0-9_@-]+)"')
+
+
+def _resolved_mention_targets(user_message: object) -> set[str]:
+    text = str(user_message or "")
+    marker = text.rfind(_MENTION_NOTE_PREFIX)
+    if marker < 0:
+        return set()
+    note = text[marker:].strip()
+    if not note.endswith(_MENTION_NOTE_SUFFIX):
+        return set()
+    return {
+        *(match.group(1) for match in _MENTION_PROFILE_RE.finditer(note)),
+        *(match.group(1) for match in _MENTION_REMOTE_TARGET_RE.finditer(note)),
+    }
+
+
+def _remove_message_agent_tool(agent: Any) -> None:
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, list):
+        agent.tools = [
+            tool
+            for tool in tools
+            if not (
+                isinstance(tool, dict)
+                and tool.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
+            )
+        ]
+    valid = getattr(agent, "valid_tool_names", None)
+    if isinstance(valid, set):
+        valid.discard(MESSAGE_AGENT_TOOL_NAME)
+
+
+def ensure_message_agent_tool(agent: Any, user_message: object = None) -> bool:
+    """Inject ``message_agent`` for Bot Chat or one resolved-mention turn.
 
     Called once per turn from the conversation loop. Idempotent and
-    deterministic for the life of a session: the gate (canonical Bot Chat
-    title on a Bot-Mode-managed install) is stable from the session's first
-    turn, so the tool list is byte-identical across turns — prompt-cache
-    safe. Every non-Bot-Chat session fails the gate on every turn and never
-    sees the schema. Never raises.
+    Ordinary sessions receive a transient schema only for a Desktop-resolved
+    @mention. The execution gate then restricts delivery to that exact target.
+    Never raises.
     """
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
+            _remove_message_agent_tool(agent)
+            return False
+        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+
+        if not is_bot_mode_managed(_agent_home(agent)):
+            _remove_message_agent_tool(agent)
+            return False
+        canonical = _session_title(agent) == BOT_CHAT_TITLE
+        allowed_targets = _resolved_mention_targets(user_message)
+        agent._message_agent_allowed_targets = None if canonical else allowed_targets
+        if not canonical and not allowed_targets:
+            _remove_message_agent_tool(agent)
             return False
         tools = getattr(agent, "tools", None)
         if tools:
@@ -147,16 +192,6 @@ def ensure_message_agent_tool(agent: Any) -> bool:
                     and tool.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
                 ):
                     return True
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
-
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return False
-        # Managed-install check, NOT section non-emptiness: a profile whose
-        # SOUL.md carries the legacy plugin-appended protocol text gets an
-        # empty section (dedupe) but must still receive the tool — otherwise
-        # upgraded installs silently lose A2A messaging (Aug 2026).
-        if not is_bot_mode_managed(_agent_home(agent)):
-            return False
         if agent.tools is None:
             agent.tools = []
         agent.tools.append(message_agent_tool_schema())
@@ -207,12 +242,23 @@ def _peers(root: Path) -> list[str]:
         return []
 
 
-def _handle(name: str) -> str:
+def _profile_dir(root: Path, name: str) -> Path:
+    return root if name == "default" else root / "profiles" / name
+
+
+def _handle(name: str, root: Path | None = None) -> str:
+    if root is not None:
+        try:
+            from tools.bot_mode_probe import _handle as _probe_handle
+
+            return _probe_handle(name, _profile_dir(root, name))
+        except Exception:
+            pass
     return "hermes" if name == "default" else name
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
+    """Map an internal, friendly, or legacy handle to a profile name."""
     want = target.strip()
     if not want:
         return None
@@ -221,7 +267,28 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
     for name in roster:
         if name.lower() == want.lower():
             return name
+    if root is not None:
+        matches = [name for name in roster if _handle(name, root).lower() == want.lower()]
+        if len(matches) == 1:
+            return matches[0]
     return None
+
+
+def _ordinary_target_allowed(agent: Any, raw_target: str, resolved: str | None = None) -> bool:
+    try:
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+        if _session_title(agent) == BOT_CHAT_TITLE:
+            return True
+    except Exception:
+        pass
+    allowed = getattr(agent, "_message_agent_allowed_targets", set())
+    if allowed is None:  # canonical Bot Chat: unrestricted roster access
+        return True
+    wanted = {raw_target.lower()}
+    if resolved:
+        wanted.add(resolved.lower())
+    return any(str(item).lower() in wanted for item in allowed)
 
 
 # ── the tool ─────────────────────────────────────────────────────────────────
@@ -250,21 +317,21 @@ def message_agent_tool(
     the Bot Chat gate, the sender identity, and the session key so the
     spawned transport is tracked against the right session.
     """
-    # ── defense-in-depth gate: only a canonical Bot Chat may deliver ──
+    # ── defense-in-depth gate: Bot Chat or one resolved-mention turn ──
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         title = _session_title(agent)
-        if title != BOT_CHAT_TITLE:
-            return _err(
-                "message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                "This session is not one; do not retry."
-            )
         if not is_bot_mode_managed(home):
             return _err(
                 "This install is not Bot-Mode-managed (no bot roster); "
                 "message_agent is unavailable. Do not retry."
+            )
+        if title != BOT_CHAT_TITLE and not getattr(agent, "_message_agent_allowed_targets", set()):
+            return _err(
+                "message_agent requires a Bot Mode 'Bot Chat' or a Desktop-resolved "
+                "@mention in the current turn. Do not retry without a new @mention."
             )
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
@@ -273,7 +340,7 @@ def message_agent_tool(
     me = _self_profile_name(Path(home))
     roster = _local_roster(root)
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    teammates = [_handle(n, root) for n in roster if n != me]
 
     body = str(message or "").strip()
     if not body:
@@ -288,13 +355,15 @@ def message_agent_tool(
     if not raw_target:
         return _err("target is required.", roster=teammates, peers=peers)
 
-    sender_handle = _handle(me)
+    sender_handle = _handle(me, root)
     prefix = f"Message from 🤖 {sender_handle} (@{sender_handle}): "
 
     # ── peer target: '<peer>/<agent>' or a bare registered peer name ──
     peer_match = _PEER_TARGET_RE.match(raw_target)
     bare_peer = raw_target.lower() if raw_target.lower() in peers else None
     if peer_match or bare_peer:
+        if not _ordinary_target_allowed(agent, raw_target):
+            return _err("Target was not resolved by this turn's @mention.")
         peer_name = peer_match.group(1) if peer_match else bare_peer
         peer_profile = peer_match.group(2) if peer_match else None
         if peer_name not in peers:
@@ -330,7 +399,9 @@ def message_agent_tool(
     # ── local teammate ──
     if not _LOCAL_TARGET_RE.match(raw_target) and "@" not in raw_target:
         return _err(f"Invalid target: {raw_target!r}.", roster=teammates, peers=peers)
-    resolved = _resolve_local_name(raw_target, roster) if _LOCAL_TARGET_RE.match(raw_target) else None
+    resolved = _resolve_local_name(raw_target, roster, root) if _LOCAL_TARGET_RE.match(raw_target) else None
+    if not _ordinary_target_allowed(agent, raw_target, resolved):
+        return _err("Target was not resolved by this turn's @mention.")
     if resolved is None:
         # ── cross-connection teammate (Desktop relay) ──
         # Every gateway connected to the user's Desktop is reachable: the
@@ -373,7 +444,7 @@ def message_agent_tool(
             "-Q",
         ],
         prefix + body,
-        f"@{_handle(resolved)}",
+        f"@{_handle(resolved, root)}",
         stdin_file=False,
         task_id=task_id,
         agent=agent,

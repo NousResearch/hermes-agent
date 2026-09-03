@@ -76,6 +76,13 @@ describe('the @handle a bot answers to', () => {
     expect(botHandle('ops')).toBe('ops')
   })
 
+  it('uses the primary profile friendly identity when one exists', () => {
+    expect(botHandle('default', row({ display_name: 'Miguel Arcanjuz', name: 'default' }))).toBe('miguel-arcanjuz')
+    expect(
+      botHandle('default', row({ name: 'default', ui_meta: { 'hermes-bots': { title: 'Miguel' } } }))
+    ).toBe('miguel')
+  })
+
   it('prefers a precomputed multi-source handle over the bare name', () => {
     expect(botHandle('default', row({ handle: 'default-vera', name: 'default' }))).toBe('default-vera')
   })

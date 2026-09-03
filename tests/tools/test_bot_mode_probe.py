@@ -68,6 +68,29 @@ def test_emits_for_named_profile_with_own_handle(tmp_path):
     assert "`@coder`" not in roster_block
 
 
+def test_default_profile_uses_friendly_title_as_callable_handle(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            display_name: miguel-arcanjuz
+            ui_meta:
+              hermes-bots:
+                title: Miguel
+            """
+        ),
+        encoding="utf-8",
+    )
+    profile_dir = _make_bot_profile(home, "coder", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(profile_dir)
+
+    assert "`@miguel`" in section
+    assert "`@default`" not in section
+    assert "`@hermes`" not in section
+
+
 def test_roster_lines_carry_roles(tmp_path):
     """Bots must know WHO to message: the roster carries title/description."""
     import textwrap as _tw

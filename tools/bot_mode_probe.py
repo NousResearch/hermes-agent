@@ -30,6 +30,7 @@ Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -118,9 +119,42 @@ def _soul_has_protocol(profile_dir: Path) -> bool:
         return False
 
 
-def _handle(name: str) -> str:
-    # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+def _mention_name_form(value: object) -> str:
+    """Turn a friendly profile name into one safe callable @handle."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    form = re.sub(r"[^a-z0-9_-]+", "-", text).strip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", form or ""):
+        return ""
+    if form in {"all", "everyone", "user", "default", "hermes"}:
+        return ""
+    return form
+
+
+def _handle(name: str, profile_dir: Path | None = None) -> str:
+    """Public handle for a profile; keep ``default`` internal-only."""
+    if name != "default":
+        return name
+    if profile_dir is not None:
+        try:
+            import yaml
+
+            data = yaml.safe_load((profile_dir / "profile.yaml").read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                ui_meta = data.get("ui_meta")
+                bot_meta = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+                candidates = [
+                    bot_meta.get("title") if isinstance(bot_meta, dict) else None,
+                    data.get("display_name"),
+                ]
+                for candidate in candidates:
+                    form = _mention_name_form(candidate)
+                    if form:
+                        return form
+        except Exception:
+            pass
+    return "hermes"
 
 
 def _profile_role(profile_dir: Path) -> str:
@@ -163,7 +197,7 @@ def _roster_lines(root: Path, me: str) -> list[str]:
         if name == me:
             continue
         role = _profile_role(profile_dir)
-        handle = _handle(name)
+        handle = _handle(name, profile_dir)
         lines.append(f"- `@{handle}`" + (f" — {role}" if role else ""))
     return lines
 

@@ -307,6 +307,21 @@ describe('the mention middleware', () => {
     expect(result.text).not.toMatch(/ — on /)
   })
 
+  it('identifies the primary profile by its friendly @miguel alias', async () => {
+    const { handler } = await contributions({
+      focused: 'research',
+      profiles: [
+        { name: 'research' },
+        { name: 'default', ui_meta: { 'hermes-bots': { title: 'Miguel' } } }
+      ]
+    })
+
+    const result = await handler({ text: '@miguel resolve isso' })
+
+    expect(result.text).toMatch(/@miguel = agent profile "default"/)
+    expect(result.text).not.toMatch(/@default =|@hermes =/)
+  })
+
   it('teaches no shellout and forbids forwarding the user’s text verbatim', async () => {
     // The class behind #91397 / #91304 / #91339: the renderer used to compose
     // a `hermes -p …` handoff, giving the model a second send path and a way

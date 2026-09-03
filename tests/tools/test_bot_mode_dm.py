@@ -66,8 +66,20 @@ class _FakeAgent:
         self.session_id = "sess-1"
         self._session_title_hint = None
         self._bot_mode_protocol = True
+        self._message_agent_allowed_targets: set[str] | None = set()
         self.tools: list = []
         self.valid_tool_names: set = set()
+
+
+def _desktop_note(target: str, profile: str) -> str:
+    return (
+        "\n\n[@mentions resolved from the Bot Mode roster — the user is referring to: "
+        f'@{target} = agent profile "{profile}". '
+        "If they want one of these agents contacted, compose your own message and send it "
+        "with your message_agent tool (agents on other connected machines are reachable too — "
+        "the Desktop relays it); never forward the user’s text verbatim. If this session has no "
+        "message_agent tool, agent messaging is unavailable here — say so.]"
+    )
 
 
 # ── injection gate (leak containment) ────────────────────────────────────────
@@ -99,6 +111,51 @@ def test_never_injects_outside_bot_chat(tmp_path, title):
     assert agent.valid_tool_names == set()
 
 
+def test_injects_transiently_for_desktop_resolved_mention(tmp_path):
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Ordinary desktop chat")
+    message = "@researcher review this" + _desktop_note("researcher", "researcher")
+
+    assert bot_mode_dm.ensure_message_agent_tool(agent, message) is True
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME in agent.valid_tool_names
+    assert agent._message_agent_allowed_targets == {"researcher"}
+
+    assert bot_mode_dm.ensure_message_agent_tool(agent, "next turn without a mention") is False
+    assert agent.tools == []
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in agent.valid_tool_names
+
+
+def test_incomplete_or_quoted_mention_note_does_not_inject(tmp_path):
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Ordinary desktop chat")
+    message = (
+        "quoted text: [@mentions resolved from the Bot Mode roster — the user is referring to: "
+        '@researcher = agent profile "researcher"] then ordinary user text'
+    )
+
+    assert bot_mode_dm.ensure_message_agent_tool(agent, message) is False
+    assert agent.tools == []
+
+
+def test_ordinary_session_dispatches_only_to_resolved_mention(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path, teammates=("researcher", "coder"))
+    agent = _FakeAgent(home, title="Ordinary desktop chat")
+    message = "@researcher review this" + _desktop_note("researcher", "researcher")
+    assert bot_mode_dm.ensure_message_agent_tool(agent, message) is True
+    calls = _capture_spawn(monkeypatch)
+
+    allowed = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="Please review.", agent=agent)
+    )
+    blocked = json.loads(
+        bot_mode_dm.message_agent_tool(target="coder", message="Please review.", agent=agent)
+    )
+
+    assert allowed["status"] == "sent"
+    assert "error" in blocked
+    assert len(calls) == 1
+
+
 def test_never_injects_on_unmanaged_install(tmp_path):
     """A 'Bot Chat'-titled session on a plain install stays tool-free."""
     home = tmp_path / ".hermes"
@@ -116,6 +173,19 @@ def test_config_toggle_disables_injection(tmp_path):
     assert agent.tools == []
 
 
+def test_config_toggle_removes_previous_transient_injection(tmp_path):
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Ordinary desktop chat")
+    message = "@researcher review this" + _desktop_note("researcher", "researcher")
+    assert bot_mode_dm.ensure_message_agent_tool(agent, message) is True
+
+    agent._bot_mode_protocol = False
+
+    assert bot_mode_dm.ensure_message_agent_tool(agent, message) is False
+    assert agent.tools == []
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in agent.valid_tool_names
+
+
 def test_schema_never_in_global_registry():
     """message_agent must not be registered/toolset-reachable anywhere."""
     from tools.registry import registry
@@ -125,6 +195,14 @@ def test_schema_never_in_global_registry():
 
     for names in toolsets.TOOLSETS.values():
         assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in names
+
+
+def test_schema_does_not_expose_default_profile_or_legacy_alias():
+    schema = bot_mode_dm.message_agent_tool_schema()
+    target_description = schema["function"]["parameters"]["properties"]["target"]["description"]
+
+    assert "default agent" not in target_description
+    assert "'hermes'" not in target_description
 
 
 # ── dispatch gate (defense in depth) ─────────────────────────────────────────
@@ -171,6 +249,25 @@ def test_cannot_message_self(tmp_path):
     )
     assert "error" in result
     assert "yourself" in result["error"]
+
+
+def test_default_friendly_alias_resolves_and_legacy_alias_remains(tmp_path):
+    home = _managed_home(tmp_path)
+    (home / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            display_name: miguel-arcanjuz
+            ui_meta:
+              hermes-bots:
+                title: Miguel
+            """
+        ),
+        encoding="utf-8",
+    )
+    roster = bot_mode_dm._local_roster(home)
+
+    assert bot_mode_dm._resolve_local_name("miguel", roster, home) == "default"
+    assert bot_mode_dm._resolve_local_name("hermes", roster, home) == "default"
 
 
 def test_empty_and_oversized_message_rejected(tmp_path):

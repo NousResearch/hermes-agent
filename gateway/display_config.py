@@ -191,6 +191,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
+# Email is a permanent-message mailbox. Its minimal tier is a safety default,
+# not a preference inherited from global interactive-gateway display settings.
+# An intentional ``display.platforms.email.<key>`` override still wins.
+_PLATFORMS_WITH_PINNED_SAFE_DEFAULTS = frozenset({"email"})
+
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
@@ -236,6 +241,14 @@ def resolve_display_setting(
             val = legacy.get(platform_key)
             if val is not None:
                 return _normalise(setting, val)
+
+    # Email's no-edit delivery tier deliberately beats global gateway display
+    # settings. This prevents global `tool_progress: all` or interim assistant
+    # messages from creating a large permanent-email flood.
+    if platform_key in _PLATFORMS_WITH_PINNED_SAFE_DEFAULTS:
+        plat_defaults = _PLATFORM_DEFAULTS.get(platform_key) or {}
+        if setting in plat_defaults:
+            return plat_defaults[setting]
 
     # 2. Global user setting (display.<key>).  Skip display.streaming because
     # that key controls only CLI terminal streaming; gateway token streaming is

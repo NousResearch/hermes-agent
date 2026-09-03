@@ -77,6 +77,24 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"enabled": "false"})
         assert restored.enabled is False
 
+    def test_email_read_only_is_loaded_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  email:\n"
+            "    enabled: true\n"
+            "    extra:\n"
+            "      read_only: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.EMAIL].enabled is True
+        assert config.platforms[Platform.EMAIL].extra["read_only"] is True
+
 
     def test_gateway_restart_notification_roundtrip_false(self):
         pc = PlatformConfig(enabled=True, gateway_restart_notification=False)

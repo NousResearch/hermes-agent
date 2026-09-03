@@ -168,6 +168,33 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "long_running_notifications") is False
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
+    def test_email_minimal_defaults_beat_global_noisy_settings(self):
+        """Global gateway verbosity must not flood a no-edit Email inbox."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": True,
+                "long_running_notifications": True,
+            }
+        }
+        assert resolve_display_setting(config, "email", "tool_progress") == "off"
+        assert resolve_display_setting(config, "email", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "email", "long_running_notifications") is False
+
+    def test_email_explicit_platform_display_opt_in_remains_supported(self):
+        """An intentional Email-specific setting still wins over its safe tier."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {"email": {"tool_progress": "all"}},
+            }
+        }
+        assert resolve_display_setting(config, "email", "tool_progress") == "all"
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

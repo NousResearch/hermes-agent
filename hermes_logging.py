@@ -261,6 +261,47 @@ COMPONENT_PREFIXES = {
 
 
 # ---------------------------------------------------------------------------
+# Process resource limits
+# ---------------------------------------------------------------------------
+
+def raise_nofile_soft_limit(target: int = 65536) -> None:
+    """Raise the soft RLIMIT_NOFILE toward *target* (never lower it).
+
+    macOS hands most processes a 256 soft file limit — launchd services and
+    plain terminal shells alike. Agent turns run in-process, and a single
+    turn that fans out concurrent subagent delegations holds hundreds of
+    fds at once (httpx clients, MCP connections, SQLite handles, tool
+    subprocess pipes): an interactive ``hermes`` session EMFILE'd mid-turn
+    minutes after an 8-way delegation burst (2026-08-03), and the gateway
+    hit the same wall under launchd's default in July 2026. Called early
+    from ``hermes_cli.main`` so every entrypoint (chat TUI, gateway,
+    dashboard, cron) is covered regardless of what the shell or service
+    definition provided. Best-effort: never raises, no-op on Windows.
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        cap = target if hard == resource.RLIM_INFINITY else min(target, hard)
+        if soft < cap:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (cap, hard))
+            logging.getLogger(__name__).info(
+                "Raised RLIMIT_NOFILE soft limit %d -> %d (hard=%s)",
+                soft,
+                cap,
+                "inf" if hard == resource.RLIM_INFINITY else hard,
+            )
+        else:
+            logging.getLogger(__name__).debug(
+                "RLIMIT_NOFILE soft limit already %d (hard=%s)",
+                soft,
+                "inf" if hard == resource.RLIM_INFINITY else hard,
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).debug("Could not raise RLIMIT_NOFILE: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main setup
 # ---------------------------------------------------------------------------
 

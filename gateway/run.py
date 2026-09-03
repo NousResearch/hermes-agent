@@ -34076,6 +34076,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
+    # Raise the soft RLIMIT_NOFILE ceiling. hermes_cli.main already does
+    # this for CLI-driven starts; calling again here covers direct
+    # start_gateway() consumers and is a no-op when the limit is high.
+    # launchd hands services soft=256 by default (EMFILE, July 2026).
+    try:
+        from hermes_logging import raise_nofile_soft_limit
+        raise_nofile_soft_limit()
+    except Exception:
+        pass
+
     # Startup security posture audit — warn-on-load, never blocks. Surfaces
     # root / weak-SSH / ephemeral-container / unauthenticated-listener posture
     # so operators get the "you're exposed" signal the June 2026 MCP-config

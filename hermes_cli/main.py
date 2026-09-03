@@ -857,6 +857,17 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+# Raise the soft file-descriptor ceiling early, before any clients, MCP
+# connections or tool subprocesses exist. macOS gives shells and launchd
+# children a 256 soft limit, which one concurrent-delegation turn can
+# exhaust (EMFILE) — see hermes_logging.raise_nofile_soft_limit.
+try:
+    from hermes_logging import raise_nofile_soft_limit as _raise_nofile
+
+    _raise_nofile()
+except Exception:
+    pass  # best-effort — never block startup on a resource-limit tweak
+
 # Apply IPv4 preference early, before any HTTP clients are created.
 # We already determined whether to force IPv4 from the raw yaml read above —
 # this just calls the toggle without a redundant load_config() round trip.

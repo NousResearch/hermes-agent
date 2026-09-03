@@ -419,6 +419,79 @@ def test_background_review_explicit_focus_runs_even_in_subagent(monkeypatch):
     assert len(forks) == 1, "explicit focus review must run even in a subagent"
 
 
+def test_background_review_disabled_bare_refine_explicit_still_runs(monkeypatch):
+    """A *bare* ``/refine`` (no focus text, ``explicit=True``) is a deliberate
+    user request and must still spawn when ``enabled: false`` — the enabled
+    gate keys on user intent, not on the presence of focus text (#100762)."""
+    from unittest.mock import patch
+
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 0
+    cfg = {"auxiliary": {"background_review": {"enabled": False}}}
+
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+            explicit=True,
+        )
+        assert len(forks) == 1, "bare /refine (explicit=True) must run when enabled=false"
+
+
+def test_background_review_bare_explicit_runs_even_in_subagent(monkeypatch):
+    """A bare ``/refine`` (``explicit=True``, ``focus=None``) bypasses the
+    delegate-depth gate just like a focused one — only the automatic
+    post-turn review is suppressed in subagents."""
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 2
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_skills=True,
+        explicit=True,
+    )
+
+    assert len(forks) == 1, "bare explicit review must run even in a subagent"
+
+
 def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch):
     """The parent must own a unique review run before the worker can start."""
     seen = {}

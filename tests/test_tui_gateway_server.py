@@ -12177,6 +12177,21 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_reports_named_custom_provider_not_billing_class():
+    """#100250: named custom entries resolve to billing class ``custom``.
+    session.info must carry the durable identity so Desktop's model pill
+    tooltip is not ``Model · custom: …``.
+    """
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="deepseek-v4-pro",
+        provider="custom",
+        requested_provider="custom:b.ai",
+    )
+    info = server._session_info(agent, {"history": []})
+    assert info["provider"] == "custom:b.ai"
+
+
 def test_session_info_reports_pending_model_switch(monkeypatch):
     """A model queued mid-turn shows as the session's model in session.info, so
     the end-of-turn settle doesn't blip the UI back to the still-live old model

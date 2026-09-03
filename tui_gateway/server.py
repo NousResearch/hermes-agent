@@ -7715,6 +7715,35 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         return None
 
 
+def _session_info_provider(agent, mirrored_provider: object = None) -> str:
+    """Provider identity for session.info — never the bare billing class ``custom``.
+
+    Named ``providers:`` entries resolve to billing class ``custom`` on the
+    agent. Desktop's model-pill tooltip prints that field, so users saw
+    ``Model · custom: <model>`` instead of the config key (#100250). Prefer
+    ``requested_provider`` (the durable identity) and heal a leftover bare
+    ``custom`` through ``canonical_custom_identity``.
+    """
+    mirrored = str(mirrored_provider or "").strip()
+    resolved = str(getattr(agent, "provider", "") or "").strip()
+    requested = str(getattr(agent, "requested_provider", "") or "").strip()
+    raw = mirrored or resolved
+    if raw.lower() != "custom":
+        return raw
+    if requested and requested.lower() != "custom":
+        return requested
+    try:
+        from hermes_cli.runtime_provider import canonical_custom_identity
+
+        healed = canonical_custom_identity(
+            config_provider=requested or None,
+            model=getattr(agent, "model", None),
+        )
+    except Exception:
+        healed = None
+    return healed or raw
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -7779,7 +7808,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
         "provider": pending_provider
-        or mirror.get("provider", getattr(agent, "provider", "")),
+        or _session_info_provider(agent, mirror.get("provider")),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

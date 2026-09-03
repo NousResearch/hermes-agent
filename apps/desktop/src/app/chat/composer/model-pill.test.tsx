@@ -80,6 +80,25 @@ describe('ModelPill pinned-override badge', () => {
   })
 })
 
+describe('ModelPill named custom provider tooltip (#100250)', () => {
+  it('uses the durable custom:<key> identity, not the billing class', () => {
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          model: 'deepseek-v4-pro',
+          modelMenuContent: <div />,
+          provider: 'custom:b.ai'
+        })}
+      />
+    )
+
+    expect(screen.getByRole('button').getAttribute('aria-label')).toBe(
+      'Model · custom:b.ai: deepseek-v4-pro'
+    )
+  })
+})
+
 describe('ModelPill per-surface model label', () => {
   it('shows the chat-bar model even when the primary global differs', () => {
     setCurrentModel('primary/model')

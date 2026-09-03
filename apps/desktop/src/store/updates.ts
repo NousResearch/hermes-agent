@@ -19,6 +19,7 @@ import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { runManagedUpdate } from '@/store/managed-updates'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
@@ -658,6 +659,24 @@ function legacyBackendReachedTarget(
 
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 
+async function activeManagedSshConnectionId(): Promise<string | null> {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const connectionId = $connection.get()?.connectionId
+  const updateManaged = window.hermesDesktop?.connections?.updateManaged
+
+  if (!connectionId || !updateManaged) {
+    return null
+  }
+
+  const registry = $connectionsRegistry.get() ?? (await refreshConnectionsRegistry().catch(() => null))
+  const connection = registry?.connections.find(entry => entry.id === connectionId)
+
+  return connection?.kind === 'ssh' ? connectionId : null
+}
+
 async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
@@ -668,6 +687,27 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   })
 
   try {
+    const managedConnectionId = await activeManagedSshConnectionId()
+
+    if (managedConnectionId) {
+      const managed = await runManagedUpdate(managedConnectionId)
+
+      if (managed.status === 'updated') {
+        return finishBackendApply(true)
+      }
+
+      const message = managed.message || translateNow('updates.applyStatus.failed')
+      $backendUpdateApply.set({
+        ...$backendUpdateApply.get(),
+        applying: false,
+        stage: 'error',
+        error: 'apply-failed',
+        message
+      })
+
+      return { ok: false, error: 'apply-failed', message }
+    }
+
     const previousStatus = $backendUpdateStatus.get()
     const requestedTargetSha = previousStatus?.commits?.at(0)?.sha
 

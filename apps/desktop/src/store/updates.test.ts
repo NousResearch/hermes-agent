@@ -788,6 +788,75 @@ describe('client nudge after a backend update', () => {
   })
 })
 
+describe('managed SSH backend update', () => {
+  const updateManagedMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    reconnectGatewaySpy.mockClear()
+    updateHermesSpy.mockReset()
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    updateManagedMock.mockReset().mockResolvedValue({
+      connectionId: 'homelab',
+      correlationId: '12345678-1234-4678-9234-567812345678',
+      message: 'Updated and restored 1 SSH scope.',
+      ok: true,
+      outcome: 'success',
+      receipt: null,
+      restoreOk: true,
+      scopes: [{ profile: 'default', restored: true }],
+      updateOk: true
+    })
+    resetUpdateApplyState()
+    $backendUpdateStatus.set(status({ behind: 1 }))
+    $mockConnectionsRegistry.set({
+      version: 2,
+      primary: 'homelab',
+      secureTokenStorage: true,
+      connections: [{ id: 'homelab', kind: 'ssh', label: 'Homelab', host: 'box' }]
+    })
+    setConnection({
+      baseUrl: 'http://127.0.0.1:9119',
+      connectionId: 'homelab',
+      isFullscreen: false,
+      logs: [],
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      windowButtonPosition: null,
+      wsUrl: 'ws://127.0.0.1:9119'
+    })
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { connections: { updateManaged: updateManagedMock } }
+    }
+  })
+
+  afterEach(() => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(null)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('drains and restores the active isolated backend instead of updating through the stale serve', async () => {
+    const result = await applyBackendUpdate()
+
+    expect(result.ok).toBe(true)
+    expect(updateManagedMock).toHaveBeenCalledWith('homelab')
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect(reconnectGatewaySpy).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('applyUpdates terminal state', () => {
   const applyMock = vi.fn()
 

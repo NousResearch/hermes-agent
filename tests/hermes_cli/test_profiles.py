@@ -311,6 +311,31 @@ class TestBackfillProfileEnvs:
 class TestDeleteProfile:
     """Tests for delete_profile()."""
 
+    def test_delete_removes_windows_bat_wrapper(self, profile_env, monkeypatch):
+        """Deleting an imported/created profile removes its Windows alias."""
+        monkeypatch.setattr("hermes_cli.profiles.sys.platform", "win32")
+        profile_dir = create_profile("imported", no_alias=True)
+        wrapper = create_wrapper_script("imported")
+        assert wrapper is not None
+        assert wrapper.name == "imported.bat"
+        assert wrapper.exists()
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._cleanup_gateway_service", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._maybe_unregister_gateway_service",
+            lambda *a, **k: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._stop_profile_backends", lambda *a, **k: None
+        )
+
+        delete_profile("imported", yes=True)
+
+        assert not profile_dir.exists()
+        assert not wrapper.exists()
+
 
     def test_rmtree_failure_raises(self, profile_env):
         profile_dir = create_profile("coder", no_alias=True)

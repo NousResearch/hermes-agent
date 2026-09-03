@@ -5679,6 +5679,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if chat_id in self._typing_tasks:
             return
 
+        task_ref: list = [None]
+
         async def _typing_loop() -> None:
             try:
                 while True:
@@ -5687,9 +5689,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             "POST", "/channels/{channel_id}/typing",
                             channel_id=chat_id,
                         )
-                        await self._client.http.request(route)
+                        await asyncio.wait_for(
+                            self._client.http.request(route),
+                            timeout=10.0,
+                        )
                     except asyncio.CancelledError:
                         return
+                    except asyncio.TimeoutError:
+                        logger.debug(
+                            "Typing indicator HTTP request timed out for %s; will retry",
+                            chat_id,
+                        )
+                        continue
                     except Exception as e:
                         # Don't die on 429 — backoff and continue
                         retry_after = self._extract_discord_retry_after(e)
@@ -5710,9 +5721,13 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             finally:
-                self._typing_tasks.pop(chat_id, None)
+                current = self._typing_tasks.get(chat_id)
+                if current is task_ref[0]:
+                    self._typing_tasks.pop(chat_id, None)
 
-        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+        task = asyncio.create_task(_typing_loop())
+        task_ref[0] = task
+        self._typing_tasks[chat_id] = task
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
@@ -5720,8 +5735,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if task:
             task.cancel()
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

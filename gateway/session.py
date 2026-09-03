@@ -2234,12 +2234,37 @@ class SessionStore:
 
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_sessions_per_user, thread_sessions_per_user = self._resolve_session_isolation(
+            source
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
             profile=self._resolve_profile_for_key(source),
         )
+
+    def _resolve_session_isolation(
+        self, source: SessionSource
+    ) -> tuple[bool, bool]:
+        """Resolve group/thread session isolation for a source.
+
+        Per-platform ``extra.group_sessions_per_user`` /
+        ``extra.thread_sessions_per_user`` overrides win when present,
+        falling back to the global gateway config. This mirrors the
+        resolution the adapters use for text-batching keys so the main
+        dispatch path and the adapter's batching key never diverge.
+        """
+        default_group = getattr(self.config, "group_sessions_per_user", True)
+        default_thread = getattr(self.config, "thread_sessions_per_user", False)
+        platform_cfg = getattr(self.config, "platforms", {}).get(source.platform)
+        if platform_cfg and isinstance(getattr(platform_cfg, "extra", None), dict):
+            extra = platform_cfg.extra
+            return (
+                extra.get("group_sessions_per_user", default_group),
+                extra.get("thread_sessions_per_user", default_thread),
+            )
+        return default_group, default_thread
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Return the pre-workspace Slack key for an explicitly scoped source.

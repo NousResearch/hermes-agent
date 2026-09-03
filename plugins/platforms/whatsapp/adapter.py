@@ -22,10 +22,11 @@ import platform
 import re
 import signal
 import subprocess
+import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (
@@ -459,6 +460,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        # chat_id -> (fetch_ts, roster) for the group-member roster injected
+        # into group message text so the model knows who is in the group.
+        self._roster_cache: Dict[str, tuple] = {}
+        self._roster_ttl = 10 * 60
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
@@ -972,12 +977,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        mentions: Optional[List[str]] = None,
     ) -> SendResult:
         """Send a message via the WhatsApp bridge.
 
         Formats markdown for WhatsApp, splits long messages into chunks
         that preserve code block boundaries, and sends each chunk sequentially.
+        ``mentions`` (list of WhatsApp JIDs) @-tags those users on the first
+        chunk; the bridge also auto-tags the author of the replied-to message
+        in a group.
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
@@ -1008,6 +1017,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Only reply-to on the first text chunk, even if the bridge
                     # response omits a parseable message id.
                     payload["replyTo"] = reply_to
+                if mentions and idx == 0:
+                    payload["mentions"] = list(mentions)
 
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
@@ -1493,6 +1504,32 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    async def _get_group_roster(self, chat_id: str) -> list:
+        """Return [{id, name}] for a group, cached for ``_roster_ttl`` seconds.
+
+        Falls back to the cached roster on fetch failure so a transient bridge
+        error never blanks out the member list the model has already seen.
+        """
+        now = time.monotonic()
+        cached = self._roster_cache.get(chat_id)
+        if cached and now - cached[0] < self._roster_ttl:
+            return cached[1]
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        return cached[1] if cached else []
+                    data = await resp.json()
+            roster = data.get("participants") or []
+            self._roster_cache[chat_id] = (now, roster)
+            return roster
+        except Exception:
+            return cached[1] if cached else []
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -1676,6 +1713,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+
+            # Surface who this message @mentions (bridge extracts
+            # contextInfo.mentionedJid) so the agent can see who is being
+            # addressed in a group — e.g. "@user, what do you think?".
+            mentioned_ids = data.get("mentionedIds") or []
+            if mentioned_ids:
+                metadata["whatsapp_mentioned_ids"] = list(mentioned_ids)
+
+            # Give the model the group roster so it knows who is in the group
+            # and can @tag a member by display name (the bridge resolves
+            # "@Name" -> JID at send time). Compact, cached, group-only.
+            if is_group:
+                roster = await self._get_group_roster(str(data.get("chatId", "")))
+                names = [r.get("name") for r in roster if r.get("name")]
+                if names:
+                    roster_line = "[Group members: " + ", ".join(names) + "]"
+                    if roster_line not in body:
+                        body = f"{roster_line}\n{body}"
 
             return MessageEvent(
                 text=body,

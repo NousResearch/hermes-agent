@@ -1807,6 +1807,15 @@ def load_gateway_config() -> GatewayConfig:
                     # (slack, telegram, matrix, dingtalk, whatsapp, feishu …)
                     # instead of re-enabling them on token/SDK presence. #41112.
                     extra["_enabled_explicit"] = True
+                # Preserve the platform's own nested ``extra:`` dict so
+                # per-platform settings (e.g. group_sessions_per_user) survive
+                # the shared-key loop, which only bridges known top-level keys
+                # and silently dropped anything the user placed under
+                # ``<platform>.extra``.  Top-level bridged keys are applied
+                # after, so they keep precedence ("top-level wins").
+                _nested_extra = platform_cfg.get("extra")
+                if isinstance(_nested_extra, dict):
+                    extra.update(_nested_extra)
                 extra.update(bridged)
 
             # Plugin-owned YAML→env config bridges (#24836).  See

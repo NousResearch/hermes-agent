@@ -2228,6 +2228,29 @@ def fetch_openrouter_models(
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
+    # [openrouter.show_all_models] Optional expansion: surface every
+    # live-catalog model that advertises tool support, not just the curated
+    # subset. Curated entries stay first (they carry the default/free
+    # badges); the rest follow in catalog order with no badge.
+    try:
+        from hermes_cli.config import load_config
+
+        _or_cfg = load_config().get("openrouter") or {}
+        _show_all_models = bool(_or_cfg.get("show_all_models", False))
+    except Exception:
+        _show_all_models = False
+    if _show_all_models:
+        curated_ids = {mid for mid, _ in curated}
+        for live_item in live_items:
+            if not isinstance(live_item, dict):
+                continue
+            mid = str(live_item.get("id") or "").strip()
+            if not mid or mid in curated_ids:
+                continue
+            if not _openrouter_model_supports_tools(live_item):
+                continue
+            curated.append((mid, ""))
+
     first_id, first_desc = curated[0]
     if not first_desc:
         curated[0] = (first_id, "recommended")

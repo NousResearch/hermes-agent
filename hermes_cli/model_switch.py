@@ -2950,6 +2950,44 @@ def _collect_authed_provider_slugs(
     return [s for s in slugs if s != "nous"]
 
 
+def _apply_quick_switch_filter(
+    rows: List[dict], quick_switch_models: list | None
+) -> List[dict]:
+    """Keep only the models named in ``quick_switch_models`` ("<provider>::<model>").
+
+    Rows whose provider is not named are dropped; within a kept provider,
+    models not in the allow-list are removed. Entries that no longer exist in
+    the provider's catalog drop out silently. ``None`` / empty passes rows
+    through unchanged.
+    """
+    if not quick_switch_models:
+        return rows
+    qs_by_slug: dict[str, list[str]] = {}
+    for entry in quick_switch_models:
+        if not isinstance(entry, str) or "::" not in entry:
+            continue
+        slug, _, model_id = entry.partition("::")
+        slug = slug.strip().lower()
+        model_id = model_id.strip()
+        if slug and model_id:
+            qs_by_slug.setdefault(slug, []).append(model_id)
+    narrowed: List[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        wanted = qs_by_slug.get(slug)
+        if wanted is None:
+            continue
+        # The user explicitly named these models ("provider::model") — show
+        # all of them as long as the provider row exists. Intersecting with
+        # the row's curated/live list would drop models the catalog happens
+        # not to carry on this fetch (e.g. a transient live-catalog miss).
+        row = dict(row)
+        row["models"] = list(wanted)
+        row["total_models"] = len(wanted)
+        narrowed.append(row)
+    return narrowed
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2964,6 +3002,7 @@ def list_authenticated_providers(
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
     excluded_providers: list | None = None,
+    quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -3278,6 +3317,26 @@ def list_authenticated_providers(
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
         model_ids = cached_provider_model_ids(hermes_id)
+        if hermes_id == "openrouter":
+            # [openrouter.show_all_models] Optional expansion for every
+            # surface that reads list_authenticated_providers (CLI, desktop
+            # /model.options, text /model fallback): list the full live
+            # catalog instead of the curated subset.
+            # fetch_openrouter_models applies the expansion and falls back
+            # to the curated snapshot when the live catalog is unreachable.
+            try:
+                from hermes_cli.config import load_config
+
+                if bool(
+                    (load_config().get("openrouter") or {}).get("show_all_models", False)
+                ):
+                    from hermes_cli.models import fetch_openrouter_models
+
+                    _expanded = [mid for mid, _ in fetch_openrouter_models()]
+                    if _expanded:
+                        model_ids = _expanded
+            except Exception:
+                pass
         if not model_ids:
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
@@ -4329,6 +4388,8 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
+    results = _apply_quick_switch_filter(results, quick_switch_models)
+
     return results
 
 
@@ -4361,6 +4422,7 @@ def list_picker_providers(
     current_model: str = "",
     include_moa: bool = False,
     excluded_providers: list | None = None,
+    quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -4414,5 +4476,9 @@ def list_picker_providers(
         if not has_models and not is_custom_endpoint:
             continue
         filtered.append(p)
+
+    # Quick-switch narrowing must run AFTER the OpenRouter live-catalog swap
+    # above (that swap would otherwise re-expand the row to the full list).
+    filtered = _apply_quick_switch_filter(filtered, quick_switch_models)
 
     return filtered

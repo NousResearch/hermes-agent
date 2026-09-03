@@ -1117,6 +1117,11 @@ DEFAULT_CONFIG = {
         "response_cache": True,
         "response_cache_ttl": 300,
         "min_coding_score": 0.65,
+        # When True, the OpenRouter picker lists every live-catalog model that
+        # advertises tool support instead of the curated subset. Intended for
+        # power users who want the full catalog reachable from /model and the
+        # CLI picker; leave False for the hand-picked agentic list.
+        "show_all_models": False,
     },
 
     # AWS Bedrock provider configuration.
@@ -3134,6 +3139,13 @@ DEFAULT_CONFIG = {
         #     openrouter:
         #       url: https://example.com/my-curation.json
         "providers": {},
+        # Quick-switch allow-list mirroring the desktop model pill's
+        # "Edit models..." selection (localStorage hermes.desktop.visible-
+        # models). When non-empty, chat-surface /model pickers show ONLY
+        # these models (formatted "<provider>::<model-id>"), grouped under
+        # their providers — the same set the desktop pill offers.
+        # Example: ["deepseek::deepseek-v4-flash", "openrouter::google/gemini-3.5-flash"]
+        "quick_switch_models": [],
     },
 
     # Per-model metadata overrides — manually declare context_window,

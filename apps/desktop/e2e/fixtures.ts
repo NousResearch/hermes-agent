@@ -172,6 +172,8 @@ ${modelContextLength ? `  context_length: ${modelContextLength}\n` : ''}provider
     models:
       mock-model: {}
     context_length: 4096
+approvals:
+  mode: off
 ${displaySection}${extraConfig ? `\n${extraConfig.trim()}\n` : ''}`
 
   fs.writeFileSync(configPath, config, 'utf8')

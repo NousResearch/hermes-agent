@@ -387,19 +387,13 @@ Runs accept a simple `input` string or an OpenAI-style message array. Message
 content can contain `text` and inline `image_url` parts, including
 `data:image/...` URLs. Uploaded files and non-image data URLs are rejected.
 
-Pass the transcript ID in `X-Hermes-Session-Id`, in the optional body
-`session_id`, or in both with the same value. Hermes returns the resolved ID in
-the 202 JSON body, the `X-Hermes-Session-Id` response header, and subsequent run
-status. When the same session ID is reused without explicit history or
-`previous_response_id`, Hermes loads that transcript from the session database
-before starting the new run. Hermes follows any
-compression-created child session and publishes the current session ID in the
-completed run status.
-
-An explicit `conversation_history` takes precedence even when it is an empty
-array. Hermes persists the resulting transcript as the active history for that
-session. This lets an API client replace stale stored context without it
-reappearing on the next turn.
+Pass `X-Hermes-Session-Id` to continue an existing transcript. Session
+continuation requires API key authentication. The optional body `session_id`
+remains a correlation ID for existing callers and does not load stored history
+on its own. When both are present they must match. Hermes returns the resolved
+ID in the 202 JSON body, the `X-Hermes-Session-Id` response header, and
+subsequent run status. `instructions`, `conversation_history`, and
+`previous_response_id` remain optional.
 
 ### GET /v1/runs/\{run_id\}
 

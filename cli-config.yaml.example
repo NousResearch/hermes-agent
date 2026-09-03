@@ -343,6 +343,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Skip cards assigned to the dispatching process's own profile
+  # (self-supervision). Set false to allow the operator profile to be a worker.
+  no_self_dispatch: true
 
 # =============================================================================
 # Terminal Tool Configuration

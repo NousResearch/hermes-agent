@@ -2911,6 +2911,10 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Do not claim/spawn a card assigned to the dispatching process's
+        # own profile (HERMES_PROFILE / named HERMES_HOME). Prevents the
+        # gateway operator from also being a dispatched worker.
+        "no_self_dispatch": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

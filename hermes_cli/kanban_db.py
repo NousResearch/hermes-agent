@@ -418,6 +418,14 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 # during the launch window.
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
+# Claim-time hold for a brand-new ready/todo card that still has zero
+# parent links. Writers that ``create`` then ``link`` on a later statement
+# used to lose the race: the dispatcher saw a root (the parent-done guard
+# is a no-op when ``task_links`` is empty) and claimed the child before
+# the edges existed. 15s covers the observed ~5s create→link gap without
+# delaying steady-state dispatch of older genuine roots.
+CLAIM_UNLINKED_GRACE_SECONDS = 15
+
 
 # Sentinel exit code a kanban worker uses to signal "I bailed because the
 # provider rate-limited / exhausted quota, not because the task failed."
@@ -4625,6 +4633,46 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone() is None
 
 
+def _unlinked_claim_grace_seconds() -> int:
+    """Seconds a newly created unlinked card is held at the claim gate.
+
+    Reads ``HERMES_KANBAN_UNLINKED_CLAIM_GRACE_SECONDS`` when set (0 restores
+    immediate-claim behaviour for tests that reimport this module). Falls
+    back to :data:`CLAIM_UNLINKED_GRACE_SECONDS`.
+    """
+    raw = os.environ.get("HERMES_KANBAN_UNLINKED_CLAIM_GRACE_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return CLAIM_UNLINKED_GRACE_SECONDS
+
+
+def _is_young_unlinked_root(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> bool:
+    """True when *task_id* has no parent links and is still inside the grace."""
+    grace = _unlinked_claim_grace_seconds()
+    if grace <= 0:
+        return False
+    row = conn.execute(
+        "SELECT created_at FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    created_at = int(row["created_at"] or 0)
+    if now - created_at >= grace:
+        return False
+    linked = conn.execute(
+        "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return linked is None
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4665,6 +4713,12 @@ def claim_task(
                 conn, task_id, "claim_rejected",
                 {"reason": "parents_not_done"},
             )
+            return None
+        # Create→link race: a card created ready with parents=[] looks
+        # like a root until the writer inserts task_links. Hold young
+        # unlinked cards for this tick; older unlinked cards are genuine
+        # roots and stay claimable.
+        if _is_young_unlinked_root(conn, task_id, now):
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
@@ -8086,6 +8140,10 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_self_dispatch: list[str] = field(default_factory=list)
+    """Ready/review task ids skipped because their assignee is the
+    dispatching process's own profile (self-supervision). Gated by
+    ``kanban.no_self_dispatch`` (default True)."""
     memory_pressure: Optional[str] = None
     """System memory pressure observed at spawn time when the memory guard
     restricted this tick (OOF-30/OOF-77): ``"critical"`` — no new workers
@@ -9621,6 +9679,52 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+def _dispatcher_operator_profile() -> Optional[str]:
+    """Profile identity of the process running the dispatcher, if known.
+
+    Prefers ``HERMES_PROFILE_NAME`` / ``HERMES_PROFILE`` (set on named
+    gateway launches and worker spawns). Falls back to
+    :func:`hermes_cli.profiles.get_active_profile_name` for a named
+    profile inferred from ``HERMES_HOME``. ``default`` / ``custom`` from
+    that fallback are ignored so a default-profile gateway still dispatches
+    cards assigned to ``default``.
+    """
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            try:
+                return _canonical_assignee(value)
+            except ValueError:
+                return value.lower()
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        name = (get_active_profile_name() or "").strip()
+    except Exception:
+        return None
+    if not name or name in {"default", "custom"}:
+        return None
+    try:
+        return _canonical_assignee(name)
+    except ValueError:
+        return name.lower()
+
+
+def _self_dispatch_skip_profile() -> Optional[str]:
+    """Assignee the dispatcher must not spawn (self-supervision).
+
+    ``kanban.no_self_dispatch`` defaults True. Returns ``None`` when the
+    gate is off or the operator profile cannot be determined.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = (load_config() or {}).get("kanban", {}) or {}
+        if cfg.get("no_self_dispatch", True) is False:
+            return None
+    except Exception:
+        pass
+    return _dispatcher_operator_profile()
+
+
 # ---------------------------------------------------------------------------
 # Memory-aware dispatch guard (OOF-30 / OOF-77)
 #
@@ -10122,6 +10226,7 @@ def _dispatch_once_locked(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+    _self_profile = _self_dispatch_skip_profile()
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -10169,6 +10274,9 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
+        if _self_profile and row_assignee == _self_profile:
+            result.skipped_self_dispatch.append(row["id"])
+            continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -10332,6 +10440,9 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if _self_profile and row["assignee"] == _self_profile:
+            result.skipped_self_dispatch.append(row["id"])
             continue
         try:
             from hermes_cli.profiles import profile_exists

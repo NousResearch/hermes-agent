@@ -1379,7 +1379,12 @@ def _handle_create(args: dict, **kw) -> str:
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
     body = args.get("body")
-    parents = args.get("parents") or []
+    parents = args.get("parents")
+    if parents is None or parents == []:
+        # Models often pass a singular parent id; fold it into the atomic
+        # create_task(parents=...) path instead of create-then-link.
+        singular = args.get("parent")
+        parents = [singular] if singular else []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on

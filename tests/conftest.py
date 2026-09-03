@@ -315,6 +315,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    "HERMES_KANBAN_UNLINKED_CLAIM_GRACE_SECONDS",
     # Pytest is routinely launched from a delegated worker.  The worker
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.
@@ -593,6 +594,22 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_unlinked_claim_grace(request, monkeypatch, _hermetic_environment):
+    """Zero the create→link claim grace so existing tests keep instant claim.
+
+    Production holds a newly created unlinked ready card for
+    ``CLAIM_UNLINKED_GRACE_SECONDS`` so a create-then-link writer can insert
+    ``task_links`` before the dispatcher treats the card as a root. Tests
+    that claim immediately after ``create_task`` were written against the
+    pre-grace behaviour. The env pin survives ``sys.modules`` reimports.
+    Opt out with ``@pytest.mark.real_unlinked_claim_grace``.
+    """
+    if request.node.get_closest_marker("real_unlinked_claim_grace"):
+        return
+    monkeypatch.setenv("HERMES_KANBAN_UNLINKED_CLAIM_GRACE_SECONDS", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -1184,6 +1201,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "real_memory_guard: bypass the autouse fixture that pins the kanban "
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_unlinked_claim_grace: opt out of the autouse fixture that "
+        "zeros kanban unlinked-claim grace.",
     )
     # NOTE: linux_only / macos_only / windows_only are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the

@@ -416,6 +416,23 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_accepts_singular_parent(worker_env):
+    """Models often pass ``parent`` instead of ``parents``; fold it into
+    create_task so the child is not born as an unlinked ready root."""
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "child via parent",
+        "assignee": "peer",
+        "parent": worker_env,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "todo"
+    from hermes_cli import kanban_db as kb
+    with kb.connect_closing() as conn:
+        assert kb.parent_ids(conn, d["task_id"]) == [worker_env]
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

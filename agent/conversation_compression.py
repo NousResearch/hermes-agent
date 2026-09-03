@@ -3374,7 +3374,16 @@ def compress_context(
         system_message: Current system prompt; used when compression needs a
             rebuilt cached prompt.
         approx_tokens: Pre-compression token estimate, logged for ops.
-        task_id: Tool task scope (used for clearing file-read dedup state).
+        task_id: Tool task scope the post-compaction dedup reset applies to
+            (``reset_file_dedup``/``reset_skill_view_dedup``). Gateway callers
+            MUST pass the live session row id — ``session_entry.session_id``,
+            the same task_id the main turn hands to ``run_conversation``: the
+            live turn records its tool-read dedup state under that id, and
+            resetting any other scope leaves those records pointing at pruned
+            context (#98206). ``None`` is not a valid scope here: both resets
+            treat it as "clear every task", which breaks concurrent-session
+            isolation. The ``"default"`` fallback is only correct for
+            non-gateway callers that have no per-session task scope.
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.

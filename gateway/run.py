@@ -22093,6 +22093,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                             commit_fence=_hyg_commit_fence,
+                                            # The live turn's tool calls (and
+                                            # thus the skill_view/read_file dedup
+                                            # records) are scoped to the session
+                                            # row id — the same value the main
+                                            # turn passes as run_conversation's
+                                            # task_id. Reset under that key so a
+                                            # post-compression re-read returns
+                                            # full content instead of a dedup
+                                            # stub pointing at pruned context
+                                            # (#98206); the "default" task
+                                            # fallback clears nothing here.
+                                            task_id=session_entry.session_id,
                                         ),
                                     )
                                     try:

@@ -102,6 +102,14 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+    # #98206: the live session row id must also ride along as task_id — the
+    # main gateway turn scopes tool dedup state (skill_view / read_file) to
+    # session_entry.session_id, so a manual compression that resets under the
+    # "default" fallback leaves the live session's dedup records in place and
+    # a post-compression skill_view returns a stub pointing at pruned context.
+    assert (
+        agent_instance._compress_context.call_args.kwargs.get("task_id") == "sess-1"
+    )
 
 
 @pytest.mark.asyncio

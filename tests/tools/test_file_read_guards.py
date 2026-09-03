@@ -672,6 +672,81 @@ class TestDedupResetOnCompression(unittest.TestCase):
         self.assertNotIn("dedup", r3)
         self.assertIn("content", r3)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_reset_is_scoped_across_concurrent_sessions(self, mock_ops):
+        """Compressing session A must not invalidate session B's dedup.
+
+        The gateway scopes each live turn's read dedup to its session row id
+        and forwards that id as compress_context(task_id=...) — the reset
+        must land on that scope only, even when repeated (out-of-turn /compress
+        followed by the hygiene sweep).
+        """
+        mock_ops.return_value = _make_fake_ops(
+            content="original content\n", file_size=18,
+        )
+        # Two concurrent sessions have both read the same file.
+        read_file_tool(self._tmpfile, task_id="sess-A")
+        read_file_tool(self._tmpfile, task_id="sess-B")
+        r_b_stub = json.loads(read_file_tool(self._tmpfile, task_id="sess-B"))
+        self.assertTrue(r_b_stub.get("dedup"), "B should dedup before any reset")
+
+        # Out-of-turn compression of session A resets only A's scope; a
+        # repeated reset (hygiene sweep after /compress) stays scoped too.
+        reset_file_dedup("sess-A")
+        reset_file_dedup("sess-A")
+
+        r_a = json.loads(read_file_tool(self._tmpfile, task_id="sess-A"))
+        self.assertNotEqual(r_a.get("dedup"), True,
+                            "A's post-compression read must return full content")
+        # B's records must survive untouched. Asserting the tracker directly:
+        # a third B read would hit the stub-loop guard (#15759), which is a
+        # different contract from scope isolation.
+        task_b = _read_tracker.get("sess-B")
+        self.assertTrue(
+            task_b and task_b.get("dedup"),
+            "B's dedup records must survive A's scoped reset — no "
+            "cross-session dedup invalidation")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_rotated_scope_starts_fresh_after_reset(self, mock_ops):
+        """A rotated session's new row id must not inherit the old row's stub.
+
+        After rotation the next turn records under a brand-new row id; the
+        out-of-turn compression reset cleared the old row's records, and no
+        stale stub may follow the session into the new row.
+        """
+        mock_ops.return_value = _make_fake_ops(
+            content="original content\n", file_size=18,
+        )
+        read_file_tool(self._tmpfile, task_id="row-old")
+
+        # Out-of-turn compression resets the live (old) row's records.
+        reset_file_dedup("row-old")
+
+        # Rotation: the next turn reads under the brand-new row id.
+        r_new = json.loads(read_file_tool(self._tmpfile, task_id="row-new"))
+        self.assertNotEqual(r_new.get("dedup"), True,
+                            "new row id must not see the old row's dedup stub")
+        self.assertIn("content", r_new)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_bare_reset_clears_all_scopes_for_non_gateway_callers(self, mock_ops):
+        """reset_file_dedup() with no scope keeps the non-gateway fallback:
+        clear every task's records at once."""
+        mock_ops.return_value = _make_fake_ops(
+            content="original content\n", file_size=18,
+        )
+        read_file_tool(self._tmpfile, task_id="ng-1")
+        read_file_tool(self._tmpfile, task_id="ng-2")
+
+        reset_file_dedup()
+
+        for task in ("ng-1", "ng-2"):
+            r = json.loads(read_file_tool(self._tmpfile, task_id=task))
+            self.assertNotEqual(r.get("dedup"), True,
+                                f"task {task} must read full content after a "
+                                f"bare reset")
+
 
 # ---------------------------------------------------------------------------
 # Large-file hint

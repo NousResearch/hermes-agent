@@ -92,3 +92,42 @@ class TestSkillViewDedup:
         # conversation_compression imports this lazily; keep the seam stable.
         from tools.skills_tool import reset_skill_view_dedup as f
         f(None)
+
+    def test_reset_is_scoped_across_concurrent_sessions(self, skills_home):
+        """Compressing session A must not invalidate session B's dedup (#98206).
+
+        The gateway forwards the live session row id as compress_context's
+        task_id, so an out-of-turn compression (repeated: /compress then the
+        hygiene sweep) clears only that session's records.
+        """
+        _view("demo-dedup-skill", task="sess-A")
+        _view("demo-dedup-skill", task="sess-B")
+        stub_b = _view("demo-dedup-skill", task="sess-B")
+        assert stub_b.get("dedup") is True
+
+        reset_skill_view_dedup("sess-A")
+        # Repeated reset stays scoped to A.
+        reset_skill_view_dedup("sess-A")
+
+        full_a = _view("demo-dedup-skill", task="sess-A")
+        assert "Step one" in full_a.get("content", "")
+        stub_b2 = _view("demo-dedup-skill", task="sess-B")
+        assert stub_b2.get("dedup") is True, (
+            "session B's unchanged view must stay deduped — no cross-session "
+            "dedup invalidation"
+        )
+
+    def test_rotated_scope_starts_fresh_after_reset(self, skills_home):
+        """A rotated session's new row id must not inherit the old row's stub.
+
+        The out-of-turn compression reset cleared the old row's records;
+        after rotation the next turn views under a brand-new row id and must
+        get full content, never a stub left over from the old row.
+        """
+        _view("demo-dedup-skill", task="row-old")
+
+        reset_skill_view_dedup("row-old")
+
+        fresh = _view("demo-dedup-skill", task="row-new")
+        assert fresh.get("dedup") is None
+        assert "Step one" in fresh.get("content", "")

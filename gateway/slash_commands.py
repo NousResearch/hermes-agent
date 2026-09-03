@@ -4798,6 +4798,13 @@ class GatewaySlashCommandsMixin:
                         focus_topic=focus_topic,
                         force=True,
                         defer_context_engine_notification=True,
+                        # Scope the dedup reset to the live session row id —
+                        # the same task_id the main gateway turn passes to
+                        # run_conversation. Without it the reset falls back to
+                        # the "default" task and a post-compression skill_view
+                        # can return a dedup stub pointing at pruned context
+                        # (#98206).
+                        task_id=session_entry.session_id,
                     )
                 )
 

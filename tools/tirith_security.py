@@ -25,6 +25,9 @@ immutable images whose data volume may also be mounted by a different host OS.
 Startup and later scans return that working binary immediately while due update
 checks run in a failure-isolated background thread. User-configured, PATH,
 package-manager, and development builds are never modified.
+Every automatic replacement requires signed release provenance; if cosign or
+the release signature is unavailable, Hermes keeps the working binary and
+retries later instead of silently falling back to checksum-only verification.
 """
 
 import functools
@@ -975,13 +978,15 @@ def _atomic_replace_binary(
     destination: str,
     *,
     expected_existing_sha256: str | None = None,
+    require_destination_absent: bool = False,
 ) -> None:
     """Stage ``source`` beside ``destination`` and atomically commit it.
 
     Download extraction happens in the system temporary directory, which may
     be on another filesystem. Copying into a sibling first makes the final
-    ``os.replace`` atomic and preserves an existing working scanner if any
-    staging or commit step fails.
+    commit atomic and preserves an existing working scanner if any staging or
+    commit step fails. Initial installs use an atomic hard-link commit so a
+    concurrent installer can win without being overwritten.
     """
     destination_dir = os.path.abspath(os.path.dirname(destination))
     os.makedirs(destination_dir, exist_ok=True)
@@ -1039,12 +1044,25 @@ def _atomic_replace_binary(
                 if current_fd >= 0:
                     os.close(current_fd)
 
-        os.replace(
-            staged_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
+        if require_destination_absent:
+            # A hard link is the portable POSIX no-clobber commit primitive:
+            # destination creation and the EEXIST check are one filesystem
+            # operation. The stage is a regular sibling on the same filesystem.
+            os.link(
+                staged_name,
+                destination_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.unlink(staged_name, dir_fd=directory_fd)
+        else:
+            os.replace(
+                staged_name,
+                destination_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
         staged_name = ""
         try:
             os.fsync(directory_fd)
@@ -1070,8 +1088,15 @@ def _download_verified_tirith(
     target: str,
     workdir: str,
     log,
+    *,
+    require_signed_release: bool = False,
 ) -> tuple[str | None, str, bool]:
-    """Download, verify, and extract one Tirith release into ``workdir``."""
+    """Download, verify, and extract one Tirith release into ``workdir``.
+
+    Initial installation retains the historical HTTPS + SHA-256 fallback.
+    Callers replacing an existing managed executable set
+    ``require_signed_release`` so an unavailable signature fails closed.
+    """
     archive_name = f"tirith-{target}.tar.gz"
     archive_path = os.path.join(workdir, archive_name)
     checksums_path = os.path.join(workdir, "checksums.txt")
@@ -1107,6 +1132,9 @@ def _download_verified_tirith(
                 max_bytes=_MAX_METADATA_DOWNLOAD_BYTES,
             )
         except Exception as exc:
+            if require_signed_release:
+                log("tirith release rejected: cosign artifacts unavailable: %s", exc)
+                return None, "cosign_artifacts_unavailable", False
             logger.info(
                 "cosign artifacts unavailable (%s), proceeding with SHA-256 only", exc
             )
@@ -1118,8 +1146,14 @@ def _download_verified_tirith(
                 log("tirith release rejected: cosign provenance verification failed")
                 return None, "cosign_verification_failed", False
             else:
+                if require_signed_release:
+                    log("tirith release rejected: cosign provenance could not be verified")
+                    return None, "cosign_exec_failed", False
                 logger.info("cosign execution failed, proceeding with SHA-256 only")
     else:
+        if require_signed_release:
+            log("tirith release replacement requires cosign provenance verification")
+            return None, "cosign_missing", False
         logger.info(
             "cosign not on PATH — using SHA-256 verification only "
             "(install cosign for full supply chain verification)"
@@ -1139,8 +1173,9 @@ def _install_tirith(
 ) -> tuple[str | None, str]:
     """Download and install Tirith to Hermes' private managed cache.
 
-    Always verifies the SHA-256 checksum and verifies cosign provenance when
-    cosign is available.
+    Always verifies the SHA-256 checksum. Initial installation verifies cosign
+    provenance when available; replacement of an existing managed executable
+    requires it.
     Returns (installed_path, failure_reason).  On success failure_reason is "".
     failure_reason is a short tag used by the disk marker to decide if the
     failure is retryable (e.g. "cosign_missing" clears when cosign appears).
@@ -1157,6 +1192,11 @@ def _install_tirith(
         return None, "unsupported_platform"
 
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
+    managed_dest = _managed_tirith_path()
+    destination_was_absent = not os.path.lexists(managed_dest)
+    replacing_existing = (
+        expected_existing_sha256 is not None or not destination_was_absent
+    )
 
     try:
         tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -1166,7 +1206,11 @@ def _install_tirith(
     try:
         logger.info("tirith not found — downloading latest release for %s...", target)
         src, reason, cosign_verified = _download_verified_tirith(
-            base_url, target, tmpdir, log
+            base_url,
+            target,
+            tmpdir,
+            log,
+            require_signed_release=replacing_existing,
         )
         if src is None:
             return None, reason
@@ -1181,6 +1225,12 @@ def _install_tirith(
         except OSError as exc:
             log("tirith install aborted: untrusted managed directory: %s", exc)
             return None, "managed_directory_untrusted"
+        # A different process may have installed a binary while this download
+        # was in flight. Never let an initial checksum-only download become an
+        # automatic replacement because of that race.
+        if os.path.lexists(dest) and not cosign_verified:
+            log("tirith replacement aborted: signed provenance is required")
+            return None, "cosign_required_for_replacement"
         if not _managed_install_directory_is_real():
             log("tirith install aborted: Hermes managed-bin directory is redirected")
             return None, "managed_directory_untrusted"
@@ -1189,6 +1239,7 @@ def _install_tirith(
                 src,
                 dest,
                 expected_existing_sha256=expected_existing_sha256,
+                require_destination_absent=destination_was_absent,
             )
         except OSError as exc:
             log("tirith install failed while replacing %s: %s", dest, exc)
@@ -1360,7 +1411,7 @@ def _run_tirith_update(path: str) -> str:
         return "deferred"
     try:
         result = subprocess.run(
-            [path, "update", "--yes", "--allow-unsigned", "--format", "json"],
+            [path, "update", "--yes", "--format", "json"],
             capture_output=True,
             text=True,
             encoding="utf-8",

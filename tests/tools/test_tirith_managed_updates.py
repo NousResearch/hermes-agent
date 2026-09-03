@@ -279,6 +279,22 @@ class TestAtomicInstall:
         assert destination.read_bytes() == b"old tirith"
         assert not list(destination.parent.glob(".tirith-install-*"))
 
+    def test_absent_only_commit_does_not_clobber_concurrent_binary(self, tmp_path):
+        source = _write_executable(tmp_path / "download" / "tirith", b"new tirith")
+        destination = _write_executable(
+            tmp_path / "bin" / "tirith", b"concurrent tirith"
+        )
+
+        with pytest.raises(FileExistsError):
+            tirith._atomic_replace_binary(
+                str(source),
+                str(destination),
+                require_destination_absent=True,
+            )
+
+        assert destination.read_bytes() == b"concurrent tirith"
+        assert not list(destination.parent.glob(".tirith-install-*"))
+
     def test_changed_preimage_is_not_replaced(self, tmp_path):
         source = _write_executable(tmp_path / "download" / "tirith", b"new tirith")
         destination = _write_executable(tmp_path / "bin" / "tirith", b"changed")
@@ -405,7 +421,7 @@ class TestManagedCachePlacement:
         monkeypatch.setattr(
             tirith,
             "_download_verified_tirith",
-            lambda *_args: (str(verified), "", True),
+            lambda *_args, **_kwargs: (str(verified), "", True),
         )
 
         installed, reason = tirith._install_tirith(log_failures=False)
@@ -900,7 +916,7 @@ class TestSelfUpdateSubprocess:
             ({"action": "updated", "new_version": "0.4.2"}, "updated"),
         ],
     )
-    def test_invokes_noninteractive_checksum_verified_update(
+    def test_invokes_noninteractive_signed_update(
         self, payload, expected, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -919,10 +935,10 @@ class TestSelfUpdateSubprocess:
             str(managed),
             "update",
             "--yes",
-            "--allow-unsigned",
             "--format",
             "json",
         ]
+        assert "--allow-unsigned" not in args[0]
         assert kwargs["stdin"] is subprocess.DEVNULL
         assert kwargs["timeout"] == tirith._UPDATE_TIMEOUT
         assert kwargs["env"]["HERMES_HOME"] == str(tmp_path)
@@ -942,6 +958,28 @@ class TestSelfUpdateSubprocess:
         assert tirith._run_tirith_update(str(managed)) == "failed"
         assert tirith._resolved_path == str(managed)
         assert managed.read_bytes() == b"old tirith"
+
+    def test_signature_required_failure_keeps_binary_without_weaker_retry(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        tirith._resolved_path = str(managed)
+        run = MagicMock(
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps({"action": "error"}),
+                stderr="release signature verification is required",
+            )
+        )
+        monkeypatch.setattr(tirith.subprocess, "run", run)
+
+        assert tirith._run_tirith_update(str(managed)) == "failed"
+        assert tirith._resolved_path == str(managed)
+        assert managed.read_bytes() == b"old tirith"
+        run.assert_called_once()
+        assert "--allow-unsigned" not in run.call_args.args[0]
 
     def test_unexpected_success_payload_is_not_treated_as_fresh(
         self, tmp_path, monkeypatch
@@ -1047,7 +1085,7 @@ fi
     tirith._background_update(str(managed), log_failures=False)
 
     assert (tmp_path / "update-argv").read_text(encoding="utf-8").strip() == (
-        "update --yes --allow-unsigned --format json"
+        "update --yes --format json"
     )
     state = json.loads(
         (tmp_path / ".tirith-update-state.json").read_text(encoding="utf-8")

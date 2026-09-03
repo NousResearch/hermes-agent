@@ -7,6 +7,7 @@ import subprocess
 import tarfile
 import threading
 import time
+from http.client import HTTPMessage
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -324,7 +325,7 @@ class TestLazyInstallPolicy:
         monkeypatch.setattr(
             _tirith_mod,
             "_download_verified_tirith",
-            lambda *_args: (str(source), "", True),
+            lambda *_args, **_kwargs: (str(source), "", True),
         )
         replace = MagicMock()
         monkeypatch.setattr(_tirith_mod, "_atomic_replace_binary", replace)
@@ -595,6 +596,90 @@ class TestCosignVerification:
         assert mock_checksum.called  # SHA-256 verification ran
         mock_extract.assert_called_once()
 
+    @patch("tools.tirith_security._extract_release_archive")
+    @patch("tools.tirith_security._verify_checksum")
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._download_file")
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    def test_replacement_requires_cosign(self, mock_target, mock_dl,
+                                         mock_which, mock_checksum,
+                                         mock_extract):
+        """Automatic replacement must not downgrade to checksum-only trust."""
+        del mock_target, mock_dl, mock_which
+        from tools.tirith_security import _install_tirith
+
+        path, reason = _install_tirith(expected_existing_sha256="0" * 64)
+
+        assert path is None
+        assert reason == "cosign_missing"
+        mock_checksum.assert_not_called()
+        mock_extract.assert_not_called()
+
+    def test_unsigned_initial_download_cannot_race_into_replacement(
+        self, tmp_path, monkeypatch
+    ):
+        """A concurrently created managed binary forces fail-closed replacement."""
+        hermes_home = tmp_path / "hermes-home"
+        verified = tmp_path / "verified-tirith"
+        verified.write_bytes(b"new tirith")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            _tirith_mod, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+
+        def unsigned_download(*_args, **_kwargs):
+            existing = hermes_home / "bin" / "tirith"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"concurrent tirith")
+            return str(verified), "", False
+
+        monkeypatch.setattr(
+            _tirith_mod, "_download_verified_tirith", unsigned_download
+        )
+
+        path, reason = _tirith_mod._install_tirith(log_failures=False)
+
+        assert path is None
+        assert reason == "cosign_required_for_replacement"
+        assert (hermes_home / "bin" / "tirith").read_bytes() == b"concurrent tirith"
+
+    def test_initial_install_cannot_clobber_late_concurrent_winner(
+        self, tmp_path, monkeypatch
+    ):
+        """The filesystem commit enforces no-clobber after the final path check."""
+        hermes_home = tmp_path / "hermes-home"
+        verified = tmp_path / "verified-tirith"
+        verified.write_bytes(b"new tirith")
+        destination = hermes_home / "bin" / "tirith"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            _tirith_mod, "_detect_target", lambda: "aarch64-apple-darwin"
+        )
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_download_verified_tirith",
+            lambda *_args, **_kwargs: (str(verified), "", False),
+        )
+        real_directory_check = _tirith_mod._managed_install_directory_is_real
+
+        def concurrent_install_after_path_check():
+            destination.write_bytes(b"concurrent tirith")
+            destination.chmod(0o755)
+            return real_directory_check()
+
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_managed_install_directory_is_real",
+            concurrent_install_after_path_check,
+        )
+
+        path, reason = _tirith_mod._install_tirith(log_failures=False)
+
+        assert path is None
+        assert reason == "install_replace_failed"
+        assert destination.read_bytes() == b"concurrent tirith"
+        assert os.access(destination, os.X_OK)
+
 
 class TestReleaseDownloadLimits:
     def test_github_token_is_not_forwarded_to_release_asset_redirect(
@@ -623,10 +708,10 @@ class TestReleaseDownloadLimits:
         redirected_request = (
             _tirith_mod.urllib.request.HTTPRedirectHandler().redirect_request(
                 initial_request,
-                None,
+                io.BytesIO(),
                 302,
                 "Found",
-                {},
+                HTTPMessage(),
                 "https://release-assets.githubusercontent.com/checksums.txt",
             )
         )

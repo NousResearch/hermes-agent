@@ -824,7 +824,12 @@ def build_anthropic_client(
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        # PMBE 2026-08-31: include the 1M-context beta — our Max-20x sub
+        # accepts it (verified empirically, properly-disguised probe), and the
+        # reactive oauth_long_context_beta_forbidden recovery (PR #17680)
+        # strips it for any subscription that rejects it. Without this,
+        # 1M-capable subs silently serve 200K.
+        all_betas = common_betas + _OAUTH_ONLY_BETAS + [_CONTEXT_1M_BETA]
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),

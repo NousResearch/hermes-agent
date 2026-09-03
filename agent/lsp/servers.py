@@ -75,6 +75,7 @@ LANGUAGE_BY_EXT: Dict[str, str] = {
     ".jsonc": "jsonc",
     ".lua": "lua",
     ".php": "php",
+    ".blade.php": "blade",
     ".prisma": "prisma",
     ".dart": "dart",
     ".ml": "ocaml",
@@ -182,6 +183,13 @@ def _file_ext_or_basename(path: str) -> str:
     files match by extension (``.py``, ``.ts``).
     """
     base = os.path.basename(path)
+    # Handle multi-part extensions like ``.blade.php`` — ``os.path.splitext``
+    # only returns the last segment (``.php``), which would match the wrong
+    # server.  Check for known double extensions first.
+    lower = base.lower()
+    for double_ext in (".blade.php",):
+        if lower.endswith(double_ext):
+            return double_ext
     _root, ext = os.path.splitext(base)
     if ext:
         return ext.lower()
@@ -406,6 +414,7 @@ def _spawn_intelephense(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "intelephense") or _which("intelephense")
     if bin_path is None:
         from agent.lsp.install import try_install
+
         bin_path = try_install("intelephense", ctx.install_strategy)
         if bin_path is None:
             return None
@@ -417,6 +426,29 @@ def _spawn_intelephense(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         cwd=root,
         env=ctx.env_overrides.get("intelephense", {}),
         initialization_options=init,
+    )
+
+
+def _spawn_laravel_lsp(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """Spawn laravel-lsp — a Laravel-aware LSP server for Blade templates.
+
+    Installed via ``composer global require laravel/lsp``.  The binary is
+    ``laravel-lsp`` and the LSP stdio mode is the default ``lsp`` subcommand.
+    No auto-install recipe — manual install only (like rust-analyzer, clangd).
+    """
+    bin_path = _resolve_override(ctx, "laravel-lsp") or _which("laravel-lsp")
+    if bin_path is None:
+        from agent.lsp.install import try_install
+
+        bin_path = try_install("laravel-lsp", ctx.install_strategy)
+        if bin_path is None:
+            return None
+    return SpawnSpec(
+        command=[bin_path, "lsp"],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("laravel-lsp", {}),
+        initialization_options=ctx.init_overrides.get("laravel-lsp", {}),
     )
 
 
@@ -1046,6 +1078,13 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_lua,
         build_spawn=_spawn_lua_ls,
         description="Lua — lua-language-server",
+    ),
+    ServerDef(
+        server_id="laravel-lsp",
+        extensions=(".blade.php",),
+        resolve_root=_root_php,
+        build_spawn=_spawn_laravel_lsp,
+        description="Laravel Blade — laravel-lsp (manual install via composer)",
     ),
     ServerDef(
         server_id="intelephense",

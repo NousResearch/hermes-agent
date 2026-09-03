@@ -72,6 +72,7 @@ agent sees a syntax-clean file with semantic problems as
 | YAML | `yaml-language-server` | npm |
 | Lua | `lua-language-server` | manual (GitHub releases) |
 | PHP | `intelephense` | npm |
+| Laravel Blade | `laravel-lsp` | manual (composer) |
 | OCaml | `ocaml-lsp` | manual (opam) |
 | Dockerfile | `dockerfile-language-server-nodejs` | npm |
 | Terraform | `terraform-ls` | manual |
@@ -92,6 +93,18 @@ For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
+
+### Laravel Blade
+
+laravel-lsp is installed via Composer:
+
+```bash
+composer global require laravel/lsp
+```
+
+Hermes detects the `laravel-lsp` binary on PATH (typically at
+`~/.config/composer/vendor/bin/laravel-lsp`) and routes `.blade.php`
+files to it. Plain `.php` files continue to use intelephense.
 
 ### PowerShell
 

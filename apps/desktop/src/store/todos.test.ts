@@ -144,6 +144,16 @@ describe('revisioned snapshots', () => {
     expect($todoRevisionsBySession.get().s1).toBe(7)
   })
 
+  it('preserves existing todos when an idle snapshot is stale', () => {
+    setSessionTodos('s1', [todo('current', 'in_progress')], 7)
+    const current = $todosBySession.get().s1
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 6, todos: [todo('stale', 'completed')] }, false)
+
+    expect($todosBySession.get().s1).toBe(current)
+    expect($todoRevisionsBySession.get().s1).toBe(7)
+  })
+
   it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
     setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
     setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])

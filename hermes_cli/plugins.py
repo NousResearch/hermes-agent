@@ -80,6 +80,22 @@ from hermes_cli.relay_plugin_cutover import (
 )
 
 
+# Well-known foreign-harness manifest directories that ship inside
+# multi-harness repos like obra/superpowers. Each contains a plugin.json
+# for another harness (Claude Code, Codex, Cursor, Devin, Kimi) and would
+# otherwise spam "unsupported schema" warnings on every discovery cycle.
+# Hermes' own portable manifest lives at .hermes-plugin/. See #101962.
+_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset(
+    {
+        ".claude-plugin",
+        ".codex-plugin",
+        ".cursor-plugin",
+        ".devin-plugin",
+        ".kimi-plugin",
+    }
+)
+
+
 def get_bundled_plugins_dir() -> Path:
     """Locate the bundled ``plugins/`` directory.
 
@@ -4706,6 +4722,11 @@ class PluginManager:
 
         for child in sorted(path.iterdir()):
             if not child.is_dir():
+                continue
+            # Skip foreign-harness manifest dirs (obra/superpowers layout)
+            # that would otherwise spam "unsupported schema" warnings (#101962).
+            if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
+                logger.debug("Skipping foreign harness manifest dir %s", child)
                 continue
             if depth == 0 and skip_names and child.name in skip_names:
                 continue

@@ -274,7 +274,10 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
 
 
-def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("peer_key", [None, "actor_peer_id", "agent_id"])
+def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(
+    tmp_path, monkeypatch, peer_key,
+):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -285,10 +288,10 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     active_path = openviking_home / "ovcli.conf"
     saved_path = openviking_home / "ovcli.conf.VPS"
     active_path.write_text(json.dumps({"url": "http://active.test"}), encoding="utf-8")
-    saved_path.write_text(
-        json.dumps({"url": "https://vps.example", "api_key": "user-key"}),
-        encoding="utf-8",
-    )
+    saved_values = {"url": "https://vps.example", "api_key": "user-key"}
+    if peer_key:
+        saved_values[peer_key] = "existing-peer"
+    saved_path.write_text(json.dumps(saved_values), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
 
@@ -318,7 +321,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
         "root_api_key": "",
         "account": "",
         "user": "",
-        "agent": "",
+        "agent": "existing-peer" if peer_key else "",
     }]
     assert config["memory"]["provider"] == "openviking"
     assert config["memory"]["openviking"] == {
@@ -328,6 +331,9 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     env_text = env_path.read_text(encoding="utf-8")
     assert "OPENVIKING_" not in env_text
     assert "OTHER_KEY=keep" in env_text
+    settings = openviking_module._resolve_connection_settings(config["memory"]["openviking"])
+    assert settings["agent"] == ("existing-peer" if peer_key else "")
+    assert json.loads(saved_path.read_text(encoding="utf-8")) == saved_values
 
 
 def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
@@ -355,8 +361,6 @@ def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeyp
         if label == "OpenViking user API key":
             assert secret is True
             return "user-key"
-        if label == openviking_module._AGENT_PROMPT_LABEL:
-            return default
         raise AssertionError(f"Unexpected prompt: {label}")
 
     values = openviking_module._prompt_manual_connection_values(

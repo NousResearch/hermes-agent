@@ -44,13 +44,10 @@ def apply_layout_tool(preset: str) -> str:
 APPLY_LAYOUT_SCHEMA = {
     "name": "apply_layout",
     "description": (
-        "Apply a saved layout preset to the Hermes desktop app when the user asks to "
-        "rearrange the workspace — e.g. \"set up my layout for coding\", \"give me a "
-        "focused view\", \"put the terminal front and center\". Built-in presets: "
-        "default (chat + sidebars), focus (chat only), terminal-deck (terminal "
-        "forward), quad (four zones). Plugin and user-saved presets are addressed by "
-        "their id. To reveal a single pane without rearranging everything, use "
-        "focus_pane instead."
+        "Apply a saved layout preset to the Hermes desktop app when the user "
+        "asks to rearrange the workspace. Built-ins: default (chat + "
+        "sidebars), focus (chat only), terminal-deck, quad; plugin/user "
+        "presets by id. To reveal ONE pane, use focus_pane instead."
     ),
     "parameters": {
         "type": "object",

@@ -37,9 +37,9 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
     cache_image_from_url,
     utf16_len,
 )
@@ -405,6 +405,8 @@ class SignalAdapter(BasePlatformAdapter):
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
             logger.info("Signal: connected to %s", self.http_url)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
             return True
         finally:
             if not self._running:
@@ -940,11 +942,11 @@ class SignalAdapter(BasePlatformAdapter):
                 raw_data, ext = remuxed
 
         if _is_image_ext(ext):
-            path = cache_image_from_bytes(raw_data, ext)
+            path = await cache_image_from_bytes_async(raw_data, ext)
         elif _is_audio_ext(ext):
-            path = cache_audio_from_bytes(raw_data, ext)
+            path = await cache_audio_from_bytes_async(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            path = await cache_document_from_bytes_async(raw_data, ext)
 
         return path, ext
 

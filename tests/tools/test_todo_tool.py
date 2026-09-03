@@ -130,11 +130,36 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool(store=store))
         assert result["summary"]["total"] == 1
         assert result["summary"]["pending"] == 1
+        assert result["revision"] == 1
 
 
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
+
+
+class TestTodoStoreSnapshots:
+    def test_revision_only_advances_when_state_changes(self):
+        store = TodoStore()
+        items = [{"id": "1", "content": "Task", "status": "pending"}]
+
+        store.write(items)
+        first = store.snapshot()
+        store.write(items)
+
+        assert first["revision"] == 1
+        assert store.snapshot() == first
+
+    def test_restore_adopts_a_trusted_revision(self):
+        store = TodoStore()
+        store.restore(
+            [{"id": "1", "content": "Task", "status": "pending"}], revision=7
+        )
+
+        assert store.snapshot()["revision"] == 7
+
+        store.write([{"id": "1", "content": "Task", "status": "completed"}])
+        assert store.snapshot()["revision"] == 8
 
 
 class TestTodoStoreBounds:

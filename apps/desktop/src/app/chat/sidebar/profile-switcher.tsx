@@ -178,8 +178,7 @@ export function ProfileRail() {
   const connections = registry?.connections
 
   const restGroups = useMemo(
-    () =>
-      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }) : [],
+    () => (multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }) : []),
     [activeConnectionId, connections, multipleConnections, roster]
   )
 
@@ -353,51 +352,67 @@ export function ProfileRail() {
   // from the single-gateway rail; fleet mode only decides where it sits).
   const activeStrip = (
     <>
-    {multiProfile && (
-      <DndContext
-        collisionDetection={closestCenter}
-        modifiers={[stepThroughCells]}
-        onDragEnd={handleDragEnd}
-        onDragOver={handleDragOver}
-        onDragStart={handleDragStart}
-        sensors={sensors}
-      >
-        <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-          {/* relative → the strip is the dragged square's offsetParent, so the
+      {multiProfile && (
+        <DndContext
+          collisionDetection={closestCenter}
+          modifiers={[stepThroughCells]}
+          onDragEnd={handleDragEnd}
+          onDragOver={handleDragOver}
+          onDragStart={handleDragStart}
+          sensors={sensors}
+        >
+          <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+            {/* relative → the strip is the dragged square's offsetParent, so the
               clamp modifier bounds drags to the occupied cells (not the +). */}
-          <div className="relative flex items-center gap-1">
-            {named.map(profile => (
-              <ProfileSquare
-                active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                color={resolveProfileColor(profile.name, colors)}
-                key={profile.name}
-                label={profileLabel(profile)}
-                // The legacy per-profile remote override predates the
-                // gateway registry; once the rail shows machines directly
-                // it only confuses, so it is offered on single-gateway
-                // setups only.
-                onConnectRemote={multipleConnections ? undefined : () => openRemoteOverrideDialog(profile.name)}
-                onDelete={() => setPendingDelete(profile)}
-                onEditSoul={() => setPendingSoul(profile.name)}
-                onRecolor={color => setProfileColor(profile.name, color)}
-                onRename={() => setPendingRename(profile)}
-                onSelect={() => selectProfile(profile.name)}
-                remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
-    )}
+            <div className="relative flex items-center gap-1">
+              {named.map(profile => (
+                <ProfileSquare
+                  active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                  color={resolveProfileColor(profile.name, colors)}
+                  key={profile.name}
+                  label={profileLabel(profile)}
+                  // The legacy per-profile remote override predates the
+                  // gateway registry; once the rail shows machines directly
+                  // it only confuses, so it is offered on single-gateway
+                  // setups only.
+                  onConnectRemote={multipleConnections ? undefined : () => openRemoteOverrideDialog(profile.name)}
+                  onDelete={() => setPendingDelete(profile)}
+                  onEditSoul={() => setPendingSoul(profile.name)}
+                  onRecolor={color => setProfileColor(profile.name, color)}
+                  onRename={() => setPendingRename(profile)}
+                  onSelect={() => selectProfile(profile.name)}
+                  remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+      )}
     </>
   )
 
   return (
-    <div aria-label={p.title} className="flex min-w-0 items-center gap-0.5" data-slot="profile-rail" role="group">
+    // `data-tour` as well as `data-slot`: only the former is identity to the
+    // tour collector and the tip catalog, and the rail's one other durable
+    // handle is a TRANSLATED aria-label, which stops matching the moment the
+    // app isn't in English.
+    <div
+      aria-label={p.title}
+      className="flex min-w-0 items-center gap-0.5"
+      data-slot="profile-rail"
+      data-tip-region=""
+      data-tour="profile-rail"
+      role="group"
+    >
       {/* Fleet: every gateway carries its own home square inside its group, so
           the pinned pill is purely the "all profiles on this gateway" toggle. */}
       {fleet && (
-        <ProfilePill active={isAll} glyph="layers" label={p.fleet.allOnGateway} onSelect={() => setShowAllProfiles(true)} />
+        <ProfilePill
+          active={isAll}
+          glyph="layers"
+          label={p.fleet.allOnGateway}
+          onSelect={() => setShowAllProfiles(true)}
+        />
       )}
 
       {/* One button toggles default ↔ all: home face when scoped to a profile,
@@ -452,53 +467,51 @@ export function ProfileRail() {
           {/* The active gateway's squares. In fleet mode they sit in the
               gateway's registry slot with a home square at their head, so the
               strip keeps one shape whichever gateway is active. */}
-          {fleet ? (
-            fleetSequence.map((entry, index) =>
-              entry.kind === 'active' ? (
-                <Fragment key="active">
-                  <FleetDivider
-                    connection={activeConnection}
+          {fleet
+            ? fleetSequence.map((entry, index) =>
+                entry.kind === 'active' ? (
+                  <Fragment key="active">
+                    <FleetDivider
+                      connection={activeConnection}
+                      first={index === 0}
+                      label={activeConnection ? p.fleet.gateway(activeConnection.label) : null}
+                      reachable
+                    />
+                    <span
+                      aria-label={activeConnection ? p.fleet.gateway(activeConnection.label) : undefined}
+                      className="flex shrink-0 items-center gap-1"
+                      data-active="true"
+                      data-connection-id={activeConnection?.id}
+                      data-slot="profile-rail-gateway"
+                      role="group"
+                    >
+                      {defaultProfile && (
+                        <ProfilePill
+                          active={onDefault}
+                          glyph="home"
+                          label={profileLabel(defaultProfile)}
+                          onSelect={() => selectProfile(defaultProfile.name)}
+                        />
+                      )}
+                      {activeStrip}
+                    </span>
+                  </Fragment>
+                ) : (
+                  <FleetRestGroup
+                    colors={colors}
                     first={index === 0}
-                    label={activeConnection ? p.fleet.gateway(activeConnection.label) : null}
-                    reachable
+                    group={entry.group}
+                    key={entry.group.connectionId}
+                    onDelete={setPendingRestDelete}
+                    onEditSoul={setPendingRestSoul}
+                    onRecolor={(agent, color) => setProfileColor(agent.profile, color)}
+                    onRename={setPendingRestRename}
+                    onSelect={switchToRest}
+                    pendingRoute={pendingRoute}
                   />
-                  <span
-                    aria-label={activeConnection ? p.fleet.gateway(activeConnection.label) : undefined}
-                    className="flex shrink-0 items-center gap-1"
-                    data-active="true"
-                    data-connection-id={activeConnection?.id}
-                    data-slot="profile-rail-gateway"
-                    role="group"
-                  >
-                    {defaultProfile && (
-                      <ProfilePill
-                        active={onDefault}
-                        glyph="home"
-                        label={profileLabel(defaultProfile)}
-                        onSelect={() => selectProfile(defaultProfile.name)}
-                      />
-                    )}
-                    {activeStrip}
-                  </span>
-                </Fragment>
-              ) : (
-                <FleetRestGroup
-                  colors={colors}
-                  first={index === 0}
-                  group={entry.group}
-                  key={entry.group.connectionId}
-                  onDelete={setPendingRestDelete}
-                  onEditSoul={setPendingRestSoul}
-                  onRecolor={(agent, color) => setProfileColor(agent.profile, color)}
-                  onRename={setPendingRestRename}
-                  onSelect={switchToRest}
-                  pendingRoute={pendingRoute}
-                />
+                )
               )
-            )
-          ) : (
-            activeStrip
-          )}
+            : activeStrip}
 
           <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
           <ImportProfileButton label={p.importProfile} />
@@ -850,7 +863,16 @@ interface ProfilePillProps {
   connectionId?: string
 }
 
-function ProfilePill({ active, connectionId, glyph, label, muted = false, onSelect, pending = false, slot }: ProfilePillProps) {
+function ProfilePill({
+  active,
+  connectionId,
+  glyph,
+  label,
+  muted = false,
+  onSelect,
+  pending = false,
+  slot
+}: ProfilePillProps) {
   return (
     <Tip label={label}>
       <Button
@@ -1298,7 +1320,7 @@ function ProfileSquare({
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => void runExportProfileFlow(label)}>
             <Codicon name="package" size="0.875rem" />
-            <span>{p.exportProfile}</span>
+            <span>{p.exportMenu}</span>
           </ContextMenuItem>
           {onConnectRemote && (
             <ContextMenuItem onSelect={onConnectRemote}>

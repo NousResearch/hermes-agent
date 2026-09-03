@@ -42,7 +42,8 @@ import {
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
-  processStartMarker
+  processStartMarker,
+  REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -63,6 +64,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
@@ -87,7 +89,8 @@ import {
   buildBrowserWindowUrl
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
-import { applyConnectionChange, teardownSshState } from './connection-apply'
+import { detectBundleSwap } from './bundle-swap'
+import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -187,13 +190,16 @@ import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
+  fsPumpDeps,
   gatewayFilePath,
   gatewayFileRequestPaths,
   isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
-  resolveGatewayFileBackend
+  resolveGatewayFileBackend,
+  writeBufferToFile
 } from './gateway-file-download'
+import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
@@ -227,6 +233,24 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import {
+  assertManagedUpdatePreflightClear,
+  executeManagedRemoteUpdate,
+  fenceManagedSshBootstrapPublication,
+  ManagedConnectionUpdateGate,
+  managedSshRecoveryScopes,
+  managedSshScopeRole,
+  managedSshTokenPersistencePlan,
+  recoverManagedSshScopes,
+  refusedManagedSshUpdate,
+  type RemoteUpdateTarget,
+  runManagedSshUpdate,
+  validateCorrelationId,
+  waitForManagedRemoteClearance,
+  waitForManagedSshBootstrapFence,
+  waitForManagedUpdateOperations
+} from './managed-ssh-update'
+import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
@@ -257,9 +281,16 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
+import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
+import {
+  LocalBackendSpawnCoordinator,
+  type LocalBackendSpawnRequest,
+  releaseLocalBackendSlotAfterExit
+} from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -276,6 +307,7 @@ import {
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
+import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
   buildSidebarSessionSliceParams,
@@ -306,6 +338,7 @@ import {
   createRemoteWsHeaderStore
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
+import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
   classifyStoredSecret,
@@ -370,6 +403,7 @@ import {
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
+import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
@@ -391,7 +425,13 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
-import { connectWindowsRemote, detectRemotePlatform, helper } from './windows-remote-lifecycle'
+import {
+  connectWindowsRemote,
+  detectRemotePlatform,
+  helper,
+  probeWindowsRemote,
+  terminateOwnedWindowsDashboardForUpdate
+} from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -803,6 +843,7 @@ const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-in
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
+const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -1337,8 +1378,13 @@ function registerMediaProtocol() {
 
       return resolvedPath
     },
+    // Claim-guarded (#90812): a media stream load can race a renderer's own
+    // reconnect dial for the same (connectionId, profile) scope; coalescing
+    // here avoids bootstrapping a second SSH tunnel / remote dashboard.
     resolveRemoteConnection: ({ connectionId, profile }) =>
-      connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
+      backendDialClaims.run(backendScopeKey(connectionId, profile), () =>
+        connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
+      )
   })
 
   protocol.handle(MEDIA_PROTOCOL, handler)
@@ -1369,13 +1415,124 @@ const profileDeletionGate = new ProfileDeletionGate()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
-const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
+// Pool sizing is a device preference (Settings → Advanced → pool rows), not a
+// launch constant: mutable at runtime, persisted in userData, applied live.
+// The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
+// for scripted/headless setups; after launch the stored preference wins.
+const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
+
+function readPersistedPoolLimits() {
+  try {
+    const limits = parsePoolLimits(fs.readFileSync(POOL_LIMITS_PATH, 'utf8'))
+    rememberLog(
+      `[pool-limits] loaded from ${POOL_LIMITS_PATH}: maxBackends=${limits.maxBackends}, idleMs=${limits.idleMs}`
+    )
+
+    return limits
+  } catch {
+    // No persisted file yet — fall back to the legacy env vars so scripted
+    // setups keep working. Log which source won: a silently-ignored env var
+    // here costs a scripted-setup user a debugging session.
+    const fromEnv = clampPoolLimits({
+      maxBackends: Number(process.env.HERMES_DESKTOP_POOL_MAX) || undefined,
+      idleMs: Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || undefined
+    })
+
+    if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
+      rememberLog(
+        `[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`
+      )
+    } else {
+      rememberLog('[pool-limits] no saved file and no env overrides; using defaults')
+    }
+
+    return fromEnv
+  }
+}
+
+function persistPoolLimits(limits) {
+  try {
+    fs.mkdirSync(path.dirname(POOL_LIMITS_PATH), { recursive: true })
+    // Atomic write: write to a temp file in the same directory, then rename.
+    // A crash mid-write would otherwise leave truncated JSON and silently
+    // lose the user's saved sizing.
+    const tmpPath = `${POOL_LIMITS_PATH}.tmp`
+    fs.writeFileSync(tmpPath, JSON.stringify(limits, null, 2), 'utf8')
+    fs.renameSync(tmpPath, POOL_LIMITS_PATH)
+  } catch (error) {
+    rememberLog(`[pool-limits] write failed: ${error.message}`)
+  }
+}
+
+// rememberLog() state. Declared here, before the top-level
+// readPersistedPoolLimits() call below, because that call logs during module
+// evaluation; declaring these later crashed launch with `undefined.push` in
+// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
+const hermesLog = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer = null
+let desktopLogFlushPromise = Promise.resolve()
+
+let poolLimits = readPersistedPoolLimits()
+// Hard cap on local backends that are starting OR running (the LRU eviction
+// above is soft — it spares keepalive-fresh entries). Follows the live
+// preference: setPoolLimits() pushes a new max into the coordinator.
+const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
+// How long a spawn may wait for a free local slot. Must stay under the
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
+// the queued ticket fails before the renderer does and the user sees why.
+const POOL_SLOT_WAIT_MS = 30_000
+
+function poolMaxBackends() {
+  return poolLimits.maxBackends
+}
+
+function poolIdleMs() {
+  return poolLimits.idleMs
+}
+
+/**
+ * Apply new limits live: persist, then converge the running pool — evict
+ * LRU backends down to the new max, and let the (already running) idle
+ * reaper handle a shortened idle window on its next tick. Returns the
+ * limits actually in force (post-clamp).
+ */
+function setPoolLimits(raw) {
+  poolLimits = clampPoolLimits(raw)
+  persistPoolLimits(poolLimits)
+  localBackendSpawnCoordinator.setLimit(poolLimits.maxBackends)
+  evictLruPoolBackends(poolMaxBackends())
+  startPoolIdleReaper()
+
+  return { ...poolLimits }
+}
+
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
 // concurrent multi-profile session keeps several backends "fresh" at once, and
 // killing one to honor the soft cap would abort a running agent.
-const POOL_KEEPALIVE_FRESH_MS = 90_000
+//
+// The window is intentionally MUCH wider than the 60s ping cadence:
+//   * 1 missed ping    = +60s of apparent silence
+//   * WSL2 IPC stall  = the renderer's `hermes:backend:touch` roundtrips
+//                       through 9p; a single brief 9p hiccup can stretch a
+//                       ping to ~30s of observed silence (#95189: gateways
+//                       exited every ~2 min on WSL2 because the previous
+//                       90s window left no headroom — one delayed ping
+//                       pushed a live backend past the threshold and the
+//                       cap-driven eviction killed the active profile's
+//                       backend mid-session, re-minting runtime ids and
+//                       re-allocating pooled gateway secondaries ~700×/day).
+//   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
+//     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
+//     pool idle window above (default 10 min) — this constant only governs the
+//     "is this backend plausibly still alive" question for LRU eviction,
+//     not when the idle reaper definitively tears a backend down.
+const POOL_KEEPALIVE_FRESH_MS = Math.max(
+  120_000,
+  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
+)
+
 let poolIdleReaper = null
 let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
@@ -1426,12 +1583,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
@@ -2096,6 +2249,59 @@ function updateGateDeps() {
   }
 }
 
+// One-shot guard for the automatic bundle-swap relaunch below: the relaunched
+// instance carries this flag so a stamp that still mismatches (unreadable
+// resources, exotic packaging) can never produce a relaunch loop.
+const BUNDLE_SWAP_RELAUNCH_FLAG = '--hermes-bundle-swap-relaunched'
+
+// How long the parked instance waits for its own scheduled exit to land before
+// giving up and booting the stale build anyway. Better a torn renderer with a
+// banner than a window that never comes back.
+const BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS = 15_000
+
+// The detached updater swaps the packaged bundle on disk AFTER `hermes update`
+// exits (posix.sh mac_swap / windows.ps1). An instance reopened mid-update —
+// the #50238 gesture the gate above exists for — was launched from the
+// PRE-swap bundle, and the updater's `open` leg then merely focuses us (single
+// instance), so no process ever loads the new build. Letting boot proceed here
+// runs the new runtime under the old renderer: exactly the skew
+// detectRendererSkew() warns about, except the Updates card already says
+// "latest", so the warning's own remedy has nothing to run.
+//
+// This is the earliest point where the swap is PROVABLE — it happens while we
+// are parked on the gate, so checking any sooner (at `ready`, before the gate)
+// only ever compares a stamp with itself. Relaunching here also keeps the
+// boot-progress window up for the whole wait instead of leaving the user with
+// no window at all.
+//
+// Returns true when the relaunch was scheduled; the caller must park rather
+// than continue booting, because the process exits underneath it.
+function relaunchIntoSwappedBundle() {
+  if (!IS_PACKAGED || process.argv.includes(BUNDLE_SWAP_RELAUNCH_FLAG)) {
+    return false
+  }
+
+  if (!detectBundleSwap(INSTALL_STAMP, loadInstallStamp())) {
+    return false
+  }
+
+  rememberLog('[updates] app bundle was swapped during the update; relaunching into the new build')
+
+  try {
+    app.relaunch({
+      args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), BUNDLE_SWAP_RELAUNCH_FLAG]
+    })
+  } catch (err) {
+    rememberLog(`[updates] bundle-swap relaunch failed: ${err?.message || err}; continuing with the current build`)
+
+    return false
+  }
+
+  void exitAfterBackendShutdown(0)
+
+  return true
+}
+
 // Block until no live update is in progress (or we hit the wait timeout).
 // Emits a boot-progress phase so the renderer shows "Update in progress…"
 // rather than a frozen splash. Returns true if it parked at all.
@@ -2158,6 +2364,14 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
+  } else if (relaunchIntoSwappedBundle()) {
+    await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
+    // Park while the scheduled exit lands so this stale build never starts a
+    // backend; the failsafe below only runs if the exit somehow does not.
+    await new Promise(resolve => setTimeout(resolve, BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS))
+    rememberLog(
+      `[updates] relaunch did not land within ${BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS}ms; continuing with the current build`
+    )
   } else {
     rememberLog('[updates] update finished; proceeding with backend start')
   }
@@ -3167,6 +3381,54 @@ function isShimLocked(shimPath) {
   }
 }
 
+// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
+// exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
+// daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
+// venv files mapped. External holders (a user terminal running `hermes`,
+// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
+// hand-off aborts, per existing design. Selection lives in the pure
+// venv-holder-select module (ordinal path-prefix, no PowerShell -like
+// wildcard hazards) so it's testable without Electron.
+function killHermesOwnedVenvDaemons(updateRoot) {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
+
+  let holders = []
+
+  try {
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
+      ],
+      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
+    )
+
+    const parsed = JSON.parse(String(out || '[]'))
+
+    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
+      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
+    )
+  } catch {
+    // Best-effort: the venv-blocker scan downstream is the real backstop.
+    return
+  }
+
+  for (const holder of holders) {
+    const pid = Number(holder?.ProcessId)
+
+    if (Number.isInteger(pid) && pid > 0) {
+      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
+      forceKillProcessTree(pid)
+    }
+  }
+}
+
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
@@ -3231,7 +3493,7 @@ async function backendCommandForPid(pid) {
   }
 }
 
-async function processIdentityMatches(identity) {
+async function processIdentityMatches(identity, timeoutMs: number = 30_000) {
   // Degraded PID-only identity (#93608): the start-marker probe failed while
   // the child was verifiably alive, so only PID liveness can be checked here.
   // backendIdentityMatches layers the command-line check on top before
@@ -3249,14 +3511,14 @@ async function processIdentityMatches(identity) {
   }
 
   try {
-    return (await processStartMarker(identity.pid)) === identity.startMarker
+    return (await processStartMarker(identity.pid, timeoutMs)) === identity.startMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function backendIdentityMatches(identity) {
-  const processMatches = await processIdentityMatches(identity)
+  const processMatches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (processMatches !== true) {
     return processMatches
@@ -3277,15 +3539,24 @@ async function backendParentMatches(entry) {
   }
 
   try {
-    return (await processStartMarker(entry.parentPid)) === entry.parentStartMarker
+    return (await processStartMarker(entry.parentPid, REAP_PROBE_TIMEOUT_MS)) === entry.parentStartMarker
   } catch (error) {
     return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
   }
 }
 
 async function stopOwnedBackend(identity) {
-  if ((await processIdentityMatches(identity)) !== true) {
+  const matches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+
+  if (matches === false) {
     return
+  }
+
+  if (matches !== true) {
+    // Identity probe failed (not confirmed gone): preserve the record so a
+    // later launch retries the stop instead of dropping it and leaking the
+    // backend. reapOrphans keeps the entry when stop() throws.
+    throw new Error(`Could not verify backend PID ${identity.pid} before stopping it.`)
   }
 
   if (IS_WINDOWS) {
@@ -3304,7 +3575,7 @@ async function stopOwnedBackend(identity) {
     const deadline = Date.now() + 1500
 
     while (Date.now() < deadline) {
-      if ((await processIdentityMatches(identity)) !== true) {
+      if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) !== true) {
         return
       }
 
@@ -3313,7 +3584,7 @@ async function stopOwnedBackend(identity) {
 
     // Revalidate immediately before escalation so PID reuse cannot target a
     // replacement process.
-    if ((await processIdentityMatches(identity)) === true) {
+    if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) === true) {
       try {
         process.kill(-identity.pid, 'SIGKILL')
       } catch {
@@ -3323,7 +3594,7 @@ async function stopOwnedBackend(identity) {
   }
 
   await new Promise(resolve => setTimeout(resolve, 50))
-  const remaining = await processIdentityMatches(identity)
+  const remaining = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
 
   if (remaining !== false) {
     throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)
@@ -3517,6 +3788,27 @@ async function releaseBackendLock(updateRoot, tag) {
     stopAllPoolBackends
   })
 
+  // Stop separately-running messaging gateways (all profiles) BEFORE the
+  // release gate. The gateway is launched by the gateway-launcher desktop
+  // plugin via /api/gateway/start and is NOT in backendConnectionState or
+  // backendPool, so the tree-kills above never see it — on Windows its
+  // launcher (venv\Scripts\python.exe) keeps the venv mandatory-locked and
+  // the 15s gate aborts the hand-off before the venv-blocker scan's
+  // pausable-gateway exemption ever gets a chance (#70337). Delegate to
+  // `hermes gateway stop --all`: the CLI discovers every profile's gateway
+  // (launcher + worker — gateway.pid records only the uv WORKER, and
+  // taskkill /T from the worker never reaches its parent), drains in-flight
+  // agents, and force-kills survivors. Best-effort; abort paths restore via
+  // startGatewaysAfterUpdateAbort. No-op off Windows.
+  stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+
+  // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
+  // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
+  // backend) yet runs off venv\Scripts\pythonw.exe, keeping venv files
+  // mapped past the backend teardown (#75477/#75478). Narrowly scoped
+  // (venv-holder-select) — external holders are never killed here.
+  killHermesOwnedVenvDaemons(updateRoot)
+
   const shim = venvHermesShimPath(updateRoot)
 
   const gate = await waitForBackendRelease(
@@ -3701,6 +3993,12 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
 
+      if (IS_WINDOWS) {
+        // The pre-gate `gateway stop --all` (#70337) took every profile's
+        // gateway down for an update that never happened — bring them back.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
+
       return { ok: false, error: message }
     }
 
@@ -3750,16 +4048,21 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
+        // Restore the gateways the pre-gate stop took down (#70337 drain
+        // semantics): the update aborted, so nothing else will relaunch them.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
       }
 
       if (scanOutcome.kind === 'probe-failure') {
-        const message = formatProbeFailedMessage()
+        const message = formatProbeFailedMessage(scanOutcome.error)
 
         rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
+        // Same drain-semantics restore as the venv-blocked abort above.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-probe-failed', message }
       }
@@ -3887,6 +4190,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
+
+      if (IS_WINDOWS) {
+        // Same drain-semantics restore as the earlier abort paths (#70337).
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
 
       return { ok: false, error: 'updater-spawn-failed', message }
     }
@@ -5798,7 +6106,7 @@ async function saveImageFromUrl(rawUrl) {
   return true
 }
 
-async function writeComposerImage(buffer, ext = '.png') {
+async function writeComposerImage(buffer, ext = '.png', name = '') {
   const rawExt = String(ext || '.png')
     .trim()
     .toLowerCase()
@@ -5809,7 +6117,19 @@ async function writeComposerImage(buffer, ext = '.png') {
   await fs.promises.mkdir(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
   const random = crypto.randomBytes(3).toString('hex')
-  const filePath = path.join(dir, `composer_${stamp}_${random}${safeExt}`)
+
+  const baseName = String(name || '')
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.[^.]+$/, '')
+
+  const safeName = (baseName || '')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 80)
+
+  const fileName = safeName ? `${safeName}_${random}${safeExt}` : `composer_${stamp}_${random}${safeExt}`
+  const filePath = path.join(dir, fileName)
   await fs.promises.writeFile(filePath, buffer)
 
   return filePath
@@ -7657,10 +7977,9 @@ async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) 
   }
 
   try {
-    await pumpStreamToFile(res, result.filePath, {
-      createWriteStream: (destPath: string) => fs.createWriteStream(destPath),
-      unlink: (destPath: string) => fs.promises.unlink(destPath)
-    })
+    // Failure-atomic: exclusive temp create beside the destination, rename into
+    // place only once the body is complete (#96597).
+    await pumpStreamToFile(res, result.filePath, fsPumpDeps())
   } catch (error) {
     ctx.abort?.()
     throw error
@@ -7812,7 +8131,9 @@ async function saveGatewayFileViaDataUrl(
     return { canceled: true, saved: false }
   }
 
-  await fs.promises.writeFile(result.filePath, buffer)
+  // Same failure-atomic contract as the streaming path: a direct writeFile
+  // truncates an existing destination before the write completes (#96597).
+  await writeBufferToFile(buffer, result.filePath, fsPumpDeps())
 
   return { path: result.filePath, saved: true }
 }
@@ -9200,6 +9521,10 @@ async function saveRegistryConnection(input: any = {}) {
     throw new Error('Remote gateway session token is required.')
   }
 
+  if (existing && connectionDialFieldsChanged(existing, entry)) {
+    managedConnectionUpdateGate.assertCanMutate(entry.id)
+  }
+
   writeDesktopConnectionsRegistry(upsertConnection(registry, entry))
 
   // A dial-material edit (endpoint/auth/ssh routing — NOT a label rename)
@@ -9253,6 +9578,68 @@ function writeActiveDesktopProfile(name) {
   writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
 
   return value || null
+}
+
+// True when the given pid belongs to a running process whose command line
+// contains "hermes", avoiding false positives from stale gateway.pid files
+// whose PID was recycled by the OS to an unrelated process.
+function isHermesProcess(pid) {
+  try {
+    process.kill(pid, 0) // signal 0 = existence check, no signal sent
+  } catch {
+    return false
+  }
+
+  // On macOS / Linux, check the command line to avoid PID recycling false positives.
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+
+    return cmdline.includes('hermes')
+  } catch {
+    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
+    // the full command line, not just the process name.  -o comm= would return
+    // "python3" for any Python process, creating false positives.
+    try {
+      const { execSync } = require('child_process')
+      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
+
+      return out.includes('hermes')
+    } catch {
+      return false
+    }
+  }
+}
+
+// Seed active-profile.json from the best available signal when the file does
+// not yet exist.  Runs exactly once (no-op once the file exists).  Priority:
+//   1. Legacy ~/.hermes/active_profile (explicit CLI choice via hermes profile use)
+//   2. Running gateway (gateway.pid with verified liveness + hermes identity)
+//   3. state.db heuristics (hybrid recency×size score picks the primary workspace)
+// The stored JSON includes _migrated:true so the renderer can optionally surface
+// a one-time notification that the profile was auto-detected.
+//
+// Decision logic lives in profile-migration.ts (pure + unit-tested). This wrapper
+// just wires Electron/Node fs into a MigrationDeps bag and delegates.
+function migrateActiveProfileIfMissing() {
+  migrateActiveProfileIfMissingPure(DESKTOP_PROFILE_CONFIG_PATH, {
+    legacyActivePath: path.join(HERMES_HOME, 'active_profile'),
+    hermesHome: HERMES_HOME,
+    profilesRoot: path.join(HERMES_HOME, 'profiles'),
+    existsSync: p => fs.existsSync(p),
+    readFileSync: (p, enc) => fs.readFileSync(p, enc),
+    statSync: p => fs.statSync(p),
+    readdirSync: (p, opts) => fs.readdirSync(p, opts as { withFileTypes: true }),
+    isHermesProcess,
+    now: () => Date.now(),
+    writeJson: (target, decision) => {
+      // Mirror writeActiveDesktopProfile's atomic-write + parent-dir-create
+      // semantics so the migration produces a file indistinguishable from a
+      // user-driven profile switch.
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      writeFileAtomic(target, JSON.stringify(decision, null, 2))
+    },
+    isValidProfileName: p => PROFILE_NAME_RE.test(p)
+  })
 }
 
 // Sanitize a connection config into the renderer-facing shape. With no
@@ -9611,9 +9998,187 @@ async function buildRemoteConnection(
 const sshConnections = new Map<string, any>()
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
+// Managed SSH update lifecycle (#93042): while an update owns a registered
+// SSH connection, the gate pauses new dials and dial-material mutations for
+// that connection id; the durable recovery journal below survives a crash
+// mid-transaction so the next launch can restore every drained scope.
+const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
+  connectionId =>
+    readManagedSshRecoveryRecords().find(record => record.connectionId === connectionId)?.correlationId || null
+)
+
+const managedConnectionUpdates = new Map<string, Promise<any>>()
+const managedConnectionRecoveries = new Map<string, Promise<void>>()
+const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
+let managedUpdateQuitWait: Promise<void> | null = null
+let managedUpdateQuitWaitDone = false
+
+function assertCanMutateManagedPrimaryRouting() {
+  const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
+
+  const ids = new Set([
+    ...managedConnectionUpdates.keys(),
+    ...managedConnectionRecoveries.keys(),
+    ...managedPrimaryRestoreOwners.keys(),
+    ...durableIds
+  ])
+
+  if (ids.size > 0) {
+    const error: any = new Error(
+      `Primary connection routing cannot change while managed SSH update recovery is pending for ${[...ids].join(', ')}.`
+    )
+
+    error.code = 'managed-update-in-progress'
+    throw error
+  }
+}
+
+function readManagedSshRecoveryRecords(): any[] {
+  try {
+    const stat = fs.lstatSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
+
+    if (!stat.isFile() || stat.isSymbolicLink() || !tightenSecretFileMode(DESKTOP_MANAGED_SSH_RECOVERY_PATH)) {
+      throw new Error('Managed SSH recovery journal is not a safe owner-only file.')
+    }
+
+    const payload = JSON.parse(fs.readFileSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH, 'utf8'))
+
+    if (payload?.version !== 1 || !Array.isArray(payload.records)) {
+      throw new Error('Managed SSH recovery journal has an unsupported shape.')
+    }
+
+    const valid = payload.records.every(record => {
+      if (
+        !record ||
+        typeof record !== 'object' ||
+        typeof record.connectionId !== 'string' ||
+        record.source?.kind !== 'ssh' ||
+        record.source?.id !== record.connectionId ||
+        !['prepared', 'launching'].includes(record.phase) ||
+        !Array.isArray(record.scopes) ||
+        record.scopes.length > 256
+      ) {
+        return false
+      }
+
+      try {
+        validateCorrelationId(record.correlationId)
+      } catch {
+        return false
+      }
+
+      const scopesValid = record.scopes.every(
+        scope =>
+          scope &&
+          typeof scope === 'object' &&
+          typeof scope.key === 'string' &&
+          scope.key.length <= 256 &&
+          typeof scope.profile === 'string' &&
+          scope.profile.length > 0 &&
+          scope.profile.length <= 128 &&
+          ['legacy', 'primary', 'registry'].includes(scope.kind) &&
+          (scope.kind === 'primary' || scope.key.length > 0)
+      )
+
+      const identities = record.scopes.map(scope => `${scope.kind}\0${scope.key}\0${scope.profile}`)
+
+      return (
+        scopesValid &&
+        new Set(identities).size === identities.length &&
+        record.scopes.filter(scope => scope.kind === 'primary').length <= 1
+      )
+    })
+
+    if (!valid) {
+      throw new Error('Managed SSH recovery journal contains an invalid record.')
+    }
+
+    return payload.records
+  } catch (cause: any) {
+    if (cause?.code === 'ENOENT') {
+      return []
+    }
+
+    const error: any = new Error(
+      'Managed SSH recovery state is unreadable or malformed; refusing connection startup and edits.'
+    )
+
+    error.code = 'managed-update-recovery-unavailable'
+    error.cause = cause
+    throw error
+  }
+}
+
+function writeManagedSshRecoveryRecords(records) {
+  fs.mkdirSync(path.dirname(DESKTOP_MANAGED_SSH_RECOVERY_PATH), { recursive: true })
+  writeSecretFileAtomic(
+    DESKTOP_MANAGED_SSH_RECOVERY_PATH,
+    JSON.stringify({ version: 1, records, updatedAt: new Date().toISOString() }, null, 2)
+  )
+}
+
+function persistManagedSshRecovery(source, correlationId, scopes) {
+  const prefix = backendScopePrefix(source.id)
+  const recoveryScopes = managedSshRecoveryScopes(scopes, prefix)
+
+  const records = readManagedSshRecoveryRecords().filter(record => record.connectionId !== source.id)
+  records.push({
+    connectionId: source.id,
+    correlationId: validateCorrelationId(correlationId),
+    createdAt: new Date().toISOString(),
+    phase: 'prepared',
+    scopes: recoveryScopes,
+    // Registry secrets are already safeStorage envelopes. Persist the exact
+    // connection snapshot so crash recovery does not silently switch hosts or
+    // credentials after a Settings edit.
+    source
+  })
+  writeManagedSshRecoveryRecords(records)
+}
+
+function markManagedSshRecoveryLaunching(connectionId, correlationId) {
+  const records = readManagedSshRecoveryRecords()
+
+  const index = records.findIndex(
+    record => record.connectionId === connectionId && record.correlationId === correlationId
+  )
+
+  if (index < 0) {
+    throw new Error('Managed SSH recovery record disappeared before remote update launch.')
+  }
+
+  records[index] = { ...records[index], phase: 'launching' }
+  writeManagedSshRecoveryRecords(records)
+}
+
+function clearManagedSshRecovery(connectionId, correlationId) {
+  const records = readManagedSshRecoveryRecords()
+
+  const remaining = records.filter(
+    record => record.connectionId !== connectionId || record.correlationId !== correlationId
+  )
+
+  if (remaining.length === records.length) {
+    return
+  }
+
+  if (remaining.length > 0) {
+    writeManagedSshRecoveryRecords(remaining)
+  } else {
+    try {
+      fs.unlinkSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        throw error
+      }
+    }
+  }
+}
+
 const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 let sshQuitTeardownDone = false
+let sshQuitTeardownPromise: Promise<void> | null = null
 let backendQuitTeardownDone = false
 
 function sshScopeKey(profile) {
@@ -9726,11 +10291,18 @@ function activeSshTerminalTarget(webContentsId?: number) {
 async function ensureTerminalBackend(webContentsId: number) {
   const windowRoute = windowConnectionRoutes.get(webContentsId)
 
+  // Claim-guarded (#90812): opening a terminal pane can race a renderer's own
+  // reconnect dial for the same (connectionId, profile) scope; coalescing
+  // here avoids bootstrapping a second SSH tunnel / remote dashboard.
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    return ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)
+    return backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile), () =>
+      ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)
+    )
   }
 
-  return ensureBackend(windowRoute?.profile ?? primaryProfileKey())
+  const profile = windowRoute?.profile ?? primaryProfileKey()
+
+  return backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that
@@ -9829,18 +10401,92 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
-async function bootstrapSshConnection(profile, sshConfig, reuseToken, source, resolvedEffectiveFingerprint?) {
+async function bootstrapSshConnection(
+  profile,
+  sshConfig,
+  reuseToken,
+  source,
+  resolvedEffectiveFingerprint?,
+  metadata: any = {}
+) {
   const scope = sshScopeKey(profile)
   const effectiveConfigFingerprint = resolvedEffectiveFingerprint || (await effectiveSshConfigFingerprint(sshConfig))
   const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
   const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
 
-  return sshBootstrapCoordinator.start(scope, fingerprint, lease =>
-    bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, fingerprint, lease)
+  return sshBootstrapCoordinator.start(
+    scope,
+    fingerprint,
+    lease => bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, metadata, fingerprint, lease),
+    metadata
   )
 }
 
-async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, fingerprint, lease) {
+// Tear down a bootstrap result whose publication lost the managed-update
+// fence: exact-terminate the serve this bootstrap owns (never a foreign one),
+// drop its forward and transport, and surface a fence error so the managed
+// updater refuses to mutate a remote install with an unfenced serve.
+async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, boundaryError) {
+  const cleanupErrors: string[] = []
+  const scope = sshScopeKey(profile)
+
+  try {
+    const expected = {
+      ownershipId: result.ownershipId,
+      pid: result.pid,
+      spawnNonce: result.spawnNonce,
+      profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
+      hermesPath: result.hermesPath,
+      hermesHome: result.hermesHome,
+      startedAt: result.startedAt,
+      creationTimeNs: result.creationTimeNs,
+      creationTime: result.creationTime
+    }
+
+    if (result.platform?.os === 'Windows') {
+      await terminateOwnedWindowsDashboardForUpdate(
+        ssh,
+        { hermesPath: result.hermesPath, hermesHome: result.hermesHome, python: result.pythonPath },
+        expected
+      )
+    } else if (result.platform?.os === 'Linux' || result.platform?.os === 'Darwin') {
+      await remoteLifecycle.terminateOwnedDashboardForUpdate(ssh, expected)
+    } else {
+      cleanupErrors.push(`unsupported remote platform ${result.platform?.os || 'unknown'}`)
+    }
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  try {
+    await ssh.cancelForward(result.localPort, result.remotePort)
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  try {
+    await ssh.close()
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  if (sshConnections.get(scope)?.ssh === ssh) {
+    sshConnections.delete(scope)
+  }
+
+  if (cleanupErrors.length > 0) {
+    const unsafe: any = new Error(
+      `An SSH bootstrap crossed the managed-update gate and its exact owned serve could not be fenced: ${cleanupErrors.join('; ')}`
+    )
+
+    unsafe.code = 'managed-update-bootstrap-fence-failed'
+    unsafe.unsafeManagedBootstrap = true
+    unsafe.cause = boundaryError
+    throw unsafe
+  }
+}
+
+async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, metadata, fingerprint, lease) {
   const scope = sshScopeKey(profile)
   const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
   const existing = sshConnections.get(scope)
@@ -9880,9 +10526,13 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     await ssh.open({ signal: lease.signal })
   }
 
-  let result
+  let result: any
 
   try {
+    if (metadata.registryConnectionId) {
+      managedConnectionUpdateGate.assertCanDial(metadata.registryConnectionId, metadata.managedUpdateCorrelation || '')
+    }
+
     const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
@@ -9932,31 +10582,52 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   try {
     lease.assertCurrent()
   } catch (error) {
-    try {
-      await ssh.cancelForward(result.localPort, result.remotePort)
-      await ssh.close()
-    } catch {
-      void 0
-    }
-
+    await rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
     throw error
   }
 
-  persistSshConnectionToken(profile, source, result.token)
-
-  removeForceCleanup()
-  sshConnections.set(scope, {
-    ssh,
-    fingerprint,
-    ownershipId: result.ownershipId || sshOwnershipKey(profile),
-    localPort: result.localPort,
-    remotePort: result.remotePort,
-    pid: result.pid,
-    host: sshConfig.host,
-    hostLabel,
-    hermesVersion: result.hermesVersion || '',
-    remotePlatform: result.platform?.os || '',
-    reused: result.reused
+  await fenceManagedSshBootstrapPublication({
+    assertCanPublish: () => {
+      if (metadata.registryConnectionId) {
+        managedConnectionUpdateGate.assertCanDial(
+          metadata.registryConnectionId,
+          metadata.managedUpdateCorrelation || ''
+        )
+      }
+    },
+    publish: () => {
+      persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)
+      removeForceCleanup()
+      sshConnections.set(scope, {
+        ssh,
+        fingerprint,
+        ownershipId: result.ownershipId || sshOwnershipKey(profile),
+        localPort: result.localPort,
+        remotePort: result.remotePort,
+        pid: result.pid,
+        host: sshConfig.host,
+        hostLabel,
+        hermesVersion: result.hermesVersion || '',
+        remotePlatform: result.platform?.os || '',
+        reused: result.reused,
+        spawnNonce: result.spawnNonce,
+        creationTimeNs: result.creationTimeNs,
+        creationTime: result.creationTime,
+        startedAt: result.startedAt,
+        hermesPath: result.hermesPath,
+        hermesHome: result.hermesHome,
+        pythonPath: result.pythonPath,
+        remoteProfile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
+        registryConnectionId:
+          metadata.registryConnectionId ||
+          (typeof source === 'string' && source.startsWith('registry:') ? source.slice('registry:'.length) : ''),
+        // Never infer primary ownership from a non-composite scope key: legacy
+        // per-profile pools also use bare keys. Only startHermes' explicit call
+        // site may label a registry-qualified SSH scope as the primary backend.
+        primaryRegistryScope: metadata.primaryRegistryScope === true
+      })
+    },
+    rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
   })
 
   sshRememberLog(
@@ -9989,26 +10660,31 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   }
 }
 
-function persistSshConnectionToken(profile, source, token) {
+function persistSshConnectionToken(profile, source, token, registryConnectionId = '') {
   try {
-    // Registry-scoped ssh backend (source "registry:<connectionId>"): the
-    // served token belongs on the registry entry, not v1 connection.json.
-    if (typeof source === 'string' && source.startsWith('registry:')) {
-      const id = source.slice('registry:'.length)
+    const persistence = managedSshTokenPersistencePlan(source, registryConnectionId)
+    const id = persistence.registryConnectionId
+    const encrypted = encryptDesktopSecret(token)
+
+    // A primary legacy route can also be qualified with a stable registry id.
+    // Mirror the adopted per-serve token to both stores so the next primary
+    // launch and a later registry-scoped launch reuse the same owned process.
+    if (id) {
       const registry = readDesktopConnectionsRegistry()
       const entry = registry.connections.find(c => c.id === id)
 
       if (entry && entry.kind === 'ssh') {
-        writeDesktopConnectionsRegistry(upsertConnection(registry, { ...entry, token: encryptDesktopSecret(token) }))
+        writeDesktopConnectionsRegistry(upsertConnection(registry, { ...entry, token: encrypted }))
       }
+    }
 
+    if (!persistence.legacySource) {
       return
     }
 
     const config = readDesktopConnectionConfig()
-    const encrypted = encryptDesktopSecret(token)
 
-    if (source === 'profile') {
+    if (persistence.legacySource === 'profile') {
       const key = connectionScopeKey(profile)
 
       if (key && config.profiles?.[key]?.mode === 'ssh') {
@@ -10031,7 +10707,57 @@ function persistSshConnectionToken(profile, source, token) {
 //   3. global remote (connection.json `mode: 'remote'`)
 // A null/empty profile resolves the env/global remote, so legacy callers and
 // the connection test (which pass no profile) are unchanged.
-async function resolveRemoteBackend(profile) {
+async function resolveRemoteBackend(profile, options: { poolKey?: string; primary?: boolean } = {}) {
+  const profileKey = String(profile || '').trim() || 'default'
+
+  const managedPrimary = options.primary
+    ? [...managedPrimaryRestoreOwners.values()].find(owner => owner.profile === profileKey)
+    : null
+
+  if (managedPrimary) {
+    // A managed update is restoring the primary: dial the exact connection
+    // snapshot the transaction captured, not whatever routing says now.
+    const source = managedPrimary.source
+    const sshConfig = managedSshConfig(source, profileKey)
+
+    if (!sshConfig) {
+      throw new Error(`SSH connection "${source.label}" has no host configured.`)
+    }
+
+    managedConnectionUpdateGate.assertCanDial(source.id, managedPrimary.correlationId)
+
+    const currentRoute = resolveDesktopRemoteRoute({
+      config: readDesktopConnectionConfig(),
+      env: {
+        token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+        url: process.env.HERMES_DESKTOP_REMOTE_URL
+      },
+      profile: profileKey,
+      registry: readDesktopConnectionsRegistry()
+    })
+
+    const persistenceSource =
+      currentRoute?.kind === 'ssh' && currentRoute.connectionId === source.id
+        ? currentRoute.source
+        : `registry:${source.id}`
+
+    const connection = await bootstrapSshConnection(
+      persistenceSource === 'profile' ? profileKey : null,
+      sshConfig,
+      decryptDesktopSecret(source.token),
+      persistenceSource,
+      undefined,
+      {
+        managedScope: 'primary',
+        managedUpdateCorrelation: managedPrimary.correlationId,
+        primaryRegistryScope: true,
+        registryConnectionId: source.id
+      }
+    )
+
+    return { ...connection, connectionId: source.id }
+  }
+
   const config = readDesktopConnectionConfig()
 
   const route = resolveDesktopRemoteRoute({
@@ -10051,11 +10777,22 @@ async function resolveRemoteBackend(profile) {
   let connection
 
   if (route.kind === 'ssh') {
+    if (route.connectionId) {
+      managedConnectionUpdateGate.assertCanDial(route.connectionId)
+    }
+
     connection = await bootstrapSshConnection(
       route.source === 'profile' ? profile : null,
       route.ssh,
       decryptDesktopSecret(route.token),
-      route.source
+      route.source,
+      undefined,
+      {
+        managedScope: options.primary ? 'primary' : options.poolKey ? 'pool' : 'transient',
+        poolKey: options.poolKey || '',
+        primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
+        registryConnectionId: route.connectionId || ''
+      }
     )
   } else {
     const token =
@@ -10615,7 +11352,7 @@ async function ensureBackend(profile) {
     return connection
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -10623,7 +11360,10 @@ async function ensureBackend(profile) {
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
-    remoteBaseUrl: null
+    remoteBaseUrl: null,
+    releaseLocalBackendSlot: null,
+    localBackendSlotKey: null,
+    localBackendSpawnRequest: null
   }
 
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
@@ -10634,12 +11374,7 @@ async function ensureBackend(profile) {
       `Hermes backend for profile "${key}" failed to start: ${error instanceof Error ? error.message : String(error)}`
     )
 
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
-    }
-
-    stopBackendChild(entry.process)
-    await waitForBackendExit(entry.process)
+    await teardownFailedLocalBackend(key, entry)
     throw error
   })
   backendPool.set(key, entry)
@@ -10658,13 +11393,17 @@ async function ensureBackend(profile) {
 // a genuinely-local child when the v1 mode says remote; non-local connections
 // pool under the composite key from backendScopeKey() and reuse the same pool
 // entry lifecycle (LRU, idle reaper, touch) as per-profile local backends.
-async function ensureRegistryBackend(connectionId, profile) {
+async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrelation = '') {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
 
   if (!source) {
     throw new Error(`No connection with id "${id}".`)
+  }
+
+  if (source.kind === 'ssh') {
+    managedConnectionUpdateGate.assertCanDial(id, managedUpdateCorrelation)
   }
 
   const profileKey = String(profile ?? '').trim() || 'default'
@@ -10738,7 +11477,8 @@ async function ensureRegistryBackend(connectionId, profile) {
       return {
         ...primaryDescriptor,
         profile: profileKey,
-        connectionId: id
+        connectionId: id,
+        sharedRemote: true
       }
     }
   }
@@ -10778,7 +11518,7 @@ async function ensureRegistryBackend(connectionId, profile) {
       return existingLocal.connectionPromise
     }
 
-    evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+    evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
       process: null,
@@ -10786,7 +11526,10 @@ async function ensureRegistryBackend(connectionId, profile) {
       token: null,
       connectionPromise: null,
       lastActiveAt: Date.now(),
-      remoteBaseUrl: null
+      remoteBaseUrl: null,
+      releaseLocalBackendSlot: null,
+      localBackendSlotKey: null,
+      localBackendSpawnRequest: null
     }
 
     localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
@@ -10799,12 +11542,7 @@ async function ensureRegistryBackend(connectionId, profile) {
         `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${error instanceof Error ? error.message : String(error)}`
       )
 
-      if (backendPool.get(localRoute.poolKey) === localEntry) {
-        backendPool.delete(localRoute.poolKey)
-      }
-
-      stopBackendChild(localEntry.process)
-      await waitForBackendExit(localEntry.process)
+      await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
       throw error
     })
     backendPool.set(localRoute.poolKey, localEntry)
@@ -10851,7 +11589,7 @@ async function ensureRegistryBackend(connectionId, profile) {
     )
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -10868,7 +11606,8 @@ async function ensureRegistryBackend(connectionId, profile) {
     key,
     entry,
     resolveRegistrySshConfig(),
-    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null
+    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null,
+    managedUpdateCorrelation
   ).catch(error => {
     if (backendPool.get(key) === entry) {
       backendPool.delete(key)
@@ -10891,7 +11630,9 @@ async function connectRegistryBackend(
   key,
   poolEntry,
   resolvedSshConfig?,
-  resolvedEffectiveFingerprint?: null | Promise<string>
+  resolvedEffectiveFingerprint?: null | Promise<string>,
+  managedUpdateCorrelation = '',
+  tokenPersistenceSource = ''
 ) {
   const profileKey = String(profile ?? '').trim() || 'default'
 
@@ -10910,8 +11651,14 @@ async function connectRegistryBackend(
       key,
       sshConfig,
       decryptDesktopSecret(source.token),
-      `registry:${source.id}`,
-      resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined
+      tokenPersistenceSource || `registry:${source.id}`,
+      resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined,
+      {
+        managedScope: 'pool',
+        managedUpdateCorrelation,
+        poolKey: key,
+        registryConnectionId: source.id
+      }
     )
 
     poolEntry.remoteBaseUrl = connection.baseUrl
@@ -10958,6 +11705,490 @@ async function connectRegistryBackend(
     logs: hermesLog.slice(-80),
     ...getWindowState()
   }
+}
+
+// Restore one scope while its connection-wide managed-update gate is still
+// held. The caller supplies the connection snapshot captured before drain so
+// a Settings edit during a long update cannot silently reconnect the old
+// session to a different host or token context.
+async function ensureManagedSshBackend(source, profile, correlationId) {
+  return ensureManagedSshBackendAtKey(source, profile, backendScopeKey(source.id, profile), correlationId)
+}
+
+async function ensureManagedSshBackendAtKey(source, profile, key, correlationId, tokenPersistenceSource = '') {
+  managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
+  const existing = backendPool.get(key)
+
+  if (existing) {
+    existing.lastActiveAt = Date.now()
+
+    return existing.connectionPromise
+  }
+
+  const entry = {
+    process: null,
+    port: null,
+    token: null,
+    connectionPromise: null,
+    lastActiveAt: Date.now(),
+    remoteBaseUrl: null
+  }
+
+  entry.connectionPromise = connectRegistryBackend(
+    source,
+    profile,
+    key,
+    entry,
+    managedSshConfig(source, profile),
+    null,
+    correlationId,
+    tokenPersistenceSource
+  ).catch(error => {
+    if (backendPool.get(key) === entry) {
+      backendPool.delete(key)
+    }
+
+    throw error
+  })
+  backendPool.set(key, entry)
+  startPoolIdleReaper()
+
+  return entry.connectionPromise
+}
+
+async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
+  managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
+  const profileKey = String(profile || '').trim() || 'default'
+
+  if (managedPrimaryRestoreOwners.size > 0 && !managedPrimaryRestoreOwners.has(source.id)) {
+    throw new Error('Another managed SSH primary restore is already in progress.')
+  }
+
+  managedPrimaryRestoreOwners.set(source.id, { correlationId, profile: profileKey, source })
+  backendConnectionState.invalidate()
+
+  try {
+    return await startHermes()
+  } finally {
+    if (managedPrimaryRestoreOwners.get(source.id)?.correlationId === correlationId) {
+      managedPrimaryRestoreOwners.delete(source.id)
+    }
+  }
+}
+
+function managedSshConfig(source, profile = '') {
+  const profileKey = String(profile ?? '').trim() || 'default'
+
+  return normalizeSshConfig({
+    mode: 'ssh',
+    host: source.host,
+    user: source.user,
+    port: source.port,
+    keyPath: source.keyPath,
+    remoteHermesPath: source.remoteHermesPath,
+    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
+  })
+}
+
+async function captureManagedSshScopes(source) {
+  const prefix = backendScopePrefix(source.id)
+  const config = readDesktopConnectionConfig()
+  const registry = readDesktopConnectionsRegistry()
+
+  const routeForProfile = profile =>
+    resolveDesktopRemoteRoute({
+      config,
+      env: {
+        token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+        url: process.env.HERMES_DESKTOP_REMOTE_URL
+      },
+      profile,
+      registry
+    })
+
+  const pooled = [...backendPool.entries()]
+    .filter(([key]) => {
+      const state = sshConnections.get(key)
+      const route = routeForProfile(String(key))
+
+      return (
+        managedSshScopeRole({
+          connectionId: source.id,
+          key: String(key),
+          prefix,
+          routeConnectionId: route?.kind === 'ssh' ? route.connectionId : '',
+          state
+        }) === 'pool'
+      )
+    })
+    .map(([key, entry]) => ({
+      drained: false,
+      entry,
+      forwardRestored: false,
+      key,
+      profile: String(key).startsWith(prefix) ? String(key).slice(prefix.length) || 'default' : String(key),
+      registryScoped: String(key).startsWith(prefix),
+      reuseToken: '',
+      state: null,
+      unsafeDrainFailure: false
+    }))
+
+  const pooledKeys = new Set(pooled.map(scope => scope.key))
+
+  const primary = [...sshConnections.entries()]
+    .filter(
+      ([key, state]) =>
+        !pooledKeys.has(key) &&
+        managedSshScopeRole({ connectionId: source.id, key: String(key), prefix, state }) === 'primary'
+    )
+    .map(([key, state]) => ({
+      drained: false,
+      entry: { connectionPromise: backendConnectionState.getPromise() },
+      forwardRestored: false,
+      key,
+      primary: true,
+      profile: String(primaryProfileKey() || 'default'),
+      reuseToken: '',
+      state,
+      unsafeDrainFailure: false
+    }))
+
+  const primaryPromise = backendConnectionState.getPromise()
+  const primaryProfile = String(primaryProfileKey() || 'default')
+  const primaryRoute = routeForProfile(primaryProfile)
+
+  if (
+    primary.length === 0 &&
+    primaryPromise &&
+    primaryRoute?.kind === 'ssh' &&
+    primaryRoute.connectionId === source.id
+  ) {
+    primary.push({
+      drained: false,
+      entry: { connectionPromise: primaryPromise },
+      forwardRestored: false,
+      key: primaryRoute.source === 'profile' ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      primary: true,
+      profile: primaryProfile,
+      reuseToken: '',
+      state: null,
+      unsafeDrainFailure: false
+    })
+  }
+
+  if (primary.length > 1) {
+    throw new Error('Managed SSH update found multiple primary scopes; refusing an ambiguous drain.')
+  }
+
+  const captured: any[] = [...pooled, ...primary]
+
+  // An already-started bootstrap may not have published sshConnections yet.
+  // Join every bootstrap qualified to this registry id. Its final boundary
+  // rechecks the managed gate and exact-terminates any serve it created, so no
+  // pre-claim dial can publish while the updater mutates the remote install.
+  await waitForManagedSshBootstrapFence(sshBootstrapCoordinator.active, source.id)
+
+  for (const scope of captured) {
+    try {
+      const descriptor: any = await scope.entry.connectionPromise
+
+      // Every independently spawned profile has its own random served token.
+      // Keep it on the scope—not one mutable connection snapshot—so restore
+      // can authenticate/reuse the exact process it captured.
+      scope.reuseToken = String(descriptor?.token || '')
+    } catch (error: any) {
+      if (error?.unsafeManagedBootstrap === true) {
+        throw error
+      }
+      // A still-pending pooled scope remains part of the restore worklist even
+      // if its original dial loses the race with the update gate.
+    }
+
+    scope.state = sshConnections.get(scope.key) || null
+  }
+
+  return captured
+}
+
+function remoteUpdateTargetFromState(state): RemoteUpdateTarget {
+  if (!state?.ssh || !state?.hermesPath || !state?.hermesHome) {
+    throw new Error('The managed SSH scope does not carry a complete remote runtime identity.')
+  }
+
+  if (!['Darwin', 'Linux', 'Windows'].includes(state.remotePlatform)) {
+    throw new Error(`Unsupported managed SSH update platform: ${state.remotePlatform || 'unknown'}.`)
+  }
+
+  return {
+    ssh: state.ssh,
+    platform: state.remotePlatform,
+    hermesPath: state.hermesPath,
+    hermesHome: state.hermesHome,
+    ...(state.pythonPath ? { pythonPath: state.pythonPath } : {})
+  }
+}
+
+async function openManagedSshUpdateTransport(
+  source
+): Promise<{ close: () => Promise<void>; target: RemoteUpdateTarget }> {
+  const config = managedSshConfig(source)
+
+  if (!config) {
+    throw new Error(`SSH connection "${source.label}" has no host configured.`)
+  }
+
+  const ssh = createSshProbeConnection(
+    { host: config.host, user: config.user, port: config.port, keyPath: config.keyPath },
+    { rememberLog: sshRememberLog }
+  )
+
+  await ssh.open()
+
+  try {
+    const platform: any = await detectRemotePlatform(ssh, config.remoteHermesPath || '')
+
+    if (platform.os === 'Windows') {
+      const runtime = platform.hermesPath ? platform : await probeWindowsRemote(ssh, config.remoteHermesPath || '')
+
+      return {
+        close: () => ssh.close(),
+        target: {
+          ssh,
+          platform: 'Windows',
+          hermesPath: runtime.hermesPath,
+          hermesHome: runtime.hermesHome,
+          pythonPath: runtime.python
+        }
+      }
+    }
+
+    const hermesPath = await remoteLifecycle.locateHermes(ssh, config.remoteHermesPath || '')
+    const hermesHome = await remoteLifecycle.probeRemoteHermesHome(ssh)
+
+    return {
+      close: () => ssh.close(),
+      target: { ssh, platform: platform.os, hermesPath, hermesHome }
+    }
+  } catch (error) {
+    await ssh.close()
+    throw error
+  }
+}
+
+async function drainManagedSshScope(scope) {
+  const state = scope.state
+  let forwardClosed = false
+
+  try {
+    if (!state) {
+      return
+    }
+
+    terminalIpc.disposeTerminalSessionsForSshScope(scope.key)
+
+    if (state.localPort && state.remotePort) {
+      await state.ssh.cancelForward(state.localPort, state.remotePort)
+      forwardClosed = true
+    }
+
+    const expected = {
+      ownershipId: state.ownershipId,
+      pid: state.pid,
+      spawnNonce: state.spawnNonce,
+      profile: state.remoteProfile || '',
+      hermesPath: state.hermesPath,
+      hermesHome: state.hermesHome,
+      startedAt: state.startedAt,
+      creationTimeNs: state.creationTimeNs,
+      creationTime: state.creationTime
+    }
+
+    if (state.remotePlatform === 'Windows') {
+      await terminateOwnedWindowsDashboardForUpdate(
+        state.ssh,
+        { hermesPath: state.hermesPath, hermesHome: state.hermesHome, python: state.pythonPath },
+        expected
+      )
+    } else if (state.remotePlatform === 'Linux' || state.remotePlatform === 'Darwin') {
+      await remoteLifecycle.terminateOwnedDashboardForUpdate(state.ssh, expected)
+    } else {
+      throw new Error(`Unsupported managed SSH update platform: ${state.remotePlatform || 'unknown'}.`)
+    }
+  } catch (error: any) {
+    // Ownership refusal is a no-kill result. Keep the original pool/state and
+    // restore its exact forward in place; routing it through generic stale
+    // cleanup could discard the create-time fence that just refused the kill.
+    scope.unsafeDrainFailure = true
+
+    if (state && state.localPort && state.remotePort && scope.reuseToken) {
+      try {
+        // A failed cancel may mean the old tunnel is still healthy. Prove that
+        // exact token first; only recreate the forward when cancellation was
+        // confirmed, avoiding a duplicate-bind attempt that masks recovery.
+        if (!forwardClosed) {
+          await waitForHermes(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
+        } else {
+          await state.ssh.forward(state.localPort, state.remotePort)
+          await waitForHermes(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
+        }
+
+        scope.forwardRestored = true
+      } catch (restoreError: any) {
+        error.message = `${error.message} The original forward also failed to recover: ${restoreError?.message || restoreError}`
+      }
+    }
+
+    throw error
+  } finally {
+    if (!scope.unsafeDrainFailure) {
+      scope.drained = true
+
+      if (scope.primary) {
+        backendConnectionState.invalidate()
+      } else if (backendPool.get(scope.key) === scope.entry) {
+        backendPool.delete(scope.key)
+      }
+
+      if (state && sshConnections.get(scope.key) === state) {
+        sshConnections.delete(scope.key)
+      }
+    }
+  }
+}
+
+async function updateManagedSshConnection(source, correlationId) {
+  const sourceSnapshot = { ...source }
+  const scopes = await captureManagedSshScopes(sourceSnapshot)
+  let ephemeral: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
+  let launchAttempted = false
+  const firstState = scopes.find(scope => scope.state)?.state
+
+  const target = firstState
+    ? remoteUpdateTargetFromState(firstState)
+    : (ephemeral = await openManagedSshUpdateTransport(sourceSnapshot)).target
+
+  return runManagedSshUpdate({
+    connectionId: source.id,
+    correlationId,
+    scopes,
+    preflightRemote: () => assertManagedUpdatePreflightClear(target, correlationId),
+    drainScope: drainManagedSshScope,
+    updateRemote: () =>
+      executeManagedRemoteUpdate(target, correlationId, {}, async () => {
+        markManagedSshRecoveryLaunching(source.id, correlationId)
+        launchAttempted = true
+      }),
+    awaitRestoreClearance: () =>
+      waitForManagedRemoteClearance(target, correlationId, { requireTerminal: launchAttempted }),
+    closeTransports: async () => {
+      const transports = new Set<any>(
+        scopes
+          .filter(scope => scope.drained)
+          .map(scope => scope.state?.ssh)
+          .filter(Boolean)
+      )
+
+      await Promise.allSettled([...transports].map(ssh => ssh.close()))
+
+      if (ephemeral) {
+        await ephemeral.close()
+      }
+    },
+    restoreScope: scope => {
+      if (scope.unsafeDrainFailure) {
+        if (!scope.forwardRestored) {
+          throw new Error(`The original ${scope.profile} SSH forward could not be restored safely.`)
+        }
+
+        return scope.entry.connectionPromise
+      }
+
+      const scopedSource = scope.reuseToken
+        ? { ...sourceSnapshot, token: encryptDesktopSecret(scope.reuseToken) }
+        : sourceSnapshot
+
+      if (scope.primary) {
+        return restoreManagedPrimarySshBackend(scopedSource, scope.profile, correlationId)
+      }
+
+      return scope.registryScoped
+        ? ensureManagedSshBackend(scopedSource, scope.profile, correlationId)
+        : ensureManagedSshBackendAtKey(scopedSource, scope.profile, scope.key, correlationId, 'profile')
+    },
+    prepareRecovery: async () => persistManagedSshRecovery(sourceSnapshot, correlationId, scopes),
+    completeRecovery: async () => clearManagedSshRecovery(source.id, correlationId),
+    releaseGate: () => managedConnectionUpdateGate.release(source.id, correlationId)
+  })
+}
+
+async function recoverManagedSshUpdate(record) {
+  const connectionId = record.connectionId
+
+  if (managedConnectionRecoveries.has(connectionId) || managedConnectionUpdates.has(connectionId)) {
+    return
+  }
+
+  const recoveryCorrelation = record.correlationId
+
+  if (!managedConnectionUpdateGate.claim(connectionId, recoveryCorrelation)) {
+    return
+  }
+
+  const operation = (async () => {
+    let transport: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
+
+    try {
+      transport = await openManagedSshUpdateTransport(record.source)
+
+      const results = await recoverManagedSshScopes<any>({
+        scopes: record.scopes,
+        awaitClearance: () =>
+          waitForManagedRemoteClearance(transport!.target, record.correlationId, {
+            requireTerminal: record.phase === 'launching'
+          }),
+        afterClearance: async () => {
+          await transport!.close()
+          transport = null
+        },
+        restoreScope: scope =>
+          scope.kind === 'primary'
+            ? restoreManagedPrimarySshBackend(record.source, scope.profile, recoveryCorrelation)
+            : scope.kind === 'legacy'
+              ? ensureManagedSshBackendAtKey(record.source, scope.profile, scope.key, recoveryCorrelation, 'profile')
+              : ensureManagedSshBackend(record.source, scope.profile, recoveryCorrelation),
+        completeRecovery: async () => clearManagedSshRecovery(connectionId, record.correlationId)
+      })
+
+      if (results.every(result => result.status === 'fulfilled')) {
+        sshRememberLog(
+          `[ssh-update] restored ${record.scopes.length} scope(s) from durable recovery for ${connectionId}`
+        )
+      } else {
+        const failures = results.filter(result => result.status === 'rejected').length
+        sshRememberLog(
+          `[ssh-update] durable recovery for ${connectionId} left ${failures} scope(s) pending; will retry next launch`
+        )
+      }
+    } catch (error: any) {
+      sshRememberLog(
+        `[ssh-update] durable recovery for ${connectionId} remains pending: ${String(error?.message || error)}`
+      )
+    } finally {
+      if (transport) {
+        await transport.close().catch(() => undefined)
+      }
+
+      managedConnectionUpdateGate.release(connectionId, recoveryCorrelation)
+      managedConnectionRecoveries.delete(connectionId)
+    }
+  })()
+
+  managedConnectionRecoveries.set(connectionId, operation)
+  await operation
+}
+
+async function resumeManagedSshRecoveries() {
+  await Promise.allSettled(readManagedSshRecoveryRecords().map(record => recoverManagedSshUpdate(record)))
 }
 
 // Stop every pooled backend and ssh scope owned by a registry connection —
@@ -11013,7 +12244,7 @@ function evictLruPoolBackends(keep) {
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
   for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
+    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
     stopPoolBackend(profile)
   }
 }
@@ -11027,8 +12258,8 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
+      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
+        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
         stopPoolBackend(profile)
       }
     }
@@ -11042,6 +12273,67 @@ function startPoolIdleReaper() {
   if (typeof poolIdleReaper.unref === 'function') {
     poolIdleReaper.unref()
   }
+}
+
+function releaseLocalBackendSlot(entry: any) {
+  if (!entry) {
+    return
+  }
+
+  const release = entry.releaseLocalBackendSlot
+  const request = entry.localBackendSpawnRequest as LocalBackendSpawnRequest | null
+  entry.releaseLocalBackendSlot = null
+  entry.localBackendSlotKey = null
+  entry.localBackendSpawnRequest = null
+
+  if (release) {
+    release()
+  } else {
+    request?.cancel()
+  }
+}
+
+function assertPoolEntryStillOwned(poolKey: string, entry: any) {
+  if (backendPool.get(poolKey) !== entry) {
+    releaseLocalBackendSlot(entry)
+    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
+  }
+}
+
+const failedLocalBackendTeardowns = new WeakMap<object, Promise<void>>()
+
+function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> {
+  const existing = failedLocalBackendTeardowns.get(entry)
+
+  if (existing) {
+    return existing
+  }
+
+  if (backendPool.get(poolKey) === entry) {
+    backendPool.delete(poolKey)
+  }
+
+  const child = entry.process
+
+  const teardown = releaseLocalBackendSlotAfterExit(
+    () => releaseLocalBackendSlot(entry),
+    async () => {
+      stopBackendChild(child)
+      await waitForBackendExit(child)
+
+      if (child && child.exitCode === null && child.signalCode === null) {
+        throw new Error(`Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`)
+      }
+
+      releaseBackendChild(child)
+    }
+  )
+
+  // Keep the settled promise in the WeakMap for the lifetime of this entry.
+  // Error + exit + outer catch may all request cleanup; none may run it twice.
+  failedLocalBackendTeardowns.set(entry, teardown)
+
+  return teardown
 }
 
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
@@ -11063,7 +12355,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // remote is reachable and hand back its connection descriptor. The pool
   // entry keeps `entry.process === null`, which stopPoolBackend/evict already
   // tolerate.
-  const remote = opts.forceLocal ? null : await resolveRemoteBackend(profile)
+  const remote = opts.forceLocal ? null : await resolveRemoteBackend(profile, { poolKey })
   profileDeletionGate.assertCanStart(profile)
 
   if (remote) {
@@ -11080,6 +12372,29 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
       ...getWindowState()
     }
   }
+
+  // Bound the slot wait BELOW the renderer's backend-boot budget (45s): once
+  // the renderer has given up on this spawn, a ticket still queued for the
+  // pool-idle window (10 min) would hold the pool key hostage and every
+  // later click on the profile would join that stale wait. Failing here
+  // surfaces the "all N slots busy" reason instead of a generic boot timeout.
+  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, { timeoutMs: POOL_SLOT_WAIT_MS })
+  entry.localBackendSlotKey = poolKey
+  entry.localBackendSpawnRequest = spawnRequest
+
+  if (localBackendSpawnCoordinator.activeCount >= poolMaxBackends()) {
+    rememberLog(
+      `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${poolMaxBackends()} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
+    )
+  }
+
+  entry.releaseLocalBackendSlot = await spawnRequest.acquired
+
+  if (entry.localBackendSpawnRequest === spawnRequest) {
+    entry.localBackendSpawnRequest = null
+  }
+
+  assertPoolEntryStillOwned(poolKey, entry)
 
   const token = crypto.randomBytes(32).toString('base64url')
 
@@ -11124,12 +12439,12 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
-
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+  assertPoolEntryStillOwned(poolKey, entry)
 
   const child = spawn(
     backend.command,
@@ -11168,7 +12483,23 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // the claim, and would miss anything printed before it.
   const outputTail = createBackendOutputTail()
   outputTail.attach(child)
+
+  // Start watching for the READY announcement BEFORE any await (#60323):
+  // stdout is already flowing into the tail, and Node streams never replay
+  // consumed chunks to late listeners — a sentinel printed while
+  // claimBackendChild runs would otherwise be lost forever, timing out a
+  // healthy backend. The tail-buffer accessor covers any residual gap.
+  const portAnnouncement = waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => outputTail.text(),
+    describeOutputTail: () => outputTail.describe(),
+    readyFile
+  })
+
+  // Mark handled so an early rejection (child dies during the claim) can't
+  // surface as an unhandled rejection before the Promise.race below attaches.
+  portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
+  assertPoolEntryStillOwned(poolKey, entry)
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
@@ -11182,14 +12513,21 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
-    releaseBackendChild(child)
-    backendPool.delete(poolKey)
+    void teardownFailedLocalBackend(poolKey, entry).catch(cleanupError => {
+      rememberLog(
+        `Hermes backend for profile "${profile}" cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+      )
+    })
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    releaseLocalBackendSlot(entry)
     releaseBackendChild(child)
-    backendPool.delete(poolKey)
+
+    if (backendPool.get(poolKey) === entry) {
+      backendPool.delete(poolKey)
+    }
 
     if (!ready) {
       rejectStart?.(
@@ -11201,10 +12539,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   })
 
   // Discover the ephemeral port the child bound to
-  const port = await Promise.race([
-    waitForDashboardPortAnnouncement(child, { describeOutputTail: () => outputTail.describe(), readyFile }),
-    startFailed
-  ])
+  const port = await Promise.race([portAnnouncement, startFailed])
 
   if (readyFile) {
     fs.unlink(readyFile, () => {})
@@ -11260,16 +12595,20 @@ const poolStopper = createPoolStopper({
   waitForExit: child => waitForBackendExit(child)
 })
 
-function stopPoolBackend(profile) {
-  return poolStopper.stop(profile)
+async function stopPoolBackend(profile: string) {
+  const entry = backendPool.get(profile)
+  await poolStopper.stop(profile)
+  releaseLocalBackendSlot(entry)
 }
 
 async function teardownPoolBackendAndWait(profile) {
-  await Promise.all(localProfilePoolKeys(profile).map(key => poolStopper.stop(key)))
+  await Promise.all(localProfilePoolKeys(profile).map(key => stopPoolBackend(key)))
 }
 
-function stopAllPoolBackends() {
-  return poolStopper.stopAll()
+async function stopAllPoolBackends() {
+  const entries = [...backendPool.values()]
+  await poolStopper.stopAll()
+  entries.forEach(releaseLocalBackendSlot)
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async () => {
@@ -11392,6 +12731,15 @@ async function startHermes() {
     return existingConnectionPromise
   }
 
+  // Seed active-profile.json from legacy signals BEFORE the first
+  // profile-dependent read (`primaryBackendIsRemote()` on the next line, then
+  // `primaryProfileKey()` inside the connection IIFE below). Without this,
+  // remote-mode users whose preference file is missing (first boot after
+  // update) resolve primaryProfileKey() to 'default' inside the IIFE, then
+  // the remote branch returns and never runs the migration. Runs once;
+  // no-op when the preference file already exists.
+  migrateActiveProfileIfMissing()
+
   const connectionAttempt = backendConnectionState.startAttempt()
   const primaryProfile = primaryProfileKey()
 
@@ -11402,7 +12750,7 @@ async function startHermes() {
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
   // must NOT latch (it's transient — see shouldLatchBackendStartFailure), while
   // a local failure latches to break install-restart loops.
-  let attemptedRemote = primaryBackendIsRemote()
+  let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
@@ -11477,9 +12825,9 @@ async function startHermes() {
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
         // both for an already-saved remote and after first-run remote Apply.
-        attemptedRemote = primaryBackendIsRemote()
+        attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
-        return resolveRemoteBackend(primaryProfile)
+        return resolveRemoteBackend(primaryProfile, { primary: true })
       },
       waitForDecision: waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
@@ -11555,6 +12903,24 @@ async function startHermes() {
     // later, after the claim, and would miss anything printed before it.
     const primaryOutputTail = createBackendOutputTail()
     primaryOutputTail.attach(hermesProcess)
+
+    // Start watching for the READY announcement BEFORE any await (#60323):
+    // claimBackendChild can take seconds (its Windows Get-Process probe cold
+    // start alone runs 2-8s) and advanceBootProgress awaits renderer IPC.
+    // stdout is already flowing into the tail, and Node streams never replay
+    // consumed chunks to late listeners, so a sentinel printed during that
+    // window was lost forever — the wait then hit its 90s timeout and a
+    // healthy backend was killed (deterministic on Windows, racy on
+    // macOS/Linux). The tail-buffer accessor covers any residual gap.
+    const portAnnouncement = waitForDashboardPortAnnouncement(hermesProcess, {
+      bufferedOutput: () => primaryOutputTail.text(),
+      describeOutputTail: () => primaryOutputTail.describe(),
+      readyFile
+    })
+
+    // Mark handled so an early rejection (child dies during the claim) can't
+    // surface as an unhandled rejection before the Promise.race below attaches.
+    portAnnouncement.catch(() => {})
     await claimBackendChild(
       hermesProcess,
       `${backend.command} ${backend.args.join(' ')}`,
@@ -11641,13 +13007,7 @@ async function startHermes() {
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
 
     // Discover the ephemeral port the child bound to
-    const port = await Promise.race([
-      waitForDashboardPortAnnouncement(hermesProcess, {
-        describeOutputTail: () => primaryOutputTail.describe(),
-        readyFile
-      }),
-      backendStartFailed
-    ])
+    const port = await Promise.race([portAnnouncement, backendStartFailed])
 
     if (readyFile) {
       fs.unlink(readyFile, () => {})
@@ -11886,7 +13246,11 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
+function spawnSecondaryWindow({
+  sessionId,
+  profile,
+  watch
+}: { sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -11948,6 +13312,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     win,
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
+      profile,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
@@ -11958,8 +13323,8 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -12631,6 +13996,11 @@ function spawnHudWindow(sessionId, profile) {
     // `hermes:hud:set-bounds`, which flips resizable on for the call — the
     // same pattern the pet overlay uses for its wheel-scale.
     resizable: false,
+    // macOS AppKit's constrainFrameRect clamps setBounds to the current
+    // display unless this is on. The HUD is moved by renderer-driven
+    // setBounds (not a native titlebar drag), so without it the bar cannot
+    // be dragged onto another monitor. No-op on Windows/Linux.
+    enableLargerThanScreen: true,
     movable: true,
     minimizable: false,
     maximizable: false,
@@ -13189,11 +14559,30 @@ function createWindow() {
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
         }
+      },
+      // #95575: a renderer that repeatedly fails to load (torn bundle after
+      // an update, file locked by AV, missing index.html) used to sit on a
+      // white screen with only a desktop.log line. Once the bounded reload
+      // budget is exhausted, put the VISIBLE error page in the window so the
+      // user sees what is wrong and how to repair it.
+      onFailedLoadBudgetExhausted: details => {
+        rememberLog(
+          `[renderer:main] load-failure budget exhausted; loading visible error page` +
+            `${details?.errorCode === undefined ? '' : ` code=${String(details.errorCode)}`}`
+        )
+        void loadRendererLoadErrorPage(mainWindow, {
+          errorCode: details?.errorCode,
+          url: details?.url,
+          errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
+          repairHint: 'hermes desktop --force-build',
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+        })
       }
     },
     reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
     reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
+    recentReloadTimesRef: rendererReloadTimesRef,
+    reloadOnFailedLoad: true
   })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
@@ -13203,7 +14592,34 @@ function createWindow() {
   // quick-entry windows used to vanish without a trace).
   attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
 
-  loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')
+  // #95575: a torn renderer bundle (update replaced the app while its files
+  // were locked) loads fine and then dies on the first lazy import — a white
+  // screen with no error surface. resolveRendererIndex already logs the torn
+  // copies; here we refuse to load one into the PRIMARY window and put the
+  // visible repair page in it instead. The Reload button re-attempts the
+  // bundle in case the file lock cleared since boot.
+  const rendererIndex = DEV_SERVER ? null : resolveRendererIndex()
+  const tornAssets = rendererIndex ? missingRendererAssets(rendererIndex) : []
+
+  if (!DEV_SERVER && rendererIndex && tornAssets.length > 0) {
+    rememberLog(
+      `[renderer] primary window: chosen renderer bundle ${rendererIndex} is incomplete ` +
+        `(${tornAssets.length} missing asset(s)); loading visible repair page instead of a white screen`
+    )
+    void loadRendererLoadErrorPage(mainWindow, {
+      errorCode: 'ERR_FILE_NOT_FOUND',
+      errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
+      missingAssets: tornAssets,
+      repairHint: 'hermes desktop --force-build',
+      reloadUrl: pathToFileURL(rendererIndex).toString()
+    })
+  } else {
+    loadWindowUrl(
+      mainWindow,
+      DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
+      'Renderer'
+    )
+  }
 
   // Start the Python backend NOW, in parallel with the renderer load — not on
   // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
@@ -13387,6 +14803,18 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
 
   return { ok: true }
 })
+// Pool sizing (Settings → Advanced): device-local, live-applied. Main is
+// authoritative (it owns the pool and the persisted copy); the returned
+// limits are what actually took effect post-clamp.
+ipcMain.handle('hermes:pool-limits:get', async () => ({ ...poolLimits }))
+ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
+  const next = setPoolLimits({
+    maxBackends: typeof raw?.maxBackends === 'number' ? raw.maxBackends : poolLimits.maxBackends,
+    idleMs: typeof raw?.idleMs === 'number' ? raw.idleMs : poolLimits.idleMs
+  })
+
+  return { ok: true, limits: next }
+})
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
 })
@@ -13395,7 +14823,10 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  createSessionWindow(sessionId.trim(), {
+    profile: typeof opts?.profile === 'string' ? opts.profile : null,
+    watch: opts?.watch === true
+  })
 
   return { ok: true }
 })
@@ -13523,6 +14954,21 @@ const hudIpc = registerHudIpc({
   }
 })
 
+ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  // Models-page recovery after a code-skew 503 (#97046): kill the owned
+  // SSH serve (if any) before the local child so reconnect cannot reuse a
+  // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
+  await recycleOwnedBackend({
+    notifyApplied: sendConnectionApplied,
+    primaryProfile: primaryProfileKey(),
+    profile: typeof profile === 'string' ? profile : '',
+    teardownPool: teardownPoolBackendAndWait,
+    teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+    teardownSsh: value => teardownSshConnection(value || null)
+  })
+
+  return { ok: true }
+})
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
@@ -13748,6 +15194,7 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 })
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
+  managedConnectionUpdateGate.assertCanMutate(key)
   const registry = removeConnection(readDesktopConnectionsRegistry(), key)
   writeDesktopConnectionsRegistry(registry)
   // Tear down anything the removed connection still had running: pooled
@@ -13761,12 +15208,14 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
+  assertCanMutateManagedPrimaryRouting()
   const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
+  assertCanMutateManagedPrimaryRouting()
   const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
   writeDesktopConnectionsRegistry(registry)
 
@@ -14036,8 +15485,15 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             }
           }
 
+          // Claim-guarded (#90812): this ~5s roster poll can race a renderer's
+          // own reconnect dial for the same connection; coalescing avoids
+          // bootstrapping a second SSH tunnel / remote dashboard.
           const descriptor: any = await withEnumerationDeadline(
-            Promise.resolve(ensureRegistryBackend(connection.id, null))
+            Promise.resolve(
+              backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+                ensureRegistryBackend(connection.id, null)
+              )
+            )
           )
 
           const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
@@ -14153,12 +15609,61 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
 
+// Transactional update for a Desktop-managed SSH install. Unlike the generic
+// fleet fan-out below, this path owns the remote serve lifecycle: it gates new
+// dials, drains only exact Desktop-owned processes, runs the launcher outside
+// those serves, proves the correlated receipt, and restores every prior scope.
+async function requestManagedSshUpdate(rawId) {
+  const connectionId = String(rawId || '').trim()
+  const existing = managedConnectionUpdates.get(connectionId)
+
+  if (existing) {
+    return existing
+  }
+
+  const correlationId = crypto.randomUUID()
+  const registry = readDesktopConnectionsRegistry()
+  const source = registry.connections.find(connection => connection.id === connectionId)
+
+  if (!source) {
+    return refusedManagedSshUpdate(connectionId, correlationId, `No connection with id "${connectionId}".`)
+  }
+
+  if (source.kind !== 'ssh') {
+    return refusedManagedSshUpdate(
+      connectionId,
+      correlationId,
+      'Only registered Desktop-managed SSH connections can use this update lifecycle.'
+    )
+  }
+
+  if (!managedConnectionUpdateGate.claim(connectionId, correlationId)) {
+    return refusedManagedSshUpdate(connectionId, correlationId, 'A managed update is already in progress.')
+  }
+
+  const operation = (async () => {
+    try {
+      return await updateManagedSshConnection(source, correlationId)
+    } catch (error: any) {
+      return refusedManagedSshUpdate(connectionId, correlationId, String(error?.message || error))
+    } finally {
+      managedConnectionUpdateGate.release(connectionId, correlationId)
+      managedConnectionUpdates.delete(connectionId)
+    }
+  })()
+
+  managedConnectionUpdates.set(connectionId, operation)
+
+  return operation
+}
+
+ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
+
 // Fan out `hermes update` to every eligible registered connection at once.
 // Cloud entries are excluded (platform-managed); each dispatch reports
 // independently so one dead LAN box can't wedge the batch. Local reuses the
-// app's own update pipeline; remote/ssh POST the backend's own
-// /api/hermes/update endpoint (the dashboard updater), which runs
-// `hermes update` on THAT machine.
+// app's own update pipeline; Desktop-managed SSH uses the transactional
+// drain/update/restore lifecycle; URL remotes POST their backend updater.
 ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
   const registry = readDesktopConnectionsRegistry()
 
@@ -14191,7 +15696,23 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
             return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
           }
 
-          const descriptor: any = await ensureRegistryBackend(connection.id, null)
+          if (connection.kind === 'ssh') {
+            const result = await requestManagedSshUpdate(connection.id)
+
+            return {
+              ...base,
+              ok: result.ok,
+              detail: result.message,
+              managed: result,
+              ...(result.ok ? {} : { error: result.error || result.outcome })
+            }
+          }
+
+          // Claim-guarded (#90812): coalesce with a concurrent renderer dial
+          // for the same connection instead of bootstrapping a second backend.
+          const descriptor: any = await backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+            ensureRegistryBackend(connection.id, null)
+          )
 
           const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
 
@@ -14385,12 +15906,14 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
+  assertCanMutateManagedPrimaryRouting()
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+  assertCanMutateManagedPrimaryRouting()
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
   const config = coerceDesktopConnectionConfig(payload, previousConfig)
@@ -14446,6 +15969,7 @@ ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
   profile: writeActiveDesktopProfile(name)
 }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
+  assertCanMutateManagedPrimaryRouting()
   const next = writeActiveDesktopProfile(name)
 
   // Switching profiles is a backend re-home: relaunch the dashboard under the
@@ -14828,7 +16352,13 @@ async function dispatchRegistryApiRequest(
   routeProfile = request?.profile,
   requestProfile = request?.profile
 ) {
-  const connection: any = await ensureRegistryBackend(registryConnectionId, routeProfile)
+  // Claim-guarded (#90812): every registry-scoped REST call funnels through
+  // here, so it can race a renderer's own WS reconnect dial for the same
+  // (connectionId, profile) scope; coalescing avoids bootstrapping a second
+  // SSH tunnel / remote dashboard.
+  const connection: any = await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+    ensureRegistryBackend(registryConnectionId, routeProfile)
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -15334,6 +16864,12 @@ ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
   }
 })
 
+ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
+  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
+
+  return capturePreviewContents(guest, payload?.rect, payload?.viewport)
+})
+
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
 
@@ -15343,7 +16879,7 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 
   const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
 
-  return writeComposerImage(buffer, payload?.ext || '.png')
+  return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
@@ -15478,6 +17014,17 @@ app.on('will-quit', () => {
 // itself. Registered at module scope, which runs long before any window.
 ipcMain.on('hermes:translucency:support', event => {
   event.returnValue = { glass: GLASS_SUPPORTED, translucency: TRANSLUCENCY_SUPPORTED }
+})
+
+// Launch-flag facts the renderer needs before first paint (same sendSync
+// pattern as translucency). `--local` gates every local-models GUI surface;
+// it arrives from `hermes desktop --local` or directly on Hermes.exe (a
+// shortcut edit), and survives self-relaunches because collectRelaunchArgs
+// only strips internal flags.
+ipcMain.on('hermes:launch-flags', event => {
+  event.returnValue = {
+    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin'
+  }
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
@@ -15801,6 +17348,10 @@ registerFsIpc({
 // Git-driven features (worktrees, review pane, repo scan) — see git-ipc.ts.
 registerGitIpc({ resolveGitBinary, resolveGhBinary })
 
+// Client-side loopback callback for MCP OAuth against remote backends — see
+// mcp-oauth-callback-ipc.ts.
+registerMcpOauthCallbackIpc()
+
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
   isWindows: IS_WINDOWS,
@@ -15905,8 +17456,24 @@ ipcMain.handle('hermes:version', async () => {
     platform: process.platform,
     hermesRoot: resolveUpdateRoot(),
     bundleOutOfSync: skew.outOfSync,
-    bundleCommitsBehind: skew.desktopCommitsBehind
+    bundleCommitsBehind: skew.desktopCommitsBehind,
+    // True when the bundle on disk is not the one this process loaded — a
+    // plain app restart (no rebuild, no installer) clears the skew above.
+    // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
+    // under a running `npm start`, which is a rebuild the developer asked for,
+    // not a torn install to offer a restart for.
+    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
   }
+})
+
+// The About page's "Restart Hermes" button (shown when bundleSwapPending):
+// load the already-swapped bundle without asking the user to quit manually.
+// app.relaunch() re-executes by path, so the fresh process picks up whatever
+// bundle now lives there.
+ipcMain.handle('hermes:app:relaunch', async () => {
+  rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
+  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  void exitAfterBackendShutdown(0)
 })
 
 // ===========================================================================
@@ -16353,6 +17920,11 @@ app.whenReady().then(() => {
     screen.on('display-removed', reposition)
   }
 
+  // A hard crash can interrupt the in-memory restore loop after exact remote
+  // serves were drained. The owner-only recovery journal survives that crash;
+  // its worker waits for the install marker to clear, then reopens every scope
+  // captured by the original transaction before removing the journal entry.
+  void resumeManagedSshRecoveries()
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -16449,6 +18021,32 @@ app.on('before-quit', event => {
     return
   }
 
+  // A detached remote updater can outlive this Electron process. Do not tear
+  // down its SSH observer/restore transaction at the generic SSH shutdown
+  // deadline: join it first (BEFORE sealing the bootstrap coordinator, whose
+  // shutdown would refuse the restore dials), then re-enter before-quit for
+  // normal teardown. A crash still fails closed on next launch via the remote
+  // install-marker preflight in both POSIX and Windows lifecycle
+  // implementations.
+  if (
+    !managedUpdateQuitWaitDone &&
+    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
+  ) {
+    event.preventDefault()
+
+    if (!managedUpdateQuitWait) {
+      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
+        ...managedConnectionUpdates.values(),
+        ...managedConnectionRecoveries.values()
+      ]).finally(() => {
+        managedUpdateQuitWaitDone = true
+        app.quit()
+      })
+    }
+
+    return
+  }
+
   // A prevented first quit leaves the renderer alive while teardown runs.
   // Seal the SSH coordinator before touching connections so reconnect
   // callbacks cannot recreate a backend for a registration whose app is
@@ -16463,20 +18061,39 @@ app.on('before-quit', event => {
     })
   }
 
-  if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
+  // backendShutdown.finally() re-enters before-quit. teardownSshConnection
+  // already deleted the map entries, so size===0 would skip the kill wait
+  // and let window-X quit finish while SSH exec is still running (#91668).
+  if (
+    sshQuitShouldBlock({
+      teardownDone: sshQuitTeardownDone,
+      connectionCount: sshConnections.size,
+      bootstrapPending: sshBootstrapCoordinator.promises().length,
+      inFlight: sshQuitTeardownPromise
+    })
+  ) {
     event.preventDefault()
-    const scopes = [...sshConnections.keys()]
 
-    const pending = Promise.allSettled([
-      ...scopes.map(scope => teardownSshConnection(scope || null)),
-      ...sshBootstrapCoordinator.promises()
-    ])
+    if (!sshQuitTeardownPromise) {
+      const scopes = [...sshConnections.keys()]
 
-    // cleanupStale waits up to 5s for the owned pid to exit (50 * 100ms).
-    // The previous 4s race could close SSH first and leave serve --isolated
-    // reparented to pid 1.
-    void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 6_000))]).then(async () => {
-      await sshBootstrapCoordinator.forceCleanupAll()
+      const pending = Promise.allSettled([
+        ...scopes.map(scope => teardownSshConnection(scope || null)),
+        ...sshBootstrapCoordinator.promises()
+      ])
+
+      // cleanupStale waits up to 5s for the owned pid to exit (50 * 100ms).
+      // The previous 4s race could close SSH first and leave serve --isolated
+      // reparented to pid 1. Latch this promise BEFORE those deletes land so
+      // a re-entrant quit still waits.
+      sshQuitTeardownPromise = Promise.race([pending, new Promise<void>(resolve => setTimeout(resolve, 6_000))]).then(
+        async () => {
+          await sshBootstrapCoordinator.forceCleanupAll()
+        }
+      )
+    }
+
+    void sshQuitTeardownPromise.then(() => {
       sshQuitTeardownDone = true
       app.quit()
     })

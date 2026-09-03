@@ -285,18 +285,34 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
 class TestDoctorMemoryProviderSection:
     """The ◆ Memory Provider section should respect memory.provider config."""
 
-    def _make_hermes_home(self, tmp_path, provider=""):
+    def _make_hermes_home(self, tmp_path, provider="", memory_config=None):
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         import yaml
-        config = {"memory": {"provider": provider}} if provider else {"memory": {}}
+        config = dict(memory_config or {})
+        if provider:
+            config["provider"] = provider
+        config = {"memory": config}
         (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(
+        self,
+        monkeypatch,
+        tmp_path,
+        provider="",
+        *,
+        memory_config=None,
+        stale_builtin_files=False,
+    ):
         """Run doctor and capture stdout."""
-        home = self._make_hermes_home(tmp_path, provider)
+        home = self._make_hermes_home(tmp_path, provider, memory_config)
+        if stale_builtin_files:
+            memories = home / "memories"
+            memories.mkdir()
+            (memories / "MEMORY.md").write_text("stale memory", encoding="utf-8")
+            (memories / "USER.md").write_text("stale user", encoding="utf-8")
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -339,6 +355,26 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+    @pytest.mark.parametrize("memory_enabled", [False, True])
+    def test_stale_builtin_files_reported_only_when_store_enabled(
+        self, monkeypatch, tmp_path, memory_enabled
+    ):
+        # #100668: disabled built-in stores must not surface stale files as active.
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="mnemosyne",
+            memory_config={
+                "memory_enabled": memory_enabled,
+                "user_profile_enabled": False,
+            },
+            stale_builtin_files=True,
+        )
+
+        assert ("MEMORY.md exists" in out) is memory_enabled
+        assert "USER.md exists" not in out
+        assert ("Built-in memory files disabled by config" in out) is not memory_enabled
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
@@ -1664,3 +1700,40 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(
+        bt, "lightpanda_engine_status",
+        lambda: (False, "cloud provider Browserbase is selected"),
+    )
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "browser.engine=lightpanda is shadowed" in out
+    assert "Browserbase" in out
+
+
+def test_run_doctor_reports_lightpanda_ok(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: "/opt/lightpanda")
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda" in out
+    assert "shadowed" not in out
+
+
+def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda selected but binary not found" in out

@@ -253,7 +253,7 @@ CODING_AGENT_GUIDANCE = (
     "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
     "attempts on the same file and ask the user rather than looping.\n"
-    "- Track multi-step work with `todo`. Reference code as `path:line` instead "
+    "- Track multi-step work with `todo_list`. Reference code as `path:line` instead "
     "of pasting whole files.\n"
     "\n"
     "Respect the user's repo: don't commit, push, or rewrite history unless "
@@ -547,9 +547,9 @@ class RuntimeMode:
         trailing: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
-            if valid_tool_names is not None and "todo" not in valid_tool_names:
+            if valid_tool_names is not None and "todo_list" not in valid_tool_names:
                 brief = brief.replace(
-                    "- Track multi-step work with `todo`. Reference code as "
+                    "- Track multi-step work with `todo_list`. Reference code as "
                     "`path:line` instead of pasting whole files.",
                     "- Reference code as `path:line` instead of pasting "
                     "whole files.",

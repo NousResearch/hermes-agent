@@ -32,6 +32,18 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so a lingering
+    kernel child can't outlive the run (hangs pytest at exit) or leak one
+    test's interpreter state into the next."""
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
+
+
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
@@ -222,18 +234,30 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             with patch.dict(os.environ, env_overrides):
                 with patch("model_tools.handle_function_call",
                            side_effect=_mock_handle_function_call):
+                    # reset=True: kernel cwd/interpreter are frozen at spawn
+                    # (like env), so mode-resolution rules are only
+                    # observable on a fresh kernel.
                     raw = execute_code(
                         code=code,
                         task_id=f"test-{mode}",
                         enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
+                        reset=True,
                     )
         return json.loads(raw)
 
     def test_strict_mode_runs_in_tmpdir(self):
-        """Strict mode: script's os.getcwd() is the staging tmpdir."""
+        """Strict mode: script's os.getcwd() is a staging tmpdir, never the
+        session cwd. Behavior contract, not a prefix snapshot: the per-call
+        path stages in hermes_sandbox_*, the session kernel in
+        hermes_kernel_* — either satisfies strict mode's isolation promise."""
         result = self._run("import os; print(os.getcwd())", mode="strict")
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_sandbox_", result["output"])
+        cwd = result["output"].strip()
+        self.assertTrue(
+            "hermes_sandbox_" in cwd or "hermes_kernel_" in cwd,
+            f"strict-mode cwd is not a staging tmpdir: {cwd!r}",
+        )
+        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
 
 
     def test_project_mode_interpreter_is_venv_python(self):
@@ -531,25 +555,36 @@ class TestPythonPathComposition(unittest.TestCase):
         """Return (PYTHONPATH, staging_dir) that execute_code passes to the child."""
         captured = {}
 
+        class _Captured(RuntimeError):
+            pass
+
         def _fake_popen(cmd, **kwargs):
             env = kwargs.get("env") or {}
             captured["PYTHONPATH"] = env.get("PYTHONPATH", "")
-            # cmd is [python, <staging_dir>/script.py]
+            # cmd is [python, <staging_dir>/script.py] (per-call) or
+            # [python, <staging_dir>/hermes_kernel_runner.py] (session
+            # kernel) — staging dir derivation is identical.
             captured["staging_dir"] = os.path.dirname(cmd[1])
-            mock_proc = unittest.mock.MagicMock()
-            mock_proc.stdout.read.return_value = b""
-            mock_proc.stderr.read.return_value = b""
-            mock_proc.wait.return_value = 0
-            mock_proc.returncode = 0
-            mock_proc.poll.return_value = 0
-            return mock_proc
+            # Abort the spawn after capture: returning a MagicMock proc
+            # would leave the kernel's reader threads spinning on mock
+            # reads and hang the cell wait loop (always-on session
+            # kernels; the pre-kernel version of this helper could get
+            # away with a fake proc because the per-call path only
+            # .wait()ed on it).
+            raise _Captured()
 
         with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
              patch("tools.code_execution_tool._uses_hermes_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen):
-            execute_code(code="pass", task_id="test-pp", enabled_tools=[])
+            try:
+                execute_code(code="pass", task_id="test-pp",
+                             enabled_tools=[], reset=True)
+            except _Captured:
+                pass  # expected: spawn aborted right after env capture
+            except Exception:
+                pass  # kernel path wraps the abort; capture already happened
 
         # If execute_code never reached Popen, the capture is empty and any
         # "X not in PYTHONPATH" assertion downstream would pass vacuously.

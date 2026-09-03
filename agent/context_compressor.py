@@ -45,6 +45,10 @@ from agent.model_metadata import (
     estimate_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_result_classification import (
+    DUPLICATE_OUTPUT_MARKER,
+    DUPLICATE_OUTPUT_MARKER_PREFIX,
+)
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -4262,7 +4266,7 @@ class ContextCompressor(ContextEngine):
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
                 # This is an older duplicate — replace with back-reference
-                result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
+                result[i] = {**msg, "content": DUPLICATE_OUTPUT_MARKER}
                 pruned += 1
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
@@ -4299,7 +4303,7 @@ class ContextCompressor(ContextEngine):
                 return False
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 return False
-            if content.startswith("[Duplicate tool output"):
+            if content.startswith(DUPLICATE_OUTPUT_MARKER_PREFIX):
                 return False
             # Already replaced by a prior prune/pressure pass (1-line summary).
             if content.startswith("[") and " chars)" in content and len(content) < 400:

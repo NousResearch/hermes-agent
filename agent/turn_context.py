@@ -582,6 +582,7 @@ def build_turn_context(
     *,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    internal_continuation: bool = False,
     restore_or_build_system_prompt,
     install_safe_stdio,
     sanitize_surrogates,
@@ -729,7 +730,7 @@ def build_turn_context(
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
     agent._unicode_sanitization_passes = 0
-    agent._tool_guardrails.reset_for_turn()
+    agent._tool_guardrails.reset_for_turn(new_user_input=not internal_continuation)
     agent._tool_guardrail_halt_decision = None
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):

@@ -3231,6 +3231,10 @@ def _run_single_child(
                         user_message=build_retry_message(_schema_errors),
                         task_id=child_task_id,
                         stream_callback=_relay_child_text,
+                        # Agent-authored retry text, not a new user request:
+                        # a no-progress streak from the first attempt must
+                        # survive into this turn.
+                        internal_continuation=True,
                     )
                 except Exception as _retry_exc:
                     logger.warning(

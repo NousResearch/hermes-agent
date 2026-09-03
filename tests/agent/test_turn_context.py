@@ -34,9 +34,11 @@ class _FakeTodoStore:
 class _FakeGuardrails:
     def __init__(self):
         self.reset_called = False
+        self.reset_new_user_input = None
 
-    def reset_for_turn(self):
+    def reset_for_turn(self, *, new_user_input: bool = True):
         self.reset_called = True
+        self.reset_new_user_input = new_user_input
 
 
 class _FakeAgent:
@@ -494,3 +496,24 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_internal_continuation_is_forwarded_to_the_guardrail_reset():
+    """build_turn_context must tell the guardrails whether this is a real user turn.
+
+    An agent-authored continuation (the delegate schema-retry) re-enters
+    run_conversation with internal_continuation=True; clearing the no-progress
+    streaks there would let a loop spanning the retry restart at 1 forever.
+    Without the forwarding this asserts, reset_for_turn() takes its default and
+    the cross-turn carry can never engage in production.
+    """
+    agent = _FakeAgent()
+    _build(agent, internal_continuation=True)
+    assert agent._tool_guardrails.reset_called
+    assert agent._tool_guardrails.reset_new_user_input is False
+
+
+def test_default_turn_is_treated_as_new_user_input():
+    agent = _FakeAgent()
+    _build(agent)
+    assert agent._tool_guardrails.reset_new_user_input is True

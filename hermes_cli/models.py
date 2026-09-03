@@ -7557,6 +7557,83 @@ def validate_requested_model(
             ),
         }
 
+    # ── Profile-based validation for plugin providers ─────────────────────
+    # A ``kind: model-provider`` plugin can override ``fetch_models()`` (or
+    # set ``models_url``) to return its real catalog from a provider-specific
+    # endpoint, and the picker already surfaces that catalog via
+    # ``provider_model_ids()``. For those profiles the generic
+    # ``GET {base}/v1/models`` probe below can contradict the picker: hosts
+    # that front a shared gateway (e.g. a subscription plugin on
+    # api.cline.bot) answer /v1/models with HTTP 200 and the gateway's full
+    # aggregator dump — a *different product catalog* — so the probe
+    # hard-rejects every model the picker itself offered (#101705).
+    # When the profile owns a dedicated catalog endpoint, that catalog is
+    # authoritative for validation too (same chain, SWR cache, and curated
+    # merge as the picker). OpenRouter is exempt: its profile catalog and
+    # the live listing are the same source, and the probe path below carries
+    # the routing-variant (``:nitro`` et al.) handling.
+    try:
+        from providers import get_provider_profile
+        from providers.base import ProviderProfile as _ProfileBase
+
+        _profile = get_provider_profile(normalized)
+        _owns_catalog = _profile is not None and (
+            type(_profile).fetch_models is not _ProfileBase.fetch_models
+            or bool(_profile.models_url)
+        )
+        if (
+            _profile
+            and _owns_catalog
+            and _profile.auth_type == "api_key"
+            and _profile.base_url
+            and normalized != "openrouter"
+        ):
+            catalog_models = provider_model_ids(normalized)
+            if catalog_models:
+                catalog_lower = {m.lower(): m for m in catalog_models}
+                if requested_for_lookup.lower() in catalog_lower:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "message": None,
+                    }
+                # Auto-correct only inside the profile catalog — never against
+                # the shared-gateway dump, which would silently swap a
+                # subscription SKU for another vendor's model.
+                auto = get_close_matches(
+                    requested_for_lookup.lower(), list(catalog_lower), n=1, cutoff=0.9
+                )
+                if auto:
+                    corrected = catalog_lower[auto[0]]
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": corrected,
+                        "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                    }
+                suggestions = get_close_matches(
+                    requested_for_lookup.lower(), list(catalog_lower), n=3, cutoff=0.5
+                )
+                suggestion_text = ""
+                if suggestions:
+                    suggestion_text = "\n  Similar models: " + ", ".join(
+                        f"`{catalog_lower[s]}`" for s in suggestions
+                    )
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"Model `{requested}` was not found in the "
+                        f"{_profile.display_name or normalized} catalog."
+                        f"{suggestion_text}"
+                    ),
+                }
+    except Exception:
+        pass  # No/failed profile resolution — keep the generic probe below.
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 

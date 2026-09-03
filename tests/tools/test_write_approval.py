@@ -177,6 +177,135 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_handle_skill_approve_surfaces_security_note(hermes_home, monkeypatch):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "skills",
+        {"action": "write_file", "name": "demo", "file_path": "scripts/run"},
+        summary="write scripts/run in 'demo'",
+        origin="foreground",
+    )
+    security_note = "Files under scripts/ may be executed later. This write was not scanned."
+    monkeypatch.setattr(
+        "tools.skill_manager_tool.apply_skill_pending",
+        lambda payload: json.dumps(
+            {
+                "success": True,
+                "message": f"Wrote scripts/run. {security_note}",
+                "security_note": security_note,
+            }
+        ),
+    )
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", record["id"]])
+
+    assert out == (
+        "Approved 1 skills write(s).\n"
+        "Warnings:\n"
+        f"  {record['id']}: {security_note}"
+    )
+    assert wa.pending_count(wa.SKILLS) == 0
+
+
+def test_handle_skill_approve_all_surfaces_only_warning_results(
+    hermes_home, monkeypatch
+):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    ordinary = wa.stage_write(
+        "skills",
+        {"action": "edit", "name": "ordinary"},
+        summary="rewrite 'ordinary'",
+        origin="foreground",
+    )
+    warned = wa.stage_write(
+        "skills",
+        {"action": "write_file", "name": "demo", "file_path": "scripts/run"},
+        summary="write scripts/run in 'demo'",
+        origin="foreground",
+    )
+    security_note = "Files under scripts/ may be executed later. This write was not scanned."
+
+    def apply_pending(payload):
+        if payload["name"] == "ordinary":
+            return json.dumps({"success": True, "message": "Updated ordinary."})
+        return json.dumps(
+            {
+                "success": True,
+                "message": f"Wrote scripts/run. {security_note}",
+                "security_note": security_note,
+            }
+        )
+
+    monkeypatch.setattr(
+        "tools.skill_manager_tool.apply_skill_pending", apply_pending
+    )
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", "all"])
+
+    assert out == (
+        "Approved 2 skills write(s).\n"
+        "Warnings:\n"
+        f"  {warned['id']}: {security_note}"
+    )
+    assert ordinary["id"] not in out
+    assert wa.pending_count(wa.SKILLS) == 0
+
+
+def test_handle_skill_approve_ordinary_success_is_unchanged(
+    hermes_home, monkeypatch
+):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "skills",
+        {"action": "edit", "name": "ordinary"},
+        summary="rewrite 'ordinary'",
+        origin="foreground",
+    )
+    monkeypatch.setattr(
+        "tools.skill_manager_tool.apply_skill_pending",
+        lambda payload: json.dumps({"success": True, "message": "Updated ordinary."}),
+    )
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", record["id"]])
+
+    assert out == "Approved 1 skills write(s)."
+    assert wa.pending_count(wa.SKILLS) == 0
+
+
+def test_handle_skill_approve_blocking_error_is_reported_and_retained(
+    hermes_home, monkeypatch
+):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "skills",
+        {"action": "write_file", "name": "demo", "file_path": "scripts/run.py"},
+        summary="write scripts/run.py in 'demo'",
+        origin="foreground",
+    )
+    error = "Security scan blocked this skill; original content restored."
+    monkeypatch.setattr(
+        "tools.skill_manager_tool.apply_skill_pending",
+        lambda payload: json.dumps({"success": False, "error": error}),
+    )
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", record["id"]])
+
+    assert out == (
+        "Approved 0 skills write(s).\n"
+        "Failed:\n"
+        f"  {record['id']}: {error}"
+    )
+    assert wa.get_pending(wa.SKILLS, record["id"]) == record
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

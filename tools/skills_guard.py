@@ -43,7 +43,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Set, Tuple
 
 
 SCANNER_VERSION = "skills-guard-v2"
@@ -750,8 +750,12 @@ def _compute_docstring_lines(lines: list) -> set:
 # Scanning functions
 # ---------------------------------------------------------------------------
 
-
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(
+    file_path: Path,
+    rel_path: str = "",
+    *,
+    scanned_files: Optional[Set[str]] = None,
+) -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
 
@@ -772,6 +776,9 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         content = file_path.read_text(encoding='utf-8')
     except (UnicodeDecodeError, OSError):
         return []
+
+    if scanned_files is not None:
+        scanned_files.add(Path(rel_path).as_posix())
 
     findings = []
     lines = content.split('\n')
@@ -822,7 +829,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    scanned_files: Optional[Set[str]] = None,
+) -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
 
@@ -863,9 +875,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
                 rel = str(f.relative_to(skill_path))
                 if ignore(rel):
                     continue
-                all_findings.extend(scan_file(f, rel))
+                all_findings.extend(
+                    scan_file(f, rel, scanned_files=scanned_files)
+                )
     elif skill_path.is_file():
-        all_findings.extend(scan_file(skill_path, skill_path.name))
+        all_findings.extend(
+            scan_file(
+                skill_path,
+                skill_path.name,
+                scanned_files=scanned_files,
+            )
+        )
 
     verdict = _determine_verdict(all_findings)
     summary = _build_summary(skill_name, source, trust_level, verdict, all_findings)

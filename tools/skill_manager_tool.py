@@ -38,8 +38,9 @@ import re
 import shutil
 import threading
 import contextvars as _ctxvars
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_write_text, is_truthy_value
@@ -123,8 +124,8 @@ except ImportError:
     _GUARD_AVAILABLE = False
 
 
-def _guard_agent_created_enabled() -> bool:
-    """Read skills.guard_agent_created from config (default False).
+def _guard_agent_created_state() -> Tuple[bool, bool]:
+    """Return the guard value and whether config was read successfully.
 
     Off by default because the agent can already execute the same code
     paths via terminal() with no gate, so the scan adds friction without
@@ -134,41 +135,170 @@ def _guard_agent_created_enabled() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return is_truthy_value(
-            cfg_get(cfg, "skills", "guard_agent_created"),
-            default=False,
+        return (
+            is_truthy_value(
+                cfg_get(cfg, "skills", "guard_agent_created"),
+                default=False,
+            ),
+            True,
         )
     except Exception:
-        return False
+        return False, False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None.
+def _guard_agent_created_enabled() -> bool:
+    """Read skills.guard_agent_created from config (default False)."""
+    return _guard_agent_created_state()[0]
+
+
+@dataclass(frozen=True)
+class _SecurityScanOutcome:
+    error: Optional[str] = None
+    target_scanned: bool = False
+    unscanned_reason: Optional[str] = None
+
+
+_GUARD_DISABLED = "guard_disabled"
+_GUARD_CONFIG_ERROR = "guard_config_error"
+_SCANNER_UNAVAILABLE = "scanner_unavailable"
+_SCANNER_ERROR = "scanner_error"
+_TARGET_NOT_SCANNED = "target_not_scanned"
+
+
+def _skill_target_identities(
+    skill_dir: Path,
+    target: Path,
+) -> Optional[Tuple[str, str]]:
+    """Return normalized lexical and resolved paths within a skill."""
+    try:
+        lexical_target = target.relative_to(skill_dir).as_posix()
+        resolved_target = (
+            target.resolve().relative_to(skill_dir.resolve()).as_posix()
+        )
+    except (OSError, ValueError):
+        return None
+    return lexical_target, resolved_target
+
+
+def _security_scan_skill(
+    skill_dir: Path,
+    *,
+    target: Optional[Path] = None,
+    guard_state: Optional[Tuple[bool, bool]] = None,
+) -> _SecurityScanOutcome:
+    """Scan after a write and report whether ``target`` was inspected.
 
     No-op when skills.guard_agent_created is disabled (the default).
     """
+    if guard_state is None:
+        guard_state = _guard_agent_created_state()
+    guard_enabled, config_read = guard_state
+    if not guard_enabled:
+        reason = _GUARD_DISABLED if config_read else _GUARD_CONFIG_ERROR
+        return _SecurityScanOutcome(unscanned_reason=reason)
     if not _GUARD_AVAILABLE:
-        return None
-    if not _guard_agent_created_enabled():
-        return None
+        return _SecurityScanOutcome(unscanned_reason=_SCANNER_UNAVAILABLE)
+
+    scanned_files: Set[str] = set()
     try:
-        result = scan_skill(skill_dir, source="agent-created")
+        result = scan_skill(
+            skill_dir,
+            source="agent-created",
+            scanned_files=scanned_files,
+        )
         allowed, reason = should_allow_install(result)
         if allowed is False:
             report = format_scan_report(result)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            return _SecurityScanOutcome(
+                error=f"Security scan blocked this skill ({reason}):\n{report}"
+            )
         if allowed is None:
             # "ask" verdict — for agent-created skills this means dangerous
             # findings were detected.  Surface as an error so the agent can
             # retry with the flagged content removed.
             report = format_scan_report(result)
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            return _SecurityScanOutcome(
+                error=f"Security scan blocked this skill ({reason}):\n{report}"
+            )
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
-    return None
+        return _SecurityScanOutcome(unscanned_reason=_SCANNER_ERROR)
+
+    if target is None:
+        return _SecurityScanOutcome()
+
+    target_identities = _skill_target_identities(skill_dir, target)
+    if target_identities is None:
+        return _SecurityScanOutcome(unscanned_reason=_TARGET_NOT_SCANNED)
+
+    target_scanned = not scanned_files.isdisjoint(target_identities)
+    return _SecurityScanOutcome(
+        target_scanned=target_scanned,
+        unscanned_reason=None if target_scanned else _TARGET_NOT_SCANNED,
+    )
+
 
 import yaml
+
+
+_UNSCANNED_SCRIPT_NOTE = (
+    "Files under scripts/ may be executed later. This write was not "
+    "content-scanned because skills.guard_agent_created is disabled; enable "
+    "it with `hermes config set skills.guard_agent_created true` for opt-in "
+    "scanning."
+)
+
+_UNSCANNED_SCRIPT_REASONS = {
+    _GUARD_CONFIG_ERROR: (
+        "the skills.guard_agent_created setting could not be read"
+    ),
+    _SCANNER_UNAVAILABLE: "the Skills Guard scanner is unavailable",
+    _SCANNER_ERROR: (
+        "the Skills Guard scan failed before confirming this file was inspected"
+    ),
+    _TARGET_NOT_SCANNED: (
+        "Skills Guard did not inspect this file (for example because its "
+        "extension, ignore rules, or text decoding excluded it)"
+    ),
+}
+
+
+def _add_unscanned_script_note(
+    result: Dict[str, Any],
+    skill_dir: Path,
+    target: Path,
+    *,
+    scan_outcome: _SecurityScanOutcome,
+) -> None:
+    """Surface the opt-in guard when executable skill content lands unscanned."""
+    target_identities = _skill_target_identities(skill_dir, target)
+    if target_identities is None:
+        return
+    is_script = any(
+        Path(identity).parts and Path(identity).parts[0] == "scripts"
+        for identity in target_identities
+    )
+    if (
+        not is_script
+        or scan_outcome.target_scanned
+        or scan_outcome.error
+    ):
+        return
+
+    if scan_outcome.unscanned_reason == _GUARD_DISABLED:
+        note = _UNSCANNED_SCRIPT_NOTE
+    else:
+        reason = _UNSCANNED_SCRIPT_REASONS.get(
+            scan_outcome.unscanned_reason,
+            "Skills Guard did not confirm content coverage for this file",
+        )
+        note = (
+            "Files under scripts/ may be executed later. This write was not "
+            f"content-scanned because {reason}."
+        )
+    result["security_note"] = note
+    result["message"] = f"{result['message']} {note}"
 
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
@@ -1040,10 +1170,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
+    scan_outcome = _security_scan_skill(skill_dir)
+    if scan_outcome.error:
         shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
+        return {"success": False, "error": scan_outcome.error}
 
     # Extract description from frontmatter for verbose notifications
     _desc = ""
@@ -1139,11 +1269,11 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
-    if scan_error:
+    scan_outcome = _security_scan_skill(existing["path"], target=skill_md)
+    if scan_outcome.error:
         if original_content is not None:
             atomic_write_text(skill_md, original_content, preserve_mode=True)
-        return {"success": False, "error": scan_error}
+        return {"success": False, "error": scan_outcome.error}
 
     # Extract description from new content for verbose notifications
     _desc = ""
@@ -1161,6 +1291,12 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    _add_unscanned_script_note(
+        result,
+        existing["path"],
+        skill_md,
+        scan_outcome=scan_outcome,
+    )
     org_note = _maybe_auto_propose_org_edit(name, existing["path"])
     if org_note:
         result["org_sharing"] = org_note
@@ -1285,10 +1421,15 @@ def _patch_skill(
     atomic_write_text(target, new_content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
+    guard_state = _guard_agent_created_state()
+    scan_outcome = _security_scan_skill(
+        skill_dir,
+        target=target,
+        guard_state=guard_state,
+    )
+    if scan_outcome.error:
         atomic_write_text(target, original_content, preserve_mode=True)
-        return {"success": False, "error": scan_error}
+        return {"success": False, "error": scan_outcome.error}
 
     result = {
         "success": True,
@@ -1299,6 +1440,12 @@ def _patch_skill(
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
+    _add_unscanned_script_note(
+        result,
+        skill_dir,
+        target,
+        scan_outcome=scan_outcome,
+    )
     org_note = _maybe_auto_propose_org_edit(name, skill_dir)
     if org_note:
         result["org_sharing"] = org_note
@@ -1464,19 +1611,30 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     atomic_write_text(target, file_content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
-    if scan_error:
+    guard_state = _guard_agent_created_state()
+    scan_outcome = _security_scan_skill(
+        existing["path"],
+        target=target,
+        guard_state=guard_state,
+    )
+    if scan_outcome.error:
         if original_content is not None:
             atomic_write_text(target, original_content, preserve_mode=True)
         else:
             target.unlink(missing_ok=True)
-        return {"success": False, "error": scan_error}
+        return {"success": False, "error": scan_outcome.error}
 
     result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    _add_unscanned_script_note(
+        result,
+        existing["path"],
+        target,
+        scan_outcome=scan_outcome,
+    )
     org_note = _maybe_auto_propose_org_edit(name, existing["path"])
     if org_note:
         result["org_sharing"] = org_note

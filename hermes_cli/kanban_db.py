@@ -6318,7 +6318,27 @@ def block_task(
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
-        if kind == "dependency":
+        #
+        # ...but only when there IS a parent to wait for. ``recompute_ready``
+        # promotes a parentless ``todo`` task straight back to ``ready`` (its
+        # "all parents are done" predicate is vacuously true over zero
+        # parents), so the dispatcher respawns it on the very next tick:
+        # block → promote → respawn → block, every tick, forever. Nothing
+        # brakes it either — this branch returns before the
+        # ``BLOCK_RECURRENCE_LIMIT`` escalation below, and a dependency block
+        # is not a failure so ``consecutive_failures`` never trips the circuit
+        # breaker. A dependency wait that no parent completion can ever
+        # satisfy is a mis-classified block (typically a worker reporting a
+        # stale base, a merge conflict, or an external wait), so fall through
+        # to the truly-blocked path: it lands in the human bucket and gets
+        # recurrence counting.
+        _has_parent_link = bool(
+            conn.execute(
+                "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        )
+        if kind == "dependency" and _has_parent_link:
             cur = conn.execute(
                 """
                 UPDATE tasks

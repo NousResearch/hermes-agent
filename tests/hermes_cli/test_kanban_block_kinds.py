@@ -83,6 +83,31 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_dependency_block_without_parents_does_not_churn(
+    kanban_home: Path,
+) -> None:
+    """A ``dependency`` block on a parentless task must not park in ``todo``.
+
+    ``recompute_ready`` promotes a parentless ``todo`` task straight back to
+    ``ready`` ("all parents done" is vacuously true over zero parents), so the
+    dispatcher respawns it on the next tick — block → promote → respawn →
+    block, every tick, forever. The dependency branch also returns before the
+    ``BLOCK_RECURRENCE_LIMIT`` escalation, and a dependency block is not a
+    failure, so neither brake applies. A dependency wait that no parent
+    completion can satisfy is a mis-classified block: route it to the human
+    bucket instead.
+    """
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn, title="no-parents")
+        assert kb.block_task(
+            conn, tid, reason="stale base, needs rebase", kind="dependency",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        # And it stays there — no silent auto-recovery into the work pool.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
     """A dependency-parked child becomes ready once its parent completes."""
     with kb.connect_closing() as conn:

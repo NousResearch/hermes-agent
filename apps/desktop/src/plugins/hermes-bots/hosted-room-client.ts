@@ -8,6 +8,7 @@
  * from React and the plugin lifecycle.
  */
 
+import { normalizeHostedMessageIdentity } from './group-message-author'
 import type { Attachment, AttachmentKind, GroupMember, GroupMessageAuthor } from './types'
 
 const MIN_ROOM_MEMBERS = 2
@@ -766,8 +767,18 @@ function memberLabel(event: HostedRoomEvent): string {
   )
 }
 
-function messageFromEvent(event: HostedRoomEvent): HostedReplayMessage {
+function messageFromEvent(event: HostedRoomEvent, roomId: null | string): HostedReplayMessage {
   const user = event.kind === 'message.user'
+
+  const identity =
+    !user && event.actor.kind === 'member'
+      ? normalizeHostedMessageIdentity({
+          roomId: event.roomId || roomId,
+          memberId: event.actor.id,
+          profile: event.actor.profile
+        })
+      : undefined
+
   const images = replayAttachments(event.payload.attachments)
 
   return {
@@ -776,6 +787,7 @@ function messageFromEvent(event: HostedRoomEvent): HostedReplayMessage {
     from: {
       kind: user ? 'user' : 'member',
       name: user ? 'You' : memberLabel(event),
+      ...(identity ? { hostedIdentity: identity } : {}),
       ...(text(event.actor.connection_id) ? { source: text(event.actor.connection_id) || undefined } : {})
     },
     text: typeof event.payload.text === 'string' ? event.payload.text : '',
@@ -795,7 +807,7 @@ function applyReplayEvent(state: HostedRoomReplayState, event: HostedRoomEvent):
   }
 
   if (event.kind === 'message.user' || event.kind === 'message.member') {
-    state.messages.push(messageFromEvent(event))
+    state.messages.push(messageFromEvent(event, state.roomId))
   } else if (event.kind === 'room.created') {
     state.name = text(event.payload.name) || state.name
 

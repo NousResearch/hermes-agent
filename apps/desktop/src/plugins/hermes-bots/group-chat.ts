@@ -13,6 +13,14 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster } from './data'
 import { mergeMemberProjectionIntoRoom, mergeProjectedMemberLists } from './group-member-projection'
+import {
+  compactGroupMessageAuthor,
+  compatibleGroupMessageCopies,
+  GROUP_CHAT_SYNC_TEXT_CHARS,
+  groupChatSyncSequence,
+  groupMessageAnchors,
+  mergeGroupMessageCopies
+} from './group-message-author'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -53,7 +61,6 @@ const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 // margin below that limit because Python escapes Unicode while JS does not.
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
 const GROUP_CHAT_SYNC_MESSAGES = 16
-const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -316,15 +323,7 @@ export function groupChatSyncSnapshot(
             id: String(entry.id).slice(0, 160)
           }
         : {}),
-      from: {
-        kind: entry?.from?.kind === 'member' ? 'member' : 'user',
-        name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
-        ...(entry?.from?.source
-          ? {
-              source: String(entry.from.source).slice(0, 128)
-            }
-          : {})
-      },
+      from: compactGroupMessageAuthor(entry?.from),
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
       at: Number(entry?.at || 0),
       ...(entry?.thread
@@ -450,11 +449,7 @@ function groupChatSyncFallbackKey(entry: GroupMessage) {
   ])
 }
 
-export function groupChatSyncSequence(entry: GroupMessage | null | undefined) {
-  const seq = Number(entry?.seq)
-
-  return Number.isSafeInteger(seq) && seq > 0 ? seq : null
-}
+export { groupChatSyncSequence } from './group-message-author'
 
 function compareGroupChatSyncEntries(left: GroupMessage, right: GroupMessage) {
   const leftSeq = groupChatSyncSequence(left)
@@ -473,84 +468,35 @@ function compareGroupChatSyncEntries(left: GroupMessage, right: GroupMessage) {
  * both the optimistic event id and its authoritative sequence twin. */
 export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
   const entries: GroupMessage[] = []
-  const byId = new Map<string, number>()
-  const bySeq = new Map<number, number>()
-  const byFallback = new Map<string, number>()
-
-  const remember = (entry: GroupMessage, index: number) => {
-    if (entry?.eventId) {
-      byId.set(`event:${String(entry.eventId)}`, index)
-      byId.set(`id:${String(entry.eventId)}`, index)
-    }
-
-    if (entry?.id) {
-      byId.set(`id:${String(entry.id)}`, index)
-      byId.set(`event:${String(entry.id)}`, index)
-    }
-
-    const seq = groupChatSyncSequence(entry)
-
-    if (seq !== null) {
-      bySeq.set(seq, index)
-    }
-
-    byFallback.set(groupChatSyncFallbackKey(entry), index)
-  }
+  const byAnchor = new Map<string, Set<number>>()
 
   for (const entry of logs.flat()) {
-    const eventId = entry?.eventId ? `event:${String(entry.eventId)}` : ''
-    const id = entry?.id ? `id:${String(entry.id)}` : ''
-    const seq = groupChatSyncSequence(entry)
-    let index = eventId ? byId.get(eventId) : id ? byId.get(id) : undefined
+    const keys = groupMessageAnchors(entry)
 
-    if (index === undefined && seq !== null) {
-      index = bySeq.get(seq)
+    if (!entry.from?.hostedIdentity && !entry.from?.hostedIdentityEvidence) {
+      keys.push(`fallback:${groupChatSyncFallbackKey(entry)}`)
     }
 
-    if (index === undefined) {
-      index = byFallback.get(groupChatSyncFallbackKey(entry))
-    }
+    // Keep all candidates for conflicting anchors. Neither insertion order
+    // nor a matching sequence may silently alias two different stable IDs.
+    const candidates = new Set(keys.flatMap(key => [...(byAnchor.get(key) || [])]))
+    const compatible = [...candidates].filter(index => compatibleGroupMessageCopies(entries[index], entry))
+    const scores = compatible.map(index => groupMessageAnchors(entries[index]).filter(key => keys.includes(key)).length)
+    const strongest = Math.max(0, ...scores)
+    const matches = compatible.filter((_, index) => scores[index] === strongest)
+    const index = matches.length === 1 ? matches[0] : entries.length
 
-    if (index === undefined) {
-      index = entries.length
+    if (index === entries.length) {
       entries.push(entry)
-      remember(entry, index)
-
-      continue
+    } else {
+      entries[index] = mergeGroupMessageCopies(entries[index], entry)
     }
 
-    const prior = entries[index]
-    const authoritativeSeq = groupChatSyncSequence(prior) ?? seq
-
-    const merged: GroupMessage = {
-      ...prior,
-      ...entry,
-      ...(prior?.images && !entry?.images
-        ? {
-            images: prior.images
-          }
-        : {}),
-      ...(prior?.id && !entry?.id
-        ? {
-            id: prior.id
-          }
-        : {}),
-      ...(prior?.eventId && !entry?.eventId
-        ? {
-            eventId: prior.eventId
-          }
-        : {}),
-      ...(authoritativeSeq !== null
-        ? {
-            seq: authoritativeSeq
-          }
-        : {})
+    for (const key of keys) {
+      const indices = byAnchor.get(key) || new Set<number>()
+      indices.add(index)
+      byAnchor.set(key, indices)
     }
-
-    entries[index] = merged
-    remember(prior, index)
-    remember(entry, index)
-    remember(merged, index)
   }
 
   return entries.sort(compareGroupChatSyncEntries)

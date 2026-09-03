@@ -148,11 +148,19 @@ export interface Attachment {
   uploadId?: string
 }
 
+export type HostedMessageIdentity = Pick<NonNullable<GroupMember['hostedIdentity']>, 'roomId' | 'memberId'> & {
+  profile?: string
+}
+
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Hosted event actor identity for display binding, never a dispatch route. */
+  hostedIdentity?: HostedMessageIdentity
+  /** Display-only evidence: weak inheritance or a durable unresolved actor conflict. */
+  hostedIdentityEvidence?: 'mirror' | 'mirror-conflict' | 'replay-conflict'
 }
 
 export interface GroupMessage {

@@ -57,6 +57,7 @@ import {
 } from './data'
 import { $groupChats, $groupChatWorkspace, groupChatHostedGateway } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
+import { hostedMessageSpeaker } from './group-message-author'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
@@ -310,9 +311,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>
-          {b.bot.openBotChat}
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {
@@ -475,15 +474,22 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   // Room previews speak the same handle vocabulary as the roster, mentions
   // and the group prompt: the primary profile is @hermes, not @default.
   const lastFrom = last?.from?.name || ''
+  const hostedSpeaker = last ? hostedMessageSpeaker(last.from, room, members) : null
 
   const lastHandle = botHandle(
     lastFrom || 'bot',
     members.find(member => member?.name === lastFrom)
   )
 
-  const preview = last
-    ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : `${members.length} bots`
+  const speaker = hostedSpeaker
+    ? hostedSpeaker.handle
+      ? `@${hostedSpeaker.handle}`
+      : hostedSpeaker.display
+    : last?.from?.kind === 'user'
+      ? 'You'
+      : `@${lastHandle}`
+
+  const preview = last ? `${speaker}: ${stripPreviewMarkdown(last.text) || '…'}` : `${members.length} bots`
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`

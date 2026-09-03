@@ -54,9 +54,13 @@ async function withHostFailure(state: 'offline' | 'unsupported', check: (room: G
     .mockResolvedValue([{ connectionId: 'host-route', mode: 'remote', profile: 'default', targetProfile: 'default' }])
 
   const request = vi.spyOn(host, 'requestProfile').mockImplementation(async (_route, method) => {
-    if (method !== 'groups.capabilities') {throw new Error(`Unexpected RPC: ${method}`)}
+    if (method !== 'groups.capabilities') {
+      throw new Error(`Unexpected RPC: ${method}`)
+    }
 
-    if (state === 'offline') {throw new Error('Connection failed')}
+    if (state === 'offline') {
+      throw new Error('Connection failed')
+    }
 
     return { authority_gateway_id: 'authority', driver: false, persistent_process: true }
   })

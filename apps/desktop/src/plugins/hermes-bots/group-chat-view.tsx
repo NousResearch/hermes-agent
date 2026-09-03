@@ -84,6 +84,7 @@ import {
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
+import { hostedMessageSpeaker } from './group-message-author'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
@@ -1188,38 +1189,51 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+    const hostedSpeaker = hostedMessageSpeaker(entry.from, room, members)
+
+    const meta = hostedSpeaker
+      ? hostedSpeaker.member
+        ? botRosterMeta(hostedSpeaker.member, allMeta)
+        : null
+      : isUser || entry.from.source
+        ? null
+        : allMeta[entry.from.name]
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
     // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    const member = hostedSpeaker
+      ? hostedSpeaker.member
+      : isUser
+        ? null
+        : members.find(
+            b =>
+              b.name === entry.from.name &&
+              (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
+          ) || null
 
-    const display = isUser
-      ? 'You'
-      : displayName(
-          member || {
-            name: entry.from.name
-          },
-          meta
-        )
+    const display = hostedSpeaker
+      ? hostedSpeaker.display
+      : isUser
+        ? 'You'
+        : displayName(
+            member || {
+              name: entry.from.name
+            },
+            meta
+          )
 
     const entryKey = `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey
+    const handle = hostedSpeaker ? hostedSpeaker.handle : botHandle(entry.from.name, member || undefined)
 
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
       ? 'You'
-      : revealed
-        ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
+      : revealed && (!hostedSpeaker || handle)
+        ? `${display}${!hostedSpeaker && entry.from.source ? `-${entry.from.source}` : ''} (@${handle})`
         : display
 
     // Speaker avatar: same appearance pipeline as the roster
@@ -1227,7 +1241,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // Remote speakers have no local meta and get the
     // deterministic face for their name — stable per bot.
     // Non-null exactly when !isUser — the user's own lines carry no avatar.
-    const appearance = isUser ? null : botAppearance(entry.from.name, meta)
+    const profile = hostedSpeaker?.profile || entry.from.name
+    const appearance = isUser ? null : botAppearance(profile, meta)
     const image = appearance?.image ?? null
     const photo = Boolean(image && !isBackfilledFacePng(image))
 
@@ -1242,9 +1257,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         {appearance ? (
           <div className="mt-0.5 shrink-0">
             <BotFace
-              color={avatarColor(appearance.color, entry.from.name)}
+              color={avatarColor(appearance.color, profile)}
               image={photo ? image : null}
-              name={entry.from.name}
+              name={profile}
               shape={appearance.shape}
               size={24}
             />
@@ -1252,7 +1267,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ) : null}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            {isUser ? (
+            {isUser || (hostedSpeaker && !handle) ? (
               <span className="text-[0.7rem] font-semibold text-foreground">{label}</span>
             ) : (
               <Button

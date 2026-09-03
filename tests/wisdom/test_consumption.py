@@ -141,6 +141,18 @@ def _manager(monkeypatch, tmp_path: Path, *, client: Client):
     return WisdomConsumption(store=store, client=client, scan=scan, config={}), target
 
 
+def _telegram_home(monkeypatch, chat_id: str) -> None:
+    from gateway.config import Platform
+
+    home = SimpleNamespace(chat_id=chat_id, thread_id=None)
+    config = SimpleNamespace(
+        get_home_channel=lambda platform: (
+            home if platform == Platform.TELEGRAM else None
+        )
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+
+
 def test_required_update_preserves_modified_bytes_before_converging(
     monkeypatch, tmp_path: Path
 ):
@@ -157,6 +169,27 @@ def test_required_update_preserves_modified_bytes_before_converging(
     assert (fork / "SKILL.md").read_text() == "# locally changed\n"
     assert (target / "SKILL.md").read_text() == "# Managed v2\n"
     assert manager.store.installation("skill-1")["version"] == 2
+
+
+def test_required_update_with_scan_findings_is_never_applied_automatically(
+    monkeypatch, tmp_path: Path
+):
+    client = Client(_files(2), mode="REQUIRED")
+    manager, target = _manager(monkeypatch, tmp_path, client=client)
+    manager.scan = lambda _path: {
+        "guard": {
+            "allowed": True,
+            "findings": [{"severity": "medium", "message": "review this"}],
+            "reason": None,
+        },
+        "skill_evaluator": {"status": "disabled", "findings": []},
+    }
+
+    result = manager.check(apply_automatic=True)
+
+    assert result["installations"][0]["state"] == "update_available"
+    assert result["installations"][0]["plan"]["auto_allowed"] is False
+    assert (target / "SKILL.md").read_text(encoding="utf-8") == "# Managed v1\n"
 
 
 def test_repeated_update_checks_reuse_the_exact_unapplied_plan(
@@ -352,9 +385,7 @@ def test_returned_draft_invalidates_receipt_and_preserves_moderator_note(
     notification = manager.notifications()["events"][0]
     assert notification["category"] == "publication_decision"
     assert notification["skill_name"] == "owner-skill"
-    assert notification["portal_url"].endswith(
-        "/orgs/org-1/wisdom/review/draft-1"
-    )
+    assert notification["portal_url"].endswith("/orgs/org-1/wisdom/review/draft-1")
 
 
 def test_portal_submission_retires_exact_candidate_without_final_notice(
@@ -476,6 +507,22 @@ def test_uninstall_validates_target_and_preserves_recoverable_trash(
     assert client.deactivated == [(manager.store.installation_identity(), "skill-1")]
 
 
+def test_uninstall_recovery_rejects_a_traversal_slug(monkeypatch, tmp_path: Path):
+    client = Client(_files(2))
+    manager, target = _manager(monkeypatch, tmp_path, client=client)
+    payload = {
+        "skill_id": "skill-1",
+        "slug": "../../outside",
+        "target_path": str(target),
+    }
+    operation = manager.store.journal("uninstall", "skill-1", "validated", payload)
+
+    with pytest.raises(PackagePolicyError, match="recovery path is invalid"):
+        manager._resume_uninstall(operation, payload)
+
+    assert target.is_dir()
+
+
 def test_takedown_check_preserves_existing_local_installation(
     monkeypatch, tmp_path: Path
 ):
@@ -528,6 +575,7 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
     ]
     assert manager.poll_feed()["inserted"] == 0
     assert WisdomStore(manager.store.root).feed_cursor() == "cursor-2"
+    _telegram_home(monkeypatch, "123456")
 
     calls = []
     monkeypatch.setattr(
@@ -551,7 +599,9 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
             "heading": "✅ Updated on this device",
             "detail": (
                 "managed-skill · v2\n"
-                "Security: Unavailable · Professionalism: Unavailable"
+                "Security check: Unavailable\n"
+                "No known matches detected is not a security certification.\n\n"
+                "Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]
@@ -581,6 +631,7 @@ def test_telegram_update_available_offers_verified_update_action(
         })
     ]
     assert manager.poll_feed()["inserted"] == 1
+    _telegram_home(monkeypatch, "123456")
 
     calls = []
     monkeypatch.setattr(
@@ -606,7 +657,9 @@ def test_telegram_update_available_offers_verified_update_action(
             "heading": "⬆️ Update available",
             "detail": (
                 "managed-skill · v2\n"
-                "Security: Unavailable · Professionalism: Unavailable"
+                "Security check: Unavailable\n"
+                "No known matches detected is not a security certification.\n\n"
+                "Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]
@@ -684,6 +737,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
     assert [
         item["event_id"] for item in manager.store.feed_events(unseen_only=True)
     ] == ["event-new"]
+    _telegram_home(monkeypatch, "123456")
 
     calls = []
     monkeypatch.setattr(
@@ -708,13 +762,63 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
             "heading": "🆕 New skill from your team",
             "detail": (
                 "team-runbook · v3\n"
-                "Security: Unavailable · Professionalism: Unavailable"
+                "Security check: Unavailable\n"
+                "No known matches detected is not a security certification.\n\n"
+                "Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]
 
     manager.notifications(mark_seen=True)
     assert manager.notifications()["events"] == []
+
+
+def test_telegram_public_home_excludes_device_state_and_mutation_controls(
+    monkeypatch, tmp_path: Path
+):
+    client = Client(_files(2))
+    client.discovery = [
+        SimpleNamespace(
+            id="remote-skill",
+            slug="team-runbook",
+            latest_version=3,
+            model_dump=lambda **_kwargs: {
+                "id": "remote-skill",
+                "slug": "team-runbook",
+                "latest_version": 3,
+            },
+        )
+    ]
+    manager, _target = _manager(monkeypatch, tmp_path, client=client)
+    manager.store.persist_local_notice(
+        event_id="event-new-public",
+        kind="new",
+        skill_id="remote-skill",
+        payload={"version": 3},
+    )
+    manager.store.persist_local_notice(
+        event_id="event-update-private",
+        kind="updated",
+        skill_id="skill-1",
+        payload={"version": 2, "update_mode": "MANUAL"},
+    )
+    _telegram_home(monkeypatch, "-100123456")
+    calls = []
+    monkeypatch.setattr(
+        "tools.send_message_tool.send_telegram_notification_pane",
+        lambda **kwargs: calls.append(kwargs) or {"success": True},
+    )
+
+    assert manager.dispatch_telegram() == {"attempted": True, "delivered": 1}
+    assert calls[0]["button_rows"] == [
+        [
+            {
+                "label": "View ↗",
+                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=3",
+            }
+        ]
+    ]
+    assert manager.dispatch_telegram() == {"attempted": False, "delivered": 0}
 
 
 def test_install_notifications_are_limited_to_this_installation(
@@ -836,9 +940,7 @@ def test_slack_public_home_only_emits_collective_publication_links(
     ]
 
 
-def test_slack_dm_home_offers_verified_update_action(
-    monkeypatch, tmp_path: Path
-):
+def test_slack_dm_home_offers_verified_update_action(monkeypatch, tmp_path: Path):
     from gateway.config import Platform, PlatformConfig
 
     client = Client(_files(2))

@@ -1,5 +1,8 @@
 import sqlite3
+import os
 from pathlib import Path
+
+import pytest
 
 from hermes_wisdom.store import WisdomStore
 
@@ -19,6 +22,22 @@ def test_profile_store_permissions_identity_and_rename(tmp_path: Path):
     assert store.existing_installation_identity() == store.installation_identity()
     assert store.root.stat().st_mode & 0o777 == 0o700
     assert store.path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes are not available")
+def test_profile_store_secures_sqlite_wal_sidecars(tmp_path: Path):
+    store = WisdomStore(tmp_path / "wisdom")
+    with store.transaction() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('mode','test')"
+        )
+        for path in (
+            store.path,
+            Path(f"{store.path}-wal"),
+            Path(f"{store.path}-shm"),
+        ):
+            assert path.exists()
+            assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_delete_recreate_does_not_inherit_identity(tmp_path: Path):
@@ -179,9 +198,7 @@ def test_schema_v9_tracks_profile_local_usage_surface_delivery_reviews_and_notic
         }
         organization_columns = {
             row[1]
-            for row in db.execute(
-                "PRAGMA table_info(wisdom_organization)"
-            ).fetchall()
+            for row in db.execute("PRAGMA table_info(wisdom_organization)").fetchall()
         }
         version = db.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
@@ -440,9 +457,12 @@ def test_candidate_delivery_is_independent_per_surface(tmp_path: Path):
 
     store.mark_surface_delivered([event_id], surface="slack")
 
-    assert store.pending_surface_events(
-        kind="wisdom.candidate", session_id="session-1", surface="slack"
-    ) == []
+    assert (
+        store.pending_surface_events(
+            kind="wisdom.candidate", session_id="session-1", surface="slack"
+        )
+        == []
+    )
     assert [
         event["id"]
         for event in store.pending_surface_events(
@@ -490,7 +510,9 @@ def test_schema_v7_preserves_v4_usage_in_an_explicit_utc_bucket(tmp_path: Path):
     assert tuple(row) == ("2026-08-03", "UTC", 2)
 
 
-def test_telegram_delivery_is_session_scoped_without_consuming_candidate(tmp_path: Path):
+def test_telegram_delivery_is_session_scoped_without_consuming_candidate(
+    tmp_path: Path,
+):
     store = WisdomStore(tmp_path / "wisdom")
     skill_path = tmp_path / "skill"
     skill_path.mkdir()
@@ -509,9 +531,12 @@ def test_telegram_delivery_is_session_scoped_without_consuming_candidate(tmp_pat
     )
     assert event_id is not None
 
-    assert store.pending_telegram_events(
-        kind="wisdom.candidate", session_id="other-session"
-    ) == []
+    assert (
+        store.pending_telegram_events(
+            kind="wisdom.candidate", session_id="other-session"
+        )
+        == []
+    )
     pending = store.pending_telegram_events(
         kind="wisdom.candidate", session_id="telegram-session"
     )
@@ -519,9 +544,12 @@ def test_telegram_delivery_is_session_scoped_without_consuming_candidate(tmp_pat
 
     store.mark_telegram_delivered([event_id])
 
-    assert store.pending_telegram_events(
-        kind="wisdom.candidate", session_id="telegram-session"
-    ) == []
+    assert (
+        store.pending_telegram_events(
+            kind="wisdom.candidate", session_id="telegram-session"
+        )
+        == []
+    )
     assert [
         item["id"]
         for item in store.local_events(
@@ -558,9 +586,12 @@ def test_v7_seeds_legacy_telegram_delivery_into_surface_ledger(tmp_path: Path):
 
     migrated = WisdomStore(root)
 
-    assert migrated.pending_surface_events(
-        kind="wisdom.candidate", session_id="session-1", surface="telegram"
-    ) == []
+    assert (
+        migrated.pending_surface_events(
+            kind="wisdom.candidate", session_id="session-1", surface="telegram"
+        )
+        == []
+    )
     assert [
         item["id"]
         for item in migrated.pending_surface_events(
@@ -580,9 +611,10 @@ def test_feed_delivery_is_independent_per_surface(tmp_path: Path):
 
     store.mark_feed_surface_delivered(["feed-1"], surface="slack")
 
-    assert store.feed_events(
-        surface="slack", surface_due_at="2999-01-01T00:00:00+00:00"
-    ) == []
+    assert (
+        store.feed_events(surface="slack", surface_due_at="2999-01-01T00:00:00+00:00")
+        == []
+    )
     assert [
         item["event_id"]
         for item in store.feed_events(

@@ -173,11 +173,11 @@ def _round_trip_frontmatter(
 
 
 def ensure_skill_editorial_metadata(skill_path: Path) -> dict[str, Any]:
-    """Populate missing editorial metadata and return resolved presentation copy.
+    """Resolve presentation copy without modifying the user-owned skill.
 
-    The model call happens only for a qualifying legacy skill. A failed or
-    racing enrichment leaves the skill untouched and returns canonical
-    fallbacks, so qualification remains available.
+    The model call happens only for a qualifying legacy skill. Generated copy
+    is persisted with the local candidate event and is applied later to the
+    owner-visible contribution overlay, never to the source skill.
     """
 
     skill_md = skill_path / "SKILL.md"
@@ -208,26 +208,12 @@ def ensure_skill_editorial_metadata(skill_path: Path) -> dict[str, Any]:
             canonical_description=fallback_description,
             skill_markdown=original,
         )
-        updated = _round_trip_frontmatter(
-            original,
-            editorial_name=(
-                generated.editorial_name if existing_name is None else None
-            ),
-            editorial_description=(
-                generated.editorial_description
-                if existing_description is None
-                else None
-            ),
-        )
-        if updated is None or skill_md.read_text(encoding="utf-8") != original:
-            raise OSError("SKILL.md changed while editorial metadata was generated")
-        atomic_write_text(skill_md, updated, preserve_mode=True)
         return {
             "editorial_name": existing_name or generated.editorial_name,
             "editorial_description": (
                 existing_description or generated.editorial_description
             ),
-            "changed": True,
+            "changed": False,
         }
     except Exception:
         fallback = extract_skill_editorial_metadata(
@@ -236,3 +222,34 @@ def ensure_skill_editorial_metadata(skill_path: Path) -> dict[str, Any]:
             fallback_description=fallback_description,
         )
         return {**fallback, "changed": False}
+
+
+def apply_editorial_metadata_to_overlay(
+    skill_path: Path,
+    *,
+    editorial_name: str | None,
+    editorial_description: str | None,
+) -> bool:
+    """Fill missing editorial fields in a private owner-review overlay."""
+
+    skill_md = skill_path / "SKILL.md"
+    if skill_md.is_symlink():
+        raise OSError("refusing to edit a symbolic SKILL.md")
+    original = skill_md.read_text(encoding="utf-8")
+    frontmatter, _body = parse_frontmatter(original)
+    existing_name, existing_description = _explicit_editorial_values(frontmatter)
+    name = editorial_name if existing_name is None else None
+    description = editorial_description if existing_description is None else None
+    if name is None and description is None:
+        return False
+    updated = _round_trip_frontmatter(
+        original,
+        editorial_name=name,
+        editorial_description=description,
+    )
+    if updated is None:
+        raise ValueError("SKILL.md frontmatter cannot store editorial metadata")
+    if skill_md.read_text(encoding="utf-8") != original:
+        raise OSError("SKILL.md changed while editorial metadata was applied")
+    atomic_write_text(skill_md, updated, preserve_mode=True)
+    return updated != original

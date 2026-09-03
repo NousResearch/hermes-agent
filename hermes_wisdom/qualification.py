@@ -198,16 +198,7 @@ def _emit_candidate(
             "changed": False,
         }
     )
-    editorial_changed = bool(editorial.pop("changed", False))
-    if source is not None and editorial_changed:
-        content_hash, tree = snapshot_tree(source)
-        store.register_skill(
-            source,
-            content_hash=content_hash,
-            source_kind="local",
-            tree=tree,
-            snapshot_text=_frontmatter_free_text(source),
-        )
+    editorial.pop("changed", None)
     event_id = store.emit_local_event(
         kind="wisdom.candidate",
         skill_id=skill_id,
@@ -355,13 +346,9 @@ def record_successful_use(
         retain_after=retain_after,
     )
     recent_after = (profile_day - timedelta(days=RECENT_USE_DAYS - 1)).isoformat()
-    days = state.usage_days(
-        skill_id, since=recent_after, timezone_name=timezone_name
-    )
+    days = state.usage_days(skill_id, since=recent_after, timezone_name=timezone_name)
     stability_events = process_due_stability_jobs(store=state, at=current)
-    if _consecutive_business_days(
-        days, required=HIGH_USAGE_CONSECUTIVE_BUSINESS_DAYS
-    ):
+    if _consecutive_business_days(days, required=HIGH_USAGE_CONSECUTIVE_BUSINESS_DAYS):
         high_usage = _emit_candidate(
             state,
             skill_id=skill_id,

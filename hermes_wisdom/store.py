@@ -489,10 +489,20 @@ class WisdomStore:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SCHEMA_VERSION),),
             )
-        try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
+        self._secure_database_files()
+
+    def _secure_database_files(self) -> None:
+        for path in (
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+        ):
+            try:
+                path.chmod(0o600)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -502,6 +512,7 @@ class WisdomStore:
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("BEGIN IMMEDIATE")
+            self._secure_database_files()
             try:
                 yield db
                 if db.in_transaction:
@@ -512,6 +523,7 @@ class WisdomStore:
                 raise
             finally:
                 db.close()
+                self._secure_database_files()
 
     def register_skill(
         self,
@@ -624,9 +636,7 @@ class WisdomStore:
                 (skill_id, retain_after),
             )
 
-    def usage_days(
-        self, skill_id: str, *, since: str, timezone_name: str
-    ) -> list[str]:
+    def usage_days(self, skill_id: str, *, since: str, timezone_name: str) -> list[str]:
         with self.transaction() as db:
             return [
                 str(row[0])
@@ -1077,9 +1087,7 @@ class WisdomStore:
                 (utc_now(), *event_ids),
             )
 
-    def mark_surface_delivered(
-        self, event_ids: list[str], *, surface: str
-    ) -> None:
+    def mark_surface_delivered(self, event_ids: list[str], *, surface: str) -> None:
         if not event_ids:
             return
         delivered_at = utc_now()

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.skill_utils import parse_frontmatter
 from hermes_wisdom.client import (
     Draft,
     WisdomAuthError,
@@ -299,6 +300,39 @@ def test_owner_draft_approval_uses_hash_bound_review_and_publication(
     assert service.store.receipt("draft-review") is None
 
 
+def test_owner_publication_resume_revalidates_review_receipt(
+    monkeypatch, tmp_path: Path
+):
+    client = ReviewClient()
+    service = _review_service(tmp_path, client=client)
+    monkeypatch.setattr(service, "require_setup", lambda: None)
+    service.review("draft-review", acknowledge=True)
+    client.state = "owner_approved"
+
+    result = service.approve_owner_draft("draft-review")
+
+    assert result["publication_state"] == "published"
+    assert client.publications == 1
+    assert service.store.receipt("draft-review") is None
+
+
+def test_owner_publication_resume_rejects_stale_review_receipt(
+    monkeypatch, tmp_path: Path
+):
+    client = ReviewClient()
+    service = _review_service(tmp_path, client=client)
+    monkeypatch.setattr(service, "require_setup", lambda: None)
+    service.review("draft-review", acknowledge=True)
+    client.state = "owner_approved"
+    client.description = "Changed after owner review."
+
+    with pytest.raises(PackagePolicyError, match="receipt is stale"):
+        service.approve_owner_draft("draft-review")
+
+    assert client.publications == 0
+    assert service.store.receipt("draft-review") is not None
+
+
 def test_owner_draft_decline_reports_already_published_without_mutating(
     monkeypatch, tmp_path: Path
 ):
@@ -513,8 +547,7 @@ def test_candidate_scan_hides_an_exact_contributed_version_until_content_changes
     assert service.scan_candidates() == []
 
     (skill / "SKILL.md").write_text(
-        (skill / "SKILL.md").read_text(encoding="utf-8")
-        + "\nNew material guidance.\n",
+        (skill / "SKILL.md").read_text(encoding="utf-8") + "\nNew material guidance.\n",
         encoding="utf-8",
     )
     changed = service.scan_candidates()
@@ -553,16 +586,27 @@ def test_suggest_uses_candidate_identity_and_rejects_a_stale_duplicate_action(
         )
 
 
-def _qualified_candidate_event(service: WisdomService, skill: Path) -> str:
+def _qualified_candidate_event(
+    service: WisdomService,
+    skill: Path,
+    *,
+    editorial_name: str | None = None,
+    editorial_description: str | None = None,
+) -> str:
     candidate = service.scan_candidates()[0]
+    payload = {
+        "skill_name": skill.name,
+        "local_reasons": {"high_usage": True},
+    }
+    if editorial_name is not None:
+        payload["editorial_name"] = editorial_name
+    if editorial_description is not None:
+        payload["editorial_description"] = editorial_description
     event_id = service.store.emit_local_event(
         kind="wisdom.candidate",
         skill_id=candidate["local_skill_id"],
         content_hash=candidate["content_hash"],
-        payload={
-            "skill_name": skill.name,
-            "local_reasons": {"high_usage": True},
-        },
+        payload=payload,
         session_id="telegram-session",
         task_id="task-1",
         qualification="high_usage",
@@ -614,9 +658,9 @@ def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified
     assert [event["notice_variant"] for event in events] == ["first", "returning"]
     assert [event["qualification_sequence"] for event in events] == [1, 2]
     assert {event["organization_name"] for event in events} == {"Nous Research"}
-    assert {
-        event["id"]: event["notice_variant"] for event in pending
-    } == {event["id"]: event["notice_variant"] for event in events}
+    assert {event["id"]: event["notice_variant"] for event in pending} == {
+        event["id"]: event["notice_variant"] for event in events
+    }
     assert qualification_notice(events[0]).startswith(
         "Your organisation (Nous Research) has enabled Collective Wisdom"
     )
@@ -655,9 +699,10 @@ def test_defer_candidate_prompt_hides_only_the_selected_surface(tmp_path: Path):
         "qualification": "high_usage",
         "state": "deferred",
     }
-    assert service.pending_candidate_events(
-        session_id="session-1", surface="desktop"
-    ) == []
+    assert (
+        service.pending_candidate_events(session_id="session-1", surface="desktop")
+        == []
+    )
     assert [
         event["id"]
         for event in service.pending_candidate_events(
@@ -738,7 +783,13 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
             "skill_evaluator": {"status": "disabled", "findings": []},
         },
     )
-    event_id = _qualified_candidate_event(service, skill)
+    source_before = (skill / "SKILL.md").read_text(encoding="utf-8")
+    event_id = _qualified_candidate_event(
+        service,
+        skill,
+        editorial_name="Telegram Runbook",
+        editorial_description="A clear team runbook for Telegram workflows.",
+    )
 
     result = service.draft_candidate(event_id)
 
@@ -753,6 +804,18 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
     assert fake.uploaded > 0
     assert fake.submissions[0]["description"] == "Share a safe runbook."
     assert "local_reasons" not in json.dumps(fake.submissions)
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == source_before
+    local_draft = store.draft("draft-1")
+    assert local_draft is not None
+    overlay_frontmatter, _body = parse_frontmatter(
+        (Path(str(local_draft["overlay_path"])) / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert overlay_frontmatter["metadata"]["hermes"] == {
+        "editorial_name": "Telegram Runbook",
+        "editorial_description": "A clear team runbook for Telegram workflows.",
+    }
 
     resumed = service.draft_candidate(event_id)
     assert resumed["created"] is False

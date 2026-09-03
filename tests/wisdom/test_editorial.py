@@ -1,9 +1,13 @@
 import sys
 import types
+import shutil
 from pathlib import Path
 
 from agent.skill_utils import parse_frontmatter
-from hermes_wisdom.editorial import ensure_skill_editorial_metadata
+from hermes_wisdom.editorial import (
+    apply_editorial_metadata_to_overlay,
+    ensure_skill_editorial_metadata,
+)
 
 
 def _skill(tmp_path: Path, frontmatter: str) -> Path:
@@ -38,7 +42,7 @@ def _model(monkeypatch, *, name: str, description: str):
     return captured
 
 
-def test_qualifying_legacy_skill_generates_and_persists_editorial_copy(
+def test_qualifying_legacy_skill_generates_editorial_copy_without_mutating_source(
     monkeypatch, tmp_path: Path
 ):
     skill = _skill(
@@ -55,21 +59,15 @@ def test_qualifying_legacy_skill_generates_and_persists_editorial_copy(
         description="Prepare and verify a reliable software release.",
     )
 
+    original = (skill / "SKILL.md").read_text(encoding="utf-8")
     result = ensure_skill_editorial_metadata(skill)
 
     assert result == {
         "editorial_name": "Safe Release Workflow",
         "editorial_description": "Prepare and verify a reliable software release.",
-        "changed": True,
+        "changed": False,
     }
-    frontmatter, _body = parse_frontmatter(
-        (skill / "SKILL.md").read_text(encoding="utf-8")
-    )
-    assert frontmatter["metadata"]["hermes"] == {
-        "tags": ["release"],
-        "editorial_name": "Safe Release Workflow",
-        "editorial_description": "Prepare and verify a reliable software release.",
-    }
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == original
     assert captured["task"] == "background_review"
     assert captured["tools"] == []
     assert "untrusted" in captured["messages"][0]["content"].lower()
@@ -138,13 +136,36 @@ def test_generation_preserves_an_existing_editorial_field(monkeypatch, tmp_path:
         description="A clear description generated for people.",
     )
 
+    original = (skill / "SKILL.md").read_text(encoding="utf-8")
     result = ensure_skill_editorial_metadata(skill)
 
     assert result["editorial_name"] == "Owner Chosen Name"
-    frontmatter, _body = parse_frontmatter(
-        (skill / "SKILL.md").read_text(encoding="utf-8")
-    )
-    assert frontmatter["metadata"]["hermes"]["editorial_name"] == ("Owner Chosen Name")
-    assert frontmatter["metadata"]["hermes"]["editorial_description"] == (
+    assert result["editorial_description"] == (
         "A clear description generated for people."
     )
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == original
+
+
+def test_generated_editorial_copy_is_applied_only_to_review_overlay(tmp_path: Path):
+    skill = _skill(
+        tmp_path,
+        "name: legacy-skill\ndescription: Agent-facing description.\n",
+    )
+    original = (skill / "SKILL.md").read_text(encoding="utf-8")
+    overlay = tmp_path / "overlay"
+    shutil.copytree(skill, overlay)
+
+    assert apply_editorial_metadata_to_overlay(
+        overlay,
+        editorial_name="Human Friendly Skill",
+        editorial_description="A clear explanation for people.",
+    )
+
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == original
+    frontmatter, _body = parse_frontmatter(
+        (overlay / "SKILL.md").read_text(encoding="utf-8")
+    )
+    assert frontmatter["metadata"]["hermes"] == {
+        "editorial_name": "Human Friendly Skill",
+        "editorial_description": "A clear explanation for people.",
+    }

@@ -1879,7 +1879,8 @@
           "summary": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 512
+            "maxLength": 512,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
           },
           "checks": {
             "type": "array",
@@ -1913,7 +1914,8 @@
                   "items": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 256
+                    "maxLength": 256,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
                   },
                   "maxItems": 5
                 }
@@ -1940,14 +1942,18 @@
                   "string",
                   "null"
                 ],
-                "maxLength": 128
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
               },
               "model": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "maxLength": 128
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
               }
             },
             "required": [

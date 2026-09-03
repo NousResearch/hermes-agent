@@ -30,6 +30,7 @@ from .contract import (
     sanitize_author_description,
     sha256_address,
 )
+from .editorial import apply_editorial_metadata_to_overlay
 
 
 MAX_FILES = 32
@@ -63,7 +64,7 @@ BLOCKED_PATH_SEGMENTS = frozenset({
     "venv",
 })
 FORBIDDEN_REFERENCE_RE = re.compile(
-    r"(?i)(?:^|[\s(`'\"])(?:scripts?|templates?)/[^\s)`'\"]+"
+    r"(?i)(?:^|[\s\[(`'\"])(?:scripts?|templates?)/[^\s)`'\"]+"
 )
 PACKAGE_MANAGER_FILES = frozenset({
     "package.json",
@@ -440,6 +441,8 @@ def prepare_package(
     author_description: str,
     owner: str,
     installation_id: str,
+    editorial_name: str | None = None,
+    editorial_description: str | None = None,
 ) -> PreparedPackage:
     source = source.resolve()
     source_hash = _source_fingerprint(source)
@@ -459,6 +462,12 @@ def prepare_package(
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(path.read_bytes())
             dest.chmod(0o600)
+    if editorial_name is not None or editorial_description is not None:
+        apply_editorial_metadata_to_overlay(
+            target,
+            editorial_name=editorial_name,
+            editorial_description=editorial_description,
+        )
     if not (target / "skill.manifest.json").exists():
         from hermes_cli import __version__ as hermes_version
 

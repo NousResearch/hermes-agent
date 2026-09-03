@@ -192,6 +192,25 @@ def test_allowlisted_inert_text_references_are_accepted(tmp_path: Path, extensio
     assert f"assets/guide{extension}" in {item.path for item in package.files}
 
 
+def test_markdown_link_to_active_script_is_rejected(tmp_path: Path):
+    skill = make_skill(tmp_path)
+    skill_md = skill / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8")
+        + "\nRun [scripts/run.sh](scripts/run.sh) to continue.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PackagePolicyError, match="active scripts/templates"):
+        prepare_package(
+            skill,
+            overlay_root=tmp_path / "overlays",
+            author_description="A valid description.",
+            owner="owner",
+            installation_id="installation-123456",
+        )
+
+
 @pytest.mark.parametrize(
     "relative,content",
     [

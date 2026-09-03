@@ -115,7 +115,9 @@ def test_high_usage_threshold_uses_consecutive_business_days_and_deduplicates(
     ]
 
 
-def test_candidate_hash_tracks_editorial_enrichment(monkeypatch, tmp_path: Path):
+def test_candidate_editorial_enrichment_does_not_change_source_hash(
+    monkeypatch, tmp_path: Path
+):
     skill = _skill(tmp_path)
     _eligible(monkeypatch, skill)
     store = _configured_store(tmp_path)
@@ -129,18 +131,11 @@ def test_candidate_hash_tracks_editorial_enrichment(monkeypatch, tmp_path: Path)
     )
 
     def enrich(path: Path):
-        skill_md = path / "SKILL.md"
-        skill_md.write_text(
-            skill_md.read_text(encoding="utf-8").replace(
-                "editorial_name: Learned Workflow",
-                "editorial_name: Human Friendly Workflow",
-            ),
-            encoding="utf-8",
-        )
+        assert path == skill
         return {
             "editorial_name": "Human Friendly Workflow",
             "editorial_description": "Reuse a workflow refined through practice.",
-            "changed": True,
+            "changed": False,
         }
 
     monkeypatch.setattr(
@@ -160,9 +155,10 @@ def test_candidate_hash_tracks_editorial_enrichment(monkeypatch, tmp_path: Path)
     assert event_id
     new_hash, _tree = snapshot_tree(skill)
     event = store.local_events(kind="wisdom.candidate")[0]
-    assert new_hash != old_hash
-    assert event["content_hash"] == new_hash
-    assert store.local_skill(skill_id)["current_hash"] == new_hash
+    assert new_hash == old_hash
+    assert event["content_hash"] == old_hash
+    assert event["payload"]["editorial_name"] == "Human Friendly Workflow"
+    assert store.local_skill(skill_id)["current_hash"] == old_hash
 
 
 def test_weekend_usage_neither_advances_nor_breaks_business_day_streak(
@@ -229,9 +225,7 @@ def test_profile_timezone_controls_the_qualification_day(monkeypatch, tmp_path: 
         store=store,
     )
     with store.transaction() as db:
-        row = db.execute(
-            "SELECT day_local,timezone_name FROM usage_day"
-        ).fetchone()
+        row = db.execute("SELECT day_local,timezone_name FROM usage_day").fetchone()
     assert tuple(row) == ("2026-08-03", "Australia/Brisbane")
 
 

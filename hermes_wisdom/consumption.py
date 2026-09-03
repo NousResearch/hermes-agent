@@ -95,6 +95,13 @@ def _sensitive_expansion(
     return reasons
 
 
+def _public_notification_safe(event: dict[str, Any]) -> bool:
+    return event["category"] == "new_skill" or (
+        event["category"] == "publication_decision"
+        and event.get("state") in {"published", "approved"}
+    )
+
+
 def _safe_target(store: WisdomStore, installation: dict[str, Any]) -> Path:
     org_id = store.active_org_id()
     if not org_id or installation["org_id"] != org_id:
@@ -114,9 +121,16 @@ def _safe_target(store: WisdomStore, installation: dict[str, Any]) -> Path:
 
 def _unique_fork_path(slug: str) -> Path:
     root = get_skills_dir().resolve()
+    if Path(slug).name != slug:
+        raise PackagePolicyError("managed skill slug cannot escape the skills root")
     for suffix in ["local-fork", *[f"local-fork-{index}" for index in range(2, 1000)]]:
         candidate = (root / f"{slug}-{suffix}").resolve()
-        candidate.relative_to(root)
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise PackagePolicyError(
+                "managed skill fork escaped the skills root"
+            ) from exc
         if not candidate.exists():
             return candidate
     raise PackagePolicyError("could not allocate a unique unmanaged fork name")
@@ -537,13 +551,8 @@ class WisdomConsumption:
                 and (not modified or mode == "REQUIRED")
                 and compatibility.outcome == "compatible"
                 and scan["guard"]["allowed"] is True
-                and (
-                    mode == "REQUIRED"
-                    or (
-                        not scan["guard"].get("findings")
-                        and not scan.get("skill_evaluator", {}).get("findings")
-                    )
-                )
+                and not scan["guard"].get("findings")
+                and not scan.get("skill_evaluator", {}).get("findings")
             ),
         }
         plan_path.write_text(json.dumps(plan, sort_keys=True), encoding="utf-8")
@@ -755,13 +764,8 @@ class WisdomConsumption:
             and (not modified_now or remote_mode == "REQUIRED")
             and compatibility.outcome == "compatible"
             and current_scan["guard"]["allowed"] is True
-            and (
-                remote_mode == "REQUIRED"
-                or (
-                    not current_scan["guard"].get("findings")
-                    and not current_scan.get("skill_evaluator", {}).get("findings")
-                )
-            )
+            and not current_scan["guard"].get("findings")
+            and not current_scan.get("skill_evaluator", {}).get("findings")
         )
         if sensitive and not accept_sensitive:
             raise PackagePolicyError(
@@ -989,7 +993,17 @@ class WisdomConsumption:
             raise PackagePolicyError("uninstall recovery journal is missing")
         phase = str(operation["phase"])
         target = Path(str(plan["target_path"]))
-        trash = self.store.root / "trash" / operation_id / str(plan["slug"])
+        slug = str(plan["slug"])
+        if Path(operation_id).name != operation_id or Path(slug).name != slug:
+            raise PackagePolicyError("uninstall recovery path is invalid")
+        trash_root = (self.store.root / "trash").resolve()
+        trash = (trash_root / operation_id / slug).resolve()
+        try:
+            trash.relative_to(trash_root)
+        except ValueError as exc:
+            raise PackagePolicyError(
+                "uninstall recovery path escaped the Wisdom trash root"
+            ) from exc
         if phase == "validated":
             trash.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if target.exists() and not trash.exists():
@@ -1155,10 +1169,6 @@ class WisdomConsumption:
         if not due:
             return {"attempted": False, "delivered": 0}
         notifications, ignored = self._notification_projection(due)
-        selected = notifications[:8]
-        if not selected:
-            self.store.mark_feed_telegram_delivered(ignored)
-            return {"attempted": False, "delivered": 0}
         try:
             from gateway.config import Platform, load_gateway_config
 
@@ -1166,6 +1176,21 @@ class WisdomConsumption:
             private_home = bool(home and not str(home.chat_id).startswith("-"))
         except Exception:
             private_home = False
+        excluded: list[str] = []
+        if not private_home:
+            public_notifications: list[dict[str, Any]] = []
+            for event in notifications:
+                if _public_notification_safe(event):
+                    public_notifications.append(event)
+                else:
+                    excluded.extend(
+                        str(event_id) for event_id in event["source_event_ids"]
+                    )
+            notifications = public_notifications
+        selected = notifications[:8]
+        if not selected:
+            self.store.mark_feed_telegram_delivered([*ignored, *excluded])
+            return {"attempted": False, "delivered": 0}
         lines = [
             "<b>Collective Wisdom</b>",
             f"{len(selected)} new {'update' if len(selected) == 1 else 'updates'}",
@@ -1193,12 +1218,12 @@ class WisdomConsumption:
                     "label": "View ↗",
                     "url": portal_url,
                 })
-            if event["category"] == "new_skill":
+            if private_home and event["category"] == "new_skill":
                 row.append({
                     "label": "Install",
                     "callback_data": f"wi:plan:install:{event['skill_id']}",
                 })
-            elif event["category"] == "update_available":
+            elif private_home and event["category"] == "update_available":
                 row.append({
                     "label": "Update",
                     "callback_data": f"wi:plan:update:{event['skill_id']}",
@@ -1229,6 +1254,7 @@ class WisdomConsumption:
             str(event_id) for item in selected for event_id in item["source_event_ids"]
         ]
         ids.extend(ignored)
+        ids.extend(excluded)
         self.store.mark_feed_telegram_delivered(ids)
         return {"attempted": True, "delivered": len(selected)}
 
@@ -1252,9 +1278,7 @@ class WisdomConsumption:
             return {"attempted": False, "delivered": 0}
 
         now = datetime.now(timezone.utc).isoformat()
-        due = self.store.feed_events(
-            surface="slack", surface_due_at=now
-        )
+        due = self.store.feed_events(surface="slack", surface_due_at=now)
         if not due:
             return {"attempted": False, "delivered": 0}
         notifications, ignored = self._notification_projection(due)
@@ -1262,11 +1286,7 @@ class WisdomConsumption:
         if not private_home:
             public_notifications: list[dict[str, Any]] = []
             for event in notifications:
-                public_safe = event["category"] == "new_skill" or (
-                    event["category"] == "publication_decision"
-                    and event.get("state") in {"published", "approved"}
-                )
-                if public_safe:
+                if _public_notification_safe(event):
                     public_notifications.append(event)
                 else:
                     excluded.extend(
@@ -1305,19 +1325,15 @@ class WisdomConsumption:
             if isinstance(portal_url, str) and portal_url:
                 row.append({"label": "View in Portal ↗", "url": portal_url})
             if private_home and event["category"] == "new_skill":
-                row.append(
-                    {
-                        "label": "Install",
-                        "callback_data": f"wi:plan:install:{event['skill_id']}",
-                    }
-                )
+                row.append({
+                    "label": "Install",
+                    "callback_data": f"wi:plan:install:{event['skill_id']}",
+                })
             elif private_home and event["category"] == "update_available":
-                row.append(
-                    {
-                        "label": "Update",
-                        "callback_data": f"wi:plan:update:{event['skill_id']}",
-                    }
-                )
+                row.append({
+                    "label": "Update",
+                    "callback_data": f"wi:plan:update:{event['skill_id']}",
+                })
             button_rows.append(row)
         try:
             from tools.send_message_tool import send_slack_wisdom_notification_pane
@@ -1338,9 +1354,7 @@ class WisdomConsumption:
                 ),
             }
         delivered_ids = [
-            str(event_id)
-            for item in selected
-            for event_id in item["source_event_ids"]
+            str(event_id) for item in selected for event_id in item["source_event_ids"]
         ]
         self.store.mark_feed_surface_delivered(
             [*delivered_ids, *ignored, *excluded], surface="slack"

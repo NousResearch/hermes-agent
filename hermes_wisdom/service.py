@@ -346,9 +346,7 @@ class WisdomService:
             return None
         cached = self.store.organization_display_name(target_org_id)
         cached_name = (
-            str(cached["display_name"])
-            if cached and cached["display_name"]
-            else None
+            str(cached["display_name"]) if cached and cached["display_name"] else None
         )
         cached_resolved = bool(cached and cached.get("resolved"))
         if cached and not force:
@@ -378,9 +376,7 @@ class WisdomService:
             )
         except Exception:
             verified_name = None
-        self.store.record_organization_display_name_check(
-            target_org_id, verified_name
-        )
+        self.store.record_organization_display_name_check(target_org_id, verified_name)
         return verified_name or cached_name
 
     def _project_candidate_event(
@@ -397,9 +393,7 @@ class WisdomService:
     def local_candidate_events(
         self, *, session_id: str | None = None
     ) -> list[dict[str, Any]]:
-        events = self.store.local_events(
-            kind="wisdom.candidate", session_id=session_id
-        )
+        events = self.store.local_events(kind="wisdom.candidate", session_id=session_id)
         organization_name = self.organization_display_name()
         return [
             self._project_candidate_event(event, organization_name=organization_name)
@@ -783,6 +777,31 @@ class WisdomService:
             )
         return matches[0]
 
+    def _candidate_editorial_copy(
+        self, *, skill_id: str, content_hash: str
+    ) -> dict[str, str | None]:
+        for event in self.store.local_events(kind="wisdom.candidate"):
+            if (
+                str(event.get("skill_id")) != skill_id
+                or str(event.get("content_hash")) != content_hash
+            ):
+                continue
+            payload = event.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            return {
+                "editorial_name": (
+                    str(payload["editorial_name"])
+                    if isinstance(payload.get("editorial_name"), str)
+                    else None
+                ),
+                "editorial_description": (
+                    str(payload["editorial_description"])
+                    if isinstance(payload.get("editorial_description"), str)
+                    else None
+                ),
+            }
+        return {"editorial_name": None, "editorial_description": None}
+
     def scan_candidates(self) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         qualified = {
@@ -793,10 +812,17 @@ class WisdomService:
         self.store.mark_missing_skills({str(path.resolve()) for path in eligible_paths})
         for path in eligible_paths:
             source_hash = _source_fingerprint(path)
-            editorial = load_skill_editorial_metadata(path)
             skill_id = self.store.register_skill(
                 path, content_hash=source_hash, source_kind="local"
             )
+            event = qualified.get((skill_id, source_hash))
+            editorial = load_skill_editorial_metadata(path)
+            if event:
+                payload = event.get("payload")
+                payload = payload if isinstance(payload, dict) else {}
+                for key in ("editorial_name", "editorial_description"):
+                    if isinstance(payload.get(key), str):
+                        editorial[key] = payload[key]
             contribution = self.store.latest_draft_for_source(skill_id, source_hash)
             if contribution and str(contribution["state"]) != "prepared":
                 # The exact bytes have already entered the contribution flow.
@@ -817,7 +843,6 @@ class WisdomService:
             except PackagePolicyError as exc:
                 eligibility = "instruction_only_fork_required"
                 reason = str(exc)
-            event = qualified.get((skill_id, source_hash))
             candidate_review = (
                 self.candidate_professionalism_review(
                     skill_id=skill_id, content_hash=source_hash
@@ -845,9 +870,7 @@ class WisdomService:
                 "qualification_sequence": (
                     int(event["qualification_sequence"]) if event else None
                 ),
-                "notice_variant": (
-                    str(event["notice_variant"]) if event else None
-                ),
+                "notice_variant": (str(event["notice_variant"]) if event else None),
                 "organization_name": (
                     event.get("organization_name") if event else None
                 ),
@@ -914,6 +937,9 @@ class WisdomService:
         skill_id = self.store.register_skill(
             source, content_hash=source_hash, source_kind="local"
         )
+        editorial = self._candidate_editorial_copy(
+            skill_id=skill_id, content_hash=source_hash
+        )
         prepared = self.store.prepared_draft(skill_id, source_hash)
         existing = self.store.latest_draft_for_source(skill_id, source_hash)
         if prepared is None and existing is not None:
@@ -942,6 +968,8 @@ class WisdomService:
                 author_description=author_copy,
                 owner=str(self.client.identity.get("owner")),
                 installation_id=self.store.installation_identity(),
+                editorial_name=editorial["editorial_name"],
+                editorial_description=editorial["editorial_description"],
             )
             local_id = f"local:{skill_id}:{source_hash.removeprefix('sha256:')[:16]}"
             self.store.record_draft({
@@ -1140,9 +1168,7 @@ class WisdomService:
         """Return the authenticated Portal review URL for this profile's team."""
         org_id = self.store.active_org_id()
         if not org_id:
-            raise PackagePolicyError(
-                "Collective Wisdom is not set up for this profile"
-            )
+            raise PackagePolicyError("Collective Wisdom is not set up for this profile")
         org_slug = org_id.split(":", 1)[-1]
         return (
             f"{portal_base_url()}/orgs/{quote(org_slug, safe='')}/wisdom/review/"
@@ -1205,9 +1231,7 @@ class WisdomService:
             raise WisdomNotFound("local candidate not found")
         return event
 
-    def _existing_candidate_draft(
-        self, event: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    def _existing_candidate_draft(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Reconcile a candidate's existing draft with Gateway authority."""
         local_skill_id = str(event["skill_id"])
         content_hash = str(event["content_hash"])
@@ -1251,8 +1275,8 @@ class WisdomService:
         existing = self._existing_candidate_draft(event)
         if existing is not None:
             return existing
-        event, local_skill_id, content_hash, skill_name = (
-            self._candidate_event_context(event_id)
+        event, local_skill_id, content_hash, skill_name = self._candidate_event_context(
+            event_id
         )
         qualification = str(event.get("qualification") or "")
 
@@ -1346,9 +1370,7 @@ class WisdomService:
             "approval": result,
         }
 
-    def defer_candidate_prompt(
-        self, event_id: str, *, surface: str
-    ) -> dict[str, Any]:
+    def defer_candidate_prompt(self, event_id: str, *, surface: str) -> dict[str, Any]:
         """Hide one surface prompt without declining the qualified skill."""
         if surface not in {"desktop", "slack", "telegram"}:
             raise WisdomValidationError("unsupported candidate notification surface")
@@ -1365,20 +1387,16 @@ class WisdomService:
             "state": "deferred",
         }
 
-    def _resume_candidate_publication(
-        self, drafted: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _resume_candidate_publication(self, drafted: dict[str, Any]) -> dict[str, Any]:
         """Resume the Gateway's idempotent publication coordinator."""
         draft_id = str(drafted["draft_id"])
-        authoritative = self.client.draft(draft_id).draft
+        receipt, _authoritative = self._validated_review_receipt(draft_id)
         published = self.client.publish(
-            draft_id, content_hash=authoritative.contentHash
+            draft_id, content_hash=str(receipt["content_hash"])
         )
         publication_state = str(published.get("state") or "")
         if publication_state not in {"pending_moderation", "published"}:
-            raise WisdomValidationError(
-                "Gateway returned an invalid publication state"
-            )
+            raise WisdomValidationError("Gateway returned an invalid publication state")
         self.store.complete_contribution(draft_id, publication_state)
         self.store.consume_receipt(draft_id)
         return {
@@ -1419,8 +1437,8 @@ class WisdomService:
                 "withdrawn": state == "pending_moderation",
             }
 
-        event, local_skill_id, content_hash, skill_name = (
-            self._candidate_event_context(event_id)
+        event, local_skill_id, content_hash, skill_name = self._candidate_event_context(
+            event_id
         )
         result = self.dismiss_local_candidate(local_skill_id, content_hash)
         return {
@@ -1630,7 +1648,9 @@ class WisdomService:
             "notice": "Changes were saved as a new owner-private revision and rescanned.",
         }
 
-    def approve(self, draft_id: str) -> dict[str, Any]:
+    def _validated_review_receipt(
+        self, draft_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         receipt = self.store.receipt(draft_id)
         if not receipt:
             raise PackagePolicyError(
@@ -1657,6 +1677,10 @@ class WisdomService:
             raise PackagePolicyError(
                 "review receipt is stale; review the complete server draft again"
             )
+        return receipt, draft.model_dump(mode="json")
+
+    def approve(self, draft_id: str) -> dict[str, Any]:
+        receipt, _draft = self._validated_review_receipt(draft_id)
         approved = self.client.approve(
             draft_id,
             content_hash=receipt["content_hash"],
@@ -1666,9 +1690,7 @@ class WisdomService:
         published = self.client.publish(draft_id, content_hash=receipt["content_hash"])
         publication_state = published.get("state")
         if publication_state not in {"pending_moderation", "published"}:
-            raise WisdomValidationError(
-                "Gateway returned an invalid publication state"
-            )
+            raise WisdomValidationError("Gateway returned an invalid publication state")
         self.store.complete_contribution(draft_id, str(publication_state))
         self.store.consume_receipt(draft_id)
         return {"approved": approved.model_dump(mode="json"), "publication": published}
@@ -1714,18 +1736,17 @@ class WisdomService:
     def _resume_owner_publication(
         self, draft_id: str, draft: dict[str, Any]
     ) -> dict[str, Any]:
+        receipt, authoritative = self._validated_review_receipt(draft_id)
         published = self.client.publish(
-            draft_id, content_hash=str(draft["contentHash"])
+            draft_id, content_hash=str(receipt["content_hash"])
         )
         state = str(published.get("state") or "")
         if state not in {"pending_moderation", "published"}:
-            raise WisdomValidationError(
-                "Gateway returned an invalid publication state"
-            )
+            raise WisdomValidationError("Gateway returned an invalid publication state")
         self._record_owner_draft_state(draft_id, state)
         self.store.consume_receipt(draft_id)
         return {
-            "draft": draft,
+            "draft": authoritative,
             "publication": published,
             "publication_state": state,
         }
@@ -1840,9 +1861,9 @@ class WisdomService:
                 "published": len(skills),
                 "suggested": len(candidates),
                 "drafts": len(drafts),
-                "installed": len(
-                    [item for item in installations if item.get("state") == "active"]
-                ),
+                "installed": len([
+                    item for item in installations if item.get("state") == "active"
+                ]),
                 "notifications": len(notifications),
             },
         }
@@ -1904,9 +1925,7 @@ class WisdomService:
         seen_cursors: set[str] = set()
         for _page in range(100):
             response = self.client.list_skills(cursor=cursor)
-            skills.extend(
-                item.model_dump(mode="json") for item in response.skills
-            )
+            skills.extend(item.model_dump(mode="json") for item in response.skills)
             cursor = response.next_cursor
             if not cursor:
                 break

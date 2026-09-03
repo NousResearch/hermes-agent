@@ -11199,6 +11199,130 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
         server._sessions.pop("sid", None)
 
 
+def _slash_exec(command: str) -> dict:
+    return server.handle_request(
+        {
+            "id": command,
+            "method": "slash.exec",
+            "params": {"session_id": "sid", "command": command},
+        }
+    )
+
+
+def test_slash_exec_routes_only_native_quick_alias_to_dispatch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "capture": {"type": "alias", "target": "/image latest.png"}
+            }
+        },
+    )
+
+    def _dispatch(rid, params):
+        calls.append(params)
+        return {"id": rid, "result": {"type": "alias", "target": "/image latest.png"}}
+
+    monkeypatch.setitem(server._methods, "command.dispatch", _dispatch)
+    server._sessions["sid"] = _session()
+    try:
+        assert _slash_exec("capture describe this image")["result"] == {
+            "type": "alias",
+            "target": "/image latest.png",
+        }
+        assert calls == [
+            {"name": "capture", "arg": "describe this image", "session_id": "sid"}
+        ]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+@pytest.mark.parametrize(
+    "quick_commands",
+    [
+        {"capture": {"type": "alias", "target": "/not-native arg"}},
+        {
+            "capture": {"type": "alias", "target": "other-quick"},
+            "other-quick": {"type": "exec", "command": "printf chained"},
+        },
+        {"capture": {"type": "alias", "target": "/research"}},
+        {"capture": {"type": "exec", "command": "printf shell"}},
+        {},
+    ],
+    ids=("non-native-alias", "chained-alias", "skill-alias", "shell", "unknown"),
+)
+def test_slash_exec_keeps_extensions_in_worker(monkeypatch, quick_commands):
+    class _Worker:
+        commands = []
+
+        def run(self, command):
+            self.commands.append(command)
+            return "handled by worker"
+
+    worker = _Worker()
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": quick_commands})
+    server._sessions["sid"] = _session(slash_worker=worker)
+    try:
+        assert _slash_exec("capture keep worker routing")["result"] == {
+            "output": "handled by worker"
+        }
+        assert worker.commands == ["capture keep worker routing"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_loads_quick_config_only_for_extension_names(monkeypatch):
+    class _Worker:
+        def run(self, command):
+            return f"worker: {command}"
+
+    loads = 0
+
+    def _load():
+        nonlocal loads
+        loads += 1
+        return {"quick_commands": {}}
+
+    monkeypatch.setattr(server, "_load_cfg", _load)
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", lambda *_args: "")
+    server._sessions["sid"] = _session(slash_worker=_Worker())
+    try:
+        assert _slash_exec("model")["result"]["output"] == "Current model: (unknown)"
+        assert loads == 0
+        assert _slash_exec("unknown-one")["result"]["output"] == "worker: unknown-one"
+        assert _slash_exec("unknown-two")["result"]["output"] == "worker: unknown-two"
+        assert loads == 2
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_uses_catalog_case_canonicalization_for_quick_alias(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "CaptureLatest": {"type": "alias", "target": "/image latest.png"}
+            }
+        },
+    )
+    monkeypatch.setitem(
+        server._methods,
+        "command.dispatch",
+        lambda rid, params: calls.append(params)
+        or {"id": rid, "result": {"type": "alias", "target": "/image latest.png"}},
+    )
+    server._sessions["sid"] = _session()
+    try:
+        assert _slash_exec("capturelatest describe")["result"]["type"] == "alias"
+        assert calls[0]["name"] == "CaptureLatest"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,

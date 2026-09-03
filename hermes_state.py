@@ -383,7 +383,8 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 # query; short enough that transient fd pressure doesn't strand the read pool.
 _READ_OPEN_RETRY_SECONDS = 60.0
 
-# Transient SQLITE_IOERR retry budget for READ-ONLY opens (#100436). A WAL
+# Transient SQLITE_IOERR retry budget for read-only opens and pooled reads
+# (#100436, #100871). A WAL
 # database being actively written (checkpoint, WAL reset/truncate, frame
 # flush) can surface "disk I/O error" to a concurrent ``mode=ro`` reader in
 # a millisecond-wide transition window: the read-only connection cannot
@@ -2147,7 +2148,7 @@ def is_transient_sqlite_error(exc: BaseException) -> bool:
 
 
 def _is_transient_read_only_ioerr(exc: sqlite3.OperationalError, *, attempt: int) -> bool:
-    """True when a read-only open should be retried rather than raised.
+    """True when a read-only SQLite operation should retry rather than raise.
 
     A ``mode=ro`` connection cannot perform WAL recovery (recovery needs to
     write the -shm index, which read-only mode refuses), so a concurrent WAL
@@ -2161,6 +2162,47 @@ def _is_transient_read_only_ioerr(exc: sqlite3.OperationalError, *, attempt: int
         attempt < _READ_ONLY_IOERR_RETRY_ATTEMPTS
         and _DISK_IO_ERROR_MARKER in str(exc).lower()
     )
+
+
+class _RetryingReadConnection:
+    """Retry transient IOERRs from an already-open pooled WAL reader.
+
+    The constructor retry above covers opening a read-only connection, but a
+    warm pooled connection can hit the same WAL transition later when its
+    SELECT executes or steps its result set (#100871). Reads through this
+    wrapper are idempotent, so replaying the statement is safe. The retry
+    deliberately stays on the same connection: close-and-reopen can cancel
+    POSIX locks held by sibling SQLite connections in this process.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def execute(self, sql: str, parameters=(), /):
+        attempt = 0
+        while True:
+            try:
+                return self._conn.execute(sql, parameters)
+            except sqlite3.OperationalError as exc:
+                if not _is_transient_read_only_ioerr(exc, attempt=attempt):
+                    raise
+                attempt += 1
+                time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
+
+    def execute_fetchone(self, sql: str, parameters=(), /):
+        """Execute and step one row within a single bounded retry boundary."""
+        attempt = 0
+        while True:
+            try:
+                return self._conn.execute(sql, parameters).fetchone()
+            except sqlite3.OperationalError as exc:
+                if not _is_transient_read_only_ioerr(exc, attempt=attempt):
+                    raise
+                attempt += 1
+                time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
 
 
 def is_malformed_schema_error(exc: BaseException) -> bool:
@@ -5741,6 +5783,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
                 load_fts5_cjk_extension(conn)
+            conn = _RetryingReadConnection(conn)
         except sqlite3.Error:
             # A partially-constructed connection — _connect_tracked_db
             # succeeded, the CJK extension load did not — must be closed here.
@@ -10910,15 +10953,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # totals. No-op attribute check when nothing is queued.
         self.flush_token_counts()
         with self._read_ctx() as conn:
-            cursor = conn.execute(
+            sql = (
                 "SELECT s.*, "
                 "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
                 "FROM sessions s "
                 "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.id = ?",
-                (session_id,),
+                "WHERE s.id = ?"
             )
-            row = cursor.fetchone()
+            parameters = (session_id,)
+            if isinstance(conn, _RetryingReadConnection):
+                row = conn.execute_fetchone(sql, parameters)
+            else:
+                row = conn.execute(sql, parameters).fetchone()
         return self._session_row_dict(row) if row else None
 
     def get_dominant_session_model_route(

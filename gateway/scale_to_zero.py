@@ -228,11 +228,22 @@ def suspend_available(environ: Optional[dict] = None) -> bool:
 BROKERED_SUSPEND_TIMEOUT_S = 40.0
 
 # Flaps answers a suspend BEFORE the kernel freezes (suspend_self is documented
-# fire-and-forget), so the re-dial fence has to outlive the 2xx by this much or a
-# re-dial can restore a live destination in the gap. Kept short because the
-# freeze also stops the timer: whatever is left of it is the post-resume delay
-# before the gateway re-dials to drain.
-FLY_FREEZE_GRACE_S = 5.0
+# fire-and-forget), so the re-dial fence has to outlive the 2xx or a re-dial can
+# restore a live destination in the gap. Measured on Fly (gru, shared-cpu-4x/2GB,
+# 2026-09-03) across four suspends: the freeze landed 2.25s, 3.83s, 4.06s and
+# 4.19s after the 2xx. The gap is a RAM snapshot, so it grows with machine size —
+# 5.0s left only 0.81s of margin on the smallest instance and would be too short
+# on a larger one, which is the failure this fence exists to prevent.
+#
+# Sized generously because the fence is NOT paid on wake: the watcher slices it on
+# the wall clock (see _scale_to_zero_await_freeze_gap), so an overshoot costs only
+# the reconnect delay on the rare flaps-accepted-but-never-froze path, itself
+# capped by ws_transport.REDIAL_HOLD_MAX_S.
+FLY_FREEZE_GRACE_S = 15.0
+
+# Poll step for that wall-clock slice. Bounds how long after a resume the fence
+# lingers before the drain re-dial (the deadline is already past by then).
+FLY_FREEZE_GRACE_TICK_S = 0.25
 
 
 def request_brokered_suspend(

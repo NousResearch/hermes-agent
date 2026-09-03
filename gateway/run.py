@@ -9583,7 +9583,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Fail-awake, and called ONLY after a clean go_dormant().
         """
         from gateway.scale_to_zero import (
-            FLY_FREEZE_GRACE_S,
             brokered_sleep_url,
             request_brokered_suspend,
             self_suspend_available,
@@ -9595,11 +9594,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 accepted = await asyncio.to_thread(suspend_self)
                 lever = "self-suspend"
                 if accepted:
-                    # flaps answers BEFORE the kernel freezes, so the fence has to
-                    # span that gap. If the freeze lands we never resume this
-                    # sleep; if it does not, what is left of it runs after the
-                    # resume and releases then.
-                    await asyncio.sleep(FLY_FREEZE_GRACE_S)
+                    # flaps answers seconds BEFORE the kernel freezes, so the fence
+                    # has to span that gap.
+                    await self._scale_to_zero_await_freeze_gap()
                     self._scale_to_zero_hold_redial(False)
                 else:
                     self._scale_to_zero_abandon_suspend()
@@ -9630,6 +9627,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
             logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
             self._scale_to_zero_abandon_suspend()
+
+    async def _scale_to_zero_await_freeze_gap(self) -> None:
+        """Hold the re-dial fence across the flaps-2xx -> kernel-freeze gap.
+
+        Sliced on the WALL clock rather than one ``asyncio.sleep`` because a Fly
+        suspend stops CLOCK_MONOTONIC while CLOCK_REALTIME keeps tracking host
+        time. Measured on a Fly machine (gru, 2026-09-03) across a 252.219s
+        freeze: ``time.monotonic()`` advanced 0.501s, ``time.time()`` advanced
+        252.219s. ``asyncio.sleep`` runs on ``loop.time()`` (monotonic), so a
+        single sleep would resume with its REMAINDER after the wake and delay the
+        drain re-dial by exactly that much, on every wake of every Fly agent.
+
+        On the wall clock the deadline is already past by the time we resume, so
+        the fence costs nothing after a freeze while still spanning the full gap
+        before one. That decoupling is what lets FLY_FREEZE_GRACE_S be sized for
+        the slowest (largest-RAM) machine instead of the fastest.
+        """
+        from gateway.scale_to_zero import (
+            FLY_FREEZE_GRACE_S,
+            FLY_FREEZE_GRACE_TICK_S,
+        )
+
+        deadline = time.time() + FLY_FREEZE_GRACE_S
+        while time.time() < deadline:
+            await asyncio.sleep(FLY_FREEZE_GRACE_TICK_S)
 
     def _scale_to_zero_mark_status(self, state: str) -> None:
         try:

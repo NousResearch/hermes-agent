@@ -167,9 +167,9 @@ async def test_watcher_quiesces_then_suspends_on_either_lever(
 @pytest.mark.parametrize(
     "in_guest,accepted,lever,redial",
     [
-        # Fly holds too: its local suspend can outlast the 1s dormant re-dial.
-        # suspend_self returns only after the freeze and resume, so releasing
-        # there is the post-resume release and costs no wake delay.
+        # Fly holds too: flaps answers seconds BEFORE the freeze, so the fence
+        # spans that gap and only then releases. The gap itself has its own cases
+        # below; here the grace is zeroed so this stays a lever-choice test.
         (True, True, "flaps", ["release"]),
         # Brokered + accepted: the watcher's hold stays, the stop is still in flight.
         (False, True, "brokered", []),
@@ -181,6 +181,7 @@ async def test_self_suspend_picks_a_lever_and_releases_only_when_nothing_will_fr
     monkeypatch, in_guest, accepted, lever, redial
 ):
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=in_guest)
+    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 0.0)
     monkeypatch.setenv(
         "GATEWAY_RELAY_SLEEP_URL", "https://portal.example.com/api/agents/i/sleep?t=s"
     )
@@ -285,6 +286,34 @@ async def test_in_guest_fence_still_held_inside_the_freeze_gap(monkeypatch):
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_in_guest_fence_releases_at_once_after_a_resume(monkeypatch):
+    """A Fly suspend stops CLOCK_MONOTONIC but keeps CLOCK_REALTIME tracking host
+    time (measured: 252.219s frozen -> monotonic +0.501s, realtime +252.219s). The
+    fence is therefore sliced on the wall clock, so a machine that froze mid-fence
+    re-dials to drain the moment it wakes instead of waiting out the remainder --
+    a plain asyncio.sleep() here would cost that remainder on EVERY Fly wake."""
+    r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=True)
+    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_S", 30.0)
+    monkeypatch.setattr("gateway.scale_to_zero.FLY_FREEZE_GRACE_TICK_S", 0.01)
+    monkeypatch.setattr("gateway.scale_to_zero.suspend_self", lambda *a, **k: True)
+
+    real_time = time.time
+    # Read 1 sets the deadline; read 2 is the first post-"resume" check, with the
+    # wall clock a freeze further on. asyncio.sleep would still owe ~30s here.
+    reads = iter([1000.0, 1000.0 + 252.219])
+    monkeypatch.setattr(
+        "gateway.run.time.time", lambda: next(reads, 1000.0 + 252.219)
+    )
+
+    started = real_time()
+    await r._scale_to_zero_self_suspend()
+    elapsed = real_time() - started
+
+    assert adapter.redial == ["release"]
+    assert elapsed < 1.0, f"fence waited out the monotonic remainder ({elapsed:.2f}s)"
 
 
 @pytest.mark.asyncio

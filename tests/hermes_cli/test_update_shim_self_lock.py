@@ -16,6 +16,9 @@ off at all.
 
 from __future__ import annotations
 
+import atexit
+import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -152,6 +155,28 @@ def test_reexec_child_runs_unattended(venv, monkeypatch):
     assert calls[0][2]["stdin"] is cli_main.subprocess.DEVNULL
 
 
+def test_reexec_transfers_gateway_resume_ownership_to_child(venv, monkeypatch):
+    """The child owns the paused fleet; the exiting parent must not resume it."""
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    monkeypatch.setattr(os, "getpid", lambda: 4321)
+    calls = _capture_popen(monkeypatch)
+    resume = {
+        "resume_needed": True,
+        "profiles": {"default": 98},
+        "unmapped": [{"pid": 99, "argv": ["python.exe", "gateway", "run"]}],
+    }
+
+    assert cli_main._reexec_dependency_sync_off_windows_shim(resume) is True
+
+    child_env = calls[0][1]
+    assert child_env[cli_main._UPDATE_REEXEC_PARENT_PID_ENV] == "4321"
+    assert json.loads(child_env[cli_main._UPDATE_REEXEC_GATEWAY_RESUME_ENV]) == {
+        **resume,
+        "resume_needed": True,
+    }
+    assert resume["resume_needed"] is False
+
+
 def test_reexec_does_not_recurse(venv, monkeypatch):
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
     monkeypatch.setenv(cli_main._UPDATE_REEXEC_ENV, "1")
@@ -220,6 +245,111 @@ def test_sync_guard_hands_off_when_only_the_shim_is_held(venv, monkeypatch):
 
     assert excinfo.value.code == 0
     assert calls, "expected the dependency sync to be handed to the venv python"
+
+
+def test_sync_guard_does_not_resume_gateways_in_shim_parent(venv, monkeypatch):
+    """Successful handoff exits immediately; only the child resumes the fleet."""
+    from hermes_cli import update_cmd
+
+    sentinel = {"resume_needed": True}
+    handed_off = []
+    resumed = []
+    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
+    monkeypatch.setattr(
+        cli_main,
+        "_reexec_dependency_sync_off_windows_shim",
+        lambda token=None: handed_off.append(token) or True,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_resume_windows_gateways_after_update",
+        lambda token: resumed.append(token),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._abort_dependency_sync_if_self_locked(sentinel)
+
+    assert excinfo.value.code == 0
+    assert handed_off == [sentinel]
+    assert resumed == []
+
+
+def test_handoff_child_waits_for_parent_and_adopts_gateway_resume(monkeypatch):
+    """The child cannot touch the shim or restart fleet until its parent exits."""
+    from hermes_cli import update_cmd
+
+    events = []
+    token = {"resume_needed": True, "profiles": {"default": 98}, "unmapped": []}
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_PARENT_PID_ENV, "4321")
+    monkeypatch.setenv(
+        cli_main._UPDATE_REEXEC_GATEWAY_RESUME_ENV,
+        json.dumps(token),
+    )
+
+    class _Parent:
+        def wait(self, timeout):
+            events.append(("wait", timeout))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(Process=lambda pid: _Parent(), TimeoutExpired=TimeoutError),
+    )
+    monkeypatch.setattr(
+        atexit,
+        "register",
+        lambda fn, value: events.append(("register", fn, value)),
+    )
+
+    adopted = update_cmd._take_windows_gateway_resume_handoff()
+
+    assert events == [
+        ("wait", 30.0),
+        ("register", cli_main._resume_windows_gateways_after_update, token),
+    ]
+    assert adopted == token
+    assert cli_main._UPDATE_REEXEC_PARENT_PID_ENV not in os.environ
+    assert cli_main._UPDATE_REEXEC_GATEWAY_RESUME_ENV not in os.environ
+
+
+def test_handoff_parent_timeout_names_the_blocking_pid(monkeypatch):
+    """A stuck shim identifies the process the user must investigate."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_PARENT_PID_ENV, "4321")
+
+    class _Parent:
+        def wait(self, timeout):
+            raise TimeoutError
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(
+            Process=lambda pid: _Parent(),
+            NoSuchProcess=ProcessLookupError,
+            TimeoutExpired=TimeoutError,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"shim PID 4321 did not exit"):
+        update_cmd._take_windows_gateway_resume_handoff()
+
+
+def test_handoff_resume_token_skips_second_gateway_pause(monkeypatch):
+    """Transferred state is authoritative; rediscovery would lose stopped profiles."""
+    from hermes_cli import update_cmd
+
+    token = {"resume_needed": True, "profiles": {"work": 77}}
+    pauses = []
+    monkeypatch.setattr(
+        cli_main,
+        "_pause_windows_gateways_for_update",
+        lambda: pauses.append("pause") or {"cold_start_if_installed": True},
+    )
+
+    assert update_cmd._prepare_windows_gateway_resume(token) is token
+    assert pauses == []
 
 
 def test_sync_guard_defers_native_lock_before_considering_the_shim(venv, monkeypatch):

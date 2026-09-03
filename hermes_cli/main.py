@@ -9569,9 +9569,13 @@ def _windows_running_hermes_launcher_locked() -> bool:
 
 # Set on the re-exec'd child so it can never spawn another one.
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+# The child waits for this process before touching the shim, then adopts the
+# exact fleet pause token instead of rediscovering an already-stopped fleet.
+_UPDATE_REEXEC_PARENT_PID_ENV = "HERMES_UPDATE_REEXEC_PARENT_PID"
+_UPDATE_REEXEC_GATEWAY_RESUME_ENV = "HERMES_UPDATE_REEXEC_GATEWAY_RESUME"
 
 
-def _reexec_dependency_sync_off_windows_shim() -> bool:
+def _reexec_dependency_sync_off_windows_shim(gateway_resume=None) -> bool:
     """Hand the dependency sync to the venv interpreter, off the console shim.
 
     Returns True when a child was spawned and the caller must exit at once,
@@ -9593,12 +9597,13 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     the whole command, so the quarantine rename is refused and uv fails to
     replace it with os error 32 (#88838, #89599).
 
-    A child is required, and waiting on it cannot work: this process holds the
-    handle the child needs released, so a parent that waits deadlocks against
-    the work it is waiting for. Windows has no exec to escape with either.
-    The shell therefore returns while the install runs on; the child keeps the
-    console and prints its own result, and ``--gateway`` writes the true exit
-    code to ``.update_exit_code`` for the gateway watcher.
+    A child is required, and the parent cannot wait on it: this process holds
+    the handle the child needs released. Instead the child waits for this
+    parent to exit before starting update work. When gateways were paused, the
+    pause token travels in the child environment and ownership is removed from
+    the parent's atexit callback only after ``Popen`` succeeds. The child then
+    resumes exactly that fleet; it must not rediscover an already-stopped fleet
+    or restart gateways while this shim is still alive.
 
     The child re-runs ``hermes update``, so the whole remaining flow — the
     dependency sync and the node/web/lazy-refresh tail behind it — still
@@ -9625,11 +9630,24 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
     if python_exe.is_file():
         try:
+            child_env = {
+                **os.environ,
+                _UPDATE_REEXEC_ENV: "1",
+                _UPDATE_REEXEC_PARENT_PID_ENV: str(os.getpid()),
+            }
+            if gateway_resume is not None:
+                child_env[_UPDATE_REEXEC_GATEWAY_RESUME_ENV] = json.dumps(
+                    gateway_resume, separators=(",", ":")
+                )
             subprocess.Popen(
                 cmd,
-                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
+                env=child_env,
                 stdin=subprocess.DEVNULL,
             )
+            if gateway_resume is not None:
+                # The atexit callback closes over this same dict. Disarm it
+                # only after the child inherited an intact, resume-needed copy.
+                gateway_resume["resume_needed"] = False
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
                 "finishing the dependency install under the venv Python."
@@ -9639,7 +9657,7 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
                 "below and this shell returns right away."
             )
             return True
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
         print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
         print("    Continuing in-process; if it cannot replace the shim, run:")

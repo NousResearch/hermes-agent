@@ -2186,7 +2186,12 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(
+    args,
+    *,
+    had_desktop_app_before_update: bool = False,
+    gateway_resume: dict | None = None,
+) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
@@ -2404,7 +2409,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # Self-lock deferral (relocated preflight — #86735): the ZIP code swap
     # above is already committed; defer only the dependency sync when this
     # process holds a native extension the sync must rewrite.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(gateway_resume)
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -5581,10 +5586,63 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
             _m()._resume_windows_gateways_after_update(gateway_resume)
         sys.exit(2)
 
-    if _m()._reexec_dependency_sync_off_windows_shim():
-        if gateway_resume is not None:
-            _m()._resume_windows_gateways_after_update(gateway_resume)
+    if _m()._reexec_dependency_sync_off_windows_shim(gateway_resume):
         sys.exit(0)
+
+
+def _take_windows_gateway_resume_handoff() -> dict | None:
+    """Wait for the shim parent and consume its serialized gateway pause token."""
+    parent_raw = os.environ.pop(_m()._UPDATE_REEXEC_PARENT_PID_ENV, "").strip()
+    token_raw = os.environ.pop(_m()._UPDATE_REEXEC_GATEWAY_RESUME_ENV, "").strip()
+    if not parent_raw and not token_raw:
+        return None
+    if not parent_raw:
+        raise RuntimeError("Windows update handoff is missing its parent PID")
+    try:
+        parent_pid = int(parent_raw)
+    except ValueError as exc:
+        raise RuntimeError("Windows update handoff has an invalid parent PID") from exc
+    if parent_pid <= 0:
+        raise RuntimeError("Windows update handoff has an invalid parent PID")
+
+    try:
+        import psutil
+
+        psutil.Process(parent_pid).wait(timeout=30.0)
+    except psutil.NoSuchProcess:
+        pass
+    except psutil.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Windows update shim PID {parent_pid} did not exit before the "
+            "dependency handoff"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not verify Windows update shim exit: {exc}"
+        ) from exc
+
+    if not token_raw:
+        return None
+    try:
+        token = json.loads(token_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Windows update handoff has an invalid gateway token") from exc
+    if not isinstance(token, dict) or not token.get("resume_needed"):
+        raise RuntimeError("Windows update handoff has an invalid gateway token")
+    # The fleet is already stopped. Register recovery immediately, before the
+    # child does any probes/backups that could raise, so ownership cannot fall
+    # into a gap between deserialization and the normal pause point below.
+    import atexit
+
+    atexit.register(_m()._resume_windows_gateways_after_update, token)
+    return token
+
+
+def _prepare_windows_gateway_resume(handed_off: dict | None) -> dict | None:
+    """Adopt a handed-off pause token, or pause the currently running fleet."""
+    if handed_off is not None:
+        return handed_off
+    return _m()._pause_windows_gateways_for_update()
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -8187,6 +8245,11 @@ def _drain_or_signal_gateway_for_update(
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    # The re-exec'd Windows child shares the update lock with its ancestor.
+    # Wait until that shim exits before any dependency probe or fleet action,
+    # and retain the exact pause token whose atexit ownership it relinquished.
+    _windows_gateway_handoff = _take_windows_gateway_resume_handoff()
+
     # A managed-runtime refresh can replace site-packages before the normal
     # ``.[all]`` install runs. Snapshot while the old environment can still
     # prove which optional backends the user had activated.
@@ -8321,8 +8384,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception:
         pass
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
+    _windows_gateway_resume = _prepare_windows_gateway_resume(
+        _windows_gateway_handoff
+    )
+    if (
+        _windows_gateway_resume
+        and _windows_gateway_resume is not _windows_gateway_handoff
+    ):
         import atexit as _atexit
 
         _atexit.register(
@@ -8585,6 +8653,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                gateway_resume=_windows_gateway_resume,
             )
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
@@ -11037,6 +11106,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                gateway_resume=_windows_gateway_resume,
             )
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)

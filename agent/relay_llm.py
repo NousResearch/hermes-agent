@@ -987,12 +987,17 @@ def _complete_logical(
                 output.update({"model": model_name, "provider": provider_name})
                 if response_model_name is not None:
                     output["response_model"] = response_model_name
-            callback = lease.host.run_in_session
-            if operation_lease is not None:
-                callback = operation_lease.run_in_session
-            callback(
-                lease.session,
-                relay_runtime.pop_relay_scope,
+            # Call pop_relay_scope directly rather than routing through
+            # run_in_session.  run_in_session re-enters the session runner
+            # which re-binds the active-turn ContextVar to whatever turn is
+            # current at call time — under concurrent overlapping turns that
+            # can be a *different* turn, invalidating the logical-parent
+            # handle mid-flight and leaking the handle in logical_llm_calls
+            # (#97981).  pop_relay_scope is a plain function that operates
+            # only on the relay/handle objects passed to it; it requires no
+            # session-runner context, so routing it through run_in_session
+            # was never necessary.
+            relay_runtime.pop_relay_scope(
                 lease.host.relay,
                 handle,
                 output=output,

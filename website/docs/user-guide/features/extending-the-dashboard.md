@@ -286,13 +286,15 @@ Each built-in ships its own palette, typography, and layout — switching produc
 |-------|---------|------------|--------|
 | **Hermes Teal** (`default`) | Dark teal + cream | System stack, 15px | 0.5rem radius, comfortable |
 | **Hermes Teal (Large)** (`default-large`) | Same as default | System stack, 18px, line-height 1.65 | 0.5rem radius, spacious |
+| **Nous Blue** (`nous-blue`) | Cream + vivid Nous blue | System stack, 15px | 0.5rem radius, comfortable |
+| **Nous Blue Contrast** (`nous-blue-contrast`) | Nous Blue chrome + navy terminal | System stack, 15px | 0.5rem radius, comfortable |
 | **Midnight** (`midnight`) | Deep blue-violet | Inter + JetBrains Mono, 14px | 0.75rem radius, comfortable |
 | **Ember** (`ember`) | Warm crimson + bronze | Spectral (serif) + IBM Plex Mono, 15px | 0.25rem radius, comfortable |
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
 
-Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
+Themes that reference Google Fonts load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`. The Hermes Teal and Nous Blue families use the system font stack and require no download.
 
 ### Full theme YAML reference
 

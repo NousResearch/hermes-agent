@@ -32,6 +32,22 @@ class TestSkinConfig:
 
 
 class TestBuiltinSkins:
+    def test_nous_blue_contrast_skin_matches_its_dark_terminal_canvas(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("nous-blue-contrast")
+
+        assert skin.name == "nous-blue-contrast"
+        background = skin.get_color("background")
+        accent = skin.get_color("ui_accent")
+        bg_r, bg_g, bg_b = (int(background[i:i + 2], 16) for i in (1, 3, 5))
+        accent_r, accent_g, accent_b = (int(accent[i:i + 2], 16) for i in (1, 3, 5))
+        assert bg_b > bg_g > bg_r, f"Nous Blue Contrast canvas lost its navy identity: {background}"
+        assert max(bg_r, bg_g, bg_b) < 80, f"Nous Blue Contrast canvas is no longer dark: {background}"
+        assert accent_b > accent_g > accent_r, f"Nous Blue Contrast accent lost its blue identity: {accent}"
+        assert skin.get_color("completion_menu_bg") != skin.get_color("completion_menu_current_bg")
+        assert skin.get_color("banner_text") != background
+
     def test_ares_skin_loads(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")
@@ -80,6 +96,7 @@ class TestSkinManagement:
         assert "ares" in names
         assert "mono" in names
         assert "slate" in names
+        assert "nous-blue-contrast" in names
         assert "daylight" in names
         assert "warm-lightmode" in names
         for s in skins:

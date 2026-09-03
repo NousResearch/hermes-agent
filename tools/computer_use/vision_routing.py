@@ -180,20 +180,23 @@ def should_route_capture_to_aux_vision(
       caller should keep the existing multimodal envelope (main model
       handles vision natively).
     """
-    if _explicit_aux_vision_override(cfg):
-        return True
-
     user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
     if user_declared is True:
         return False
     if user_declared is False:
         return True
 
+    supports_vision = _lookup_supports_vision(provider, model, cfg)
     accepts_tool_image = _provider_accepts_multimodal_tool_result(provider, model)
+    if supports_vision is True and accepts_tool_image is not False:
+        return False
+
+    if _explicit_aux_vision_override(cfg):
+        return True
+
     if accepts_tool_image is None or accepts_tool_image is False:
         return True
 
-    supports_vision = _lookup_supports_vision(provider, model, cfg)
     if supports_vision is True:
         return False
     return True

@@ -610,16 +610,9 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto: an explicitly configured auxiliary.vision backend is the
-    # DE-FACTO choice — the user named a dedicated vision model, so that's
-    # what they want images to go through, even when the main model has
-    # native vision (maintainer decision, 2026-08-28, reversing #29135's
-    # fallback-only posture: config that only takes effect when the main
-    # model gets worse is a trap, not a setting). Native vision remains
-    # the default for unconfigured installs, and the fallback when the
-    # aux backend is unset.
-    if _explicit_aux_vision_override(cfg):
-        return "text"
+    # auto: native vision takes precedence when the main model supports it.
+    # When the main model is text-only (e.g. DeepSeek), fallback to auxiliary.vision
+    # if configured.
     if requested_provider:
         supports = _lookup_supports_vision(
             provider,
@@ -633,6 +626,8 @@ def decide_image_input_mode(
         supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     return "text"
 
 

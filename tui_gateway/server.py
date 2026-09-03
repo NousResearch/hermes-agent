@@ -6821,6 +6821,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
                 sid,
                 session["session_key"],
                 session_id=session["session_key"],
+                session_db=getattr(agent, "_session_db", None),
                 platform_override=_session_source(session),
             )
         finally:
@@ -9010,10 +9011,12 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session.pop("create_reasoning_override", None)
         session.pop("create_service_tier_override", None)
         session.pop("one_turn_model_restore", None)
+        prev_agent = session.get("agent")
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
+            session_db=getattr(prev_agent, "_session_db", None),
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=(
                 _context_cwd_is_launch_artifact(session)

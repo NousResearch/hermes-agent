@@ -5268,6 +5268,25 @@ def release_stale_claims(
         if _handle_stale_own_worker_handoff(conn, row, now=now):
             continue
 
+        # Pass 10 (AK): never signal from a stale snapshot. The scan that
+        # produced *row* is old by now; a heartbeat that landed since (the
+        # usual winner against every CAS above) refreshed the claim — the
+        # worker is alive and this tick must stand down before any
+        # termination, so the pid-kill backstop inside
+        # ``_terminate_reclaimed_worker`` cannot fire for a row whose
+        # claim was refreshed after the snapshot.
+        fresh = conn.execute(
+            "SELECT claim_expires FROM tasks "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (row["id"], row["claim_lock"]),
+        ).fetchone()
+        if (
+            fresh is not None
+            and fresh["claim_expires"] is not None
+            and int(fresh["claim_expires"]) > now
+        ):
+            continue
+
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
             scope_unit=row["worker_scope"] or None,
@@ -10130,7 +10149,34 @@ def _handle_stale_own_worker_handoff(
                     (grace, row["id"], row["claim_lock"], now),
                 )
                 if cur.rowcount != 1:
-                    return False
+                    # CAS miss: the row moved between the stale scan and
+                    # this write — the usual winner is a concurrent
+                    # ``heartbeat_claim`` refreshing ``claim_expires``,
+                    # i.e. the worker is ALIVE. Act on the fresh state
+                    # read inside this transaction, never on the stale
+                    # snapshot: falling through would hand the caller a
+                    # termination keyed to *row*'s pre-refresh pid
+                    # (pass 10, AK). Whatever the fresh state is (a
+                    # landed heartbeat, or the row moved on entirely)
+                    # the safe action this tick is to stand down — the
+                    # next tick re-scans and sees the truth.
+                    fresh = conn.execute(
+                        "SELECT status, claim_lock, claim_expires "
+                        "FROM tasks WHERE id = ?",
+                        (row["id"],),
+                    ).fetchone()
+                    _log.info(
+                        "kanban: own-worker handoff extension CAS missed "
+                        "for %s (run %s) — fresh state status=%s "
+                        "claim_lock=%s claim_expires=%s; skipping the "
+                        "row this tick",
+                        row["id"], run_id,
+                        fresh["status"] if fresh is not None else None,
+                        fresh["claim_lock"] if fresh is not None else None,
+                        (fresh["claim_expires"]
+                         if fresh is not None else None),
+                    )
+                    return True
                 current_run = _current_run_id(conn, row["id"])
                 if current_run is not None:
                     conn.execute(

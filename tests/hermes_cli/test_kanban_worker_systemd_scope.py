@@ -2316,6 +2316,113 @@ def test_release_stale_claims_own_worker_handoff_applies_once_scope_dead_after_c
     ).fetchone()["n"] == 0
 
 
+def test_release_stale_claims_handoff_cas_miss_skips_fresh_heartbeat_row(
+    shims, conn, monkeypatch,
+):
+    """Pass 10 (AK): a heartbeat landing between the stale scan and the
+    handoff extension CAS used to make the sweep fall through to
+    ``_terminate_reclaimed_worker`` carrying the OLD snapshot —
+    signalling (scope stop, pid backstop) a worker that just proved it
+    is alive. The CAS miss must re-read the row inside the write
+    transaction and act on the FRESH state: a landed heartbeat means
+    alive, so the row is skipped this tick and nothing is signalled."""
+    straggler = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_casmiss", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_deactivating(unit)  # drain in progress: the extension runs
+    tid = kb.create_task(conn, title="cas miss", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "review_requested", "implementer": "w",
+            "reviewer": "r", "summary": "done building",
+        },
+        tid=tid,
+    )
+
+    def stop_that_loses_to_a_heartbeat(unit_arg, *, task_id=None, **kw):
+        # The interleaving under test: the worker's heartbeat lands
+        # between the sweep's stale scan and the extension CAS.
+        kb.heartbeat_claim(conn, tid)
+        return False  # stop not confirmed — the extension branch runs
+
+    monkeypatch.setattr(
+        kb, "request_worker_scope_stop", stop_that_loses_to_a_heartbeat,
+    )
+    signalled: list[int] = []
+
+    def record_signal(pid, sig):
+        signalled.append((pid, sig))
+
+    assert kb.release_stale_claims(conn, signal_fn=record_signal) == 0
+
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    # The heartbeat's TTL owns the row now — not a defer grace.
+    assert row["claim_expires"] > int(time.time()) + 600
+    assert signalled == [], "a heartbeat-refreshed claim is never signalled"
+    assert kb._pid_alive(straggler), "nothing of the run was signalled"
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind IN ('reclaimed', 'review_requested')", (tid,),
+    ).fetchone()["n"] == 0
+
+
+def test_release_stale_claims_never_terminates_refreshed_claim(
+    shims, conn, monkeypatch,
+):
+    """Pass 10 (AK), marker-free row: the same interleaving on the
+    generic path — the heartbeat lands after the scan but before
+    ``_terminate_reclaimed_worker`` — must stand the sweep down instead
+    of firing the pid-kill backstop on a live worker whose claim was
+    refreshed after the snapshot."""
+    worker = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_freshhb", 1)
+    shims.write_unit(unit, [worker])
+    tid = kb.create_task(conn, title="fresh heartbeat", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (worker, kb._worker_pid_start_time(worker), now, unit,
+         now - 60, now - 7200, tid),  # heartbeat past the 1h backstop
+    )
+    conn.commit()
+
+    real_alive = kb._run_worker_alive
+
+    def alive_after_a_heartbeat(row_arg):
+        # The heartbeat commits between the scan and the termination
+        # call (the exact window the stale snapshot used to cover).
+        kb.heartbeat_claim(conn, tid)
+        return real_alive(row_arg)
+
+    monkeypatch.setattr(kb, "_run_worker_alive", alive_after_a_heartbeat)
+    signalled: list[tuple] = []
+
+    def record_signal(pid, sig):
+        signalled.append((pid, sig))
+
+    assert kb.release_stale_claims(conn, signal_fn=record_signal) == 0
+
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["claim_expires"] > int(time.time()) + 600
+    assert signalled == [], "the refreshed claim is skipped before any signal"
+    assert kb._pid_alive(worker), "the live worker was never signalled"
+    assert [s["action"] for s in shims.stops() if s["unit"] == unit] == []
+
+
 def test_crash_cleanup_defers_until_scope_stop_verified(shims, conn):
     """Crash reclamation of a scoped run waits for the VERIFIED scope
     stop (Gate B review, crash-cleanup ordering): a deactivating unit

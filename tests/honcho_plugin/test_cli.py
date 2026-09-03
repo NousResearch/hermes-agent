@@ -101,6 +101,127 @@ class TestCmdSetupLocalJwt:
         host_block = (cfg.get("hosts") or {}).get("hermes") or {}
         assert host_block.get("apiKey") == "my-local-jwt-token"
 
+    def test_local_jwt_prompt_echoes_received_length(self, monkeypatch, capsys, tmp_path):
+        """The masked JWT prompt must echo the received length so a clipboard
+        race (wrong paste) is visible before the credential is saved (#100384)."""
+        self._run_setup(
+            monkeypatch,
+            tmp_path,
+            initial_cfg={},
+            prompt_answers=[
+                "local",                       # deployment
+                "http://localhost:8000",       # base URL
+                "my-local-jwt-token",          # local JWT (18 chars)
+            ],
+        )
+        out = capsys.readouterr().out
+        assert "Received 18 chars." in out
+
+
+class TestCmdSetupConnectionTest:
+    """The setup wizard's connection test must make a real authenticated call.
+
+    Constructing the SDK client performs no network I/O, so a client-only
+    check reports OK regardless of credentials: against a self-hosted Honcho
+    with AUTH_USE_AUTH=true, setup looked successful while the daemon failed
+    every memory operation (#100384).
+    """
+
+    def _run_setup(self, monkeypatch, tmp_path, ensure_workspace):
+        """Run the wizard against a fake client whose `_ensure_workspace`
+        raises whatever `ensure_workspace` raises."""
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda cfg, path=None: None)
+
+        answers = [
+            "local",                       # deployment
+            "http://localhost:8000",       # base URL
+            "my-local-jwt-token",          # local JWT
+        ]
+
+        def _fake_prompt(label, default=None, secret=False):
+            if answers:
+                return answers.pop(0)
+            return default or ""
+
+        monkeypatch.setattr(honcho_cli, "_prompt", _fake_prompt)
+
+        fake_config = SimpleNamespace(
+            workspace_id="hermes",
+            peer_name="eri",
+            ai_peer="hermes",
+            observation_mode="off",
+            write_frequency="async",
+            recall_mode="hybrid",
+            session_strategy="per-session",
+            resolve_session_name=lambda: "hermes",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: fake_config,
+        )
+
+        class FakeClient:
+            def _ensure_workspace(self):
+                ensure_workspace()
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.get_honcho_client",
+            lambda cfg: FakeClient(),
+        )
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+
+    def test_rejected_credentials_fail_setup(self, monkeypatch, capsys, tmp_path):
+        class _AuthRejected(Exception):
+            status = 401
+            code = "api_error"
+
+        def _ensure():
+            raise _AuthRejected("Invalid JWT")
+
+        self._run_setup(monkeypatch, tmp_path, _ensure)
+
+        out = capsys.readouterr().out
+        assert "FAILED (server reachable, but it rejected these credentials)" in out
+        assert "Invalid JWT" in out
+        assert "Honcho is ready." not in out
+
+    def test_unreachable_server_is_distinguished(self, monkeypatch, capsys, tmp_path):
+        class _Unreachable(Exception):
+            status = 0
+            code = "connection_error"
+
+        def _ensure():
+            raise _Unreachable("Connection refused")
+
+        self._run_setup(monkeypatch, tmp_path, _ensure)
+
+        out = capsys.readouterr().out
+        assert "FAILED (could not reach the Honcho server)" in out
+        assert "Honcho is ready." not in out
+
+    def test_authenticated_roundtrip_reports_ok(self, monkeypatch, capsys, tmp_path):
+        calls = []
+
+        def _ensure():
+            calls.append("ensured")
+
+        self._run_setup(monkeypatch, tmp_path, _ensure)
+
+        out = capsys.readouterr().out
+        assert calls == ["ensured"]
+        assert "Testing connection... OK" in out
+        assert "Honcho is ready." in out
+
 
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):

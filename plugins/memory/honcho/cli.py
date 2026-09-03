@@ -606,6 +606,10 @@ def cmd_setup(args) -> None:
             secret=True,
         )
         if new_local_key:
+            # Masked input hides clipboard races; the received length makes
+            # a wrong paste (e.g. a shell command instead of the JWT)
+            # visible before it is saved (#100384).
+            print(f"  Received {len(new_local_key)} chars.")
             hermes_host["apiKey"] = new_local_key
         elif current_host_key:
             print("  Keeping existing local JWT.")
@@ -1019,10 +1023,24 @@ def cmd_setup(args) -> None:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
         reset_honcho_client()
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
-        get_honcho_client(hcfg)
+        client = get_honcho_client(hcfg)
+        # Constructing a client performs no network I/O, so a rejected
+        # credential used to pass here and only surface later, on the
+        # daemon's first memory operation (#100384). The SDK's workspace
+        # get-or-create is the authenticated call it runs before every
+        # workspace-scoped operation, so exercising it here proves the
+        # real auth path end to end.
+        client._ensure_workspace()
         print("OK")
     except Exception as e:
-        print(f"FAILED\n  Error: {e}")
+        _status = getattr(e, "status", 0)
+        _code = getattr(e, "code", "")
+        if _status in (401, 403):
+            print(f"FAILED (server reachable, but it rejected these credentials)\n  Error: {e}")
+        elif _code in ("connection_error", "timeout"):
+            print(f"FAILED (could not reach the Honcho server)\n  Error: {e}")
+        else:
+            print(f"FAILED\n  Error: {e}")
         return
 
     print("\n  Honcho is ready.")

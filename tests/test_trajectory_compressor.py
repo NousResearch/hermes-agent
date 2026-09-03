@@ -446,6 +446,50 @@ class TestCompressionToolPairIntegrity:
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
 
+    def test_snap_boundary_with_no_clean_boundary_returns_min_idx(self):
+        tc = _make_compressor()
+        # The entire region [1, 5) is tool turns — there is no clean boundary
+        # anywhere. The callers guard against this by checking
+        # _is_boundary_clean on the result and skipping compression.
+        trajectory = [{"from": "gpt", "value": "start"}] + [
+            {"from": "tool", "value": f"<tool_response>{i}</tool_response>"} for i in range(10)
+        ]
+        result = tc._snap_boundary(trajectory, 3, 1, 5)
+        assert result == 1  # backward fallback lands on min_idx
+        assert tc._is_boundary_clean(trajectory, result) is False
+
+
+    def test_compression_skipped_when_region_starts_on_tool_turn(self):
+        """A compressible region that starts on a tool turn must not be
+        compressed: slicing there would orphan a <tool_response> from its
+        <tool_call> and corrupt the training trajectory."""
+        config = CompressionConfig(
+            target_max_tokens=50,
+            summary_target_tokens=20,
+        )
+        tc = _make_compressor(config)
+        # system, human, gpt <tool_call>, then tool <tool_response> turns that
+        # fill the compressible region. The first unprotected turn is a tool
+        # turn, so snapping the head boundary cannot find a clean start.
+        trajectory = [
+            {"from": "system", "value": "sys"},
+            {"from": "human", "value": "hi"},
+            {"from": "gpt", "value": "<tool_call>a</tool_call>"},
+        ] + [
+            {"from": "tool", "value": f"<tool_response>{i}</tool_response>" + "y" * 50}
+            for i in range(6)
+        ]
+        protected, start, end = tc._find_protected_indices(trajectory)
+        assert start < end, "test premise: a non-empty compressible region"
+        assert tc._is_boundary_clean(trajectory, start) is False, (
+            "test premise: region starts on a tool turn (the unguarded case)"
+        )
+        with patch.object(TrajectoryCompressor, "_generate_summary") as mock_summary:
+            compressed, metrics = tc.compress_trajectory(trajectory)
+        mock_summary.assert_not_called()
+        assert compressed == trajectory
+        assert metrics.compressed_turns == len(trajectory)
+
 
 # ---------------------------------------------------------------------------
 # TrajectoryCompressor — compression must never increase the token count

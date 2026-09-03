@@ -267,7 +267,11 @@ mcp_servers:
   linear:
     url: "https://mcp.linear.app/mcp"
     auth: oauth
+    oauth:
+      scope: "read"   # optional ceiling; omit to request every advertised scope
 ```
+
+`oauth.scope` is the privilege ceiling Hermes registers and authorizes with. Hosted servers often advertise administrative scopes in `scopes_supported`; without this key the MCP SDK requests that full list. Set a narrow subset when you do not want the consent screen (or the issued token) to include those extras.
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 

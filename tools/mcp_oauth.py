@@ -33,7 +33,7 @@ Configuration in config.yaml::
         oauth:                                  # all fields optional
           client_id: "pre-registered-id"        # skip dynamic registration
           client_secret: "secret"               # confidential clients only
-          scope: "read write"                   # default: server-provided
+          scope: "read write"                   # hard ceiling; default: server-provided
           redirect_port: 0                      # 0 = auto-pick free port
           redirect_uri: "https://proxy/callback"  # default: loopback callback
           redirect_host: "localhost"            # loopback hostname (WAF-safe)
@@ -1687,6 +1687,60 @@ def apply_oauth_provider_defaults(
     return cfg
 
 
+_PinnedOAuthClientMetadata: Any = None
+
+
+def _pin_explicit_scope(
+    metadata: "OAuthClientMetadata", scope: str
+) -> "OAuthClientMetadata":
+    """Return metadata whose configured scope cannot be widened by the SDK.
+
+    The MCP SDK's ``async_auth_flow`` Step 3 assigns
+    ``client_metadata.scope = get_client_metadata_scopes(...)``. That helper
+    never sees the caller's value: if protected-resource metadata advertises
+    ``scopes_supported``, it requests the entire list. Hermes documents
+    ``oauth.scope`` as a working knob, so an explicit value is a least-privilege
+    ceiling for registration and authorization — not a hint the SDK may drop.
+
+    The subclass otherwise serializes like the SDK model. Narrowing after pin
+    (including ``insufficient_scope`` step-up that would add scopes) is refused
+    on purpose; widen the config if the operator needs more privilege.
+    """
+    global _PinnedOAuthClientMetadata
+
+    metadata_type = type(metadata)
+    cached = _PinnedOAuthClientMetadata
+    if cached is None or getattr(cached, "__bases__", (None,))[0] is not metadata_type:
+
+        class _ExplicitScopeMetadata(metadata_type):
+            def __setattr__(self, name: str, value: Any) -> None:
+                if (
+                    name == "scope"
+                    and self.__dict__.get("_hermes_explicit_scope") is not None
+                ):
+                    pinned = self.__dict__["_hermes_explicit_scope"]
+                    if value != pinned:
+                        logger.warning(
+                            "MCP OAuth: SDK overwrote client_metadata.scope "
+                            "(%r) with %r; keeping configured oauth.scope %r",
+                            pinned,
+                            value,
+                            pinned,
+                        )
+                    return
+                super().__setattr__(name, value)
+
+        _ExplicitScopeMetadata.__name__ = "PinnedOAuthClientMetadata"
+        _ExplicitScopeMetadata.__qualname__ = "PinnedOAuthClientMetadata"
+        _ExplicitScopeMetadata.__module__ = __name__
+        _PinnedOAuthClientMetadata = _ExplicitScopeMetadata
+
+    dumped = metadata.model_dump(by_alias=True, mode="json", exclude_none=True)
+    pinned = _PinnedOAuthClientMetadata.model_validate(dumped)
+    object.__setattr__(pinned, "_hermes_explicit_scope", scope)
+    return pinned
+
+
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     """Build OAuthClientMetadata from the oauth config dict.
 
@@ -1728,12 +1782,16 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         metadata_kwargs["scope"] = scope
 
     try:
-        return OAuthClientMetadata.model_validate(metadata_kwargs)
+        metadata = OAuthClientMetadata.model_validate(metadata_kwargs)
     except Exception:
         # mcp 1.x metadata models predate SEP-837 and reject the unknown
         # field — retry without it rather than failing the whole flow.
         metadata_kwargs.pop("application_type", None)
-        return OAuthClientMetadata.model_validate(metadata_kwargs)
+        metadata = OAuthClientMetadata.model_validate(metadata_kwargs)
+
+    # Empty string is treated as unset (same as today): pin only a real scope
+    # so we do not register with an explicit empty scope field.
+    return _pin_explicit_scope(metadata, scope) if scope else metadata
 
 
 def _invalidate_tokens_on_client_change(

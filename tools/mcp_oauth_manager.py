@@ -642,8 +642,8 @@ class MCPOAuthManager:
         """Return a cached OAuth provider for ``server_name`` or build one.
 
         Idempotent: repeat calls with the same name return the same instance.
-        If ``server_url`` changes for a given name, the cached entry is
-        discarded and a fresh provider is built.
+        If ``server_url`` or ``oauth.scope`` changes for a given name, the
+        cached entry is discarded and a fresh provider is built.
 
         Returns None if the MCP SDK's OAuth support is unavailable.
         """
@@ -656,6 +656,17 @@ class MCPOAuthManager:
                     server_name, entry.server_url, server_url,
                 )
                 entry = None
+
+            if entry is not None:
+                old_scope = (entry.oauth_config or {}).get("scope")
+                new_scope = (oauth_config or {}).get("scope")
+                if old_scope != new_scope:
+                    logger.info(
+                        "MCP OAuth '%s': oauth.scope changed from %r to %r, "
+                        "discarding cached provider",
+                        server_name, old_scope, new_scope,
+                    )
+                    entry = None
 
             if entry is None:
                 entry = _ProviderEntry(

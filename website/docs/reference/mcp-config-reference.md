@@ -370,10 +370,13 @@ mcp_servers:
     url: "https://mcp.example.com/mcp"
     auth: oauth
     oauth:
+      scope: "user:read company:read"                           # least-privilege ceiling
       client_metadata_url: "https://example.com/my-cimd.json"  # self-hosted document
       cimd: false                                              # force DCR
       user_agent: "My-MCP-Client/1.0"                          # token-request User-Agent
 ```
+
+`oauth.scope` is a **hard ceiling** for Dynamic Client Registration and the authorize request. The MCP SDK otherwise requests every scope listed in the server's `scopes_supported`. When this key is set, Hermes keeps that value even if discovery advertises a wider list, and logs a warning if the SDK tries to overwrite it. Omit the key to keep the SDK's default (all advertised scopes).
 
 `client_metadata_url` must be an HTTPS URL with a path (no bare origin, no fragment, no userinfo, no `.`/`..` segments) that returns `200` and `Content-Type: application/json` with **no redirect** — authorization servers are forbidden from following redirects when fetching it. Hermes still pins its callback to the same `27890`–`27894` range, so a self-hosted document must declare all ten loopback URIs (`http://127.0.0.1:<port>/callback` and `http://localhost:<port>/callback` for each port), and its `client_id` must be its own URL.
 

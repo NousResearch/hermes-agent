@@ -3289,6 +3289,31 @@ def create_task(
                 project_obj = _pdb.get_project(_pconn, project_id)
         except Exception:
             project_obj = None
+        if project_obj is None:
+            # Boards are shared across profiles, so their metadata is the
+            # cross-profile project registry for Kanban task routing. Resolve a
+            # reference that names the board (or its canonical project id)
+            # without consulting another profile's private projects.db.
+            board_slug = _normalize_board_slug(
+                board if board else get_current_board()
+            ) or DEFAULT_BOARD
+            board_meta = read_board_metadata(board_slug)
+            board_project_id = str(board_meta.get("project_id") or "").strip()
+            board_repo = str(board_meta.get("default_workdir") or "").strip()
+            board_refs = {board_slug}
+            if board_project_id:
+                board_refs.add(board_project_id)
+            if project_id in board_refs and board_repo and Path(board_repo).is_absolute():
+                project_slug = _pdb.normalize_slug(board_slug)
+                project_obj = _pdb.Project(
+                    id=board_project_id or project_slug,
+                    slug=project_slug,
+                    name=str(board_meta.get("name") or project_slug),
+                    created_at=int(board_meta.get("created_at") or 0),
+                    primary_path=board_repo,
+                    board_slug=board_slug,
+                )
+
         if project_obj is None and project_source_task_id:
             # Worker profiles have their own projects.db, while the Kanban DB is
             # intentionally shared. Recover routing only from a canonical
@@ -3297,9 +3322,31 @@ def create_task(
             # opening the creator profile's project store, and without reusing
             # the source task's literal worktree path.
             source_task = get_task(conn, str(project_source_task_id))
+            requested_project_slug = None
+            try:
+                requested_project_slug = _pdb.normalize_slug(project_id)
+            except ValueError:
+                pass
+            source_project_slug = None
+            if source_task is not None and source_task.branch_name:
+                prefix, separator, leaf = source_task.branch_name.partition("/")
+                if separator and (
+                    leaf == source_task.id
+                    or leaf.startswith(f"{source_task.id}-")
+                ):
+                    try:
+                        source_project_slug = _pdb.normalize_slug(prefix)
+                    except ValueError:
+                        pass
             if (
                 source_task is not None
-                and source_task.project_id == project_id
+                and (
+                    source_task.project_id == project_id
+                    or (
+                        requested_project_slug is not None
+                        and requested_project_slug == source_project_slug
+                    )
+                )
                 and source_task.workspace_kind == "worktree"
                 and source_task.workspace_path
             ):
@@ -3309,26 +3356,11 @@ def create_task(
                     and source_path.name == source_task.id
                     and source_path.parent.name == ".worktrees"
                 ):
-                    project_slug = None
-                    if source_task.branch_name:
-                        prefix, separator, leaf = source_task.branch_name.partition("/")
-                        if separator and (
-                            leaf == source_task.id
-                            or leaf.startswith(f"{source_task.id}-")
-                        ):
-                            try:
-                                project_slug = _pdb.normalize_slug(prefix)
-                            except ValueError:
-                                project_slug = None
-                    if project_slug is None:
-                        try:
-                            project_slug = _pdb.normalize_slug(project_id)
-                        except ValueError:
-                            project_slug = None
+                    project_slug = source_project_slug or requested_project_slug
                     if project_slug:
                         project_repo = str(source_path.parent.parent)
                         project_obj = _pdb.Project(
-                            id=project_id,
+                            id=source_task.project_id,
                             slug=project_slug,
                             name=project_slug,
                             created_at=0,
@@ -3338,10 +3370,10 @@ def create_task(
                             workspace_kind = "worktree"
 
         if project_obj is None:
-            # A project id/slug that doesn't resolve must not crash task
-            # creation or persist a dangling reference — drop the link and
-            # create the task as an ordinary (scratch) task.
-            project_id = None
+            raise ValueError(
+                f"project {project_id!r} was not found in the active profile "
+                "registry or the selected board"
+            )
         else:
             # Canonicalise (a slug may have been passed) and anchor the
             # worktree under the project's primary repo.

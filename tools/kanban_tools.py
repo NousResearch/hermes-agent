@@ -1446,12 +1446,16 @@ def _handle_create(args: dict, **kw) -> str:
             # A project link is safe to inherit because ``create_task`` turns
             # it into a fresh per-task worktree. Never inherit the parent's
             # literal workspace kind/path; directory sharing must be explicit.
-            if _inherit_project and project_id is None:
-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
-                if _self_tid:
-                    _self_task = kb.get_task(conn, _self_tid)
-                    if _self_task is not None and _self_task.project_id:
+            # The source-task hint is independent of workspace inheritance: it
+            # lets a non-director recover project identity even when the caller
+            # explicitly requests the mandatory fresh worktree shape.
+            _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+            if _self_tid:
+                _self_task = kb.get_task(conn, _self_tid)
+                if _self_task is not None and _self_task.project_id:
+                    if _inherit_project and project_id is None:
                         project_id = _self_task.project_id
+                    if project_id is not None:
                         project_source_task_id = _self_task.id
             new_tid = kb.create_task(
                 conn,

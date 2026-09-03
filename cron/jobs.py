@@ -3171,6 +3171,17 @@ def _mark_job_run_locked(
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                # Malformed "schedule" (direct jobs.json edit, old writers,
+                # corruption): job.get("schedule", {}) only falls back to {}
+                # when the key is ABSENT, not when it's present with value
+                # None, so a null schedule still reaches .get("kind") below
+                # and raises AttributeError, aborting mark_job_run() before
+                # save_jobs() -- the exact failure _get_due_jobs_locked
+                # already guards against at scan time. Repair here too so a
+                # completion for a job whose schedule got corrupted between
+                # the scan and this call doesn't crash instead of persisting.
+                if not isinstance(job.get("schedule"), dict):
+                    job["schedule"] = {}
                 if expected_fire_owner is not None:
                     claim = job.get("fire_claim")
                     if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
@@ -3655,6 +3666,13 @@ def _claim_job_for_fire_locked(
         for job in jobs:
             if job["id"] != job_id:
                 continue
+            # Same malformed-"schedule" repair as _mark_job_run_locked /
+            # _get_due_jobs_locked: job.get("schedule", {}) only falls back
+            # to {} when the key is absent, not when it's present with value
+            # None, so a null schedule still reaches .get("kind") below and
+            # raises AttributeError before save_jobs() persists the claim.
+            if not isinstance(job.get("schedule"), dict):
+                job["schedule"] = {}
             if is_terminal_job(job) and not _is_recoverable_error_job(job):
                 return False
             # enabled + pause markers must both clear — a half-paused record

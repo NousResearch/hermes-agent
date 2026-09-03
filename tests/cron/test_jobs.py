@@ -911,6 +911,57 @@ class TestGetDueJobs:
         assert any(d.get("id") == healthy["id"] for d in due)
 
 
+    def test_mark_job_run_with_null_schedule_does_not_crash(self, tmp_cron_dir):
+        """A job whose "schedule" is present but null (direct jobs.json edit,
+        corruption) must not crash mark_job_run().
+
+        _get_due_jobs_locked() already repairs a malformed schedule before
+        scanning (test_idless_job_does_not_crash_or_block_sibling_jobs's
+        sibling coverage), but mark_job_run()/_mark_job_run_locked() reads
+        load_jobs() fresh and indexes "schedule" raw: job.get("schedule", {})
+        only substitutes {} when the key is ABSENT, not when it's present
+        with value None, so a null schedule still reached .get("kind") and
+        raised AttributeError -- aborting the completion write entirely, so
+        the run's last_status/last_error/next_run_at were never persisted.
+        """
+        save_jobs([{
+            "id": "null-schedule-job",
+            "name": "Corrupted schedule",
+            "prompt": "does not matter",
+            "schedule": None,
+            "enabled": True,
+            "no_agent": True,
+        }])
+
+        # Must not raise AttributeError: 'NoneType' object has no attribute 'get'.
+        assert mark_job_run("null-schedule-job", True) is True
+
+        updated = get_job("null-schedule-job")
+        assert updated["last_status"] == "ok"
+        assert updated["schedule"] == {}
+
+    def test_claim_job_for_fire_with_null_schedule_does_not_crash(self, tmp_cron_dir):
+        """Same null-"schedule" corruption as mark_job_run, for the external
+        fire-claim path: claim_job_for_fire()/_claim_job_for_fire_locked()
+        also reads job.get("schedule", {}).get("kind") raw and crashed
+        before persisting the claim."""
+        save_jobs([{
+            "id": "null-schedule-fire-job",
+            "name": "Corrupted schedule",
+            "prompt": "does not matter",
+            "schedule": None,
+            "enabled": True,
+            "no_agent": True,
+        }])
+
+        # Must not raise AttributeError: 'NoneType' object has no attribute 'get'.
+        assert claim_job_for_fire("null-schedule-fire-job") is True
+
+        updated = get_job("null-schedule-fire-job")
+        assert updated["fire_claim"] is not None
+        assert updated["schedule"] == {}
+
+
     def test_long_execution_does_not_perpetually_defer(self, tmp_cron_dir, monkeypatch):
         """#33315: a recurring job whose runtime exceeds interval+grace must still
         run once when the tick comes back, not skip forever.

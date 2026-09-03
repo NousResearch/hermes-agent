@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tarfile
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -1022,6 +1023,50 @@ class TestCircuitBreakerRecovery:
         assert not _tirith_mod._circuit_open
         assert _tirith_mod._circuit_opened_at is None
         mock_run.assert_called_once()
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_half_open_recovery_probe_is_single_flight(
+        self, mock_cfg, mock_run
+    ):
+        mock_cfg.return_value = _CFG
+        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
+        _tirith_mod._circuit_open = True
+        _tirith_mod._circuit_opened_at = 100.0
+        entered = threading.Event()
+        release = threading.Event()
+        first_result = {}
+
+        def slow_success(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(5), "test did not release half-open probe"
+            return _mock_run(0, _json_stdout())
+
+        mock_run.side_effect = slow_success
+
+        with patch(
+            "tools.tirith_security.time.monotonic",
+            return_value=100.0 + _tirith_mod._CIRCUIT_RETRY_SECONDS,
+        ):
+            worker = threading.Thread(
+                target=lambda: first_result.update(
+                    result=check_command_security("echo first")
+                )
+            )
+            worker.start()
+            assert entered.wait(5), "half-open probe did not start"
+
+            second = check_command_security("echo second")
+            assert second["action"] == "allow"
+            assert "circuit breaker" in second["summary"]
+            assert mock_run.call_count == 1
+
+            release.set()
+            worker.join(5)
+
+        assert not worker.is_alive()
+        assert first_result["result"]["action"] == "allow"
+        assert not _tirith_mod._circuit_open
 
 
 # ---------------------------------------------------------------------------

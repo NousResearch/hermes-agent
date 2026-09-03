@@ -128,18 +128,16 @@ _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_
 # pause Tirith briefly to prevent agent hangs (#41400), then permit one
 # half-open recovery probe. Any recognized Tirith verdict closes the breaker.
 #
-# Thread safety: the breaker fields are module-level globals
-# mutated without a lock. check_command_security can be called from
-# concurrent agent threads (gateway multi-session). The race is benign —
-# at worst two threads both increment past _CRASH_LIMIT and both set the
-# open timestamp, opening the breaker one call early. This intentionally matches
-# the lock-free style of error counters in mcp_tool.py rather than the
-# locked _warn_once pattern, because the worst case is harmless.
+# Thread safety: crash counting remains lock-free; a race can only open the
+# breaker one call early. The retry lock covers just the monotonic timestamp
+# check and re-arm, never the subprocess call. That makes a half-open probe
+# single-flight without reintroducing the hang the breaker prevents.
 _CRASH_LIMIT = 3
 _CIRCUIT_RETRY_SECONDS = 60.0
 _crash_count: int = 0
 _circuit_open: bool = False
 _circuit_opened_at: float | None = None
+_circuit_retry_lock = threading.Lock()
 
 
 def _reset_tirith_crash_state() -> None:
@@ -166,13 +164,18 @@ def _record_tirith_crash() -> None:
 
 
 def _circuit_retry_is_due() -> bool:
-    """Return whether an open circuit may make one recovery attempt."""
-    if not _circuit_open or _circuit_opened_at is None:
-        return False
-    if time.monotonic() - _circuit_opened_at < _CIRCUIT_RETRY_SECONDS:
-        return False
-    _reset_tirith_crash_state()
-    return True
+    """Atomically claim the half-open recovery probe when its TTL is due."""
+    global _circuit_opened_at
+    with _circuit_retry_lock:
+        if not _circuit_open or _circuit_opened_at is None:
+            return False
+        now = time.monotonic()
+        if now - _circuit_opened_at < _CIRCUIT_RETRY_SECONDS:
+            return False
+        # Keep the circuit open while the claimant probes, but re-arm its
+        # timestamp first so concurrent callers cannot start another probe.
+        _circuit_opened_at = now
+        return True
 
 # Background install thread coordination
 _install_lock = threading.Lock()

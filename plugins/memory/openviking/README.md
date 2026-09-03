@@ -2,12 +2,39 @@
 
 Context database by Volcengine (ByteDance) with filesystem-style knowledge hierarchy, tiered retrieval, and automatic memory extraction.
 
-## Requirements
+## Setup
 
-- OpenViking installed with the `openviking-server` command available
-- OpenViking server config initialized and validated (`openviking-server init`,
-  then `openviking-server doctor`)
-- OpenViking server running and reachable from Hermes
+Run:
+
+```bash
+hermes memory setup openviking
+```
+
+The setup offers three connection types:
+
+- **OpenViking Service (VolcEngine Cloud)** — connect to the managed cloud
+  service with an API key.
+- **Quick Local Setup** — install a compatible OpenViking release in an
+  isolated runtime with its built-in `bge-small-zh-v1.5-f16` embedding model,
+  and create a private local configuration under the active Hermes profile.
+  OpenViking runs embeddings in-process with `llama-cpp-python` and reuses the
+  active saved Hermes LLM provider and static API-key credentials for its VLM.
+- **Connect to an existing server** — link a self-managed local or remote
+  OpenViking server.
+
+Quick Local reports installation and first-model-download progress. It validates
+the generated configuration with a temporary server before activating the
+profile. Hermes starts the configured local OpenViking server when memory is
+first used; the server remains running for reuse after a Hermes session exits.
+
+## Self-managed requirements
+
+For an existing local server, install and prepare OpenViking separately:
+
+- Install OpenViking with the `openviking-server` command available.
+- Initialize and validate `ov.conf` with `openviking-server init` and
+  `openviking-server doctor`.
+- Make the server reachable from Hermes.
 
 OpenViking 0.2.10 or newer is recommended. For backward compatibility,
 Hermes can identify older servers that expose the legacy status-only health
@@ -15,20 +42,12 @@ response, but only when anonymous OpenAPI metadata also identifies the service
 as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
 upgrade them to receive the current health contract and compatibility fixes.
 
-## Setup
-
-Prepare OpenViking first:
+Start the self-managed server with:
 
 ```bash
 openviking-server init
 openviking-server doctor
 openviking-server
-```
-
-Then configure Hermes:
-
-```bash
-hermes memory setup    # select "openviking"
 ```
 
 The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current

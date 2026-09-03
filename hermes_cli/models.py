@@ -7074,7 +7074,12 @@ def validate_requested_model(
                 "message": f"Could not read MoA presets: {exc}",
             }
 
-    if any(ch.isspace() for ch in requested):
+    # Custom providers may legitimately expose model IDs with spaces
+    # (e.g. Frankonia returns "Qwen 3.8 27B", "Gemma 4 26B").
+    # For known built-in providers the space check still applies.
+    if normalized == "custom" or normalized.startswith("custom:"):
+        pass
+    elif any(ch.isspace() for ch in requested):
         return {
             "accepted": False,
             "persist": False,

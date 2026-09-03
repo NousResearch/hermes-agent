@@ -17,8 +17,9 @@
  */
 export function serveBackendArgs(profile?: string) {
   const head = profile ? ['--profile', profile] : []
+  const isolation = profile ? ['--isolated'] : []
 
-  return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
+  return [...head, 'serve', ...isolation, '--host', '127.0.0.1', '--port', '0']
 }
 
 /**
@@ -34,7 +35,29 @@ export function dashboardFallbackArgs(args) {
     return args.slice()
   }
 
-  return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
+  // `--isolated` is a serve-era flag. Older dashboard runtimes already use
+  // the profile-scoped behavior and do not necessarily recognize it. Only the
+  // flag serveBackendArgs itself appended is dropped (first occurrence) so a
+  // second one a user supplied through extra-args config still reaches the
+  // runtime and fails loudly there rather than being silently swallowed here.
+  const tail = withoutIsolated(args.slice(i + 1))
+
+  return [...args.slice(0, i), 'dashboard', '--no-open', ...tail]
+}
+
+/**
+ * Drop the first `--isolated` token from an argv, returning a copy. Used both
+ * by the legacy `dashboard` rewrite and by the serve path when the resolved
+ * runtime understands `serve` but predates the `--isolated` flag.
+ */
+export function withoutIsolated(args) {
+  const i = args.indexOf('--isolated')
+
+  if (i === -1) {
+    return args.slice()
+  }
+
+  return [...args.slice(0, i), ...args.slice(i + 1)]
 }
 
 /**
@@ -45,4 +68,24 @@ export function dashboardFallbackArgs(args) {
  */
 export function sourceDeclaresServe(dashboardPySource) {
   return /add_parser\(\s*["']serve["']/.test(String(dashboardPySource || ''))
+}
+
+/**
+ * True when a runtime's `hermes_cli/subcommands/dashboard.py` source registers
+ * the `--isolated` flag. `serve` predates `--isolated` (added by the unified
+ * multi-profile dashboard work), so "understands serve" does NOT imply
+ * "accepts --isolated" — an in-between runtime would die on an unrecognized
+ * argument instead of starting the pooled backend.
+ */
+export function sourceDeclaresIsolated(dashboardPySource) {
+  return /["']--isolated["']/.test(String(dashboardPySource || ''))
+}
+
+/**
+ * True when `serve --help` output lists `--isolated`. Used only on the probe
+ * fallback path, where the runtime's source is unreadable (a bare `hermes`
+ * resolved from PATH).
+ */
+export function helpDeclaresIsolated(helpText) {
+  return /(^|[\s,[])--isolated(\s|,|=|\]|$)/m.test(String(helpText || ''))
 }

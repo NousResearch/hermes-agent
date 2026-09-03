@@ -45,7 +45,14 @@ import {
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import {
+  dashboardFallbackArgs,
+  helpDeclaresIsolated,
+  serveBackendArgs,
+  sourceDeclaresIsolated,
+  sourceDeclaresServe,
+  withoutIsolated
+} from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
@@ -2447,41 +2454,48 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   })
 }
 
-// Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+// What does the resolved runtime understand? The desktop spawns
+// `hermes serve --isolated`; runtimes older than serve only have `dashboard`,
+// and runtimes between the two know `serve` but not `--isolated`. We detect
+// both so getBackendArgsForRuntime() can downgrade the invocation instead of
+// crashing on an unknown subcommand or an unrecognized argument (either would
+// brick users mid-upgrade — #54568 follow-up).
 //
 // Fast path: read the runtime's own dashboard.py (instant, covers managed
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
 // (covers a bare `hermes` resolved from PATH with no known source root). Result
 // is cached per resolved runtime so we probe at most once per backend.
-const _serveSupportCache = new Map()
+const _backendCapabilityCache = new Map()
 
-function backendSupportsServe(backend) {
+// Both capabilities come from one source read (or one probe): `serve` and the
+// `--isolated` flag landed in different releases, so a runtime can understand
+// the subcommand and still reject the flag.
+const SERVE_CAPABLE_RUNTIME = { serve: true, isolated: true }
+const LEGACY_DASHBOARD_RUNTIME = { serve: false, isolated: false }
+
+function backendCapabilities(backend) {
   if (!backend || !backend.command) {
-    return true
+    return SERVE_CAPABLE_RUNTIME
   }
 
   const key = `${backend.command}::${backend.root || ''}`
 
-  if (_serveSupportCache.has(key)) {
-    return _serveSupportCache.get(key)
+  if (_backendCapabilityCache.has(key)) {
+    return _backendCapabilityCache.get(key)
   }
 
-  let supported = null
+  let caps = null
 
   if (backend.root) {
     try {
       const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
-      supported = sourceDeclaresServe(src)
+      caps = { serve: sourceDeclaresServe(src), isolated: sourceDeclaresIsolated(src) }
     } catch {
-      supported = null // source unreadable — fall through to the probe
+      caps = null // source unreadable — fall through to the probe
     }
   }
 
-  if (supported === null) {
+  if (caps === null) {
     try {
       const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
       // Same cold-Windows Python-startup class as the runtime probes
@@ -2490,11 +2504,16 @@ function backendSupportsServe(backend) {
       // is cached for the process lifetime, silently routing a modern
       // runtime through the legacy `dashboard` form. Share the probe budget
       // and its timeout-only retry instead of a thinner local bound.
-      execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
+      //
+      // stdio: 'pipe' because the help listing is also how we learn whether
+      // this runtime accepts `--isolated` — an exit code alone cannot say
+      // (argparse honors `--help` before rejecting an unknown flag).
+
+      const help = execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
         env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
         timeout: PROBE_TIMEOUT_MS,
-        stdio: 'ignore',
+        stdio: 'pipe',
         // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
         // (see resolveHermesBackend step 4); execFileSync of a .cmd without
         // shell throws EINVAL on modern Node, which the catch below would
@@ -2502,25 +2521,34 @@ function backendSupportsServe(backend) {
         shell: Boolean(backend.shell),
         windowsHide: true
       })
-      supported = true
+
+      caps = { serve: true, isolated: helpDeclaresIsolated(String(help || '')) }
     } catch {
-      supported = false
+      caps = LEGACY_DASHBOARD_RUNTIME
     }
   }
 
-  _serveSupportCache.set(key, supported)
+  _backendCapabilityCache.set(key, caps)
   rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+    `[backend] \`serve\` ${caps.serve ? 'supported' : 'unsupported → routing via legacy `dashboard`'}` +
+      `${caps.serve && !caps.isolated ? ' (no --isolated — dropping the flag)' : ''} for ${backend.label || key}`
   )
 
-  return supported
+  return caps
 }
 
 // Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
+// runtime actually understands: unchanged when `serve` and `--isolated` are
+// both supported, `--isolated` stripped for a serve-capable runtime that
+// predates the flag, or rewritten to `dashboard --no-open` for older runtimes.
 function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+  const caps = backendCapabilities(backend)
+
+  if (!caps.serve) {
+    return dashboardFallbackArgs(backend.args)
+  }
+
+  return caps.isolated ? backend.args : withoutIsolated(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -12423,7 +12451,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  const backendArgs = serveBackendArgs(profile)
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)

@@ -87,6 +87,9 @@ function isTimeoutError(err: unknown): boolean {
 /**
  * Run execFileSync; on timeout only, retry once before failing.
  * Non-timeout failures (ENOENT, non-zero exit) fail immediately.
+ *
+ * Returns the captured stdout with `stdio: 'pipe'` (callers that need to read
+ * a `--help` listing), or null with `stdio: 'ignore'` (exit-code-only probes).
  */
 function execProbeSync(
   command: string,
@@ -94,21 +97,21 @@ function execProbeSync(
   options: {
     cwd?: string
     env?: NodeJS.ProcessEnv
-    stdio: 'ignore'
+    stdio: 'ignore' | 'pipe'
     timeout: number
     shell?: boolean
     windowsHide?: boolean
   }
-): void {
+): Buffer | null {
   try {
-    execFileSync(command, args, options)
+    return execFileSync(command, args, options)
   } catch (err) {
     if (!isTimeoutError(err)) {
       throw err
     }
 
     // One cold-cache / AV miss should not force hermes-setup --update (#61764).
-    execFileSync(command, args, options)
+    return execFileSync(command, args, options)
   }
 }
 

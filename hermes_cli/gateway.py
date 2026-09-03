@@ -9027,6 +9027,29 @@ def _gateway_command_inner(args):
             # systemd/launchd restart failed — check if linger is the issue
             if supports_systemd_services():
                 linger_ok, _detail = get_systemd_linger_status()
+                if linger_ok is False:
+                    # Headless-service-account recovery (#83208): install
+                    # already auto-enables linger via _ensure_linger_enabled,
+                    # but a pre-existing unit on a linger-less account fails
+                    # every restart with no self-healing. Attempt the same
+                    # enable once and retry the service restart before giving
+                    # up — the snapshot check below reports the real outcome.
+                    _ensure_linger_enabled()
+                    linger_ok, _detail = get_systemd_linger_status()
+                    if linger_ok is True:
+                        try:
+                            systemd_restart(system=system)
+                            service_available = True
+                        except Exception:
+                            pass
+                if service_available:
+                    _restart_snapshot = get_gateway_runtime_snapshot(system=system)
+                    if _restart_snapshot.running:
+                        print("✓ Gateway restarted (linger enabled during restart)")
+                        return
+                    print("⚠ Gateway service restarted but reports not running —")
+                    print("  check `hermes gateway status` or logs for final state.")
+                    return
                 if linger_ok is not True:
                     import getpass
 

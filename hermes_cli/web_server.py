@@ -2130,6 +2130,55 @@ elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
 
+_STATUS_SYNC_INPUTS_TIMEOUT = 2.0
+
+
+def _degraded_status_sync_inputs() -> tuple[int, int, str, bool]:
+    """In-memory degraded inputs when the /api/status disk reads time out.
+
+    Pure computation (no I/O), so it is safe to run on the event loop:
+    versions report up-to-date (the historical tolerant default, never a
+    spurious migration prompt), session validity is unknown (never a
+    spurious NAS re-mint), and the local update button hides (fail closed).
+    """
+    try:
+        from hermes_cli.config import _coerce_config_version
+
+        _latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
+    except Exception:
+        _latest = 1
+    return _latest, _latest, "unknown", True
+
+
+def _read_status_sync_inputs() -> tuple[int, int, str, bool]:
+    """Read get_status's leftover synchronous inputs in one worker call. (#83208)
+
+    The topology/health/session/storage/memory/disk probes all moved off the
+    event loop already; these three small disk reads were still inline on it,
+    on every ~1/s poll: config.yaml (version check), auth.json (Nous session
+    validity) and the install-method stamps (update-button gate). Each is
+    milliseconds on a healthy disk, but on a slow or stalled disk (the
+    headless-NAS class behind the 83.9s freeze) they hold the GIL inside the
+    hot poll path. get_status runs this in a worker under a single wait_for
+    guard; per-reader fallbacks mirror the old inline defaults so a wedged
+    disk degrades the payload instead of the loop.
+    """
+    try:
+        current_ver, latest_ver = check_config_version()
+    except Exception:
+        current_ver, latest_ver = _degraded_status_sync_inputs()[:2]
+    try:
+        from hermes_cli.auth import get_nous_session_validity
+
+        nous_session_valid = get_nous_session_validity()
+    except Exception:
+        nous_session_valid = "unknown"
+    try:
+        local_update_managed = _dashboard_local_update_managed_externally()
+    except Exception:
+        local_update_managed = True
+    return current_ver, latest_ver, nous_session_valid, local_update_managed
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -3843,7 +3892,30 @@ async def get_status(profile: Optional[str] = None):
         status_scope.__enter__()
 
     try:
-        current_ver, latest_ver = check_config_version()
+        # Leftover synchronous disk reads (config/auth/stamps, #83208) run in
+        # one worker under a single guard so the ~1/s poll never holds the
+        # loop; a wedged disk degrades this payload instead of stalling it.
+        try:
+            (
+                current_ver,
+                latest_ver,
+                _nous_session_validity,
+                _local_update_managed,
+            ) = await asyncio.wait_for(
+                run_in_threadpool(_read_status_sync_inputs),
+                timeout=_STATUS_SYNC_INPUTS_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, Exception):
+            _log.debug(
+                "/api/status sync inputs exceeded %.2fs; using degraded defaults",
+                _STATUS_SYNC_INPUTS_TIMEOUT,
+            )
+            (
+                current_ver,
+                latest_ver,
+                _nous_session_validity,
+                _local_update_managed,
+            ) = _degraded_status_sync_inputs()
         # --- Gateway liveness detection ---
         # Delegated to the single shared ladder in gateway.status so this
         # endpoint and /api/messaging/platforms can never disagree about
@@ -4052,12 +4124,8 @@ async def get_status(profile: Optional[str] = None):
         # is determinable with no working token (local auth-store state). NAS
         # re-mints the bootstrap session when it reads "terminal". Best-effort:
         # never let auth classification break the public liveness probe.
-        nous_session_valid = "unknown"
-        try:
-            from hermes_cli.auth import get_nous_session_validity
-            nous_session_valid = get_nous_session_validity()
-        except Exception:
-            nous_session_valid = "unknown"
+        # Read off-loop above (#83208 bundle); the degraded default is unknown.
+        nous_session_valid = _nous_session_validity
 
         # Always-public liveness + auth-gate shape. Safe for external uptime
         # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
@@ -4068,7 +4136,7 @@ async def get_status(profile: Optional[str] = None):
             "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,
-            "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "can_update_hermes": not _local_update_managed,
             "gateway_running": gateway_running,
             "gateway_state": gateway_state,
             "gateway_platforms": gateway_platforms,

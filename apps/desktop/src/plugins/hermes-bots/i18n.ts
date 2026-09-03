@@ -155,6 +155,12 @@ type BotsMessages = {
     manageTitle: string
     settingsTitle: string
     settingsDesc: string
+    compressHistory: string
+    compressHistoryHint: string
+    compressingHistory: string
+    compressHistoryDone: (compressed: number, pending: number) => string
+    compressHistoryNone: string
+    compressHistoryFailed: (failed: number, total: number) => string
     nameLabel: string
     searchToAdd: string
     searchToAddPlaceholder: string
@@ -379,6 +385,13 @@ const en: BotsMessages = {
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    compressHistory: 'Compress member histories',
+    compressHistoryHint: 'Summarize the hidden session behind each bot to free context space.',
+    compressingHistory: 'Compressing member histories…',
+    compressHistoryDone: (compressed, pending) =>
+      `Compressed ${compressed} member ${compressed === 1 ? 'history' : 'histories'}${pending ? `; ${pending} still running` : ''}.`,
+    compressHistoryNone: 'No existing member histories need compression.',
+    compressHistoryFailed: (failed, total) => `Could not compress ${failed} of ${total} member histories.`,
     nameLabel: 'Group name',
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
@@ -596,6 +609,13 @@ const ja: BotsMessages = {
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    compressHistory: 'メンバー履歴を圧縮',
+    compressHistoryHint: '各ボットの非表示セッションを要約し、コンテキスト容量を確保します。',
+    compressingHistory: 'メンバー履歴を圧縮中…',
+    compressHistoryDone: (compressed, pending) =>
+      `${compressed} 件のメンバー履歴を圧縮しました${pending ? `（${pending} 件は引き続き処理中）` : ''}。`,
+    compressHistoryNone: '圧縮が必要な既存のメンバー履歴はありません。',
+    compressHistoryFailed: (failed, total) => `${total} 件中 ${failed} 件のメンバー履歴を圧縮できませんでした。`,
     nameLabel: 'グループ名',
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
@@ -809,6 +829,13 @@ const zh: BotsMessages = {
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
     settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    compressHistory: '压缩成员历史',
+    compressHistoryHint: '总结每个机器人背后的隐藏会话，以释放上下文空间。',
+    compressingHistory: '正在压缩成员历史…',
+    compressHistoryDone: (compressed, pending) =>
+      `已压缩 ${compressed} 个成员历史${pending ? `；${pending} 个仍在后台处理` : ''}。`,
+    compressHistoryNone: '没有需要压缩的现有成员历史。',
+    compressHistoryFailed: (failed, total) => `${total} 个成员历史中有 ${failed} 个压缩失败。`,
     nameLabel: '群组名称',
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
@@ -1022,6 +1049,13 @@ const zhHant: BotsMessages = {
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
     settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    compressHistory: '壓縮成員歷史',
+    compressHistoryHint: '摘要每個機器人背後的隱藏工作階段，以釋放上下文空間。',
+    compressingHistory: '正在壓縮成員歷史…',
+    compressHistoryDone: (compressed, pending) =>
+      `已壓縮 ${compressed} 個成員歷史${pending ? `；${pending} 個仍在背景處理` : ''}。`,
+    compressHistoryNone: '沒有需要壓縮的現有成員歷史。',
+    compressHistoryFailed: (failed, total) => `${total} 個成員歷史中有 ${failed} 個壓縮失敗。`,
     nameLabel: '群組名稱',
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',

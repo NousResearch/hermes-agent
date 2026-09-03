@@ -186,6 +186,59 @@ describe('session resolution', () => {
     expect(result.stored).toBeTruthy()
     expect(result.stored).not.toBe('sid-gone')
   })
+
+  it('compresses existing member histories through live ids without minting sessions', async () => {
+    const room = await loadRoom()
+    const local: GroupMember = { name: 'research', title: '' }
+
+    const remote: GroupMember = {
+      connectionId: 'mini',
+      name: 'critic',
+      remoteSource: true,
+      route: { connectionId: 'mini', mode: 'remote', profile: 'critic', targetProfile: 'critic' }
+    }
+
+    room.chat.updateGroupChat('Core', current => {
+      current.roomId = 'r-core'
+
+      return current
+    })
+    await room.turns.ensureGroupChatSession('Core', local)
+    await room.turns.ensureGroupChatSession('Core', remote)
+
+    const beforeCreates = room.gateway.rpcFor('session.create').length
+    const outcomes = await room.turns.compressGroupChatSessions('Core', [local, remote])
+
+    expect(outcomes.map(outcome => outcome.status)).toEqual(['compressed', 'compressed'])
+    expect(room.gateway.rpcFor('session.create')).toHaveLength(beforeCreates)
+    expect(room.gateway.rpcFor('session.compress')).toHaveLength(2)
+
+    for (const call of room.gateway.rpcFor('session.compress')) {
+      expect(String(call.params.session_id)).toMatch(/^rt-/)
+    }
+
+    // Routed sessions stay leased for resume -> compress, so their runtime id
+    // cannot be reaped between the two session-scoped RPCs.
+    expect(room.gateway.timeline).toContain('session.compress')
+    expect(room.gateway.refcount()).toBe(0)
+  })
+
+  it('skips a member with no room session instead of creating empty plumbing', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Fresh', current => {
+      current.roomId = 'r-fresh'
+
+      return current
+    })
+
+    const outcomes = await room.turns.compressGroupChatSessions('Fresh', [{ name: 'research', title: '' }])
+
+    expect(outcomes).toEqual([{ member: 'research', status: 'skipped' }])
+    expect(room.gateway.rpcFor('session.resume')).toHaveLength(1)
+    expect(room.gateway.rpcFor('session.create')).toHaveLength(0)
+    expect(room.gateway.rpcFor('session.compress')).toHaveLength(0)
+  })
 })
 
 describe('session-gone classification', () => {

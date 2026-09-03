@@ -127,6 +127,7 @@ const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')
 
 const {
+  $gateway,
   activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -196,10 +197,19 @@ afterEach(() => {
   setMockAtom($messages, [])
   $profiles.set([profile('cached-only')])
   setWorkspaceScope('sessions')
+  $gateway.set(null)
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('forwards an explicit timeout through the active-gateway request door', async () => {
+    const request = vi.fn(async () => ({ ok: true }))
+    $gateway.set({ request } as never)
+
+    await expect(host.request('session.compress', { session_id: 'rt-1' }, 660_000)).resolves.toEqual({ ok: true })
+    expect(request).toHaveBeenCalledWith('session.compress', { session_id: 'rt-1' }, 660_000)
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

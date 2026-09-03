@@ -298,6 +298,19 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         : { attached: true }
     }
 
+    if (method === 'session.compress') {
+      const session = resolveSession(null, params.session_id)
+
+      if (!session) {
+        throw gatewayError(`session-scoped RPC rejected: ${String(params.session_id)} not in memory`, 4001)
+      }
+
+      const removed = Math.max(0, session.messages.length - 2)
+      session.messages = session.messages.slice(-2)
+
+      return { removed, status: 'compressed' }
+    }
+
     if (method === 'prompt.submit') {
       submits += 1
 

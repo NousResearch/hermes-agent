@@ -189,6 +189,8 @@ class MemoryStore:
         self.user_profile_enabled = user_profile_enabled
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Live entries captured at load_from_disk() for scoped re-rendering
+        self._snapshot_entries: Dict[str, List[str]] = {"memory": [], "user": []}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
@@ -262,6 +264,8 @@ class MemoryStore:
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+        # Capture sanitized entries for project-scoped re-rendering
+        self._snapshot_entries = {"memory": sanitized_memory, "user": sanitized_user}
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -703,17 +707,64 @@ class MemoryStore:
             "usage": f"{current:,}/{limit:,}",
         })
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
+    @staticmethod
+    def _scoped_entries(entries: List[str], project_scope: str) -> List[str]:
+        """Filter ``entries`` by ``project_scope`` using the ``[project:<name>]`` tag convention.
+
+        Tag conventions (configurable by the user via MEMORY.md):
+        - Untagged entries and ``[global]`` entries survive any scope.
+        - ``[project:<name>]`` entries survive only when ``project_scope == <name>``.
+        - All entries survive when ``project_scope`` is empty (backward compatible).
+
+        Tag matching is case-insensitive and strips Markdown list markers (``-``, ``*``)
+        and leading whitespace before testing the tag prefix. The ORIGINAL entry text is
+        always what is rendered in the memory block.
+
+        An entry is included iff:
+          NOT clean.lower().startswith("[project:") OR clean.lower().startswith(tag.lower())
+        where ``clean`` is the entry with leading whitespace and ``-``/``*`` list markers
+        stripped.
+        """
+        if not project_scope:
+            return list(entries)
+        tag = f"[project:{project_scope.lower()}]"
+        out = []
+        for e in entries:
+            clean = e.lstrip()
+            while clean[:1] in ("-", "*"):
+                clean = clean[1:].lstrip()
+            if clean.lower().startswith("[project:"):
+                if clean.lower().startswith(tag):
+                    out.append(e)
+            else:
+                out.append(e)
+        return out
+
+    def format_for_system_prompt(self, target: str, project_scope: str = "") -> Optional[str]:
         """
         Return the frozen snapshot for system prompt injection.
 
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
+        When ``target == "memory"`` and a ``project_scope`` is provided, the
+        returned block is derived from the same load-time frozen snapshot,
+        filtered to only include entries matching the project scope.  The
+        prefix-cache invariant is preserved because the filtering always
+        produces the same output for the same ``project_scope`` applied to
+        the same session's frozen snapshot.
 
-        Returns None if the snapshot is empty (no entries at load time).
+        When ``target == "user"`` or ``project_scope`` is empty, the exact
+        frozen-string behavior from load_from_disk() time is returned.
+
+        Returns None if the result would be empty (no entries match the scope
+        or no entries exist at all).
         """
-        block = self._system_prompt_snapshot.get(target, "")
+        if target == "user" or not project_scope:
+            block = self._system_prompt_snapshot.get(target, "")
+            return block if block else None
+        # Scoped rendering from the frozen snapshot entries
+        filtered = self._scoped_entries(
+            self._snapshot_entries.get("memory", []), project_scope
+        )
+        block = self._render_block("memory", filtered)
         return block if block else None
 
     # -- Internal helpers --
@@ -1202,6 +1253,16 @@ def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> T
         is_truthy_value(section.get("memory_enabled"), default=True),
         is_truthy_value(section.get("user_profile_enabled"), default=True),
     )
+
+
+def get_builtin_memory_project_scoping(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return whether project-scoped memory filtering is enabled in config.
+
+    Reads the ``project_scoping`` key from the ``[memory]`` config section.
+    Defaults to ``False`` when unset.
+    """
+    section = get_builtin_memory_config(config)
+    return is_truthy_value(section.get("project_scoping"), default=False)
 
 
 @no_cache_check_fn

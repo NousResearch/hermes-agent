@@ -98,6 +98,67 @@ def resolve_agent_cwd() -> Path:
     return Path(os.getcwd())
 
 
+# Project-root markers for resolve_project_scope (issue #33638).
+# Mirrors _marker_root / _PROJECT_MARKERS / _CONTEXT_FILES in coding_context.py
+# but narrower: only the markers the memory project-scoping feature cares about.
+_PROJECT_SCOPE_MARKERS = (
+    ".git",
+    "AGENTS.md",
+    ".hermes-memory.md",
+)
+
+
+def resolve_project_scope() -> str:
+    """Map the agent's working directory to a project scope identifier.
+
+    Returns the basename of the nearest ancestor project root, or ``""`` when
+    the cwd is not inside a recognisable project (or is in the install tree,
+    ``$HOME``, or a shared temp dir — none of those are projects).
+
+    This feeds the ``memory.project_scoping`` feature (issue #33638) and must
+    agree with :func:`build_context_files_prompt`'s cwd semantics.
+    """
+    import tempfile
+
+    cwd = resolve_context_cwd()
+    if cwd is None:
+        cwd = Path(os.getcwd())
+
+    # Never scope to the Hermes repo itself.
+    if _is_install_tree(cwd):
+        return ""
+
+    current = cwd.resolve()
+
+    # Resolve $HOME and shared temp root once, matching _marker_root behaviour.
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
+
+    for depth, parent in enumerate([current, *current.parents]):
+        if depth > 6:
+            break
+        # Stop the walk at $HOME or the shared temp root — their parents are
+        # never project roots, so continuing past them is wasted work and can
+        # produce false positives from unrelated markers in parent directories.
+        if parent == home or (temp_root is not None and parent == temp_root):
+            break
+        for marker in _PROJECT_SCOPE_MARKERS:
+            try:
+                if (parent / marker).exists():
+                    return parent.name
+            except PermissionError:
+                # Permission error on any ancestor stops marker checks at
+                # this level but does not abort the walk — continue upward.
+                continue
+    return ""
+
+
 def resolve_context_cwd() -> Path | None:
     # None means "no configured cwd": build_context_files_prompt then falls back
     # to the launch dir (os.getcwd()), correct for a local CLI launched inside a

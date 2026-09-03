@@ -706,3 +706,158 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+# =========================================================================
+# Project-scoped memory filtering (issue #33638)
+# =========================================================================
+
+class TestProjectScopedMemory:
+    """Project-scope filtering for the built-in memory system-prompt block."""
+
+    def _write_memory_entries(self, path, entries):
+        content = "\n§\n".join(entries)
+        path.write_text(content, encoding="utf-8")
+
+    def test_other_project_filtered_when_scope_active(self, store, tmp_path):
+        """[project:other] entries filtered when scope active."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "[project:other] Some other project fact",
+            "[project:myapp] This is for myapp",
+        ])
+        store.load_from_disk()
+        result = store.format_for_system_prompt("memory", project_scope="myapp")
+        assert result is not None
+        assert "[project:other]" not in result
+        assert "[project:myapp]" in result
+
+    def test_untagged_and_global_survive(self, store, tmp_path):
+        """[global] + untagged entries survive when scope active."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "Untagged fact",
+            "[global] Global preference",
+            "[project:myapp] Myapp specific",
+        ])
+        store.load_from_disk()
+        result = store.format_for_system_prompt("memory", project_scope="myapp")
+        assert result is not None
+        assert "Untagged fact" in result
+        assert "[global] Global preference" in result
+
+    def test_matching_project_survives(self, store, tmp_path):
+        """[project:<matching>] survives when scope matches."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "[project:myapp] Myapp config",
+            "[project:myapp] Another myapp fact",
+        ])
+        store.load_from_disk()
+        result = store.format_for_system_prompt("memory", project_scope="myapp")
+        assert result is not None
+        count = result.count("[project:myapp]")
+        assert count == 2, f"Expected 2 occurrences of [project:myapp], got {count}"
+        assert "Myapp config" in result
+        assert "Another myapp fact" in result
+
+    def test_empty_scope_full_unfiltered_backward_compat(self, store, tmp_path):
+        """Empty scope → full unfiltered block (backward compat)."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "[project:other] Other project",
+            "[project:myapp] Myapp fact",
+            "General fact",
+        ])
+        store.load_from_disk()
+        # No project_scope arg → all entries included (backward compat)
+        result = store.format_for_system_prompt("memory")
+        assert result is not None
+        assert "[project:other]" in result
+        assert "[project:myapp]" in result
+        assert "General fact" in result
+
+        # Explicit empty string → same as no arg
+        result2 = store.format_for_system_prompt("memory", project_scope="")
+        assert result2 == result
+
+    def test_user_target_ignores_scope(self, store, tmp_path):
+        """user target ignores project scope."""
+        self._write_memory_entries(tmp_path / "USER.md", [
+            "[project:other] User fact for other",
+            "General user fact",
+        ])
+        store.load_from_disk()
+        result = store.format_for_system_prompt("user", project_scope="myapp")
+        assert result is not None
+        assert "[project:other]" in result
+        assert "General user fact" in result
+
+    def test_mid_session_add_does_not_affect_scoped_render(self, store, tmp_path):
+        """Mid-session add() does NOT change scoped render (snapshot frozen)."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "[project:myapp] Original entry",
+        ])
+        store.load_from_disk()
+        # Mid-session add
+        store.add("memory", "[project:myapp] Added later")
+        result = store.format_for_system_prompt("memory", project_scope="myapp")
+        assert result is not None
+        assert "Original entry" in result
+        assert "Added later" not in result
+
+    def test_get_builtin_memory_project_scoping_defaults_false(self):
+        """Default is False, reads config key when set."""
+        from tools.memory_tool import get_builtin_memory_project_scoping
+        # No config → False
+        assert get_builtin_memory_project_scoping(None) is False
+        # Explicit True
+        assert get_builtin_memory_project_scoping({"memory": {"project_scoping": True}}) is True
+        # Explicit False
+        assert get_builtin_memory_project_scoping({"memory": {"project_scoping": False}}) is False
+        # Empty config dict → False
+        assert get_builtin_memory_project_scoping({}) is False
+
+    def test_all_entries_filtered_returns_none(self, store, tmp_path):
+        """All entries filtered out → None."""
+        self._write_memory_entries(tmp_path / "MEMORY.md", [
+            "[project:other] Only other project entries",
+        ])
+        store.load_from_disk()
+        result = store.format_for_system_prompt("memory", project_scope="myapp")
+        assert result is None
+
+    def test_bullet_prefixed_tags_match(self, store):
+        """Bullet-prefixed [project:other] excluded, [project:myapp] included under scope 'myapp'.
+
+        The original strict prefix match treated '- [project:other] note' as
+        untagged (the '-' prefix made startswith('[project:') false), leaking
+        other-project entries into the filtered prompt.
+        """
+        filtered = MemoryStore._scoped_entries([
+            "- [project:other] note",
+            "- [project:myapp] note",
+        ], "myapp")
+        assert "- [project:other] note" not in filtered
+        assert "- [project:myapp] note" in filtered
+
+    def test_tag_matching_is_case_insensitive(self, store):
+        """[project:MyApp] is INCLUDED under scope 'myapp' (case-insensitive)."""
+        filtered = MemoryStore._scoped_entries([
+            "[project:MyApp] note",
+            "[project:myapp] note",
+        ], "myapp")
+        assert "[project:MyApp] note" in filtered
+        assert "[project:myapp] note" in filtered
+
+    def test_whitespace_prefixed_tag_is_included(self, store):
+        """Leading whitespace before tag is stripped for matching."""
+        filtered = MemoryStore._scoped_entries([
+            "  [project:myapp] note",
+        ], "myapp")
+        assert "  [project:myapp] note" in filtered
+
+    def test_mid_text_project_tag_is_untagged(self, store):
+        """Mid-text occurrence 'note [project:other] here' is treated as untagged."""
+        filtered = MemoryStore._scoped_entries([
+            "note [project:other] here",
+            "[project:myapp] real tag",
+        ], "myapp")
+        assert "note [project:other] here" in filtered
+        assert "[project:myapp] real tag" in filtered

@@ -921,6 +921,26 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_stdio_params_receive_stringified_numeric_env(self):
+        """The runtime passes normalized numeric env values to the MCP SDK."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                server = MCPServerTask("numeric-env")
+                await server.start(
+                    {"command": "npx", "args": ["-y", "test"], "env": {"COUNT": 1}}
+                )
+                assert params.call_args.kwargs["env"]["COUNT"] == "1"
+                await server.shutdown()
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection
@@ -1298,6 +1318,26 @@ class TestBuildSafeEnv:
         assert result["USERPROFILE"] == r"C:\Users\alice"
         assert "GITHUB_TOKEN" not in result
         assert "OPENAI_API_KEY" not in result
+
+    def test_user_env_numeric_values_are_stringified(self):
+        """YAML numeric scalars must reach MCP stdio subprocesses as strings."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {}, clear=True):
+            result = _build_safe_env(
+                {"COUNT": 1, "RATIO": 1.5, "MODE": "strict"}
+            )
+
+        assert result == {"COUNT": "1", "RATIO": "1.5", "MODE": "strict"}
+
+    @pytest.mark.parametrize("value", [True, False, None, [1], {"nested": 1}])
+    def test_user_env_ambiguous_values_are_rejected(self, value):
+        """Ambiguous YAML values must fail instead of becoming Python reprs."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(ValueError, match="FLAG.*string or numeric scalar"):
+                _build_safe_env({"FLAG": value})
 
 
 # ---------------------------------------------------------------------------

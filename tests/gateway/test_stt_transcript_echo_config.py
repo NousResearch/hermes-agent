@@ -56,6 +56,26 @@ def test_platforms_telegram_reply_setting_beats_gateway_platforms(tmp_path, monk
     assert cfg.platforms[Platform.TELEGRAM].extra["reply_to_transcript"] is True
 
 
+def test_telegram_reply_to_transcript_loads_from_direct_gateway_block(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "gateway:\n"
+        "  telegram:\n"
+        "    enabled: true\n"
+        "    token: test-token\n"
+        "    reply_to_transcript: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    cfg = load_gateway_config()
+
+    assert cfg.platforms[Platform.TELEGRAM].extra["reply_to_transcript"] is True
+
+
 def test_telegram_reply_setting_coerces_quoted_false(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

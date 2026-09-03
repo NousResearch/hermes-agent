@@ -11362,7 +11362,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
     # Resolve this platform-owned presentation option from every supported
     # Telegram config location in the same precedence order as gateway/config:
-    # gateway.platforms < platforms < top-level telegram. The plugin hook may
+    # gateway.platforms < platforms < gateway.telegram < top-level telegram.
+    # The plugin hook may
     # receive one of the nested blocks as a fallback, so blindly re-emitting
     # that block would otherwise clobber the already merged winner.
     _reply_to_transcript = None
@@ -11382,6 +11383,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     for _candidate in (
         _gateway_platforms.get("telegram"),
         _platforms.get("telegram"),
+        _gateway.get("telegram"),
         yaml_cfg.get("telegram"),
     ):
         if not isinstance(_candidate, dict):

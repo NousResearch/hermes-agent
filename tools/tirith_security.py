@@ -33,6 +33,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -429,12 +430,13 @@ def _valid_update_state(state: object) -> _UpdateState | None:
         return None
     checked_at = state_dict.get("checked_at")
     outcome = state_dict.get("outcome")
-    if (
-        not isinstance(checked_at, (int, float))
-        or isinstance(checked_at, bool)
-        or checked_at != checked_at  # NaN
-        or checked_at < 0
-    ):
+    if not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool):
+        return None
+    try:
+        normalized_checked_at = float(checked_at)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(normalized_checked_at) or normalized_checked_at < 0:
         return None
     if not isinstance(outcome, str) or (
         outcome != "failed" and outcome not in _UPDATE_SUCCESS_OUTCOMES
@@ -442,7 +444,7 @@ def _valid_update_state(state: object) -> _UpdateState | None:
         return None
     return {
         "schema_version": schema_version,
-        "checked_at": float(checked_at),
+        "checked_at": normalized_checked_at,
         "outcome": outcome,
     }
 

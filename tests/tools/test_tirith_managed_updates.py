@@ -124,6 +124,26 @@ class TestUpdateState:
         )
         assert tirith._update_is_due(now=1_000)
 
+    @pytest.mark.parametrize(
+        "checked_at",
+        [10**1000, float("inf"), float("-inf"), float("nan")],
+    )
+    def test_non_finite_or_overflowing_state_never_suppresses_checks(
+        self, tmp_path, monkeypatch, checked_at
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state = tmp_path / ".tirith-update-state.json"
+        state.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "checked_at": checked_at,
+                "outcome": "current",
+            }),
+            encoding="utf-8",
+        )
+
+        assert tirith._update_is_due(now=1_000)
+
     def test_persistence_failure_still_throttles_this_process(
         self, tmp_path, monkeypatch
     ):

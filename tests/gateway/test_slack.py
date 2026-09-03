@@ -303,6 +303,41 @@ class TestSlackWorkspaceCollisionIsolation:
 
 
 # ---------------------------------------------------------------------------
+# Slash matcher
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommandPattern:
+    """The bolt slash matcher must accept every slash the gateway can dispatch."""
+
+    def test_includes_skill_slugs(self):
+        """A skill slash (/<skill-name>) reaches slack_bolt only if the matcher
+        lists it; otherwise bolt logs "Unhandled request", never acks, and Slack
+        shows "app did not respond" even though gateway dispatch would serve it."""
+        with patch(
+            "agent.skill_commands.get_skill_commands",
+            return_value={"/my-skill": {"name": "my-skill"}},
+        ):
+            pattern = _slack_mod._slash_command_pattern()
+
+        assert pattern.match("/my-skill")
+        assert pattern.match("/btw"), "registry slashes must still match"
+        assert not pattern.match("/my-skill-extra"), "must be anchored"
+        assert not pattern.match("/unknown")
+
+    def test_skill_scan_failure_keeps_registry_slashes(self):
+        """A broken skills dir must not take the whole slash surface down."""
+        with patch(
+            "agent.skill_commands.get_skill_commands",
+            side_effect=RuntimeError("boom"),
+        ):
+            pattern = _slack_mod._slash_command_pattern()
+
+        assert pattern.match("/btw")
+        assert not pattern.match("/my-skill")
+
+
+# ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 

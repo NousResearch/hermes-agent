@@ -4497,6 +4497,25 @@ class MCPServerTask:
                 # ``_ever_connected`` itself is set once and never cleared.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ever_connected:
+                    try:
+                        from tools.mcp_oauth import _is_interactive_forced
+
+                        is_interactive_forced = _is_interactive_forced()
+                    except Exception:
+                        is_interactive_forced = False
+
+                    if is_interactive_forced:
+                        # Interactive OAuth single-flight gate:
+                        # When running under force_interactive_oauth() (e.g. `hermes mcp login`
+                        # or interactive CLI probe), any initial connection failure must fail fast
+                        # immediately. Retrying in a background loop would re-enter _run_http,
+                        # rotate the PKCE state, print duplicate authorization prompts while the
+                        # user is mid-authorization, and cause 'State parameter mismatch' or
+                        # port collisions (#98118, #73997).
+                        self._error = exc
+                        self._ready.set()
+                        return
+
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park

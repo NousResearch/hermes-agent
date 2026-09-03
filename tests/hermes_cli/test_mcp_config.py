@@ -528,6 +528,36 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_propagates_connect_timeout_to_config(self, monkeypatch):
+        """_probe_single_server must propagate explicit connect_timeout into the config passed to _connect_server."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeTool:
+            name = "do_thing"
+            description = "a tool"
+
+        class _FakeServer:
+            _tools = [_FakeTool()]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+
+        mc._probe_single_server(
+            "srv",
+            {"url": "http://localhost:5678/mcp", "auth": "oauth"},
+            connect_timeout=315.0,
+        )
+
+        assert seen["config"].get("connect_timeout") == 315.0
+
 
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at

@@ -306,6 +306,17 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(raw_timeout))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    else:
+        try:
+            connect_timeout = max(1.0, float(connect_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
+
+    # Propagate effective connect_timeout into config passed to _connect_server
+    # so that underlying HTTP/SSE/stdio transports honor the full probe timeout
+    # instead of disconnecting early (fixes #98118).
+    config = dict(config)
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []

@@ -365,6 +365,12 @@ def force_interactive_oauth():
         _oauth_interactive_forced.reset(token)
 
 
+def _is_interactive_forced() -> bool:
+    """Return True if interactive OAuth was explicitly forced (e.g. mcp login / dashboard)."""
+    return bool(_oauth_interactive_forced.get())
+
+
+
 @contextmanager
 def suppress_interactive_oauth():
     """Disable stdin-based OAuth prompts for the current execution context.
@@ -728,6 +734,27 @@ class HermesTokenStorage:
 # ---------------------------------------------------------------------------
 
 
+class _LegacyAuthCodeResult(tuple):
+    """Compatibility wrapper that acts as (code, state) tuple while supporting .code, .state, .iss."""
+
+    def __new__(cls, code: str, state: "str | None" = None, iss: "str | None" = None):
+        instance = super().__new__(cls, (code, state))
+        instance._iss = iss
+        return instance
+
+    @property
+    def code(self) -> str:
+        return self[0]
+
+    @property
+    def state(self) -> "str | None":
+        return self[1]
+
+    @property
+    def iss(self) -> "str | None":
+        return getattr(self, "_iss", None)
+
+
 def _authorization_code_result(code: str, state: "str | None", iss: "str | None" = None):
     """Package redirect parameters in the shape the installed SDK expects.
 
@@ -740,8 +767,9 @@ def _authorization_code_result(code: str, state: "str | None", iss: "str | None"
     try:
         from mcp.shared.auth import AuthorizationCodeResult
     except ImportError:  # mcp < 2.0
-        return code, state
+        return _LegacyAuthCodeResult(code, state, iss)
     return AuthorizationCodeResult(code=code, state=state, iss=iss)
+
 
 
 def _make_callback_handler() -> tuple[type, dict]:

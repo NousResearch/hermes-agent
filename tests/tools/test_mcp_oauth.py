@@ -1112,3 +1112,47 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+def test_interactive_oauth_initial_failure_does_not_retry_loop(monkeypatch):
+    """Under force_interactive_oauth(), initial connection failure must fail fast
+    without burning reconnect retries that rotate PKCE state."""
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_oauth import force_interactive_oauth
+
+    attempts = 0
+
+    async def _failing_http(self, config):
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("HTTP read timeout")
+
+    monkeypatch.setattr(MCPServerTask, "_run_http", _failing_http)
+
+    task = MCPServerTask("oauth-srv")
+    task._auth_type = "oauth"
+
+    with force_interactive_oauth():
+        with pytest.raises(TimeoutError):
+            asyncio.run(task.start({"url": "https://mcp.example.com", "auth": "oauth"}))
+
+    assert attempts == 1
+
+
+def test_authorization_code_result_compatibility():
+    """_authorization_code_result must return a 2-tuple under mcp < 2.0 or AuthorizationCodeResult under mcp >= 2.0."""
+    from tools.mcp_oauth import _authorization_code_result
+
+    res = _authorization_code_result("test_code", "test_state", "test_iss")
+    if isinstance(res, tuple):
+        # Under mcp < 2.0, must unpack cleanly as 2-tuple
+        code, state = res
+        assert code == "test_code"
+        assert state == "test_state"
+    else:
+        assert res.code == "test_code"
+        assert res.state == "test_state"
+        assert res.iss == "test_iss"
+
+
+

@@ -529,6 +529,14 @@ class TestListProfiles:
         assert "alpha" in names
         assert "beta" in names
 
+    def test_ignores_cron_only_profile_shells(self, profile_env):
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / "profiles" / "ghost" / "cron").mkdir(parents=True)
+
+        names = [p.name for p in list_profiles()]
+
+        assert "ghost" not in names
+
 
 # ===================================================================
 # TestActiveProfile
@@ -1104,6 +1112,15 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
+
+    def test_on_ignores_cron_only_profile_shells(self, profile_env):
+        tmp_path = profile_env
+        create_profile("worker", no_alias=True)
+        (tmp_path / ".hermes" / "profiles" / "ghost" / "cron").mkdir(parents=True)
+
+        serve = dict(profiles_to_serve(multiplex=True))
+
+        assert set(serve) == {"default", "worker"}
 
     def test_empty_allowlist_serves_only_default(self, profile_env):
         create_profile("worker", no_alias=True)

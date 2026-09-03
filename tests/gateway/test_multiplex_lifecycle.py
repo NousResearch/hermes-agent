@@ -27,7 +27,12 @@ def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     for name in ("worker", "guest"):
-        (default_home / "profiles" / name).mkdir(parents=True)
+        # A durable identity marker is what profile discovery requires; a
+        # bare mkdir would now read as a runtime-only shell (see
+        # hermes_cli.profiles._is_profile_directory).
+        profile_dir = default_home / "profiles" / name
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("", encoding="utf-8")
 
     import gateway.run as gateway_run
 

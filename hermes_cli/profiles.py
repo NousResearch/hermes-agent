@@ -1042,6 +1042,24 @@ def set_profile_display_name(profile_name: str, display_name: str) -> str:
 # CRUD operations
 # ---------------------------------------------------------------------------
 
+_PROFILE_IDENTITY_MARKERS = (
+    "config.yaml",
+    ".env",
+    "SOUL.md",
+    "profile.yaml",
+    "auth.json",
+    "state.db",
+)
+
+
+def _is_profile_directory(path: Path) -> bool:
+    """Return whether *path* contains durable profile identity.
+
+    Runtime subsystems such as cron may recreate an otherwise deleted profile's
+    directory.  A runtime-only shell must not become a listed or served profile.
+    """
+    return path.is_dir() and any((path / marker).is_file() for marker in _PROFILE_IDENTITY_MARKERS)
+
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
@@ -1078,7 +1096,7 @@ def list_profiles() -> List[ProfileInfo]:
         # wrapper dir each time — O(N*M), the dominant cost in this function).
         alias_map = build_alias_map()
         for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir():
+            if not _is_profile_directory(entry):
                 continue
             name = entry.name
             if name == "default":
@@ -1168,7 +1186,7 @@ def profiles_to_serve(
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir():
+            if not _is_profile_directory(entry):
                 continue
             name = entry.name
             if name == "default":

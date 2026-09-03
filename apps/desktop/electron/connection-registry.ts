@@ -811,6 +811,34 @@ export function connectionIdForLabel(label: string, taken: Iterable<string>): st
   }
 }
 
+/**
+ * Settle the connection id a pre-save OAuth login must write its session for.
+ * The registry editor can open the sign-in window BEFORE the draft is saved,
+ * and the login window's cookie partition is derived from this id
+ * (oauth-partition.ts) — so it must equal the id the eventual save uses. An
+ * explicit draft id wins; otherwise mint from the label exactly like
+ * normalizeConnectionInput will (labelSlug maps an empty label to
+ * 'connection', so even an unnamed draft gets a stable, unique id). The
+ * editor's save path never promotes a fresh entry to primary, so a pending
+ * draft always ends up on its own partition.
+ */
+export function connectionIdForPendingLogin(opts: {
+  connectionId?: unknown
+  label?: unknown
+  registry: ConnectionRegistry
+}): string {
+  if (typeof opts.connectionId === 'string' && opts.connectionId.trim()) {
+    return opts.connectionId.trim()
+  }
+
+  const label = typeof opts.label === 'string' ? opts.label : ''
+
+  return connectionIdForLabel(
+    label,
+    opts.registry.connections.map(c => c.id)
+  )
+}
+
 // ── Validation ──────────────────────────────────────────────────────────────
 
 export interface ConnectionInput {

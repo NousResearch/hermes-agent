@@ -17,6 +17,7 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForLabel,
+  connectionIdForPendingLogin,
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
@@ -606,6 +607,62 @@ test('connectionIdForLabel suffixes on collision and never mints "local"', () =>
   assert.equal(connectionIdForLabel('Homelab', ['homelab']), 'homelab-2')
   assert.equal(connectionIdForLabel('Homelab', ['homelab', 'homelab-2']), 'homelab-3')
   assert.equal(connectionIdForLabel('Local', []), 'local-2')
+})
+
+// A registry-editor sign-in can run before the draft is saved: the id settled
+// here names the cookie partition the login writes, so it MUST equal the id
+// normalizeConnectionInput mints when the draft is saved.
+test('connectionIdForPendingLogin: an explicit draft id wins (trimmed)', () => {
+  const registry = emptyRegistry()
+
+  assert.equal(connectionIdForPendingLogin({ connectionId: 'homelab', registry }), 'homelab')
+  assert.equal(connectionIdForPendingLogin({ connectionId: '  homelab  ', registry }), 'homelab')
+})
+
+test('connectionIdForPendingLogin: mints the save-time id for an unpersisted draft', () => {
+  let registry = emptyRegistry()
+  const entry = normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
+  registry = upsertConnection(registry, entry)
+
+  // Label-derived and collision-suffixed exactly like normalizeConnectionInput.
+  assert.equal(connectionIdForPendingLogin({ label: 'Mac mini', registry }), 'mac-mini')
+  assert.equal(connectionIdForPendingLogin({ label: 'Homelab', registry }), 'homelab-2')
+
+  // The save must land on the same id the login used.
+  const saved = normalizeConnectionInput(
+    {
+      kind: 'remote',
+      id: connectionIdForPendingLogin({ label: 'Mac mini', registry }),
+      label: 'Mac mini',
+      url: 'http://10.0.0.6:9119'
+    },
+    registry
+  )
+
+  assert.equal(saved.id, 'mac-mini')
+})
+
+test('connectionIdForPendingLogin: an unnamed draft still gets a stable unique id', () => {
+  let registry = emptyRegistry()
+  registry = upsertConnection(registry, {
+    id: 'connection',
+    kind: 'remote',
+    label: 'Taken',
+    url: 'http://10.0.0.7:9119',
+    authMode: 'oauth'
+  })
+
+  // labelSlug('') is 'connection'; the collision suffixes just like a label.
+  assert.equal(connectionIdForPendingLogin({ label: '', registry }), 'connection-2')
+  assert.equal(connectionIdForPendingLogin({ registry }), 'connection-2')
+})
+
+test('connectionIdForPendingLogin: blank or non-string ids fall back to minting', () => {
+  const registry = emptyRegistry()
+
+  for (const junk of ['', '   ', 42, null, undefined]) {
+    assert.equal(connectionIdForPendingLogin({ connectionId: junk, label: 'Homelab', registry }), 'homelab')
+  }
 })
 
 test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {

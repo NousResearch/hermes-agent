@@ -4175,6 +4175,10 @@ def delegate_task(
     # resolved tool names around each construction under a lock, so child
     # toolset resolution never leaks into the parent (shared with the plugin
     # subagent-lifecycle API).
+    # #85233: a fan-out shares one iteration budget. Independent per-child
+    # caps let N children burn N x max_iterations of metered prefills, so
+    # split the configured cap across the batch (single task unchanged).
+    per_child_max_iter = max(1, effective_max_iter // n_tasks) if n_tasks > 1 else effective_max_iter
     children = []
     for i, t in enumerate(task_list):
         # Per-task role beats top-level; normalise again so unknown
@@ -4197,7 +4201,7 @@ def delegate_task(
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
                 model=creds["model"],
-                max_iterations=effective_max_iter,
+                max_iterations=per_child_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],

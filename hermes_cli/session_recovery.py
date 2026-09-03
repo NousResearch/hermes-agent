@@ -1431,6 +1431,49 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     return result
 
 
+def _lost_and_found_plausibility_errors(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Flag systematic timestamp mis-mapping in a salvaged database.
+
+    Structural checks (integrity, FK, FTS, row counts) pass on mis-mapped
+    salvage because every row still inserts. Only semantics give it away:
+    the physical column order of a source upgraded via ALTER TABLE differs
+    from the destination template's declared order, so positional cell
+    mapping lands counters/strings where ``started_at``/``timestamp``
+    belong — and the NOT NULL substitutes turn gaps into 0.0. When every
+    mapped row violates the epoch floor, the mapping was wrong.
+
+    Stub rows written by ``stub_missing_parent_sessions`` legitimately carry
+    ``started_at = 0.0`` when no timestamped message survived, so they are
+    excluded from the denominator.
+    """
+    from hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
+
+    errors: list[str] = []
+    checks = (
+        ("sessions", "started_at", f"WHERE COALESCE(title, '') NOT LIKE '{STUB_TITLE_PREFIX}%'"),
+        ("messages", "timestamp", ""),
+    )
+    for table, column, mapped_filter in checks:
+        (total,) = conn.execute(f"SELECT COUNT(*) FROM {table} {mapped_filter}").fetchone()
+        if not total:
+            continue
+        (implausible,) = conn.execute(
+            f"SELECT COUNT(*) FROM {table} {mapped_filter} "
+            f"{'AND' if mapped_filter else 'WHERE'} ({column} IS NULL OR {column} < ?)",
+            (_EPOCH_LOW,),
+        ).fetchone()
+        if implausible == total:
+            errors.append(
+                f"{table}.{column} is implausible in all {total} salvaged row(s) "
+                "(NULL or before 2001-09): the source's physical column order "
+                "did not match the destination template, so cells were mapped "
+                "onto the wrong columns"
+            )
+    return errors
+
+
 def _recover_via_lost_and_found(
     *,
     source: Path,
@@ -1453,6 +1496,7 @@ def _recover_via_lost_and_found(
         SQLITE3_CLI_GUIDANCE,
         LostAndFoundError,
         find_sqlite3_cli,
+        find_sqlite3_cli_refusal,
         map_lost_and_found_rows,
         rebuild_fts_indexes,
         run_cli_lost_and_found_recover,
@@ -1461,6 +1505,16 @@ def _recover_via_lost_and_found(
 
     sqlite3_bin = find_sqlite3_cli()
     if sqlite3_bin is None:
+        refusal = find_sqlite3_cli_refusal()
+        if refusal.get("reason") == "wal_reset_vulnerable":
+            raise SessionRecoverySourceError(
+                "Partial recovery requires a page-level salvage shell, but "
+                "the only sqlite3 CLI on PATH is not safe to use for it: it "
+                + refusal["detail"]
+                + ". The readable table schemas for: "
+                + ", ".join(missing_required)
+                + " are still required."
+            )
         raise SessionRecoverySourceError(
             "Partial recovery still requires readable table schemas for: "
             + ", ".join(missing_required)
@@ -1529,6 +1583,21 @@ def _recover_via_lost_and_found(
         "heuristically. Review every count before trusting this output."
     )
     verification["complete"] = False
+
+    # Structural checks cannot see a positional mis-mapping (#101409):
+    # every row still inserts, so integrity/FK/FTS stay green. A
+    # systematic timestamp violation is the semantic tell — surface it
+    # so a mis-mapped salvage is never reported as verified.
+    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        plausibility_errors = _lost_and_found_plausibility_errors(
+            plausibility_conn
+        )
+    finally:
+        plausibility_conn.close()
+    if plausibility_errors:
+        verification["errors"].extend(plausibility_errors)
+        verification["healthy"] = False
 
     source_unchanged = (
         _source_fingerprint(source) == inspection["source_fingerprint"]

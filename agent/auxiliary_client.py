@@ -1800,6 +1800,10 @@ class _CodexCompletionsAdapter:
         timeout = kwargs.get("timeout")
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
+        # Per-request HTTP headers (OpenCode session affinity, Copilot
+        # x-initiator) map to real headers via the SDK kwarg — forward them.
+        if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
+            resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
 
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
@@ -2553,6 +2557,13 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
+        # Per-request HTTP headers (OpenCode session affinity) — the Anthropic
+        # SDK accepts ``extra_headers`` on messages.create/stream too.
+        if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
+            anthropic_kwargs["extra_headers"] = {
+                **(anthropic_kwargs.get("extra_headers") or {}),
+                **kwargs["extra_headers"],
+            }
 
         # Pass through caller-supplied extra_body so providers behind
         # Anthropic-compatible gateways receive their per-vendor request
@@ -3031,13 +3042,19 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
     return api_key, base_url
 
 
-def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
+def _resolve_nous_runtime_api(
+    *, force_refresh: bool = False, stale_access_token: Optional[str] = None
+) -> Optional[tuple[str, str]]:
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
     clients aligned with the singleton auth store + JWT refresh flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
+
+    ``stale_access_token`` is the bearer that just 401'd; with ``force_refresh``
+    it lets the auth store adopt a sibling process's rotation instead of
+    re-POSTing the shared grant.
     """
     pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
     if pooled is not None:
@@ -3049,6 +3066,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
         creds = resolve_nous_runtime_credentials(
             timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
+            stale_access_token=stale_access_token or None,
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -8298,7 +8316,7 @@ def _refresh_nous_auxiliary_client(
     401 lands under the ``task=""`` key while the stale entry survives under the
     task-scoped key (#58894).
     """
-    runtime = _resolve_nous_runtime_api(force_refresh=True)
+    runtime = _resolve_nous_runtime_api(force_refresh=True, stale_access_token=api_key)
     if runtime is None:
         return None, model
 
@@ -9556,7 +9574,13 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
 
-    return kwargs
+    # OpenCode relay session affinity — same key as the main turn so
+    # compression/title/vision calls stay on the conversation's warm backend.
+    from agent.opencode_affinity import merge_opencode_session_headers
+
+    return merge_opencode_session_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None
+    )
 
 
 def _validate_llm_response(

@@ -725,7 +725,15 @@ from cron.jobs import (
     save_job_output,
     use_cron_store,
 )
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.executions import (
+    _TERMINAL_STATES,
+    create_execution,
+    finish_execution,
+    get_execution,
+    mark_execution_handoff_pending,
+    mark_execution_running,
+    recover_interrupted_executions,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -769,6 +777,10 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
+# Parent gateway threads synchronously waiting on restart-safe scope workers.
+# Shutdown must not misclassify these as ownerless in-process runs: the tool
+# process sweep cannot reach the worker's transient scope.
+_restart_safe_waiter_job_ids: set[str] = set()
 _running_lock = threading.Lock()
 
 # Wall-clock (time.time()) instant each in-flight job id was claimed by
@@ -1287,9 +1299,11 @@ def mark_running_jobs_interrupted(
     Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
+        restart_safe_waiters = set(_restart_safe_waiter_job_ids)
         active_fires = [
             (token, job_id, owner, profile_home)
             for job_id, executions in _running_fire_owners.items()
+            if job_id not in restart_safe_waiters
             for token, (owner, profile_home) in executions.items()
         ]
         if only_owners is not None:
@@ -1301,7 +1315,9 @@ def mark_running_jobs_interrupted(
         if only_owners is None:
             active_fires.extend(
                 (None, job_id, None, _get_hermes_home())
-                for job_id in _running_job_ids - registered_ids
+                for job_id in (
+                    _running_job_ids - registered_ids - restart_safe_waiters
+                )
             )
         _interrupted_job_ids.update(
             token if token is not None else job_id
@@ -3203,6 +3219,28 @@ def _deliver_result(
         logger.warning("Job '%s': %s", job["id"], msg)
         return msg
 
+    # Restart-safe workers intentionally have no live gateway adapter objects.
+    # Hand the send back through a durable queue so the current or replacement
+    # gateway performs it with relay/E2EE parity.  The execution id is the
+    # idempotency key; the queue never retries an uncertain claimed send.
+    # Match on this job's own attempt: a worker's script may itself dispatch
+    # another job in-process (``hermes cron run``), and that nested delivery
+    # must not be keyed under the outer execution id.
+    external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
+    if (
+        external_execution
+        and adapters is None
+        and external_execution == str(job.get("execution_id") or "")
+    ):
+        from cron.delivery_queue import enqueue_and_wait
+
+        return enqueue_and_wait(
+            external_execution,
+            job,
+            content,
+            for_failure=for_failure,
+        )
+
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
@@ -4116,6 +4154,26 @@ def _deliver_result(
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def drain_delivery_queue(adapters, loop) -> int:
+    """Send queued worker results through this gateway's live adapters."""
+    from cron.delivery_queue import _path, drain
+
+    # Only restart-safe workers create the queue file.  Every gateway (macOS,
+    # Windows, launchd, Docker) runs this housekeeping tick, so skip the sqlite
+    # open/create entirely until a worker has actually queued something.
+    if not _path().exists():
+        return 0
+    return drain(
+        lambda queued_job, queued_content, queued_for_failure: _deliver_result(
+            queued_job,
+            queued_content,
+            adapters=adapters,
+            loop=loop,
+            for_failure=queued_for_failure,
+        )
+    )
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
@@ -7368,6 +7426,34 @@ def run_one_job(
     run cooperatively — agent interruption AND script process-tree kill —
     through the single fenced completion path.
     """
+    # Every gateway path (built-in scheduler, external providers, and direct
+    # API fires) crosses this seam.  Ensure the detached worker has a durable
+    # attempt to adopt before any launch can occur.
+    if not job.get("execution_id"):
+        execution = create_execution(job["id"], source="direct")
+        job["execution_id"] = execution["id"]
+
+    execution_id = str(job["execution_id"])
+    external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
+    if not external_owner:
+        try:
+            if _launch_external_cron_worker(job):
+                return True
+        except Exception as handoff_error:
+            error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
+            logger.error("Job '%s': %s", job["id"], error)
+            claim = job.get("fire_claim")
+            owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            try:
+                mark_job_run(
+                    job["id"],
+                    False,
+                    error,
+                    **({"expected_fire_owner": owner} if owner else {}),
+                )
+            finally:
+                finish_execution(execution_id, success=False, error=error)
+            return True
     if extra_prompt is None:
         # A gateway-forwarded manual run (`hermes cron run --prompt` /
         # cronjob(action='run', prompt=...) on a relay-fronted target) stamps
@@ -7469,6 +7555,7 @@ def _run_one_job_body(
     )
 
     _scope_token = None
+    _terminal_scope_token = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -7491,7 +7578,16 @@ def _run_one_job_body(
 
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
-        mark_execution_running(execution_id)
+        # Detached workers atomically transition the attempt to running while
+        # adopting it.  In-process paths must win the claimed->running CAS
+        # here before any user script or agent side effect may begin.
+        external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
+        if not external_owner and mark_execution_running(execution_id) is None:
+            logger.warning(
+                "Cron job %s lost execution ownership before start; skipping",
+                job["id"],
+            )
+            return True
 
         # Run and deliver under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is active, and cron
@@ -7965,6 +8061,313 @@ def _run_one_job_body(
             from tools.terminal_scope import reset_terminal_scope
 
             reset_terminal_scope(_terminal_scope_token)
+
+
+def _wait_for_external_cron_worker_body(
+    process: subprocess.Popen,
+    *,
+    execution_id: str,
+) -> bool:
+    """Preserve ``run_one_job``'s synchronous contract after handoff.
+
+    The worker owns the durable execution and survives this gateway process.
+    The caller nevertheless waits while it remains alive so manual/background
+    callers do not release their in-process guard or report stale job state.
+    A gateway replacement may kill this waiter; it does not kill the scoped
+    worker or change its ledger ownership.
+    """
+    def _is_terminal() -> bool:
+        current = get_execution(execution_id)
+        return bool(current and current.get("status") in _TERMINAL_STATES)
+
+    # The worker commits its terminal row before its process exits, so exit is
+    # the correct wakeup.  Each ledger read opens a connection and re-runs
+    # schema init; polling it at 50ms for an hours-long agent run is ~72k
+    # opens/hour of pure contention with the worker's own writes.
+    while True:
+        try:
+            returncode = process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if _is_terminal():
+                return True
+            continue
+        # The worker can commit its terminal row and exit between the first
+        # read and wait(). Re-read the exact attempt before declaring that
+        # it died without terminalizing.
+        if _is_terminal():
+            return True
+        # If the adopted worker died without terminalizing, its owner is
+        # now provably gone. Recover to ``unknown`` rather than routing the
+        # exception through the pre-handoff dispatch-failure path, which
+        # would falsely assert that no side effect could have happened.
+        recover_interrupted_executions()
+        if _is_terminal():
+            return True
+        raise RuntimeError(
+            "cron external worker exited before durable recovery could "
+            f"terminalize its execution state (exit {returncode})"
+        )
+
+
+def _wait_for_external_cron_worker(
+    process: subprocess.Popen,
+    *,
+    execution_id: str,
+    job_id: Optional[str] = None,
+    handoff_files: tuple[Path, ...] = (),
+) -> bool:
+    try:
+        return _wait_for_external_cron_worker_body(
+            process, execution_id=execution_id
+        )
+    finally:
+        if job_id is not None:
+            with _running_lock:
+                _restart_safe_waiter_job_ids.discard(job_id)
+        # The execution is terminal or its worker is dead: nobody will read a
+        # payload or acknowledgement left behind by a late/unread handoff.
+        for stale in handoff_files:
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _launch_external_cron_worker(job: dict) -> bool:
+    """Launch *job* outside a managed gateway cgroup when required.
+
+    Returns ``False`` when the caller is not a managed systemd gateway and the
+    existing in-process path should be used.  In managed topology, failure to
+    establish the transient scope raises: falling back would recreate the
+    restart interruption this handoff exists to prevent.
+    """
+    execution_id = str(job["execution_id"])
+    job_id = str(job["id"])
+    handoff_dir = _get_hermes_home() / "cron" / "external-workers"
+    payload_path = handoff_dir / f"{execution_id}.json"
+    ack_path = handoff_dir / f"{execution_id}.ready"
+    command = [
+        sys.executable,
+        "-m",
+        "cron.scheduler",
+        "--external-worker-file",
+        str(payload_path),
+        "--ack-file",
+        str(ack_path),
+    ]
+
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import build_subprocess_env
+    from tools.process_registry import restart_safe_gateway_child_argv
+
+    multiplex_active = is_multiplex_active()
+    scoped_command = restart_safe_gateway_child_argv(
+        command,
+        unit_suffix=f"cron-{job_id}-exec-{execution_id}",
+    )
+    if scoped_command == command:
+        return False
+
+    if mark_execution_handoff_pending(execution_id) is None:
+        raise RuntimeError(
+            "cron execution claim changed before external worker handoff"
+        )
+
+    _ensure_cron_dir(handoff_dir)
+    try:
+        handoff_dir.chmod(0o700)
+    except OSError:
+        pass
+    fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
+            json.dump(
+                {
+                    "job": job,
+                    "profile_home": str(_get_hermes_home().resolve()),
+                    "multiplex_active": multiplex_active,
+                },
+                payload_file,
+            )
+            payload_file.flush()
+            os.fsync(payload_file.fileno())
+    except BaseException:
+        payload_path.unlink(missing_ok=True)
+        raise
+
+    worker_env = build_subprocess_env(
+        scrub_secrets=multiplex_active,
+        inherit_profile_home=True,
+        extra={"HERMES_HOME": str(_get_hermes_home().resolve())},
+    )
+    try:
+        process = subprocess.Popen(
+            scoped_command,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=worker_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            creationflags=windows_hide_flags(),
+        )
+    except BaseException:
+        payload_path.unlink(missing_ok=True)
+        raise
+
+    with _running_lock:
+        _restart_safe_waiter_job_ids.add(job_id)
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if ack_path.exists():
+            try:
+                acknowledgement = json.loads(ack_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.exception(
+                    "Cron external worker %s published an unreadable acknowledgement; "
+                    "treating handoff as ownership-uncertain",
+                    execution_id,
+                )
+                return _wait_for_external_cron_worker(
+                    process,
+                    execution_id=execution_id,
+                    job_id=job_id,
+                    handoff_files=(payload_path,),
+                )
+            finally:
+                ack_path.unlink(missing_ok=True)
+            if (
+                not isinstance(acknowledgement, dict)
+                or acknowledgement.get("execution_id") != execution_id
+            ):
+                logger.error(
+                    "Cron external worker acknowledgement mismatch for %s; "
+                    "treating handoff as ownership-uncertain",
+                    execution_id,
+                )
+                return _wait_for_external_cron_worker(
+                    process,
+                    execution_id=execution_id,
+                    job_id=job_id,
+                    handoff_files=(payload_path,),
+                )
+            logger.info(
+                "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
+                job_id,
+                acknowledgement.get("pid"),
+                execution_id,
+            )
+            return _wait_for_external_cron_worker(
+                process,
+                execution_id=execution_id,
+                job_id=job_id,
+                handoff_files=(payload_path,),
+            )
+        returncode = process.poll()
+        if returncode is not None:
+            with _running_lock:
+                _restart_safe_waiter_job_ids.discard(job_id)
+            payload_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"cron external worker exited before ownership acknowledgement "
+                f"(exit {returncode})"
+            )
+        time.sleep(0.05)
+
+    # The child may have adopted the durable row just before publishing its
+    # acknowledgement.  Never fall back to in-process execution on an uncertain
+    # handoff: that could duplicate side effects.  The execution owner/dead-owner
+    # recovery ledger remains the authority.
+    logger.warning(
+        "Cron external worker for job '%s' did not acknowledge within 5s; "
+        "leaving the durable execution claim untouched",
+        job_id,
+    )
+    return _wait_for_external_cron_worker(
+        process,
+        execution_id=execution_id,
+        job_id=job_id,
+        handoff_files=(payload_path, ack_path),
+    )
+
+
+def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
+    """Adopt and execute one gateway-dispatched cron payload.
+
+    The execution row is created by the gateway before spawn, then transferred
+    here before the ready acknowledgement is published.  No side effect runs
+    unless that durable ownership transfer succeeds.
+    """
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        job = payload["job"]
+        profile_home = Path(payload["profile_home"]).resolve()
+        execution_id = str(job["execution_id"])
+    except Exception:
+        logger.exception("Cron external worker could not load payload %s", payload_path)
+        return False
+    finally:
+        try:
+            payload_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        is_multiplex_active,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+    from cron.executions import adopt_claimed_execution
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    home_token = set_hermes_home_override(profile_home)
+    previous_multiplex = is_multiplex_active()
+    multiplex_active = bool(payload.get("multiplex_active", False))
+    set_multiplex_active(multiplex_active)
+    hydrate_profile_secret_sources(profile_home)
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        with use_cron_store(profile_home):
+            if adopt_claimed_execution(execution_id) is None:
+                logger.error(
+                    "Cron external worker refused execution %s: durable ownership "
+                    "could not be established",
+                    execution_id,
+                )
+                return False
+            try:
+                ack_path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
+                    json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
+                    ack_file.flush()
+                    os.fsync(ack_file.fileno())
+            except Exception:
+                logger.exception(
+                    "Cron external worker could not publish ready acknowledgement for %s",
+                    execution_id,
+                )
+                return False
+            old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
+            os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
+            try:
+                return run_one_job(job, adapters=None, loop=None, verbose=False)
+            finally:
+                if old_external_execution is None:
+                    os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
+                else:
+                    os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
+    finally:
+        reset_secret_scope(secret_token)
+        set_multiplex_active(previous_multiplex)
+        reset_hermes_home_override(home_token)
 
 
 def _notify_provider_jobs_changed() -> None:
@@ -8582,4 +8985,22 @@ def tick(
 
 
 if __name__ == "__main__":
+    if "--external-worker-file" in sys.argv:
+        import argparse
+
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--external-worker-file", type=Path, required=True)
+        parser.add_argument("--ack-file", type=Path, required=True)
+        args = parser.parse_args()
+        # The gateway spawns this worker with stdout/stderr on DEVNULL; without
+        # a handler every adoption/ack failure below would be invisible.
+        try:
+            from hermes_logging import setup_logging
+
+            setup_logging(hermes_home=_get_hermes_home(), mode="cron")
+        except Exception:
+            pass
+        raise SystemExit(
+            0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
+        )
     tick(verbose=True)

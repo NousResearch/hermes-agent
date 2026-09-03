@@ -545,6 +545,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
+    # Muse Spark family (1.1/1.2/1.3 + contributor tiers) ships with a 1M
+    # context window: 1,048,576 per OpenRouter live metadata (verified
+    # 2026-09-02). The family key covers every checkpoint; live endpoint /
+    # models.dev metadata still wins when available. Substring match also
+    # covers -contributor and provider-prefixed ids (meta/...).
+    "muse-spark-1.3": 1_048_576,
+    "muse-spark": 1_048_576,
     # Thinking Machines — Inkling family ships with a 1M context window
     # (max output 256K).  Verified against OpenRouter live metadata
     # (context_length 1,048,576 for inkling, inkling-small, and the
@@ -670,6 +677,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-omni": 262144,
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # Meta Muse Spark — 1M context (1,048,576; verified via models.dev
+    # opencode/opencode-go/meta and api.commandcode.ai /models). Covers every
+    # variant: 1.1, 1.2, 1.3, -contributor, -contributor-free. Kept to the
+    # "muse-spark" prefix on purpose: a bare "muse" key would also match
+    # muse-image / muse-voice.
+    "muse-spark": 1_048_576,
 }
 
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on
@@ -2304,6 +2317,8 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 # catch-all can never be listed here.
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",    # 1M; older builds persisted the "minimax" catch-all (204,800)
+    "muse-spark-1.3",  # 1M; builds before this entry fell through to the 256K fallback
+    "muse-spark",      # 1M; 1.1/1.2 builds fell through to the 256K fallback
     "grok-4.3",      # 1M; pre-2026-05-15 builds persisted the "grok-4" catch-all (256,000)
     "grok-4.6",      # 500K; pre-catalog builds persisted the "grok-4" catch-all (256,000)
     "grok-4-fast",   # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback
@@ -3460,9 +3475,11 @@ def get_model_context_length(
             if base_url and codex_source == "live":
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
-    if effective_provider == "gmi" and base_url:
-        # GMI exposes authoritative context_length via /models, but it is not
-        # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+    if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
+        # GMI and CommandCode (api.commandcode.ai) expose authoritative
+        # context_length via /models (e.g. muse-spark 1M) but are not in
+        # models.dev, and as known providers they skip step 2's
+        # custom-endpoint probe — without this they fell to the 256K fallback.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

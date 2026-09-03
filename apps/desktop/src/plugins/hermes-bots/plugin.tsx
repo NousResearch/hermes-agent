@@ -734,11 +734,23 @@ export default {
               botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || ''
             ).trim()
 
-            const target = bot.remoteSource && bot.connectionId ? `${handle}@${bot.connectionId}` : handle
+            // message_agent only resolves canonical identities: the relay
+            // matches a roster row's handle/profile (± @connection-id), the
+            // local path a bare profile name or 'hermes'. botHandle() prefers
+            // the row's source-qualified UI alias ('default-vera'), which
+            // neither resolver accepts — annotate the canonical form instead.
+            const target =
+              bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
 
+            // Local rows get the same annotation whenever their UI alias
+            // ('default-this-device') differs from the resolvable handle —
+            // otherwise the agent has only the alias to go on and the local
+            // path rejects it the same way (#97678).
             const where = bot.remoteSource
               ? ` — on ${bot.connectionLabel || bot.connectionId} (message_agent target: "${target}")`
-              : ''
+              : handle !== target
+                ? ` (message_agent target: "${target}")`
+                : ''
 
             return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
           })

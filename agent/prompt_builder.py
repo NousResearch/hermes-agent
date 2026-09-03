@@ -281,14 +281,20 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
             "disabled, so never target='memory'. "
         )
     return frame + (
-        "Save proactively — storage has a hard character budget, and when "
-        "it fills, replace or consolidate stale entries in the same batch "
+        "Skills come first: when you learn something while doing a task — a "
+        "procedure, a pitfall, and the user's preferences and corrections "
+        "for that kind of work — record it in the skill you used or built "
+        "for the task (skill_manage), where it loads only when relevant. "
+        "Memory is the narrow exception for facts that apply to EVERY "
+        "session regardless of task (who the user is, environment facts, "
+        "standing conventions with no task home); it has a hard character "
+        "budget, so when it fills, replace or consolidate stale entries "
         "rather than skipping the save. Write entries as declarative facts, "
         "not instructions to yourself: 'User prefers concise responses' ✓ — "
         "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
         "a directive in later sessions and can override the user's current "
-        "request). Route by longevity: a fact stale within a week belongs "
-        "in session history; procedures and workflows belong in skills."
+        "request). A fact stale within a week belongs in session history; "
+        "procedures and workflows belong in skills."
     )
 
 
@@ -467,7 +473,9 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+# "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls
+# and the turn closes on finish_reason=stop (#96550).
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE
 # (execution discipline: tool persistence, mandatory tool use for arithmetic,
@@ -479,13 +487,14 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # failure modes on those families (financial math in prose, no read-back after
 # external writes, identifier "repair", completeness claims despite count
 # mismatches). GLM's tool-calls-as-plain-text stall (#53847) and MiMo (#41874)
-# are covered here too. Gemini/Gemma are excluded — they get the more specific
+# are covered here too. Muse Spark (#96550) stops after a chat-only turn on
+# defaults. Gemini/Gemma are excluded — they get the more specific
 # GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
 # it does not exhibit these failure modes; users can opt any model in via
 # config.yaml `agent.execution_guidance: true` or a substring list.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
-    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
+    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
 )
 
 # Universal "finish the job" guidance — applied to ALL models, not gated

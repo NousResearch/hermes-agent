@@ -99,3 +99,32 @@ def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, capl
 
     assert result is entry
     assert pool._entries[0].last_status is None, "lock contention is not a credential failure"
+
+
+def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
+    """Every 401-recovery caller must hand the auth store the bearer that
+    failed — without it ``_already_rotated_by_peer`` can never fire and each
+    subagent rotates the shared grant again (the "no crash, N refreshes"
+    variant of the Sep 2 stampede).
+    """
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "nous"
+    agent.api_mode = "chat_completions"
+    agent.api_key = "jwt-that-just-401d"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    agent._client_kwargs = {}
+    monkeypatch.setattr(agent, "_replace_primary_openai_client", lambda **k: True)
+
+    seen = {}
+
+    def _fake_resolve(**kwargs):
+        seen.update(kwargs)
+        return {"api_key": "fresh", "base_url": agent.base_url}
+
+    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _fake_resolve)
+
+    assert agent._try_refresh_nous_client_credentials(force=True) is True
+    assert seen["force_refresh"] is True
+    assert seen["stale_access_token"] == "jwt-that-just-401d"

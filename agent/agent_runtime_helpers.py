@@ -100,6 +100,17 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# A tool-call opener with no closer, or GLM-style argument markup
+# (<arg_key>/<arg_value>) outside any closed block, means the stream was
+# cut mid-serialization of a text-channel tool call (#101899). The call
+# can't be recovered; strip from the block-boundary opener (or the line
+# holding the first stray argument tag) to the end of the text.
+_UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
@@ -1065,6 +1076,9 @@ def strip_think_blocks(agent, content: str) -> str:
     #     during streaming may still be valuable to the user; matches
     #     OpenClaw's intentional asymmetry.)
     content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
+    # 3c. Tool-call openers or argument markup surviving 1b belong to a
+    #     block that never closed — a mid-serialization stream cut (#101899).
+    content = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', content)
     return content
 
 
@@ -2860,6 +2874,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # constructs a fresh one — no stale closed transport can be reused.
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+    # What IS shared across those per-client wrappers is the underlying
+    # connection pool: ``build_keepalive_http_client`` mounts a
+    # process-shared ``HTTPTransport`` behind a per-client view whose
+    # ``close()`` is a no-op for the pool, so a closed wrapper never takes
+    # a sibling's (or the successor's) connections with it
+    # (tests/agent/test_shared_http_transport.py).
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(
             client_kwargs.get("base_url", ""), verify=httpx_verify,
@@ -4908,8 +4928,8 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     )
 
 
-def _iter_httpx_pool_objects(http_client: Any):
-    """Yield httpcore pool objects reachable from an httpx client.
+def _iter_httpx_pools_with_owner(http_client: Any):
+    """Yield ``(pool, owner)`` pairs reachable from an httpx client.
 
     Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
     any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
@@ -4918,31 +4938,37 @@ def _iter_httpx_pool_objects(http_client: Any):
     ``force_close_tcp_sockets`` return 0 while a stream is still mid-recv —
     the interrupt logs success and the provider keeps burning the slot
     (#72975).
+
+    ``owner`` is ``None`` for a pool this client owns outright, or the
+    ``_SharedTransport`` view id when the pool is process-shared with other
+    clients (``process_bootstrap.build_keepalive_http_client``). Callers must
+    then touch only the in-flight requests stamped with that owner.
     """
     seen_pools: set[int] = set()
 
-    def _emit(pool: Any):
+    def _emit(pool: Any, owner: Any):
         if pool is None:
             return
         marker = id(pool)
         if marker in seen_pools:
             return
         seen_pools.add(marker)
-        yield pool
+        yield pool, owner
 
     def _pools_for_transport(transport: Any):
         if transport is None:
             return
+        owner = id(transport) if type(transport).__name__ == "_SharedTransport" else None
         # Normal httpx.HTTPTransport / HTTPProxy-as-transport: connections
         # live under ``_pool``. HTTPProxy itself *is* a ConnectionPool and
         # may be mounted directly — then ``_connections`` is on the
         # transport.
         pool = getattr(transport, "_pool", None)
         if pool is not None:
-            yield from _emit(pool)
+            yield from _emit(pool, owner)
             return
         if getattr(transport, "_connections", None) is not None:
-            yield from _emit(transport)
+            yield from _emit(transport, owner)
 
     try:
         yield from _pools_for_transport(getattr(http_client, "_transport", None))
@@ -4951,6 +4977,12 @@ def _iter_httpx_pool_objects(http_client: Any):
             yield from _pools_for_transport(mounted)
     except Exception:
         return
+
+
+def _iter_httpx_pool_objects(http_client: Any):
+    """Yield httpcore pool objects reachable from an httpx client."""
+    for pool, _owner in _iter_httpx_pools_with_owner(http_client):
+        yield pool
 
 
 def _connection_candidates(conn: Any):
@@ -4991,23 +5023,32 @@ def _iter_pool_sockets(client: Any):
             # Some SDK wrappers *are* the httpx client (or expose the pool
             # directly). Fall through so mount-aware discovery still runs.
             http_client = client
-        pools = list(_iter_httpx_pool_objects(http_client))
+        pools = list(_iter_httpx_pools_with_owner(http_client))
     except Exception:
         return
 
     if not pools:
         return
 
+    from agent.process_bootstrap import HERMES_TRANSPORT_OWNER_EXT
+
     seen: set[int] = set()
-    for pool in pools:
+    for pool, owner in pools:
         # Empty-list is falsy: use ``is None`` so an empty ``_connections``
         # still lets us walk in-flight ``_requests`` rather than skipping
         # the pool entirely.
         raw_conns = getattr(pool, "_connections", None)
         if raw_conns is None:
             raw_conns = getattr(pool, "_pool", None)
-        connections = list(raw_conns or [])
+        # A process-shared pool carries other clients' idle + in-flight
+        # connections: only this client's own in-flight requests (stamped by
+        # ``_SharedTransport.handle_request``) may be shut down.
+        connections = [] if owner is not None else list(raw_conns or [])
         for pool_req in list(getattr(pool, "_requests", None) or []):
+            if owner is not None:
+                exts = getattr(getattr(pool_req, "request", None), "extensions", None) or {}
+                if exts.get(HERMES_TRANSPORT_OWNER_EXT) != owner:
+                    continue
             conn = getattr(pool_req, "connection", None)
             if conn is not None:
                 connections.append(conn)

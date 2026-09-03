@@ -70,7 +70,12 @@ class TestGuidanceConstants:
         assert "declarative facts" in MEMORY_GUIDANCE
         assert "imperative phrasing" in MEMORY_GUIDANCE
         assert "stale within a week" in MEMORY_GUIDANCE
-        assert "Save proactively" in MEMORY_GUIDANCE  # positive posture leads
+        # Skills are the default home for task-learned knowledge (incl. the
+        # user's preferences/corrections for that work); memory is the narrow
+        # every-session exception. The routing rule must LEAD, not trail.
+        assert MEMORY_GUIDANCE.index("Skills come first") < MEMORY_GUIDANCE.index("Memory is the narrow exception")
+        assert "preferences and corrections" in MEMORY_GUIDANCE
+        assert "Save proactively" not in MEMORY_GUIDANCE
         assert "workflows belong" in MEMORY_GUIDANCE
         # The category/SKIP curricula must NOT be re-taught here.
         assert "PR numbers" not in MEMORY_GUIDANCE
@@ -1107,6 +1112,13 @@ class TestExecutionGuidanceModels:
         from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
         for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
             assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_muse_spark_gets_both_guidance_blocks(self):
+        # Muse Spark closes the turn after a chat-only response on defaults
+        # (#96550) — it needs tool-use enforcement AND execution guidance.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
 
     def test_excludes_google_and_claude(self):
         # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;

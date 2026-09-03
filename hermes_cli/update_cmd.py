@@ -227,7 +227,7 @@ def _run_config_check_fresh() -> tuple:
     _reload_config_modules()
     from hermes_cli.config import check_config_version
 
-    return check_config_version()
+    return check_config_version(raise_on_parse_error=True)
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
@@ -1050,9 +1050,9 @@ def _print_curator_first_run_notice() -> None:
 def _print_fts_optimize_available_notice() -> None:
     """Advertise the opt-in v23 search-index optimization after `hermes update`.
 
-    Only fires when the current profile's state.db is still on the legacy
-    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
-    points at the exact command. Honors ``sessions.fts_optimize_notice``:
+    Only fires when the current profile's state.db still needs an FTS storage
+    rebuild. Leads with the reclaimable-space figure and points at the exact
+    command. Honors ``sessions.fts_optimize_notice``:
     ``advise`` (default) prints an advisory notice, ``require`` prints a
     firmer required-upgrade notice, ``off`` suppresses it. Silent for
     fresh/already-optimized installs.
@@ -1088,13 +1088,17 @@ def _print_fts_optimize_available_notice() -> None:
         return
     db = None
     interrupted = False
+    needs_upgrade = False
     try:
         db = SessionDB(db_path=db_path, read_only=True)
-        # read_only opens skip schema init, so probe the layout directly.
+        # read_only opens skip schema init, so probe the stored layout directly.
         row = db._conn.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
+        needs_upgrade = bool(row) and getattr(
+            db, "_db_needs_fts_storage_upgrade"
+        )(db._conn)
         # An interrupted `optimize-storage` run: the table is already the
         # v23 shape, but backfill markers / demoted trash tables remain.
         # Offer the command again — re-running resumes and finishes it.
@@ -1120,9 +1124,8 @@ def _print_fts_optimize_available_notice() -> None:
                 db.close()
             except Exception:
                 pass
-    sql = (row[0] if row else "") or ""
-    if not sql or ("tool_name" in sql and not interrupted):
-        # v23 layout already present (fresh/optimized) — nothing to offer.
+    if not needs_upgrade and not interrupted:
+        # Current layout already present (fresh/optimized) — nothing to offer.
         return
 
     if interrupted:

@@ -1,13 +1,13 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
-import re
 import pytest
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
+from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
 from tools.file_operations import (
     _is_write_denied,
     ReadResult,
@@ -156,10 +156,16 @@ class TestSearchResult:
         assert d["matches"][0]["path"] == "a.py"
 
 
-    def test_truncated_flag(self):
+    def test_truncated_flag_marks_total_as_lower_bound(self):
         r = SearchResult(total_count=100, truncated=True)
         d = r.to_dict()
         assert d["truncated"] is True
+        assert d["total_count_is_lower_bound"] is True
+
+    def test_untruncated_total_omits_lower_bound_flag(self):
+        r = SearchResult(total_count=100)
+        d = r.to_dict()
+        assert "total_count_is_lower_bound" not in d
 
 
 class TestSearchResultDensify:
@@ -256,16 +262,29 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
+        stdin_data = kwargs.get("stdin_data")
+        is_windows = os.name == "nt"
+        if is_windows:
+            # Match LocalEnvironment: commands are POSIX scripts executed by
+            # Git Bash, and stdin bytes must bypass Windows newline rewriting.
+            command = [_find_bash(), "-c", command]
         completed = subprocess.run(
             command,
-            shell=True,
-            text=True,
+            shell=not is_windows,
+            text=not is_windows,
             capture_output=True,
-            input=kwargs.get("stdin_data"),
+            input=(stdin_data.encode("utf-8", "surrogateescape")
+                   if is_windows and stdin_data is not None else stdin_data),
         )
-        output = completed.stdout
+        output = (
+            completed.stdout.decode("utf-8", "replace")
+            if is_windows else completed.stdout
+        )
         if include_stderr:
-            output += completed.stderr
+            output += (
+                completed.stderr.decode("utf-8", "replace")
+                if is_windows else completed.stderr
+            )
         return {
             "output": output,
             "returncode": completed.returncode,
@@ -440,7 +459,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        return make_real_subprocess_env("/")
+        return LocalEnvironment("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""

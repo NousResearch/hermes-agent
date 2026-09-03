@@ -51,6 +51,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union,
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
+    COMPACTION_HEARTBEAT_STATUS,
     COMPACTION_STATUS,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -131,7 +132,8 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
     r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
     r"|skipping\s+concurrent\s+compression"
-    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    rf"|{re.escape(COMPACTION_STATUS)}"
+    rf"|{re.escape(COMPACTION_HEARTBEAT_STATUS)}"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
     r"|pre[- ]api\s+compression"
@@ -533,6 +535,7 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
         _status_template_to_regex(_template)
         for _template in (
             COMPACTION_STATUS,
+            COMPACTION_HEARTBEAT_STATUS,
             COMPACTION_DONE_STATUS,
             PRE_API_COMPRESSION_STATUS_TEMPLATE,
             PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
@@ -14439,10 +14442,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # transcription is forwarded without requiring /voice join.
                 self._bind_voice_input_callback(adapter)
                 connected_count += 1
+                _degraded = adapter.send_path_degraded
                 self._update_platform_runtime_status(
-                    platform.value, platform_state="connected", error_code=None, error_message=None,
+                    platform.value,
+                    platform_state="retrying" if _degraded else "connected",
+                    error_code=None,
+                    error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
                 )
-                logger.info("\u2713 %s connected", platform.value)
+                logger.info("\u2713 %s connected%s", platform.value, " (degraded)" if _degraded else "")
             else:  # outcome == "failed"
                 logger.warning("\u2717 %s failed to connect", platform.value)
                 # Defensive cleanup: a failed connect() may have allocated resources
@@ -16203,15 +16210,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._bind_voice_input_callback(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
+                        # connect() returning True does not mean the adapter's
+                        # receive path is confirmed -- Telegram's degraded
+                        # reconnect returns True so the gateway stays up while
+                        # its own ladder retries. Stamping "connected" here
+                        # would undo the adapter's accurate status (#101391).
+                        _degraded = adapter.send_path_degraded
                         self._update_platform_runtime_status(
                             platform.value,
-                            platform_state="connected",
+                            platform_state="retrying" if _degraded else "connected",
                             error_code=None,
-                            error_message=None,
+                            error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
                             needs_attention=False,
                             retrying_since=None,
                         )
-                        logger.info("✓ %s reconnected successfully", platform.value)
+                        if _degraded:
+                            logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
+                        else:
+                            logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Final responses rejected while this adapter was down
                         # are still owned by this live process, so startup
@@ -27460,17 +27476,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not error:
             return
 
-        from hermes_state import classify_persistence_error, format_session_db_unavailable
+        from hermes_state import (
+            _default_db_path,
+            classify_persistence_error,
+            format_session_db_unavailable,
+        )
 
         cause = classify_persistence_error(error)
         hint = format_session_db_unavailable()
         if cause == "corrupt":
+            # Copy-pasteable, so name the real store (profiles / HERMES_HOME
+            # do not live under ~/.hermes).
+            db_path = _default_db_path()
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
                 "1. Run `hermes doctor --fix`\n"
-                "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
-                "(then replace state.db)\n"
+                "2. Stop the gateway, then recover with:\n"
+                f"   hermes sessions recover --source {db_path} "
+                "--inspect-only\n"
+                "   (if it reports recoverable) hermes sessions recover "
+                f"--source {db_path} --output recovered-state.db\n"
+                "   — recovery snapshots the damaged file first; do NOT run "
+                "`sqlite3 ... \".recover\"` against the live state.db, a "
+                "vulnerable sqlite3 CLI can corrupt it further\n"
                 "3. Restore from a backup in ~/.hermes/backups/\n"
                 "Run `hermes doctor` for sanitized diagnostics."
             )
@@ -33247,7 +33276,42 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
-def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None):
+def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
+    """Drain each profile's worker queue through its matching live adapters."""
+    from cron import scheduler as cron_scheduler
+
+    if runner is None:
+        if adapters is not None:
+            cron_scheduler.drain_delivery_queue(adapters, loop)
+        return
+    for profile_name, profile_home in _handoff_watch_scopes(runner):
+        scoped_home = profile_home or get_hermes_home()
+        if profile_name is None:
+            profile_adapters = adapters
+        else:
+            profile_adapters = getattr(runner, "_profile_adapters", {}).get(
+                profile_name
+            )
+        if profile_adapters is None:
+            continue
+        with _profile_runtime_scope(scoped_home):
+            if profile_name is not None and not profile_adapters and adapters:
+                routes = cron_scheduler._primary_profile_routes_for_current_home()
+                if routes:
+                    profile_adapters = cron_scheduler.SharedRouteAdapters(
+                        adapters, routes
+                    )
+            cron_scheduler.drain_delivery_queue(profile_adapters, loop)
+
+
+def _start_gateway_housekeeping(
+    stop_event: threading.Event,
+    adapters=None,
+    loop=None,
+    interval: int = 60,
+    cron_provider=None,
+    runner=None,
+):
     """Background thread for gateway-only periodic chores (NOT cron).
 
     Split out of the historical ``_start_cron_ticker`` so the cron *trigger*
@@ -33301,6 +33365,16 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     tick_count = 0
     while not stop_event.is_set():
         tick_count += 1
+
+        # Restart-safe cron workers run outside the gateway cgroup and queue
+        # their final send for whichever gateway instance is live.  Drain on
+        # the gateway-wide housekeeper rather than the built-in scheduler tick:
+        # external providers do not run that ticker.
+        if adapters is not None or runner is not None:
+            try:
+                _drain_restart_safe_cron_deliveries(adapters, loop, runner)
+            except Exception as exc:
+                logger.debug("Cron durable delivery queue drain error: %s", exc)
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
@@ -34483,6 +34557,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "adapters": runner.adapters,
             "loop": asyncio.get_running_loop(),
             "cron_provider": cron_provider,
+            "runner": runner,
         },
         daemon=True,
         name="gateway-housekeeping",

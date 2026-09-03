@@ -1017,7 +1017,19 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        result = prefix + "{ " + middle + "& }" + suffix
+        #
+        # The consumed `&` also separated the compound from any statement
+        # that followed on the same line (`A && B & C`); `{ B & } C` is a
+        # syntax error, so restore a `;` when the suffix resumes with command
+        # text. No separator when the suffix already starts with a
+        # terminator (`;` `&` `|` newline `)` `}`) — except `&>`, which is a
+        # redirect prefix for the NEXT command, not a terminator.
+        tail = suffix.lstrip(" \t")
+        needs_separator = bool(tail) and (
+            tail[0] not in ";\n&|)}" or tail.startswith("&>")
+        )
+        separator = " ;" if needs_separator else ""
+        result = prefix + "{ " + middle + "& }" + separator + suffix
 
     return result
 
@@ -3134,8 +3146,15 @@ def terminal_tool(
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
+                lifecycle_scan_root_within_budget,
             )
-            if contains_launchctl_submit_command(command):
+            # Keep the specific launchctl diagnostic when this optional
+            # pre-scan fits the budget.  The full fail-closed guard below still
+            # runs when it does not, so oversized roots never reach shlex here.
+            if (
+                lifecycle_scan_root_within_budget(command)
+                and contains_launchctl_submit_command(command)
+            ):
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,

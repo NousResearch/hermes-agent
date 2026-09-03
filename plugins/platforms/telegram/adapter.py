@@ -900,6 +900,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
 
+    @property
+    def send_path_degraded(self) -> bool:
+        # True from polling-generation start until the first getUpdates
+        # round-trip is proven (_record_polling_progress), and again at every
+        # polling-death site. getattr: tests build adapters via object.__new__().
+        return bool(getattr(self, "_send_path_degraded", False))
+
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
@@ -2694,6 +2701,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_conflict_recovery_generation = None
         else:
             self._polling_conflict_count = 0
+        # First proof getUpdates is flowing for this generation: flip a
+        # published "retrying" (degraded connect, reconnect stamp, or the
+        # mid-session recovery below) back to "connected" (#101391).
+        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
+            self._write_runtime_status_safe(
+                "connected", platform_state="connected", error_code=None, error_message=None,
+            )
         self._send_path_degraded = False
 
     def _observe_polling_request_result(self, request, generation, result):
@@ -2912,6 +2926,11 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         self._send_path_degraded = True
+        # Polling died mid-session on an adapter that published "connected"
+        # at connect time. Without this, gateway_state.json keeps saying
+        # connected for as long as the recovery ladder runs (#101391: 11 h).
+        if getattr(self, "_running", False):
+            self._mark_degraded()
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
             self.name, reason, _redact_telegram_error_text(error),

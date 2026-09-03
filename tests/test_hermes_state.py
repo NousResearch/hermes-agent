@@ -11,7 +11,13 @@ import pytest
 
 import hermes_state
 from agent.session_activity import ActivityProvenance
-from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+from hermes_state import (
+    FTS_SQL,
+    FTS_STORAGE_VERSION,
+    SCHEMA_SQL,
+    SCHEMA_VERSION,
+    SessionDB,
+)
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -3631,6 +3637,160 @@ class TestFTSExternalContentMigration:
             # A new write is indexed live by the legacy triggers.
             db.append_message("s1", role="user", content="AFTEROPEN token")
             assert len(db.search_messages("AFTEROPEN")) == 1
+        finally:
+            db.close()
+
+    @pytest.mark.parametrize("with_message", [False, True])
+    def test_v23_rebuild_from_trigram_tool_calls_projection(
+        self, tmp_path, with_message
+    ):
+        """v23 installs built with historical trigram projection should be
+        repaired via optimize-storage: trigram must drop tool_calls while
+        standard messages_fts keeps indexing them."""
+        db_path = tmp_path / "v23-toolcalls.db"
+
+        # Build an external-content DB that is already at schema version 23,
+        # but with the old tool_calls-inclusive trigram projection.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript(FTS_SQL)
+        conn.executescript(
+            """
+            DROP TRIGGER IF EXISTS messages_fts_trigram_insert;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_delete;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+            DROP TABLE IF EXISTS messages_fts_trigram;
+            DROP VIEW IF EXISTS messages_fts_trigram_src;
+
+            CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
+                SELECT id, role, content, tool_name, tool_calls
+                FROM messages
+                WHERE role <> 'tool';
+
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content,
+                tool_name,
+                tool_calls,
+                content='messages_fts_trigram_src',
+                content_rowid='id',
+                tokenize='trigram'
+            );
+
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages
+            WHEN new.role <> 'tool'
+            BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+            END;
+
+            CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages
+            WHEN old.role <> 'tool'
+            BEGIN
+                INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+            END;
+
+            CREATE TRIGGER messages_fts_trigram_update
+            AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
+            WHEN (old.content IS NOT new.content
+                OR old.tool_name IS NOT new.tool_name
+                OR old.tool_calls IS NOT new.tool_calls
+                OR old.role IS NOT new.role)
+            BEGIN
+                INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+                WHERE old.role <> 'tool';
+                INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                SELECT new.id, new.content, new.tool_name, new.tool_calls
+                WHERE new.role <> 'tool';
+            END;
+            """
+        )
+        # Simulate the historical v23 projection shipped before this fix.
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES ('fts_storage_version', '1')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES ('fts_optimize_available', '1')"
+        )
+        conn.commit()
+        conn.close()
+
+        if with_message:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                ("s1", "cli", time.time()),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "s1",
+                    time.time(),
+                    "assistant",
+                    "部署完成 assistant content",
+                    "legacyTool",
+                    '{"name": "legacy", "arguments": "UNIQUE_TOOLCALL_TOKEN_43701"}',
+                ),
+            )
+            conn.commit()
+            assert conn.execute(
+                "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701'"
+            ).fetchall()
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn is not None
+            assert db.fts_optimize_available() is True
+            assert db.get_meta("fts_storage_version") == "1"
+
+            original_ensure = db._ensure_fts_schema
+
+            def interrupt_after_demote(cursor, table_name, ddl):
+                if table_name == "messages_fts_trigram":
+                    raise RuntimeError("injected trigram rebuild interruption")
+                return original_ensure(cursor, table_name, ddl)
+
+            db._ensure_fts_schema = interrupt_after_demote
+            with pytest.raises(RuntimeError, match="injected trigram"):
+                db.optimize_fts_storage(vacuum=False)
+
+            db.close()
+            db = SessionDB(db_path=db_path)
+            assert db._conn is not None
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.get_meta("fts_rebuild_progress") is None
+            assert db._has_fts_trash(db._conn) is True
+            assert db.fts_optimize_available() is True
+            assert db.get_meta("fts_storage_version") == "1"
+            if with_message:
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+
+            if with_message:
+                # messages_fts stays in the tool-calls search path.
+                assert len(db.search_messages("UNIQUE_TOOLCALL_TOKEN_43701")) == 1
+                # New trigram schema excludes tool_calls from trigram projection.
+                assert not db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701' LIMIT 1"
+                ).fetchone()
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
+            trigger_sql = db._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'trigger' AND name = 'messages_fts_trigram_update'"
+            ).fetchone()[0]
+            assert "tool_calls" not in trigger_sql
+            assert db.get_meta("fts_storage_version") == str(FTS_STORAGE_VERSION)
         finally:
             db.close()
 

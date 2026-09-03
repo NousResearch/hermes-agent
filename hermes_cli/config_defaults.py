@@ -3899,6 +3899,7 @@ DEFAULT_CONFIG = {
         # every invocation (MCP backend, status, doctor, install). Set true
         # to let cua-driver use its own default (telemetry on).
         "cua_telemetry": False,
+        "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config on
         # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,

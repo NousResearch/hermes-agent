@@ -465,6 +465,66 @@ class TestBuildCallKwargsMaxTokens:
         assert "max_tokens" not in kw3
 
 
+class TestGeminiDisabledReasoningOmitted:
+    """#87910: Gemini's OpenAI-compatible endpoint rejects the ``reasoning``
+    field outright (400 "Unknown name reasoning: Cannot find field"). A
+    reasoning-disabled config — ``{"enabled": False}``, e.g. from
+    ``auxiliary.compression.reasoning_effort: none`` — must therefore be
+    OMITTED for Gemini (omission is equivalent: Gemini never reasons unless
+    explicitly asked), while providers that accept an explicit disabled
+    field keep it."""
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["gemini", "google", "google-gemini", "google-ai-studio"],
+    )
+    def test_disabled_reasoning_omitted_for_gemini(self, provider):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="gemini-3.6-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"enabled": False}},
+        )
+        extra = kwargs.get("extra_body") or {}
+        assert "reasoning" not in extra
+
+    def test_disabled_reasoning_via_reasoning_config_also_omitted(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="gemini",
+            model="gemini-3.6-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+        )
+        extra = kwargs.get("extra_body") or {}
+        assert "reasoning" not in extra
+
+    def test_enabled_reasoning_kept_for_gemini(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="gemini",
+            model="gemini-3.6-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"enabled": True, "effort": "high"}},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+
+    def test_disabled_reasoning_kept_for_other_providers(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"enabled": False}},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+
 
 
 class TestNousTagsScoping:

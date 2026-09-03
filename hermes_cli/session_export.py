@@ -254,11 +254,15 @@ def _format_timestamp(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return (
-            datetime.fromtimestamp(float(value), tz=timezone.utc)
-            .isoformat(timespec="seconds")
-            .replace("+00:00", "Z")
-        )
+        try:
+            return (
+                datetime
+                .fromtimestamp(float(value), tz=timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+        except (OverflowError, OSError, ValueError):
+            return str(value)
     if isinstance(value, datetime):
         dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace(

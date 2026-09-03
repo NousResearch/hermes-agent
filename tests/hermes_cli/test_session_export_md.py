@@ -61,6 +61,21 @@ def test_safe_session_filename_is_deterministic_and_path_safe():
 
 
 
+def test_markdown_export_preserves_messages_with_corrupt_timestamp():
+    session = _session(
+        messages=[
+            {"role": "user", "content": "damaged row", "created_at": float("inf")},
+            {"role": "assistant", "content": "healthy row", "created_at": 1783331698.0},
+        ]
+    )
+
+    rendered = render_session_markdown(session)
+
+    assert "damaged row" in rendered
+    assert "inf" in rendered
+    assert "healthy row" in rendered
+
+
 def test_verify_export_file_checks_count_and_sha(tmp_path):
     session = _session()
     path = write_session_markdown(session, tmp_path)
@@ -73,5 +88,4 @@ def test_verify_export_file_checks_count_and_sha(tmp_path):
     ok, reason = verify_export_file(path, session)
     assert ok is False
     assert "sha256" in reason
-
 

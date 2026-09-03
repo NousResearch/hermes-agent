@@ -3014,6 +3014,24 @@ def terminal_tool(
                 f"notify_on_complete=true for long-running commands."
             )
 
+        # A raised TERMINAL_TIMEOUT default exists for dispatcher-owned
+        # background workflows; a foreground call that omits ``timeout`` must
+        # not inherit it past the foreground cap. The caller expressed no
+        # timeout intent, so clamp instead of rejecting (raise
+        # TERMINAL_MAX_FOREGROUND_TIMEOUT for a longer legitimate wait).
+        if (
+            not background
+            and timeout is None
+            and effective_timeout > FOREGROUND_MAX_TIMEOUT
+        ):
+            logger.info(
+                "Clamping default-derived foreground timeout %ss to "
+                "FOREGROUND_MAX_TIMEOUT=%ss (raise TERMINAL_MAX_FOREGROUND_TIMEOUT "
+                "for a longer wait). Task: %s",
+                default_timeout, FOREGROUND_MAX_TIMEOUT, effective_task_id,
+            )
+            effective_timeout = FOREGROUND_MAX_TIMEOUT
+
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
         if not background:

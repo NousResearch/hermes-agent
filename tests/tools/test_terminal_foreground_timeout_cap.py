@@ -90,15 +90,17 @@ class TestForegroundTimeoutCap:
         assert call_kwargs[0][0] == "pnpm dev --help"
 
 
-    def test_config_default_above_cap_not_rejected(self):
-        """When config default timeout > cap but model passes no timeout, execute normally.
+    def test_config_default_above_cap_clamped_for_foreground(self):
+        """When config default timeout > cap and model passes no timeout, clamp.
 
-        Only the model's explicit timeout parameter triggers rejection,
-        not the user's configured default.
+        A raised TERMINAL_TIMEOUT default serves dispatcher-owned background
+        workflows (#100451); the model expressed no timeout intent, so the
+        call is not rejected, but the foreground wait is still bounded by
+        FOREGROUND_MAX_TIMEOUT instead of inheriting the raised default.
         """
-        from tools.terminal_tool import terminal_tool
+        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
 
-        # User configured TERMINAL_TIMEOUT=900 in their env
+        # Profile raised TERMINAL_TIMEOUT=900 for background workflows
         with patch("tools.terminal_tool._get_env_config",
                     return_value=_make_env_config(timeout=900)), \
              patch("tools.terminal_tool._start_cleanup_thread"):
@@ -111,10 +113,79 @@ class TestForegroundTimeoutCap:
                  patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
                 result = json.loads(terminal_tool(command="make build"))
 
-        # Should execute with the config default, NOT be rejected
+        # Executes (not rejected) with the wait clamped to the cap
         call_kwargs = mock_env.execute.call_args
-        assert call_kwargs[1]["timeout"] == 900
+        assert call_kwargs[1]["timeout"] == FOREGROUND_MAX_TIMEOUT
         assert "error" not in result or result["error"] is None
+
+
+    def test_config_default_at_or_below_cap_untouched(self):
+        """A config default at or below the cap must pass through unchanged."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config",
+                    return_value=_make_env_config(timeout=300)), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "done", "returncode": 0}
+
+            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(command="make build"))
+
+        call_kwargs = mock_env.execute.call_args
+        assert call_kwargs[1]["timeout"] == 300
+        assert "error" not in result or result["error"] is None
+
+
+    def test_background_spawn_keeps_raised_default(self):
+        """Background spawns are not clamped by the foreground cap.
+
+        The raised TERMINAL_TIMEOUT default exists for dispatcher-owned
+        background workflows; a background spawn must keep using it.
+        """
+        from types import SimpleNamespace
+
+        from tools.terminal_tool import terminal_tool
+        import tools.process_registry as process_registry_mod
+
+        spawn_calls = []
+        create_env_calls = []
+
+        class FakeRegistry:
+            pending_watchers = []
+
+            def spawn_local(self, **kwargs):
+                spawn_calls.append(kwargs)
+                return SimpleNamespace(id="sess-1", pid=4321)
+
+        mock_env = SimpleNamespace(env={})
+
+        def _fake_create_environment(**kwargs):
+            create_env_calls.append(kwargs)
+            return mock_env
+
+        # Empty environment cache so the spawn runs through _create_environment,
+        # the consumer of the raised default on the background path.
+        with patch("tools.terminal_tool._get_env_config",
+                    return_value=_make_env_config(timeout=900)), \
+             patch("tools.terminal_tool._start_cleanup_thread"), \
+             patch("tools.terminal_tool._active_environments", {}), \
+             patch("tools.terminal_tool._last_activity", {}), \
+             patch("tools.terminal_tool._task_env_overrides", {}), \
+             patch("tools.terminal_tool._resolve_container_task_id", lambda value: value or "default"), \
+             patch("tools.terminal_tool._create_environment", side_effect=_fake_create_environment), \
+             patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}), \
+             patch.object(process_registry_mod, "process_registry", FakeRegistry()):
+            result = json.loads(terminal_tool(command="long-runner", background=True))
+
+        assert result["exit_code"] == 0
+        assert len(spawn_calls) == 1
+        # The raised default survives into the environment the background
+        # process runs in — the cap only bounds foreground waits.
+        assert create_env_calls[0]["timeout"] == 900
 
 
     def test_exactly_at_max_not_rejected(self):

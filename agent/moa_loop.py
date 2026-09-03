@@ -149,6 +149,8 @@ def _redact_trace_accounting(acct: Any) -> Any:
         model=acct.model,
         provider=acct.provider,
         temperature=acct.temperature,
+        duration_s=getattr(acct, "duration_s", None),
+        stats=getattr(acct, "stats", None),
     )
 
 
@@ -196,6 +198,11 @@ class _RefAccounting:
     display ``text`` is a truncated preview and is not enough to audit what an
     advisor actually saw). They are only populated when tracing is on; they add
     negligible cost otherwise.
+
+    ``duration_s`` is wall-clock seconds for the reference call (observer
+    metrics / tokens-per-sec). ``stats`` is an optional provider-root stats
+    dict (local inference servers report tokens/sec, TTFT, speculative-draft
+    counts) — never includes message bodies.
     """
 
     __slots__ = (
@@ -208,6 +215,8 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "duration_s",
+        "stats",
     )
 
     def __init__(
@@ -222,6 +231,8 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        duration_s: float | None = None,
+        stats: Any = None,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -232,6 +243,8 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        self.duration_s = duration_s
+        self.stats = stats
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -522,6 +535,7 @@ def _run_reference(
 
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
+    t0 = time.monotonic()
     try:
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
@@ -628,6 +642,11 @@ def _run_reference(
         except Exception:  # pragma: no cover - defensive
             pass
         _output_text = _extract_text(response) or "(empty response)"
+        # Provider-root stats (local servers: tokens/sec, TTFT). Only keep a
+        # plain non-empty dict — never message bodies.
+        _stats = getattr(response, "stats", None)
+        if not isinstance(_stats, dict) or not _stats:
+            _stats = None
         acct = _RefAccounting(
             usage,
             cost_usd,
@@ -638,6 +657,8 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            duration_s=time.monotonic() - t0,
+            stats=_stats,
         )
         return label, _output_text, acct
     except Exception as exc:
@@ -649,6 +670,7 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            duration_s=time.monotonic() - t0,
         )
 
 
@@ -1675,10 +1697,11 @@ class MoAChatCompletions:
     ) -> None:
         """Flush the pending full-turn trace to disk, if one is pending.
 
-        No-op when tracing is off (``save_moa_turn`` checks the config), when
-        there is no pending trace (a cache-HIT iteration ran no references), or
-        when the aggregator input was never recorded. Clears the pending trace
-        so a repeat consume cannot double-write. Best-effort — never raises.
+        No-op when there is no pending fan-out (a cache-HIT iteration ran no
+        references) or when the aggregator input was never recorded. Full
+        traces still respect ``moa.save_traces``; metrics-lite always writes
+        on a pending fan-out. Clears the pending trace so a repeat consume
+        cannot double-write. Best-effort — never raises.
 
         ``aggregator_output_fallback`` is the aggregator's resolved acting text
         as the caller already holds it in memory (the streamed assistant text).
@@ -2344,9 +2367,10 @@ class MoAClient:
     ) -> None:
         """Flush the pending full-turn MoA trace via the completions facade.
 
-        No-op unless ``moa.save_traces`` is enabled and a turn is pending.
-        ``aggregator_output_fallback`` supplies the resolved acting text so the
-        streaming path's trace is self-contained (see the facade docstring).
+        Metrics-lite always writes on a pending fan-out. Full traces still
+        require ``moa.save_traces``. ``aggregator_output_fallback`` supplies
+        the resolved acting text so the streaming path's trace is
+        self-contained (see the facade docstring).
         """
         return self.chat.completions.consume_and_save_trace(
             session_id, aggregator_output_fallback=aggregator_output_fallback

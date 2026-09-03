@@ -3122,6 +3122,11 @@ class AIAgent:
         summary.pop("raw_usage", None)
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
+        # Optional provider-root stats (local servers: tokens/sec, TTFT).
+        # Only a plain non-empty dict — never message bodies.
+        stats = getattr(response, "stats", None)
+        if isinstance(stats, dict) and stats:
+            summary["stats"] = stats
         return summary
 
     @staticmethod

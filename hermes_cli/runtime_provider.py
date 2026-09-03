@@ -846,6 +846,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 if base_url:
                     result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
+                        "provider_key": str(ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
@@ -933,6 +934,33 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return result
 
     return None
+
+
+def request_policy_provider(provider: str, requested_provider: str = "") -> str:
+    """Return the identity used to select request-shaping policy.
+
+    ``provider`` remains the canonical wire transport. A configured named
+    custom endpoint needs a distinct policy identity, however, or it inherits
+    generic custom/Ollama request fields. Resolve raw legacy names through the
+    same config lookup as runtime resolution so aliases such as ``local`` are
+    only treated as named endpoints when the user actually configured one.
+    """
+    provider_norm = str(provider or "").strip().lower()
+    requested_norm = _normalize_custom_provider_name(requested_provider or "")
+    if provider_norm != "custom":
+        return provider_norm
+    if requested_norm.startswith("custom:"):
+        return requested_norm
+    try:
+        custom_provider = _get_named_custom_provider(requested_norm)
+    except Exception:
+        custom_provider = None
+    if custom_provider:
+        return custom_provider_slug(
+            str(custom_provider.get("name") or requested_norm),
+            str(custom_provider.get("provider_key") or ""),
+        )
+    return provider_norm
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:

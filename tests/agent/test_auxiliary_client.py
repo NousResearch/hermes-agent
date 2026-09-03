@@ -359,6 +359,43 @@ class TestMoaAggregatorSharedResolution:
         assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
 
 
+def test_named_custom_runtime_avoids_generic_custom_auxiliary_fields():
+    from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+
+    token = set_runtime_main(
+        "custom",
+        "glm-custom",
+        requested_provider="custom:zhipuai",
+        base_url="https://proxy.example/v1",
+    )
+    try:
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="glm-custom",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://proxy.example/v1",
+        )
+    finally:
+        reset_runtime_main(token)
+
+    assert "reasoning_effort" not in kwargs
+    assert kwargs.get("extra_body", {}).get("think") is None
+
+
+def test_bare_custom_runtime_keeps_generic_custom_auxiliary_fields():
+    kwargs = _build_call_kwargs(
+        provider="custom",
+        model="ollama-model",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_config={"enabled": False},
+        base_url="http://127.0.0.1:11434/v1",
+    )
+
+    assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["extra_body"]["think"] is False
+
+
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
 

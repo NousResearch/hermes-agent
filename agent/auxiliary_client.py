@@ -9484,10 +9484,25 @@ def _build_call_kwargs(
     profile_top_level: Dict[str, Any] = {}
     profile_handles_reasoning = False
     try:
+        from hermes_cli.runtime_provider import request_policy_provider
         from providers import get_provider_profile
         from providers.base import ProviderProfile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
+        provider_norm = str(provider or "").strip().lower()
+        requested_provider = ""
+        runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
+        runtime_base_url = str(_runtime_main_value("base_url") or "").strip().rstrip("/")
+        if provider_norm == runtime_provider and (
+            not effective_base
+            or not runtime_base_url
+            or str(effective_base).strip().rstrip("/") == runtime_base_url
+        ):
+            requested_provider = str(
+                _runtime_main_value("requested_provider") or ""
+            ).strip()
+        profile = get_provider_profile(
+            request_policy_provider(provider_norm, requested_provider)
+        )
         if profile is not None:
             profile_body = profile.build_extra_body(
                 model=model,

@@ -7578,6 +7578,20 @@ class AIAgent:
                 **self._stream_hook_base_payload(),
                 delta=text,
                 kind="text",
+                # First-token / rate measurement needs precise token arrival
+                # times. Observer callbacks are dispatched through an async
+                # queue (worker thread), so the callback time has uncontrolled
+                # latency vs the real arrival — record the timestamp on this
+                # synchronous token path and ship it in the payload.
+                delta_at=time.time(),
+                # HTTP request sent time (recorded by chat_completion_helpers
+                # just before create()): for TTFT = first chunk - request sent,
+                # excluding agent-side request preparation.
+                request_sent_at=getattr(self, "_current_request_sent_at", None),
+                # First chunk arrival time (incl. reasoning first packet): a
+                # reasoning model's first text delta lands well after its first
+                # chunk, so TTFT should use the earlier first-chunk time.
+                first_chunk_at=getattr(self, "_current_first_chunk_at", None),
             )
         except Exception:
             logger.debug("on_stream_delta plugin hook enqueue failed", exc_info=True)

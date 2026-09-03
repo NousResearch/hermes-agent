@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from agent.secret_scope import (
     build_profile_secret_scope,
@@ -53,6 +53,40 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Official observer-hook consumption: LLM streaming perf metrics (TTFT /
+# generation window / output tokens). Idempotent registration; data is
+# delivered via message.complete's stream_perf field and the live
+# stream.perf event.
+from tui_gateway.stream_perf_hooks import register_stream_perf_hooks
+
+# agent.session_id -> UI sid mapping: the hooks' session_id is the agent's
+# internal id, while live events must be routed to the frontend stats bar
+# by UI sid.
+_AGENT_TO_UI: Dict[str, str] = {}
+_AGENT_TO_UI_LOCK = threading.Lock()
+
+
+def _on_stream_perf_update(agent_sid: str, perf: dict) -> None:
+    """Push stream.perf (incremental) to the matching UI session after each
+    LLM API call completes.
+
+    Fired synchronously from the agent thread (post_api_request); skips when
+    the mapping is missing — message.complete's whole-turn stream_perf then
+    backstops the data so the final numbers stay consistent.
+    """
+    with _AGENT_TO_UI_LOCK:
+        ui_sid = _AGENT_TO_UI.get(agent_sid)
+    if not ui_sid:
+        return
+    try:
+        _emit("stream.perf", ui_sid, {"perf": perf})
+    except Exception:
+        logger.debug("stream.perf emit failed", exc_info=True)
+
+
+_STREAM_PERF = register_stream_perf_hooks()
+_STREAM_PERF.set_on_update(_on_stream_perf_update)
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -13251,6 +13285,14 @@ def _run_prompt_submit(
     )
     _emit("message.start", sid)
 
+    # Aggregation key MUST be the agent's session_id: the official hooks
+    # (post_api_request / on_stream_delta) key on the agent-internal session
+    # id, which is different from the UI sid.
+    _agent_sid = getattr(agent, "session_id", "") or sid
+    with _AGENT_TO_UI_LOCK:
+        _AGENT_TO_UI[_agent_sid] = sid
+    _STREAM_PERF.begin_turn(_agent_sid)
+
     def run():
         terminal_receipt_attempted = False
         terminal_receipt_committed = terminal_callback is None
@@ -13858,6 +13900,16 @@ def _run_prompt_submit(
                 terminal_receipt_committed = True
             if terminal_receipt_committed:
                 _retire_turn_marker(session, marker_key)
+                # Per-turn LLM streaming perf metrics (aggregated by the official
+                # hooks: TTFT / generation window / output tokens), so the
+                # frontend stats bar shows accurate averages. Aggregation key
+                # matches the hooks'.
+                _agent_sid = getattr(agent, "session_id", "") or sid
+                _perf = _STREAM_PERF.end_turn(_agent_sid)
+                if _perf:
+                    payload["stream_perf"] = _perf
+                with _AGENT_TO_UI_LOCK:
+                    _AGENT_TO_UI.pop(_agent_sid, None)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────

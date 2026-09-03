@@ -271,6 +271,22 @@ def test_utf32_le_bom_is_skipped_without_crashing(tmp_path, caplog, monkeypatch)
     assert any("UTF-32" in r.message for r in caplog.records)
 
 
+def test_utf32_user_env_leaves_project_env_as_active_source(tmp_path, monkeypatch):
+    """A skipped user env must not weaken project-env precedence."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    raw = codecs.BOM_UTF32_LE + "PRECEDENCE_PROBE=user\n".encode("utf-32-le")
+    user_env.write_bytes(raw)
+    project_env = tmp_path / "project.env"
+    project_env.write_text("PRECEDENCE_PROBE=project\n", encoding="utf-8")
+    monkeypatch.setenv("PRECEDENCE_PROBE", "stale-shell")
+
+    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
+
+    assert loaded == [project_env]
+    assert os.environ["PRECEDENCE_PROBE"] == "project"
+    assert user_env.read_bytes() == raw
 
 
 def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):

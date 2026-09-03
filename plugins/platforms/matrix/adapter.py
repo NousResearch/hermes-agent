@@ -2605,6 +2605,8 @@ class MatrixAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = True,
+        **kwargs: Any,
     ) -> SendResult:
         """Upload an audio file as a voice message (MSC3245 native voice).
 
@@ -2615,10 +2617,26 @@ class MatrixAdapter(BasePlatformAdapter):
         transcode non-Ogg input to Ogg/Opus (best-effort — if ffmpeg is
         unavailable the original file is sent unchanged, preserving the
         previous behaviour).
+
+        Ogg/Opus input is forced to ``is_voice=True``: it is exactly the
+        container MSC3245 voice messages use, and without the flag Element X
+        draws a file card instead of a player. The caller cannot be relied on
+        here — gateway media delivery derives ``is_voice`` from an
+        ``[[audio_as_voice]]`` directive in the response text, and the gateway
+        only auto-appends that directive from tool results when the agent did
+        not write its own ``MEDIA:`` tag (see ``gateway/run.py``). An agent
+        that synthesises audio itself (e.g. ``terminal`` + ``synth_voice.py``)
+        and emits its own ``MEDIA:`` tag therefore never gets the directive,
+        so the decision is made here, in code, rather than depending on the
+        model remembering a marker. Non-Ogg input still honours the caller's
+        flag, so a plain ``.mp3`` attachment is not turned into a voice note.
         """
+        already_ogg = str(audio_path).lower().endswith((".ogg", ".oga", ".opus"))
+        if already_ogg:
+            is_voice = True
         converted_path: Optional[str] = None
         send_path = audio_path
-        if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
+        if not already_ogg:
             converted_path = await asyncio.to_thread(
                 _matrix_transcode_voice_to_ogg, audio_path
             )
@@ -2639,7 +2657,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     else None
                 ),
                 metadata=metadata,
-                is_voice=True,
+                is_voice=is_voice,
             )
         finally:
             if converted_path:

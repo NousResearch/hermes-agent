@@ -7382,6 +7382,21 @@ class TurnRunner:
                 if has_voice_directive:
                     unique_tags.insert(0, "[[audio_as_voice]]")
                 final_response = final_response + "\n" + "\n".join(unique_tags)
+        elif "[[audio_as_voice]]" not in final_response:
+            # The agent wrote its own MEDIA: tag, which skips the whole
+            # auto-append above -- including the [[audio_as_voice]] directive
+            # a TTS tool asked for THIS turn. Losing it means the adapter
+            # delivers a file card instead of a voice bubble, so recover the
+            # directive on its own. The MEDIA: tags themselves are deliberately
+            # not appended here: the agent already supplied them, and adding
+            # them again would deliver the same file twice.
+            _, has_voice_directive = _collect_auto_append_media_tags(
+                result.get("messages", []),
+                history_offset=len(agent_history),
+                history_media_paths=_history_media_paths,
+            )
+            if has_voice_directive:
+                final_response = "[[audio_as_voice]]\n" + final_response
 
         # Auto-titling runs at TURN START (agent/turn_context.py) from the
         # user's message alone, so it no longer waits on final_response — a

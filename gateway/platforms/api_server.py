@@ -2979,6 +2979,7 @@ class APIServerAdapter(BasePlatformAdapter):
             GatewayRunner,
         )
         from hermes_cli.tools_config import _get_platform_tools
+        from hermes_state import _BARE_BILLING_PROVIDERS
 
         # Catch RuntimeError ONLY around this call, not the wider
         # _create_agent()+run_conversation() span --
@@ -3050,6 +3051,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 return None
 
+        def _routable_ambient_provider(name: Any) -> Optional[str]:
+            # ``"custom"``/``"auto"`` are the ambient runtime's provider *kind*
+            # labels for a named custom provider, not names under
+            # ``providers:`` — re-resolving them through
+            # _resolve_provider_runtime yields a credential-less fallback
+            # runtime that clobbers the working ambient credentials already in
+            # runtime_kwargs (#102384). Mirrors the resume-side guard in
+            # hermes_state.session_gateway_runtime (_BARE_BILLING_PROVIDERS).
+            cleaned = _clean_request_string(name)
+            if cleaned and cleaned.strip().lower() in _BARE_BILLING_PROVIDERS:
+                return None
+            return cleaned
+
         # Final precedence mirrors the gateway contract:
         # confirmed Browser model lock → session /model override →
         # session-persisted model (POST /api/sessions {"model": ...}) →
@@ -3072,7 +3086,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if session_override:
             override_model = resolve_effective_model(session_override, None, model)
             session_provider = _clean_request_string(session_override.get("provider"))
-            current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+            current_provider = _routable_ambient_provider(runtime_kwargs.get("provider"))
             provider_runtime = _resolve_provider_runtime(
                 session_provider or current_provider,
                 target_model=override_model,
@@ -3092,7 +3106,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # alias).  Pins this session's turns ahead of per-request body
             # values — a session's chosen model is a standing selection,
             # matching the native gateway's session-model semantics.
-            current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+            current_provider = _routable_ambient_provider(runtime_kwargs.get("provider"))
             provider_runtime = _resolve_provider_runtime(
                 current_provider,
                 target_model=session_row_model,

@@ -2364,8 +2364,15 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+    def select(self, *, auth_type: Optional[str] = None) -> Optional[PooledCredential]:
+        """Select an available entry, optionally constrained to one auth type.
+
+        The filter is a hard eligibility boundary, not a preference: when no
+        matching entry is available this returns ``None`` instead of selecting
+        another credential kind. Existing callers that omit ``auth_type`` keep
+        the prior pool behavior unchanged.
+        """
+        entry, pending_refresh = self._select_under_lock(auth_type=auth_type)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
         if entry is not None:
@@ -2374,15 +2381,17 @@ class CredentialPool:
         # If no entry was available but we just refreshed some, re-select
         # now that the refreshed entries are back in the pool.
         if pending_refresh:
-            entry, _ = self._select_under_lock()
+            entry, _ = self._select_under_lock(auth_type=auth_type)
             if entry is not None:
                 self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_under_lock(
+        self, *, auth_type: Optional[str] = None
+    ) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Run selection under the lock, returning entry + pending refreshes."""
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(auth_type=auth_type)
 
     def _refresh_pending_entries(self, pending: List[tuple]) -> None:
         """Refresh deferred single-use-token entries outside the lock.
@@ -2581,13 +2590,22 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_unlocked(
+        self,
+        *,
+        refresh: bool = True,
+        auth_type: Optional[str] = None,
+    ) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Select the best available credential entry.
 
         Returns ``(entry, pending_refresh)`` where *pending_refresh* contains
         single-use-token entries that must be refreshed outside the lock.
         """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        if auth_type is not None:
+            available = [
+                entry for entry in available if entry.auth_type == auth_type
+            ]
         if not available:
             self._current_id = None
             self._log_no_available_entries()

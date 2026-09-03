@@ -2200,6 +2200,13 @@ def run_conversation(
     # turn's flush must not be reported against this turn.
     agent._compression_adoption_failed = False
 
+    # An enabled review runtime owns final-surface delivery for this turn.
+    # Streaming deltas are buffered until the matching checkpoint passes;
+    # disabled or absent runtimes preserve the ordinary byte path.
+    from agent.review_checkpoints import configure_review_output_hold
+
+    configure_review_output_hold(agent)
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -2218,6 +2225,8 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _review_plan_attempt = 0
+    _review_final_attempt = 0
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -8137,6 +8146,113 @@ def run_conversation(
                     failed = True
                     break
 
+                # Review the persisted action bundle before any handler can
+                # run. A REVISE result is represented as ordinary tool
+                # results, one per call, so strict assistant(tool_calls) →
+                # tool alternation remains valid without a synthetic user
+                # message or an executed side effect.
+                from agent.review_checkpoints import (
+                    discard_review_output,
+                    release_review_output,
+                    review_tool_checkpoint,
+                )
+
+                _review_decision = review_tool_checkpoint(
+                    agent,
+                    turn_id=turn_id,
+                    attempt=_review_plan_attempt,
+                    user_message=original_user_message or user_message,
+                    assistant_content=turn_content,
+                    tool_calls=list(assistant_message.tool_calls or []),
+                )
+                _review_action = _review_decision.action
+                _review_summary = (
+                    (_review_decision.result.summary if _review_decision.result else "")
+                    or _review_decision.reason
+                    or "No reviewer explanation was available."
+                )
+
+                if _review_action == "continue":
+                    if not release_review_output(agent):
+                        _review_action = "block"
+                        _review_summary = (
+                            "The held candidate exceeded the safe output buffer."
+                        )
+                    elif _review_decision.reason:
+                        agent._emit_status(
+                            "⚠️ Review unavailable; continuing under the configured "
+                            f"failure policy ({_review_decision.reason})"
+                        )
+
+                if _review_action != "continue":
+                    discard_review_output(agent)
+                    if _review_action == "revise":
+                        _review_tool_text = (
+                            "Review checkpoint requested a revised plan before "
+                            f"execution. No tool ran. {_review_summary}"
+                        )
+                    elif _review_action == "ask_user":
+                        _review_tool_text = (
+                            "Review checkpoint needs the user's decision before "
+                            f"execution. No tool ran. {_review_summary}"
+                        )
+                    elif _review_action == "cancelled":
+                        _review_tool_text = (
+                            "Review checkpoint was cancelled before execution. "
+                            f"No tool ran. {_review_summary}"
+                        )
+                    else:
+                        _review_tool_text = (
+                            "Review checkpoint blocked this planned action before "
+                            f"execution. No tool ran. {_review_summary}"
+                        )
+
+                    for _review_tc in assistant_message.tool_calls or []:
+                        append_message(messages, {
+                            "role": "tool",
+                            "name": _review_tc.function.name,
+                            "tool_call_id": coalesce_tool_call_id(_review_tc),
+                            "content": _review_tool_text,
+                        })
+                    agent._session_messages = messages
+                    try:
+                        agent._flush_messages_to_session_db(
+                            messages, conversation_history
+                        )
+                    except Exception:
+                        logger.warning(
+                            "review checkpoint closure flush failed (session=%s)",
+                            getattr(agent, "session_id", None) or "none",
+                            exc_info=True,
+                        )
+
+                    if _review_action == "revise":
+                        _review_plan_attempt += 1
+                        final_response = None
+                        agent._emit_status(
+                            "↻ Reviewer requested a revised plan; no tool ran"
+                        )
+                        continue
+
+                    if _review_action == "ask_user":
+                        final_response = (
+                            "Review checkpoint needs your decision before the "
+                            f"planned action can run. {_review_summary}"
+                        )
+                    elif _review_action == "cancelled":
+                        final_response = (
+                            "Review checkpoint was cancelled before the planned "
+                            f"action could run. {_review_summary}"
+                        )
+                    else:
+                        final_response = (
+                            "Review checkpoint blocked the planned action before "
+                            f"any tool ran. {_review_summary}"
+                        )
+                    _turn_exit_reason = f"review_plan_{_review_action}"
+                    failed = True
+                    break
+
                 # A UI must never observe an assistant/tool-call row that is
                 # still only an ephemeral in-memory projection. Emit interim
                 # commentary only after the canonical SessionDB append above.
@@ -9119,6 +9235,69 @@ def run_conversation(
                     )
                     final_response = None
                     continue
+
+                # All ordinary completion/verification gates have accepted the
+                # candidate. Review it once more before any final surface or
+                # durable assistant row receives it. Automatic final-answer
+                # rewriting would require a synthetic conversation turn, so a
+                # REVISE verdict is surfaced as a controlled stop instead.
+                from agent.review_checkpoints import (
+                    discard_review_output,
+                    release_review_output,
+                    review_final_checkpoint,
+                )
+
+                _review_decision = review_final_checkpoint(
+                    agent,
+                    turn_id=turn_id,
+                    attempt=_review_final_attempt,
+                    user_message=original_user_message or user_message,
+                    final_response=final_response,
+                )
+                _review_action = _review_decision.action
+                _review_summary = (
+                    (_review_decision.result.summary if _review_decision.result else "")
+                    or _review_decision.reason
+                    or "No reviewer explanation was available."
+                )
+                if _review_action == "continue":
+                    if not release_review_output(agent):
+                        _review_action = "block"
+                        _review_summary = (
+                            "The held candidate exceeded the safe output buffer."
+                        )
+                    elif _review_decision.reason:
+                        agent._emit_status(
+                            "⚠️ Review unavailable; continuing under the configured "
+                            f"failure policy ({_review_decision.reason})"
+                        )
+
+                if _review_action != "continue":
+                    discard_review_output(agent)
+                    if _review_action == "revise":
+                        _review_final_attempt += 1
+                        final_response = (
+                            "Review checkpoint requested changes to the candidate "
+                            f"answer. {_review_summary}"
+                        )
+                    elif _review_action == "ask_user":
+                        final_response = (
+                            "Review checkpoint needs your decision before this "
+                            f"candidate answer can be released. {_review_summary}"
+                        )
+                    elif _review_action == "cancelled":
+                        final_response = (
+                            "Review checkpoint was cancelled before the candidate "
+                            f"answer could be released. {_review_summary}"
+                        )
+                    else:
+                        final_response = (
+                            "Review checkpoint blocked the candidate answer. "
+                            f"{_review_summary}"
+                        )
+                    _turn_exit_reason = f"review_final_{_review_action}"
+                    failed = True
+                    break
 
                 append_message(messages, final_msg)
                 # Make the completed answer durable before leaving the loop —

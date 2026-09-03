@@ -167,9 +167,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "wake.openwakeword": (
         "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
+        # Match openwakeword's own constraint (onnxruntime <2,>=1.10.0). The
+        # previous ==1.27.0 pin forced a downgrade of the onnxruntime already
+        # installed for local STT (faster-whisper VAD), which fails on Windows
+        # while the running process holds the DLL, leaving a half-uninstalled
+        # package behind and breaking STT.
+        "onnxruntime>=1.10.0,<2",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
     # Open-vocabulary keyword spotting: any typed phrase, zero training.
     # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
@@ -178,12 +183,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sherpa-onnx==1.13.4",
         "sentencepiece==0.2.2",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
     "wake.porcupine": (
         "pvporcupine==4.0.3",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
 
     # ─── Image generation backends ─────────────────────────────────────────

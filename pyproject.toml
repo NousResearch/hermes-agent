@@ -222,12 +222,15 @@ voice = [
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
   "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
+  # Match openwakeword's own constraint (onnxruntime <2,>=1.10.0) instead of
+  # pinning 1.27.0, which forces a downgrade of the onnxruntime used by local
+  # STT and fails on Windows while the venv DLL is held by a running process.
+  "onnxruntime>=1.10.0,<2",
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  "numpy>=2.4.3,<3",
   # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
   # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
   # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the

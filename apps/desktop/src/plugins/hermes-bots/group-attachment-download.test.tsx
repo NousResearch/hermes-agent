@@ -170,7 +170,10 @@ describe('the shared verified download action', () => {
     render(<GroupAttachmentDownload attachment={attachment} group="Core" message={message} />)
     fireEvent.click(screen.getByRole('button', { name: 'Download report.txt' }))
     await waitFor(() =>
-      expect(mocks.notify).toHaveBeenCalledWith({ kind: 'error', message: 'This attachment could not be downloaded.' })
+      expect(mocks.notify).toHaveBeenCalledWith({
+        kind: 'error',
+        message: "This file couldn't be verified. Nothing was downloaded."
+      })
     )
     expect(downloads).toHaveLength(0)
     expect((screen.getByRole('button') as HTMLButtonElement).disabled).toBe(false)
@@ -253,7 +256,7 @@ describe('the shared verified download action', () => {
 describe('existing transcript attachment regression', () => {
   it('downloads a hosted transcript chip even when its gateway lacks the catalog', async () => {
     render(<GroupChatWorkspace group="Core" members={[]} />)
-    expect(screen.queryByRole('button', { name: 'Shared files' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Download report.txt' }))
     await waitFor(() => expect(downloads).toHaveLength(1))
     expect(reads()[0][2]).toMatchObject({ event_id: item.event_id, attachment_id: item.attachment_id })
@@ -272,6 +275,6 @@ describe('existing transcript attachment regression', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Download local.txt' }))
     await waitFor(() => expect(downloads).toEqual([{ href: 'data:text/plain;base64,Yg==', name: 'local.txt' }]))
     expect(mocks.requestProfile).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: 'Shared files' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy()
   })
 })

@@ -62,7 +62,7 @@ describe('strict shared-files response contract', () => {
     ['missing cursor', { ...filePage(), next_cursor: undefined }],
     ['missing continuation', { ...filePage(), has_more: true }],
     ['unexpected continuation', { ...filePage(), next_cursor: 'cursor' }],
-    ['oversized cursor', { ...filePage([], true), next_cursor: 'x'.repeat(2049) }],
+    ['oversized cursor', { ...filePage([], true), next_cursor: 'x'.repeat(4097) }],
     ['too many items', filePage(Array.from({ length: 9 }, (_, index) => fileItem(20 - index)))],
     ['duplicate identity', filePage([fileItem(20, 'a', 1), fileItem(19, 'b', 1)])],
     ['ascending sequence', filePage([fileItem(19), fileItem(20)])],
@@ -154,7 +154,7 @@ describe('shared-files request routing', () => {
 
   it('bounds search and cursor input before routing', async () => {
     await expect(listHostedGroupFiles('Core', { query: 'x'.repeat(256) })).rejects.toThrow()
-    await expect(listHostedGroupFiles('Core', { cursor: 'x'.repeat(2049) })).rejects.toThrow()
+    await expect(listHostedGroupFiles('Core', { cursor: 'x'.repeat(4097) })).rejects.toThrow()
     expect(mocks.route).not.toHaveBeenCalled()
   })
 

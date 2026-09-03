@@ -1,14 +1,15 @@
 /** Strict metadata-only client for the hosted Group Chat shared-files RPC. */
 
 import { $groupChats, groupChatHostedGateway } from './group-chat'
+import { withGroupFileDeadline as boundedRequest } from './group-file-errors'
 import { hostedRouteForRoom, requestHostedConnection } from './hosted-room-runtime'
-import type { Attachment, GroupChat } from './types'
+import type { Attachment, GroupChat, GroupMessage } from './types'
 
 const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
 const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
 const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i
 const MAX_ATTACHMENT_BYTES = 15_000_000
-const MAX_CURSOR_LENGTH = 2048
+const MAX_CURSOR_LENGTH = 4096
 export const GROUP_FILES_PAGE_SIZE = 8
 export const GROUP_FILES_MAX_PAGE_SIZE = 32
 export const GROUP_FILES_MAX_QUERY_LENGTH = 255
@@ -25,14 +26,19 @@ export interface GroupFileItem {
   producer: GroupFileProducer
   seq: number
   sharedAt: number
+  manifestIndex?: number
+  key?: string
+  localMessage?: GroupMessage
 }
 
 export interface GroupFilesPage {
-  authority: { epoch: number; gatewayId: string }
+  authority: { epoch: number; gatewayId: string } | null
   hasMore: boolean
   items: GroupFileItem[]
   nextCursor: null | string
   snapshotSeq: number
+  latestFileSeq?: number
+  localSnapshotKey?: string
 }
 
 export interface GroupFilesListInput {
@@ -46,7 +52,11 @@ export function isGroupFilesCursorError(error: unknown): boolean {
   const inner = record(outer?.error)
   const message = String(outer?.message || inner?.message || '')
 
-  return /attachment list cursor (?:is invalid|does not match this request|must be|is too large)/i.test(message)
+  return (
+    outer?.code === 4143 ||
+    inner?.code === 4143 ||
+    /attachment list cursor (?:is invalid|does not match this request|must be|is too large)/i.test(message)
+  )
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -69,19 +79,14 @@ function integer(value: unknown, label: string, minimum = 0): number {
   return Number(value)
 }
 
-async function boundedRequest<T>(request: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
+function cursorText(value: unknown) {
+  const cursor = requiredText(value, 'cursor', MAX_CURSOR_LENGTH)
 
-  try {
-    return await Promise.race([
-      request,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Shared-files request timed out')), 10_000)
-      })
-    ])
-  } finally {
-    clearTimeout(timer)
+  if (new TextEncoder().encode(cursor).length > MAX_CURSOR_LENGTH) {
+    throw new Error('Invalid shared-files cursor')
   }
+
+  return cursor
 }
 
 // Backend wire naming is intentionally contained here. Reconciliation of the
@@ -112,6 +117,7 @@ function parseItem(value: unknown, snapshotSeq: number): GroupFileItem {
   const size = integer(item?.size, 'size')
   const seq = integer(item?.seq, 'sequence', 1)
   const sharedAt = item?.shared_at
+  const manifestIndex = item?.manifest_index === undefined ? undefined : integer(item.manifest_index, 'manifest index')
 
   if (
     !ATTACHMENT_ID_RE.test(attachmentId) ||
@@ -120,6 +126,7 @@ function parseItem(value: unknown, snapshotSeq: number): GroupFileItem {
     !MIME_RE.test(mime) ||
     size > MAX_ATTACHMENT_BYTES ||
     seq > snapshotSeq ||
+    (manifestIndex !== undefined && manifestIndex > 7) ||
     typeof sharedAt !== 'number' ||
     !Number.isFinite(sharedAt) ||
     sharedAt <= 0 ||
@@ -133,7 +140,8 @@ function parseItem(value: unknown, snapshotSeq: number): GroupFileItem {
     eventId,
     producer: parseProducer(item?.producer),
     seq,
-    sharedAt
+    sharedAt,
+    ...(manifestIndex === undefined ? {} : { manifestIndex })
   }
 }
 
@@ -148,7 +156,11 @@ export function parseGroupFilesPage(
   const epoch = integer(authority?.epoch, 'authority epoch', 1)
   const hasMore = response?.has_more
   const rawCursor = response?.next_cursor
-  const nextCursor = rawCursor === null ? null : requiredText(rawCursor, 'cursor', MAX_CURSOR_LENGTH)
+  const nextCursor = rawCursor === null ? null : cursorText(rawCursor)
+
+  const latestFileSeq =
+    response?.latest_seq === undefined ? undefined : integer(response.latest_seq, 'latest file sequence')
+
   const rawItems = response?.items
   const limit = Math.min(GROUP_FILES_MAX_PAGE_SIZE, integer(expected.limit ?? GROUP_FILES_PAGE_SIZE, 'page size', 1))
 
@@ -170,7 +182,11 @@ export function parseGroupFilesPage(
   const items = rawItems.map(item => parseItem(item, snapshotSeq))
   const ids = new Set(items.map(item => item.attachment.attachmentId))
 
-  if (ids.size !== items.length) {
+  if (
+    ids.size !== items.length ||
+    (latestFileSeq !== undefined && items.some(item => item.seq > latestFileSeq)) ||
+    (items.some(item => item.manifestIndex !== undefined) && items.some(item => item.manifestIndex === undefined))
+  ) {
     throw new Error('Invalid shared-files duplicate')
   }
 
@@ -178,15 +194,33 @@ export function parseGroupFilesPage(
     const previous = items[index - 1]
     const current = items[index]
 
-    if (
-      current.seq > previous.seq ||
-      (current.seq === previous.seq && current.attachment.attachmentId! <= previous.attachment.attachmentId!)
-    ) {
+    if (compareGroupFiles(previous, current) >= 0) {
       throw new Error('Invalid shared-files order')
     }
   }
 
-  return { authority: { epoch, gatewayId }, hasMore, items, nextCursor, snapshotSeq }
+  return {
+    authority: { epoch, gatewayId },
+    hasMore,
+    items,
+    nextCursor,
+    snapshotSeq,
+    ...(latestFileSeq === undefined ? {} : { latestFileSeq })
+  }
+}
+
+export function compareGroupFiles(left: GroupFileItem, right: GroupFileItem): number {
+  return (
+    right.seq - left.seq ||
+    (left.manifestIndex !== undefined && right.manifestIndex !== undefined
+      ? left.manifestIndex - right.manifestIndex
+      : 0) ||
+    (left.attachment.attachmentId! < right.attachment.attachmentId!
+      ? -1
+      : left.attachment.attachmentId === right.attachment.attachmentId
+        ? 0
+        : 1)
+  )
 }
 
 export function validateGroupFilesContinuation(previous: GroupFilesPage, next: GroupFilesPage) {
@@ -195,13 +229,15 @@ export function validateGroupFilesContinuation(previous: GroupFilesPage, next: G
 
   if (
     next.snapshotSeq !== previous.snapshotSeq ||
-    next.authority.gatewayId !== previous.authority.gatewayId ||
-    next.authority.epoch !== previous.authority.epoch ||
+    next.authority?.gatewayId !== previous.authority?.gatewayId ||
+    next.authority?.epoch !== previous.authority?.epoch ||
+    next.localSnapshotKey !== previous.localSnapshotKey ||
     next.nextCursor === previous.nextCursor ||
     (last &&
       first &&
-      (first.seq > last.seq ||
-        (first.seq === last.seq && first.attachment.attachmentId! <= last.attachment.attachmentId!)))
+      previous.authority !== null &&
+      (compareGroupFiles(last, first) >= 0 ||
+        (last.manifestIndex === undefined) !== (first.manifestIndex === undefined)))
   ) {
     throw new Error('Invalid shared-files continuation')
   }
@@ -218,7 +254,7 @@ export async function listHostedGroupFiles(group: string, input: GroupFilesListI
   }
 
   if (input.cursor !== undefined) {
-    requiredText(input.cursor, 'cursor', MAX_CURSOR_LENGTH)
+    cursorText(input.cursor)
   }
 
   if (

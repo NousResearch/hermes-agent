@@ -62,20 +62,20 @@ describe('shared-files states and recovery', () => {
     const loadPage = vi.fn(() => response.promise)
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
 
-    expect(screen.getByRole('dialog').textContent).toContain('Files shared in Core.')
-    expect(screen.getByRole('status', { name: 'Loading shared files' })).toBeTruthy()
-    expect(screen.queryByText('No shared files')).toBeNull()
+    expect(screen.getByRole('dialog').textContent).toContain('Core')
+    expect(screen.getByRole('status', { name: 'Loading files' })).toBeTruthy()
+    expect(screen.queryByText('No files shared yet.')).toBeNull()
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith('Core', { limit: 8 }))
     await act(async () => response.resolve(parsedFilePage([])))
-    expect(screen.getByText('No shared files')).toBeTruthy()
+    expect(screen.getByText('No files shared yet.')).toBeTruthy()
     expect(screen.queryByRole('status')).toBeNull()
-    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Search files' })).toBeTruthy()
   })
 
   it('recovers a failed first-page request through Retry', async () => {
     const loadPage = vi.fn().mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce(parsedFilePage())
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
-    await screen.findByText('Shared files could not be loaded')
+    await screen.findByText('Files could not be loaded.')
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await screen.findByText('file-20.txt')
     expect(loadPage).toHaveBeenCalledTimes(2)
@@ -85,15 +85,15 @@ describe('shared-files states and recovery', () => {
     const response = deferred<GroupFilesPage>()
     const loadPage = vi.fn(() => response.promise)
     const view = render(<SharedFilesDialog {...dialogProps} availability="offline" loadPage={loadPage} />)
-    expect(screen.getByText('Shared files are offline')).toBeTruthy()
+    expect(screen.getByText('Files are temporarily unavailable.')).toBeTruthy()
     expect(loadPage).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(loadPage).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('status', { name: 'Loading shared files' })).toBeTruthy()
+    expect(screen.getByRole('status', { name: 'Loading files' })).toBeTruthy()
     await act(async () => response.reject(new Error('still offline')))
-    expect(screen.getByText('Shared files are offline')).toBeTruthy()
+    expect(screen.getByText('Files are temporarily unavailable.')).toBeTruthy()
     view.rerender(<SharedFilesDialog {...dialogProps} availability="unavailable" loadPage={loadPage} />)
-    expect(screen.getByText('File browsing is unavailable for this Group Chat.')).toBeTruthy()
+    expect(screen.getByText("File browsing isn't available for this Group Chat yet.")).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(loadPage).toHaveBeenCalledTimes(1)
   })
@@ -102,9 +102,9 @@ describe('shared-files states and recovery', () => {
     const loadPage = vi.fn().mockResolvedValueOnce(parsedFilePage()).mockResolvedValueOnce(parsedFilePage([]))
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await screen.findByText('file-20.txt')
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search shared files' }), { target: { value: 'missing' } })
-    await screen.findByText('No matching files')
-    expect(screen.queryByText('No shared files')).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search files' }), { target: { value: 'missing' } })
+    await screen.findByText('No matching files.')
+    expect(screen.queryByText('No files shared yet.')).toBeNull()
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('missing')
     expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, query: 'missing' })
   })
@@ -117,8 +117,8 @@ describe('shared-files states and recovery', () => {
 
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await screen.findByText('No files on this page')
-    expect(screen.queryByText('No shared files')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Older files' }))
+    expect(screen.queryByText('No files shared yet.')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await screen.findByText('file-10.txt')
     expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, cursor: 'cursor-after-20' })
   })
@@ -136,13 +136,13 @@ describe('query and room request fences', () => {
 
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await screen.findByText('file-20.txt')
-    fireEvent.click(screen.getByRole('button', { name: 'Older files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await waitFor(() => expect(loadPage).toHaveBeenCalledTimes(2))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'found' } })
     await screen.findByText('found.txt')
     await act(async () => older.resolve(parsedFilePage([fileItem(19, 'stale-page.txt')])))
     expect(files()).toEqual(['found.txt'])
-    expect((screen.getByRole('button', { name: 'Newer files' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Newer' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('debounces typing and ignores an older search response', async () => {
@@ -193,7 +193,7 @@ describe('query and room request fences', () => {
     await act(async () => next.resolve(parsedFilePage([fileItem(20, 'other.txt')])))
     await act(async () => old.resolve(parsedFilePage([fileItem(20, 'old-room.txt')])))
     expect(files()).toEqual(['other.txt'])
-    expect(screen.getByRole('dialog').textContent).toContain('Files shared in Other.')
+    expect(screen.getByRole('dialog').textContent).toContain('Other')
   })
 
   it('ignores work after close and starts fresh when reopened', async () => {
@@ -237,15 +237,15 @@ describe('snapshot navigation and restart recovery', () => {
     const view = render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await waitFor(() => expect(files()).toHaveLength(8))
     expect(screen.getAllByRole('button', { name: 'Download report.txt' })).toHaveLength(8)
-    fireEvent.click(screen.getByRole('button', { name: 'Older files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await waitFor(() => expect(files()).toHaveLength(1))
     view.rerender(<SharedFilesDialog {...dialogProps} latestSeq={21} loadPage={loadPage} />)
     expect(screen.getByRole('button', { name: 'Show latest' })).toBeTruthy()
     expect(files()).toEqual(['report.txt'])
-    fireEvent.click(screen.getByRole('button', { name: 'Newer files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Newer' }))
     expect(files()).toHaveLength(8)
     expect(loadPage).toHaveBeenCalledTimes(2)
-    fireEvent.click(screen.getByRole('button', { name: 'Older files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     expect(files()).toHaveLength(1)
     expect(loadPage).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByRole('button', { name: 'Show latest' }))
@@ -262,7 +262,7 @@ describe('snapshot navigation and restart recovery', () => {
 
     render(<SharedFilesDialog {...dialogProps} loadPage={loadPage} />)
     await screen.findByText('file-20.txt')
-    fireEvent.click(screen.getByRole('button', { name: 'Older files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await screen.findByText('This file list has expired.')
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Return to latest' }))
@@ -303,19 +303,19 @@ describe('capability, keyboard and narrow layout', () => {
 
     $hostedRoomCapabilities.set({ 'gateway-a': capability })
     render(<SharedFilesControl group="Core" room={FILE_ROOM} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Shared files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }))
     await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(1))
     act(() =>
       $hostedRoomCapabilities.set({
         'gateway-a': { ...capability, limits: { ...capability.limits, attachmentList: false } }
       })
     )
-    expect(screen.getByText('File browsing is unavailable for this Group Chat.')).toBeTruthy()
+    expect(screen.getByText("File browsing isn't available for this Group Chat yet.")).toBeTruthy()
     await act(async () => pending.resolve(filePage()))
     expect(screen.queryByText('file-20.txt')).toBeNull()
   })
 
-  it('hides the header button for classic rooms and attachment-only older gateways', () => {
+  it('keeps the Files entry for classic rooms and attachment-only older gateways', () => {
     const capability = classifyHostedRoomCapability(
       {
         authority_gateway_id: 'install:home',
@@ -328,7 +328,7 @@ describe('capability, keyboard and narrow layout', () => {
 
     $hostedRoomCapabilities.set({ 'gateway-a': capability })
     const view = render(<SharedFilesControl group="Core" room={FILE_ROOM} />)
-    expect(screen.queryByRole('button', { name: 'Shared files' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy()
     act(() =>
       $hostedRoomCapabilities.set({
         'gateway-a': classifyHostedRoomCapability(
@@ -342,11 +342,11 @@ describe('capability, keyboard and narrow layout', () => {
         )
       })
     )
-    expect(screen.getByRole('button', { name: 'Shared files' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy()
     view.rerender(
       <SharedFilesControl group="Classic" room={{ ...FILE_ROOM, hosted: null, continuityMode: 'desktop' }} />
     )
-    expect(screen.queryByRole('button', { name: 'Shared files' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy()
   })
 
   it('opens only from the header action and Escape closes the actual Dialog once', async () => {
@@ -363,7 +363,7 @@ describe('capability, keyboard and narrow layout', () => {
     })
     render(<SharedFilesControl group="Core" room={FILE_ROOM} />)
     expect(screen.queryByRole('dialog')).toBeNull()
-    const trigger = screen.getByRole('button', { name: 'Shared files' })
+    const trigger = screen.getByRole('button', { name: 'Files' })
     expect(trigger.tagName).toBe('BUTTON')
     expect(trigger.getAttribute('data-size')).toBe('icon-sm')
     fireEvent.click(trigger)

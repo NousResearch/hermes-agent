@@ -1,5 +1,6 @@
 /** Desktop byte staging and retrieval for capable hosted Group Chats. */
 
+import { GroupFileError } from './group-file-errors'
 import type { Attachment, ProfileRoute } from './types'
 
 type RequestHostedConnection = <T>(route: ProfileRoute, method: string, params?: Record<string, unknown>) => Promise<T>
@@ -8,6 +9,33 @@ const MAX_ATTACHMENT_BYTES = 15_000_000
 const MAX_ATTACHMENT_TOTAL_BYTES = 25_000_000
 const MAX_ATTACHMENTS = 8
 const MAX_BASE64_CHARS = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4
+
+function validBase64(content: string): boolean {
+  if (content.length % 4 !== 0) {
+    return false
+  }
+
+  const padding = content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0
+  const end = content.length - padding
+
+  // A repeated regex group grows V8's regex stack on valid multi-megabyte
+  // receipts. This scan uses constant stack space up to the existing 15 MB cap.
+  for (let index = 0; index < end; index += 1) {
+    const code = content.charCodeAt(index)
+
+    if (!(
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 ||
+      code === 47
+    )) {
+      return false
+    }
+  }
+
+  return end >= padding
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
@@ -141,7 +169,7 @@ export async function readHostedMessageAttachment(
     !receiptName ||
     (attachment.name !== undefined && receiptName !== attachment.name) ||
     contentBase64.length > MAX_BASE64_CHARS ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contentBase64) ||
+    !validBase64(contentBase64) ||
     !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mime) ||
     (attachment.mime !== undefined && mime !== attachment.mime) ||
     typeof receiptSize !== 'number' ||
@@ -151,7 +179,7 @@ export async function readHostedMessageAttachment(
     decodedSize !== receiptSize ||
     (attachment.size !== undefined && receiptSize !== attachment.size)
   ) {
-    throw new Error('The Group Chat host returned an invalid attachment.')
+    throw new GroupFileError('verification', 'The Group Chat host returned an invalid attachment.')
   }
 
   return {

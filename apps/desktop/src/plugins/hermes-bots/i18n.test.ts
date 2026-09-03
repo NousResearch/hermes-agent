@@ -46,7 +46,15 @@ describe('BOTS_LOCALES', () => {
       'olderFiles',
       'newerFiles',
       'returnToLatest',
-      'showLatest'
+      'showLatest',
+      'filesClassicDescription',
+      'filesReconnected',
+      'filesClearSearch',
+      'filesRefresh',
+      'fileGone',
+      'fileVerificationFailed',
+      'fileTimeout',
+      'filesAccessUnavailable'
     ]
 
     for (const locale of ['en', 'ja', 'zh', 'zh-hant', 'ar', 'ru'] as const) {
@@ -66,7 +74,7 @@ describe('BOTS_LOCALES', () => {
 
   it('describes unavailable browsing without denying existing attachment support', () => {
     const byPath = Object.fromEntries(leafEntries(en))
-    expect(byPath['group.sharedFilesUnavailable']).toBe('File browsing is unavailable for this Group Chat.')
+    expect(byPath['group.sharedFilesUnavailable']).toBe("File browsing isn't available for this Group Chat yet.")
   })
 
   it('covers the English key tree in every shipped locale', () => {

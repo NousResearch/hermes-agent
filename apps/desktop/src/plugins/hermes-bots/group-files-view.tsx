@@ -1,4 +1,4 @@
-/** Capability-gated shared-files control and bounded snapshot browser. */
+/** Files discovery for hosted rooms and this Desktop's retained classic attachments. */
 
 import {
   Button,
@@ -13,34 +13,34 @@ import {
   Loader,
   SearchField,
   Tip,
-  useI18n,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { GroupAttachmentDownload } from './group-attachment-download'
 import { groupChatHostedGateway } from './group-chat'
 import {
-  GROUP_FILES_MAX_QUERY_LENGTH,
-  GROUP_FILES_PAGE_SIZE,
-  type GroupFilesListInput,
-  type GroupFilesPage,
-  isGroupFilesCursorError,
-  listHostedGroupFiles,
-  validateGroupFilesContinuation
-} from './group-files-client'
+  classicLatestFileKey,
+  createClassicGroupFilesLoader,
+  isClassicFileRoom,
+  latestHostedFileSeq
+} from './group-files-classic'
+import { listHostedGroupFiles } from './group-files-client'
+import { GroupFilesRows } from './group-files-rows'
 import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import { useBots } from './i18n'
-import type { GroupChat, GroupMessage } from './types'
+import type { GroupChat } from './types'
+import { type GroupFilesAvailability, type GroupFilesLoader, useGroupFiles } from './use-group-files'
 
-export type GroupFilesAvailability = 'available' | 'offline' | 'unavailable'
-type GroupFilesLoadState = 'error' | 'loading' | 'ready'
-type GroupFilesLoader = (group: string, input?: GroupFilesListInput) => Promise<GroupFilesPage>
+export type { GroupFilesAvailability } from './use-group-files'
 
 export function groupFilesAvailability(
   room: GroupChat,
   capabilities: ReturnType<typeof $hostedRoomCapabilities.get>
 ): GroupFilesAvailability {
+  if (isClassicFileRoom(room)) {
+    return 'available'
+  }
+
   const authorityId = groupChatHostedGateway(room)
   const capability = capabilities[String(room.hostedConnectionId || '')]
 
@@ -57,337 +57,159 @@ export function groupFilesAvailability(
     : 'unavailable'
 }
 
-function formatFileSize(bytes: number, locale: string) {
-  if (bytes < 1000) {
-    return new Intl.NumberFormat(locale, { style: 'unit', unit: 'byte', unitDisplay: 'short' }).format(bytes)
-  }
-
-  const units = [
-    ['kilobyte', 1_000],
-    ['megabyte', 1_000_000]
-  ] as const
-
-  const [unit, divisor] = units[bytes < 1_000_000 ? 0 : 1]
-
-  return new Intl.NumberFormat(locale, {
-    maximumFractionDigits: bytes < divisor * 10 ? 1 : 0,
-    style: 'unit',
-    unit,
-    unitDisplay: 'short'
-  }).format(bytes / divisor)
-}
-
-function formatFileType(mime: string, name: string) {
-  const subtype = mime.split('/')[1]?.split(/[;+]/)[0]
-  const extension = name.includes('.') ? name.split('.').pop() : ''
-
-  return String(extension || subtype || mime).toLocaleUpperCase()
-}
-
 interface SharedFilesDialogProps {
   availability: GroupFilesAvailability
+  observation?: unknown
   group: string
   latestSeq: number
+  latestKey?: string
+  classic?: boolean
   loadPage?: GroupFilesLoader
   onClose: () => void
   open: boolean
   roomId: string
 }
 
-export function SharedFilesDialog({
+export function SharedFilesDialog(props: SharedFilesDialogProps) {
+  return <FilesDialogBody key={JSON.stringify([props.group, props.roomId, props.classic || false])} {...props} />
+}
+
+function FilesDialogBody({
   availability,
+  observation,
   group,
   latestSeq,
+  latestKey,
+  classic = false,
   loadPage = listHostedGroupFiles,
   onClose,
   open,
   roomId
 }: SharedFilesDialogProps) {
   const b = useBots()
-  const { locale } = useI18n()
-  const [draftQuery, setDraftQuery] = useState('')
-  const query = draftQuery.trim()
-  const [pages, setPages] = useState<GroupFilesPage[]>([])
-  const [pageIndex, setPageIndex] = useState(0)
-  const [loadState, setLoadState] = useState<GroupFilesLoadState>('loading')
-  const [pageFailed, setPageFailed] = useState(false)
-  const [cursorExpired, setCursorExpired] = useState(false)
-  const [refresh, setRefresh] = useState(0)
-  const requestGeneration = useRef(0)
-  const page = pages[pageIndex]
+  const input = useRef<HTMLInputElement>(null)
+  const files = useGroupFiles({ availability, observation, group, loadPage, open })
+  const page = files.page
+  const first = files.pages[0]?.data
 
-  // eslint-disable-next-line no-restricted-syntax -- invalidates requests for a new dialog scope, not a reactive-value mirror
-  useEffect(() => {
-    requestGeneration.current += 1
-    setDraftQuery('')
-    setPages([])
-    setPageIndex(0)
-    setPageFailed(false)
-    setCursorExpired(false)
-  }, [group, open, roomId])
+  const latest = classic
+    ? Boolean(latestKey && first && latestKey !== first.localSnapshotKey)
+    : Boolean(first && Math.max(latestSeq, files.latestFileSeq) > first.snapshotSeq)
 
-  useEffect(
-    () => () => {
-      requestGeneration.current += 1
-    },
-    []
+  const problem = files.cursorExpired
+    ? b.group.sharedFilesExpired
+    : files.failure === 'access'
+      ? b.group.filesAccessUnavailable
+      : files.offline
+        ? b.group.sharedFilesOffline
+        : b.group.sharedFilesError
+
+  const recover = files.cursorExpired ? files.latest : files.retry
+  const recoverLabel = files.cursorExpired ? b.group.returnToLatest : b.group.sharedFilesRetry
+
+  const body = files.unavailable ? (
+    <EmptyState className="my-auto" title={b.group.sharedFilesUnavailable} />
+  ) : page?.items.length ? (
+    <GroupFilesRows group={group} items={page.items} loading={files.loading} onRefresh={files.latest} roomId={roomId} />
+  ) : files.loading ? (
+    <Loader className="m-auto size-16" label={b.group.sharedFilesLoading} type="lemniscate-bloom" />
+  ) : files.failure || files.offline ? (
+    <ErrorState className="my-auto" title={<p className="text-sm font-medium">{problem}</p>}>
+      <Button onClick={recover} variant="secondary">
+        {recoverLabel}
+      </Button>
+    </ErrorState>
+  ) : (
+    <div className="my-auto">
+      <EmptyState
+        title={
+          page && (page.hasMore || files.index > 0)
+            ? b.group.sharedFilesPageEmpty
+            : files.query
+              ? b.group.sharedFilesNoResults
+              : b.group.sharedFilesEmpty
+        }
+      />
+      {files.query ? (
+        <div className="flex justify-center">
+          <Button onClick={() => files.setQuery('')} size="inline" variant="textStrong">
+            {b.group.filesClearSearch}
+          </Button>
+        </div>
+      ) : null}
+    </div>
   )
-
-  // eslint-disable-next-line no-restricted-syntax -- request generation fences asynchronous results, not a reactive-value mirror
-  useEffect(() => {
-    const generation = ++requestGeneration.current
-
-    if (!open) {
-      return
-    }
-
-    if (availability !== 'available') {
-      setLoadState('ready')
-
-      return
-    }
-
-    setLoadState('loading')
-    setPageFailed(false)
-    setCursorExpired(false)
-
-    const timer = setTimeout(
-      () => {
-        void loadPage(group, { limit: GROUP_FILES_PAGE_SIZE, ...(query ? { query } : {}) }).then(
-          next => {
-            if (requestGeneration.current !== generation) {
-              return
-            }
-
-            setPages([next])
-            setPageIndex(0)
-            setLoadState('ready')
-          },
-          () => {
-            if (requestGeneration.current === generation) {
-              setLoadState('error')
-            }
-          }
-        )
-      },
-      query ? 250 : 0
-    )
-
-    return () => {
-      clearTimeout(timer)
-      requestGeneration.current += 1
-    }
-  }, [availability, draftQuery, group, loadPage, open, query, refresh, roomId])
-
-  const loadOlder = async () => {
-    if (!page?.hasMore || !page.nextCursor || loadState === 'loading') {
-      return
-    }
-
-    if (pages[pageIndex + 1]) {
-      setPageIndex(value => value + 1)
-
-      return
-    }
-
-    const generation = ++requestGeneration.current
-    const expectedIndex = pageIndex
-    setLoadState('loading')
-    setPageFailed(false)
-
-    try {
-      const older = await loadPage(group, {
-        cursor: page.nextCursor,
-        limit: GROUP_FILES_PAGE_SIZE,
-        ...(query ? { query } : {})
-      })
-
-      if (requestGeneration.current !== generation) {
-        return
-      }
-
-      validateGroupFilesContinuation(page, older)
-      const seen = new Set(pages.flatMap(loaded => loaded.items.map(item => item.attachment.attachmentId)))
-
-      if (older.items.some(item => seen.has(item.attachment.attachmentId))) {
-        throw new Error('Invalid shared-files duplicate page')
-      }
-
-      setPages(current => [...current.slice(0, expectedIndex + 1), older])
-      setPageIndex(expectedIndex + 1)
-      setLoadState('ready')
-    } catch (error) {
-      if (requestGeneration.current === generation) {
-        setLoadState('error')
-        setPageFailed(true)
-        setCursorExpired(isGroupFilesCursorError(error))
-      }
-    }
-  }
-
-  const showNewer = () => {
-    requestGeneration.current += 1
-    setPageIndex(value => Math.max(0, value - 1))
-    setLoadState('ready')
-  }
-
-  const returnToLatest = () => {
-    requestGeneration.current += 1
-    setPages([])
-    setPageIndex(0)
-    setPageFailed(false)
-    setRefresh(value => value + 1)
-  }
-
-  const retry = () => {
-    if (availability === 'offline') {
-      const generation = ++requestGeneration.current
-      setLoadState('loading')
-      void loadPage(group, { limit: GROUP_FILES_PAGE_SIZE, ...(query ? { query } : {}) })
-        .finally(() => {
-          if (requestGeneration.current === generation) {
-            setLoadState('ready')
-          }
-        })
-        .catch(() => undefined)
-
-      return
-    }
-
-    requestGeneration.current += 1
-    setRefresh(value => value + 1)
-  }
-
-  const body = (() => {
-    if (availability === 'offline') {
-      if (loadState === 'loading') {
-        return <Loader className="m-auto size-16" label={b.group.sharedFilesLoading} type="lemniscate-bloom" />
-      }
-
-      return (
-        <ErrorState className="my-auto" title={<p className="text-sm font-medium">{b.group.sharedFilesOffline}</p>}>
-          <Button onClick={retry} variant="secondary">
-            {b.group.sharedFilesRetry}
-          </Button>
-        </ErrorState>
-      )
-    }
-
-    if (availability === 'unavailable') {
-      return <EmptyState className="my-auto" title={b.group.sharedFilesUnavailable} />
-    }
-
-    if (loadState === 'loading' && !page) {
-      return <Loader className="m-auto size-16" label={b.group.sharedFilesLoading} type="lemniscate-bloom" />
-    }
-
-    if (loadState === 'error') {
-      return (
-        <ErrorState
-          className="my-auto"
-          title={
-            <p className="text-sm font-medium">
-              {cursorExpired ? b.group.sharedFilesExpired : b.group.sharedFilesError}
-            </p>
-          }
-        >
-          <Button onClick={pageFailed ? returnToLatest : retry} variant="secondary">
-            {pageFailed ? b.group.returnToLatest : b.group.sharedFilesRetry}
-          </Button>
-        </ErrorState>
-      )
-    }
-
-    if (!page?.items.length) {
-      const partialPage = Boolean(page && (page.hasMore || pageIndex > 0))
-
-      return (
-        <EmptyState
-          className="my-auto"
-          title={
-            partialPage ? b.group.sharedFilesPageEmpty : query ? b.group.sharedFilesNoResults : b.group.sharedFilesEmpty
-          }
-        />
-      )
-    }
-
-    return (
-      <div aria-busy={loadState === 'loading'} className="min-h-0 flex-1 overflow-y-auto" role="list">
-        {page.items.map(item => {
-          const attachment = item.attachment
-          const timestamp = item.sharedAt * 1000
-
-          const metadata = [
-            item.producer.label,
-            new Date(timestamp).toLocaleString(locale),
-            formatFileType(attachment.mime || '', attachment.name || ''),
-            formatFileSize(attachment.size || 0, locale)
-          ].join(' · ')
-
-          const message = { eventId: item.eventId, id: item.eventId, roomId } as GroupMessage
-
-          return (
-            <div
-              className="flex min-h-12 min-w-0 items-center gap-2 py-1.5"
-              key={attachment.attachmentId}
-              role="listitem"
-            >
-              <Codicon
-                className="shrink-0 text-(--ui-text-tertiary)"
-                name={attachment.kind === 'pdf' ? 'file-pdf' : attachment.kind === 'image' ? 'file-media' : 'file'}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium" title={attachment.name}>
-                  {attachment.name}
-                </div>
-                <div className="truncate text-[0.65rem] text-(--ui-text-quaternary)" title={metadata}>
-                  {metadata}
-                </div>
-              </div>
-              <GroupAttachmentDownload attachment={attachment} group={group} message={message} presentation="icon" />
-            </div>
-          )
-        })}
-      </div>
-    )
-  })()
-
-  const hasNewArrival = Boolean(page && latestSeq > page.snapshotSeq)
-  const showSearch = Boolean(query || draftQuery || pages[0]?.items.length)
 
   return (
     <Dialog onOpenChange={value => !value && onClose()} open={open}>
-      <DialogContent bodyClassName="flex min-h-0 flex-col gap-3" className="h-[min(36rem,85vh)] max-w-xl">
+      <DialogContent
+        bodyClassName="flex min-h-0 flex-col gap-3"
+        className="h-[min(36rem,85vh)] max-w-xl"
+        onKeyDown={event => {
+          const target = event.target as HTMLElement
+          const editing = target.matches('input,textarea,[contenteditable="true"]')
+
+          if (event.key === '/' && !editing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            event.preventDefault()
+            input.current?.focus()
+          } else if (event.key === 'ArrowDown' && target === input.current) {
+            const row = event.currentTarget.querySelector<HTMLElement>('[data-file-row]')
+
+            if (row) {
+              event.preventDefault()
+              row.focus()
+            }
+          }
+        }}
+        onOpenAutoFocus={event => {
+          event.preventDefault()
+          input.current?.focus()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{b.group.sharedFiles}</DialogTitle>
-          <DialogDescription className="min-w-0 truncate" title={b.group.sharedFilesDescription(group)}>
-            {b.group.sharedFilesDescription(group)}
+          <DialogDescription className="min-w-0">
+            <bdi className="block truncate" title={group}>
+              {group}
+            </bdi>
+            {classic ? <span className="block break-words">{b.group.filesClassicDescription}</span> : null}
           </DialogDescription>
         </DialogHeader>
-        {showSearch ? (
-          <SearchField
-            aria-label={b.group.searchSharedFiles}
-            containerClassName="w-full"
-            inputClassName="w-full"
-            loading={loadState === 'loading' && Boolean(page)}
-            onChange={value => setDraftQuery([...value].slice(0, GROUP_FILES_MAX_QUERY_LENGTH).join(''))}
-            placeholder={b.group.searchSharedFiles}
-            value={draftQuery}
-          />
-        ) : null}
+        <SearchField
+          aria-label={b.group.searchSharedFiles}
+          containerClassName="w-full"
+          inputClassName="w-full"
+          inputRef={input}
+          loading={files.loading && Boolean(page)}
+          onChange={files.setQuery}
+          placeholder={b.group.searchSharedFiles}
+          value={files.query}
+        />
         {body}
-        {page && availability === 'available' && loadState !== 'error' ? (
-          <div className="flex min-h-6 items-center justify-end gap-1">
-            {hasNewArrival ? (
-              <Button className="mr-auto" onClick={returnToLatest} size="inline" variant="textStrong">
+        {page && !files.unavailable ? (
+          <div className="flex min-h-8 flex-wrap items-center justify-end gap-2">
+            {page.items.length > 0 && (files.failure || files.offline) ? (
+              <div className="mr-auto flex min-w-0 flex-wrap items-center gap-2 text-xs" role="status">
+                <span>{problem}</span>
+                <Button disabled={files.loading} onClick={recover} size="inline" variant="textStrong">
+                  {recoverLabel}
+                </Button>
+              </div>
+            ) : files.reconnected ? (
+              <span className="mr-auto text-xs text-(--ui-text-tertiary)" role="status">
+                {b.group.filesReconnected}
+              </span>
+            ) : null}
+            {latest ? (
+              <Button onClick={files.latest} size="inline" variant="textStrong">
                 {b.group.showLatest}
               </Button>
             ) : null}
             <Tip label={b.group.newerFiles}>
               <Button
                 aria-label={b.group.newerFiles}
-                disabled={pageIndex === 0 || loadState === 'loading'}
-                onClick={showNewer}
+                disabled={files.index === 0 || files.loading}
+                onClick={files.newer}
                 size="icon-xs"
                 variant="ghost"
               >
@@ -397,8 +219,8 @@ export function SharedFilesDialog({
             <Tip label={b.group.olderFiles}>
               <Button
                 aria-label={b.group.olderFiles}
-                disabled={!page.hasMore || loadState === 'loading'}
-                onClick={() => void loadOlder()}
+                disabled={!page.hasMore || files.loading}
+                onClick={files.older}
                 size="icon-xs"
                 variant="ghost"
               >
@@ -417,37 +239,52 @@ export function SharedFilesControl({ group, room }: { group: string; room: Group
   const capabilities = useValue($hostedRoomCapabilities)
   const availability = groupFilesAvailability(room, capabilities)
   const [open, setOpen] = useState(false)
-  const advertised = availability === 'available'
+  const classic = isClassicFileRoom(room)
+  const roomId = String(room.roomId || '')
 
-  useEffect(() => setOpen(false), [group, room.roomId, room.hosted, room.hostedEpoch])
+  const classicLoader = useMemo(
+    () => (classic ? createClassicGroupFilesLoader(group, roomId) : null),
+    [classic, group, roomId]
+  )
 
-  if (!advertised && !open) {
-    return null
-  }
+  const loader = classicLoader || listHostedGroupFiles
+  useEffect(() => {
+    if (!open) {
+      classicLoader?.clear()
+    }
+
+    return () => classicLoader?.clear()
+  }, [open, classicLoader])
+  useEffect(() => setOpen(false), [group, roomId, room.hosted, room.hostedEpoch, classic])
 
   return (
     <>
-      {advertised ? (
-        <Tip label={b.group.sharedFiles}>
-          <Button
-            aria-label={b.group.sharedFiles}
-            className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-            onClick={() => setOpen(true)}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <Codicon name="files" />
-          </Button>
-        </Tip>
+      <Tip label={b.group.sharedFiles}>
+        <Button
+          aria-label={b.group.sharedFiles}
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setOpen(true)}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <Codicon name="files" />
+        </Button>
+      </Tip>
+      {open ? (
+        <SharedFilesDialog
+          availability={availability}
+          classic={classic}
+          group={group}
+          key={JSON.stringify([roomId, room.hosted, room.hostedEpoch, classic])}
+          latestKey={classic ? classicLatestFileKey(room) : undefined}
+          latestSeq={classic ? 0 : latestHostedFileSeq(room)}
+          loadPage={loader}
+          observation={capabilities[String(room.hostedConnectionId || '')]}
+          onClose={() => setOpen(false)}
+          open={open}
+          roomId={roomId}
+        />
       ) : null}
-      <SharedFilesDialog
-        availability={availability}
-        group={group}
-        latestSeq={Math.max(0, Number(room.hostedSeq || 0))}
-        onClose={() => setOpen(false)}
-        open={open}
-        roomId={String(room.roomId || '')}
-      />
     </>
   )
 }

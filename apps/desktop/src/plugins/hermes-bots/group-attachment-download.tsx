@@ -4,6 +4,7 @@ import { Button, Codicon, host, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { $groupChats } from './group-chat'
+import { GroupFileError, groupFileFailure, type GroupFileFailure, withGroupFileDeadline } from './group-file-errors'
 import { readHostedGroupChatAttachment } from './hosted-room-runtime'
 import { useBots } from './i18n'
 import type { Attachment, GroupMessage } from './types'
@@ -15,14 +16,21 @@ export async function downloadGroupChatAttachment(
   signal?: AbortSignal
 ) {
   const room = $groupChats.get()[group]
-  const resolved = attachment.data ? attachment : await readHostedGroupChatAttachment(group, message, attachment)
+
+  if (!room) {
+    throw new GroupFileError('gone')
+  }
+
+  const resolved = attachment.data
+    ? attachment
+    : await withGroupFileDeadline(readHostedGroupChatAttachment(group, message, attachment), signal)
 
   if (signal?.aborted) {
     return
   }
 
   if (!resolved.data) {
-    throw new Error('Attachment data is unavailable.')
+    throw new GroupFileError('gone')
   }
 
   const current = $groupChats.get()[group]
@@ -53,13 +61,17 @@ interface GroupAttachmentDownloadProps {
   group: string
   message: GroupMessage
   presentation?: 'chip' | 'icon'
+  disabled?: boolean
+  onFailure?: (failure: GroupFileFailure) => void
 }
 
 export function GroupAttachmentDownload({
   attachment,
   group,
   message,
-  presentation = 'chip'
+  presentation = 'chip',
+  disabled = false,
+  onFailure
 }: GroupAttachmentDownloadProps) {
   const b = useBots()
   const [pending, setPending] = useState(false)
@@ -88,9 +100,25 @@ export function GroupAttachmentDownload({
 
     try {
       await downloadGroupChatAttachment(group, message, attachment, controller.signal)
-    } catch {
+    } catch (error) {
       if (!controller.signal.aborted) {
-        host.notify({ kind: 'error', message: b.group.attachmentDownloadFailed })
+        const failure = groupFileFailure(error)
+
+        if (onFailure) {
+          onFailure(failure)
+        } else {
+          host.notify({
+            kind: 'error',
+            message:
+              failure === 'verification'
+                ? b.group.fileVerificationFailed
+                : failure === 'gone' || failure === 'access'
+                  ? b.group.fileGone
+                  : failure === 'timeout'
+                    ? b.group.fileTimeout
+                    : b.group.attachmentDownloadFailed
+          })
+        }
       }
     } finally {
       if (request.current === controller) {
@@ -110,7 +138,8 @@ export function GroupAttachmentDownload({
             ? 'max-w-60 gap-1 border border-(--ui-stroke-tertiary) text-[0.65rem] text-(--ui-text-tertiary)'
             : 'text-(--ui-text-tertiary) hover:text-foreground'
         }
-        disabled={pending}
+        data-file-download="true"
+        disabled={pending || disabled}
         onClick={() => void download()}
         size={presentation === 'chip' ? 'sm' : 'icon-xs'}
         variant="ghost"
@@ -120,9 +149,9 @@ export function GroupAttachmentDownload({
             <Codicon
               name={attachment.kind === 'pdf' ? 'file-pdf' : attachment.kind === 'image' ? 'file-media' : 'file'}
             />
-            <span className="min-w-0 truncate" title={name}>
+            <bdi className="min-w-0 truncate" title={name}>
               {name}
-            </span>
+            </bdi>
           </>
         ) : null}
         <Codicon name={pending ? 'loading' : 'cloud-download'} spinning={pending} />

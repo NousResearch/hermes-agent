@@ -1388,6 +1388,27 @@ class MatrixAdapter(BasePlatformAdapter):
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
+        peer_agents_raw = config.extra.get("peer_agent_ids", [])
+        if isinstance(peer_agents_raw, list):
+            self._peer_agent_ids: Set[str] = {
+                str(user_id).strip()
+                for user_id in peer_agents_raw
+                if str(user_id).strip()
+            }
+        else:
+            self._peer_agent_ids = {
+                user_id.strip()
+                for user_id in str(peer_agents_raw or "").split(",")
+                if user_id.strip()
+            }
+        try:
+            peer_budget = int(
+                config.extra.get("peer_reply_budget_per_human_message", 0)
+            )
+        except (TypeError, ValueError):
+            peer_budget = 0
+        self._peer_reply_budget_per_human_message = max(0, peer_budget)
+        self._peer_reply_budget_remaining: Dict[str, int] = {}
         ignore_patterns_raw = os.getenv("MATRIX_IGNORE_USER_PATTERNS", "")
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in (p.strip() for p in ignore_patterns_raw.split(",") if p.strip()):
@@ -3398,6 +3419,7 @@ class MatrixAdapter(BasePlatformAdapter):
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        is_peer_agent_message = sender in self._peer_agent_ids
 
         # Require-mention gating.
         if not is_dm:
@@ -3412,6 +3434,26 @@ class MatrixAdapter(BasePlatformAdapter):
                     room_id,
                 )
                 return None
+
+            if self._peer_agent_ids:
+                if is_peer_agent_message:
+                    if not is_mentioned:
+                        logger.debug(
+                            "Matrix: ignoring peer-agent message %s from %s — "
+                            "no direct @mention",
+                            event_id,
+                            sender,
+                        )
+                        return None
+                    remaining = self._peer_reply_budget_remaining.get(room_id, 0)
+                    if remaining <= 0:
+                        logger.info(
+                            "Matrix: ignoring peer-agent message %s from %s — "
+                            "reply budget exhausted",
+                            event_id,
+                            sender,
+                        )
+                        return None
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
@@ -3441,13 +3483,23 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                     return None
 
+            # Open or consume a peer round only after all ordinary room,
+            # mention, and thread gates have accepted the event.
+            if self._peer_agent_ids:
+                if is_peer_agent_message:
+                    self._peer_reply_budget_remaining[room_id] -= 1
+                elif sender in self._allowed_user_ids:
+                    self._peer_reply_budget_remaining[room_id] = (
+                        self._peer_reply_budget_per_human_message
+                    )
+
         # DM mention-thread.
         if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
             thread_id = event_id
             self._threads.mark(thread_id)
 
         # Strip mention from body (only when mention-gating is active).
-        if is_mentioned and self._require_mention:
+        if is_mentioned and (self._require_mention or is_peer_agent_message):
             body = self._strip_mention(body)
 
         # Auto-thread/session-scope policy. Real Matrix thread roots are
@@ -5395,11 +5447,12 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """Translate config.yaml matrix: keys into MATRIX_* env vars.
+    """Translate config.yaml matrix: keys into runtime configuration.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML. Matrix-local settings without legacy env vars
+    are returned as PlatformConfig extras.
     """
     if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
         os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
@@ -5433,7 +5486,11 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
         os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
-    return None
+    seeded = {}
+    for key in ("peer_agent_ids", "peer_reply_budget_per_human_message"):
+        if key in matrix_cfg:
+            seeded[key] = matrix_cfg[key]
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

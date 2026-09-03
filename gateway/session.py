@@ -577,6 +577,13 @@ def build_session_context_prompt(
             "Matrix room/thread only. Do not assume unresolved references are "
             "about other Matrix rooms or projects unless the user explicitly says so."
         )
+        if src.chat_type != "dm":
+            lines.append(
+                "**Matrix shared-room participation:** You do not have to answer every "
+                "message. When there is nothing useful, warm, or interesting to add, "
+                "respond with exactly `NO_REPLY`; the gateway will preserve the turn in "
+                "context without sending the marker to the room."
+            )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups

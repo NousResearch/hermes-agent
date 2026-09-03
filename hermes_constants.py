@@ -940,7 +940,14 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-                version = result.stdout.decode().strip().lstrip("v")
+                # stdout class follows the call's own mode, but test mocks and
+                # wrapper shims can hand back str - coerce before decoding
+                # instead of crashing the update chain with AttributeError.
+                stdout = result.stdout
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode()
+                version = (stdout or "").strip().lstrip("v")
+
                 major = int(version.split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
                 return False  # broken, not outdated — the runnable probe handles it

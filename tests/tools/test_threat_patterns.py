@@ -150,6 +150,21 @@ class TestFalsePositives:
         )
         assert scan_for_threats(text, scope="all") == []
 
+    def test_wreaks_havoc_does_not_trip_known_c2(self):
+        # 'havoc' was removed from known_c2_framework (line 115) because
+        # it is a common English word and a legitimate agent profile name.
+        # Confirm the phrase "wreaks havoc" passes at context scope with
+        # no false positive, while the remaining C2 brands still fire.
+        text = "This approach wreaks havoc on deterministic ordering guarantees."
+        findings = scan_for_threats(text, scope="context")
+        assert "known_c2_framework" not in findings
+
+    def test_remaining_c2_brands_still_fire(self):
+        # Regression: the other C2 framework names (Cobalt Strike, Sliver,
+        # Mythic, Metasploit, Brainworm) must still be detected.
+        text = "Cobalt Strike is a popular red-team framework."
+        assert "known_c2_framework" in scan_for_threats(text, scope="context")
+
 
 # =========================================================================
 # Classic injection still works (regression for the migration)

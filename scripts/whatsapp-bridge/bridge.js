@@ -84,6 +84,16 @@ const SEND_READ_RECEIPTS =
   typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
 
+// Mark the socket online on connect. WhatsApp only emits delivery/read
+// receipts for messages received on an online-marked socket, so read
+// receipts are inert while this stays false. Online presence is visible
+// to contacts — opt-in, default off (privacy-preserving).
+const MARK_ONLINE =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_MARK_ONLINE === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_MARK_ONLINE.toLowerCase());
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 // Cache directories: the Python gateway passes the profile-aware paths via
@@ -409,7 +419,7 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: MARK_ONLINE,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -1111,6 +1121,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    markOnline: MARK_ONLINE,
   });
 });
 

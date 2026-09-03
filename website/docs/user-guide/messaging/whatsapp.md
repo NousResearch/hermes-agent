@@ -181,9 +181,12 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+  mark_online: false                        # Mark the socket online so receipts can be delivered
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+`send_read_receipts` only works when `mark_online` is also `true`: WhatsApp delivers messages down the offline-notification path on a socket that is not marked online, and it emits no delivery receipt (the first grey tick's counterpart) for offline-delivered messages — so `readMessages()` is discarded before a read receipt can ever render. `mark_online` therefore gates both ticks and stays opt-in (default: `false`), because online presence is visible to your contacts. When `send_read_receipts: true` is set while `mark_online` is `false`, the adapter logs a warning at startup. Changing `mark_online` restarts the bridge subprocess on the next connection, same as `send_read_receipts`.
 
 ---
 

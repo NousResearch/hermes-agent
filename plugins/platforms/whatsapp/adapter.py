@@ -441,6 +441,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
     - send_read_receipts: Mark accepted inbound WhatsApp messages as read
+      (has no effect unless mark_online is true — WhatsApp only delivers
+      receipts for messages received while the socket is marked online)
+    - mark_online: Mark the Baileys socket online on connect (default: false).
+      Required for send_read_receipts to produce ticks; online presence is
+      visible to contacts, so it stays opt-in
 
     Behavior (gating, mention parsing, markdown conversion, chunking) is
     provided by ``WhatsAppBehaviorMixin`` so the Cloud API adapter can
@@ -495,6 +500,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             read_receipts if isinstance(read_receipts, bool)
             else str(read_receipts or "").strip().lower() in {"1", "true", "yes", "on"}
         )
+        mark_online = config.extra.get("mark_online", False)
+        self._mark_online = (
+            mark_online if isinstance(mark_online, bool)
+            else str(mark_online or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        if self._send_read_receipts and not self._mark_online:
+            # WhatsApp only emits delivery/read receipts for messages received
+            # on an online-marked socket; with markOnlineOnConnect off the
+            # bridge's readMessages() call is silently discarded upstream.
+            print(
+                f"[{self.name}] warning: send_read_receipts=true has no effect "
+                "while mark_online is false (WhatsApp discards receipts for "
+                "offline-delivered messages). Set platforms.whatsapp.mark_online: "
+                "true to make read receipts work; note this makes the bot "
+                "visible as online to contacts."
+            )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -688,7 +709,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 running_hash = data.get("scriptHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
                                 running_read_receipts = bool(data.get("sendReadReceipts", False))
-                                config_matches = running_read_receipts == self._send_read_receipts
+                                running_mark_online = bool(data.get("markOnline", False))
+                                config_mismatches = []
+                                if running_read_receipts != self._send_read_receipts:
+                                    config_mismatches.append("send_read_receipts")
+                                if running_mark_online != self._mark_online:
+                                    config_mismatches.append("mark_online")
+                                config_matches = not config_mismatches
                                 if (
                                     running_hash
                                     and disk_hash
@@ -706,7 +733,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
                                     if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
+                                    else f"{', '.join(config_mismatches)} config changed"
                                 )
                                 print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
@@ -736,6 +763,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
                 "true" if self._send_read_receipts else "false"
+            )
+            bridge_env["WHATSAPP_MARK_ONLINE"] = (
+                "true" if self._mark_online else "false"
             )
             # Under multiplexing, the bridge subprocess runs with a copy of
             # os.environ that does NOT contain the secondary profile's .env

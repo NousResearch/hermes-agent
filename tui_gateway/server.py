@@ -9847,6 +9847,9 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
 
 
 def _history_to_messages(history: list[dict]) -> list[dict]:
+    from agent.display_projection import is_interim_assistant_message
+
+    include_interim_assistant = _load_interim_assistant_messages()
     messages = []
     tool_call_args = {}
 
@@ -9879,6 +9882,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
+            if not include_interim_assistant and is_interim_assistant_message(m):
+                content_text = ""
             if not content_text.strip():
                 continue
         if role == "tool":
@@ -10034,7 +10039,46 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
     session["inflight_turn"] = turn
 
 
-def _record_inflight_correction(session: dict, text: Any) -> None:
+def _persist_display_only_correction(session: dict, correction: str) -> None:
+    """Persist a tool-time steer for display without replaying it to the model.
+
+    The agent already delivers this text through the newest tool result. A
+    tagged durable row keeps the user's bubble after settle/restart; SessionDB
+    omits ``steer_correction`` rows from the model-fed resume projection.
+    """
+
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return
+    agent = session.get("agent")
+    db = getattr(agent, "_session_db", None) if agent is not None else None
+    try:
+        if db is not None:
+            db.append_message(
+                session_key,
+                role="user",
+                content=correction,
+                timestamp=time.time(),
+                display_kind="steer_correction",
+            )
+            return
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None:
+                scoped_db.append_message(
+                    session_key,
+                    role="user",
+                    content=correction,
+                    timestamp=time.time(),
+                    display_kind="steer_correction",
+                )
+    except Exception:
+        logger.debug("failed to persist display-only steer correction", exc_info=True)
+
+
+def _record_inflight_correction(
+    session: dict, text: Any, *, persist_display_only: bool = False
+) -> None:
     """Record an accepted mid-turn correction on the live turn.
 
     The correction is appended, never written over ``user``: a resuming client
@@ -10062,6 +10106,8 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
     turn["correction_offsets"] = offsets
     turn["updated_at"] = time.time()
     session["inflight_turn"] = turn
+    if persist_display_only:
+        _persist_display_only_correction(session, correction)
 
 
 def _clear_inflight_turn(session: dict) -> None:
@@ -10610,7 +10656,9 @@ def _handle_busy_submit(
         try:
             if agent.steer(plain_text):
                 with session["history_lock"]:
-                    _record_inflight_correction(session, plain_text)
+                    _record_inflight_correction(
+                        session, plain_text, persist_display_only=True
+                    )
                     _drop_queued_duplicates_of_inflight_user(session)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
@@ -10628,9 +10676,16 @@ def _handle_busy_submit(
         and hasattr(agent, "redirect")
     ):
         try:
+            persist_display_only = bool(getattr(agent, "_executing_tools", False)) or (
+                getattr(agent, "api_mode", None) == "codex_app_server"
+            )
             if agent.redirect(plain_text):
                 with session["history_lock"]:
-                    _record_inflight_correction(session, plain_text)
+                    _record_inflight_correction(
+                        session,
+                        plain_text,
+                        persist_display_only=persist_display_only,
+                    )
                     # #84417: do not re-fire the live turn's original user text
                     # from a stale server-queue self-duplicate after settle.
                     _drop_queued_duplicates_of_inflight_user(session)

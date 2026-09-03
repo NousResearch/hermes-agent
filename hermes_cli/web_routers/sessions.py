@@ -44,6 +44,7 @@ manage_router = APIRouter()
 # monkeypatch-transparent).
 _cron_default_profile = late("_cron_default_profile")
 _cron_profile_home = late("_cron_profile_home")
+_config_profile_scope = late("_config_profile_scope")
 _import_sessions_for_profile = late("_import_sessions_for_profile")
 _maybe_auto_archive_for_profile = late("_maybe_auto_archive_for_profile")
 _open_session_db_for_profile = late("_open_session_db_for_profile")
@@ -671,6 +672,17 @@ async def get_session_messages(
         )
 
     def _read():
+        from hermes_cli.config import load_config
+        from utils import is_truthy_value
+
+        with _config_profile_scope(profile):
+            config = load_config()
+        display_config = config.get("display") if isinstance(config, dict) else {}
+        if not isinstance(display_config, dict):
+            display_config = {}
+        interim_assistant_messages = is_truthy_value(
+            display_config.get("interim_assistant_messages", True)
+        )
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = _resolve_session_id(db, session_id)
@@ -685,7 +697,7 @@ async def get_session_messages(
             default_page = limit is None
             latest_page = order == "latest" or (order is None and default_page)
             _limit = 500 if default_page else min(limit, 500)
-            return sid, _limit, db.get_messages(
+            return sid, _limit, interim_assistant_messages, db.get_messages(
                 sid,
                 limit=_limit,
                 offset=offset,
@@ -698,12 +710,16 @@ async def get_session_messages(
     result = await asyncio.to_thread(_read)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    sid, _limit, messages = result
+    sid, _limit, interim_assistant_messages, messages = result
+    from agent.display_projection import project_interim_assistant_for_display
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
 
     projected_messages = []
     for message in messages:
+        message = project_interim_assistant_for_display(
+            message, enabled=interim_assistant_messages
+        )
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

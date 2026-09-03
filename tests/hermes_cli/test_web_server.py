@@ -2172,6 +2172,48 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["summary", "live q", "live a"]
 
+    def test_get_session_messages_hides_interim_narration_when_disabled(self):
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "display:\n  interim_assistant_messages: false\n",
+            encoding="utf-8",
+        )
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="hidden-interim", source="desktop")
+            db.append_message(
+                "hidden-interim",
+                role="assistant",
+                content="I will inspect that now.",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            )
+            db.append_message(
+                "hidden-interim",
+                role="tool",
+                content="done",
+                tool_call_id="call-1",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/hidden-interim/messages")
+        assert resp.status_code == 200
+        messages = resp.json()["messages"]
+        assert messages[0]["content"] == "I will inspect that now."
+        assert messages[0]["display_kind"] == "hidden"
+        assert messages[1]["content"] == "done"
+        assert not messages[1].get("display_kind")
+
     def test_get_session_messages_include_compacted_surfaces_archived_rows(self):
         """include_compacted=true returns the full display history: archived
         (active=0, compacted=1) rows plus live rows, in insertion order.

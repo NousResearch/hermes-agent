@@ -16,6 +16,38 @@ def test_load_interim_assistant_messages_defaults_true():
         assert _load_interim_assistant_messages() is True
 
 
+def test_history_projection_hides_persisted_interim_when_disabled():
+    from tui_gateway.server import _history_to_messages
+
+    history = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": "Checking the service now.",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command":"status"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "ready"},
+        {"role": "assistant", "content": "The service is ready."},
+    ]
+
+    with patch("tui_gateway.server._load_cfg", return_value={
+        "display": {"interim_assistant_messages": False}
+    }):
+        projected = _history_to_messages(history)
+
+    assert [message.get("text") for message in projected if message["role"] != "tool"] == [
+        "run it",
+        "The service is ready.",
+    ]
+    assert any(message["role"] == "tool" for message in projected)
+
+
 def test_agent_cbs_includes_interim_callback_when_enabled():
     """_agent_cbs() includes interim_assistant_callback when the config is on.
 
@@ -48,5 +80,4 @@ def test_agent_cbs_includes_interim_callback_when_enabled():
     assert emitted[0][1] == "test-session"
     assert emitted[0][2]["text"] == "hello world"
     assert emitted[0][2]["already_streamed"] is True
-
 

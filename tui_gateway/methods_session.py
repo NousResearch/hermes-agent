@@ -3775,7 +3775,7 @@ def _(rid, params: dict) -> dict:
         # rebuilds the transcript from the inflight snapshot and the steered
         # text has no user bubble — the "my message vanished on reload" loss.
         with session["history_lock"]:
-            _record_inflight_correction(session, text)
+            _record_inflight_correction(session, text, persist_display_only=True)
             # #84417: steer does not cancel the live original, but a server
             # queue self-copy of that original must still not re-fire after
             # settle (same class as redirect).
@@ -3810,12 +3810,17 @@ def _(rid, params: dict) -> dict:
     ):
         return _err(rid, 4010, "agent does not support active-turn redirect")
     try:
+        persist_display_only = bool(getattr(agent, "_executing_tools", False)) or (
+            getattr(agent, "api_mode", None) == "codex_app_server"
+        )
         accepted = agent.redirect(text)
     except Exception as exc:
         return _err(rid, 5000, f"redirect failed: {exc}")
     if accepted:
         with session["history_lock"]:
-            _record_inflight_correction(session, text)
+            _record_inflight_correction(
+                session, text, persist_display_only=persist_display_only
+            )
             # #84417: purge server-queue self-duplicates of the live original
             # so post-turn drain cannot restart the pre-correction prompt.
             _drop_queued_duplicates_of_inflight_user(session)

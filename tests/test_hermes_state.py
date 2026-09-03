@@ -897,12 +897,16 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
         traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        # Borrow through the same pool seam as search_messages(), then return
+        # the traced reader to the pool. Calling _get_read_conn() directly here
+        # opens an untracked checkout, so the search correctly uses a different
+        # connection and the trace silently observes nothing.
+        with db._read_ctx() as read_conn:
+            if read_conn is not db._conn:
+                traced_connections.append(read_conn)
+            for conn in traced_connections:
+                conn.set_trace_callback(statements.append)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -5047,6 +5051,30 @@ class TestDisplayMetadataPersistence:
         reloaded = db.get_messages_as_conversation("s1")
         assert reloaded[0]["display_kind"] == "async_delegation_complete"
         assert reloaded[0]["display_metadata"] == meta
+
+    def test_display_only_steer_correction_is_not_model_replayed(self, db):
+        db.create_session("s1", source="desktop")
+        db.append_message("s1", "user", "original prompt")
+        db.append_message(
+            "s1",
+            "user",
+            "use the corrected approach",
+            display_kind="steer_correction",
+        )
+        db.append_message("s1", "assistant", "corrected result")
+
+        model_history, display_history = db.get_resume_conversations("s1")
+
+        assert [message["content"] for message in model_history] == [
+            "original prompt",
+            "corrected result",
+        ]
+        assert [message["content"] for message in display_history] == [
+            "original prompt",
+            "use the corrected approach",
+            "corrected result",
+        ]
+        assert display_history[1]["display_kind"] == "steer_correction"
 
 
 

@@ -12039,6 +12039,39 @@ def test_session_redirect_records_correction_without_erasing_prompt():
     assert snapshot["corrections"] == ["hurry up", "and the worktree ones"]
 
 
+def test_tool_time_correction_persists_for_display_but_not_model(tmp_path):
+    """A steer arrives through a tool result, but its user bubble is durable."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s1", source="desktop")
+        session = {
+            "session_key": "s1",
+            "agent": types.SimpleNamespace(_session_db=db),
+        }
+        server._start_inflight_turn(session, "original prompt")
+
+        server._record_inflight_correction(
+            session, "use the corrected approach", persist_display_only=True
+        )
+
+        model_history, display_history = db.get_resume_conversations("s1")
+        assert not any(
+            message.get("content") == "use the corrected approach"
+            for message in model_history
+        )
+        correction = next(
+            message
+            for message in display_history
+            if message.get("content") == "use the corrected approach"
+        )
+        assert correction["role"] == "user"
+        assert correction["display_kind"] == "steer_correction"
+    finally:
+        db.close()
+
+
 def test_inflight_snapshot_carries_arrival_order_offsets():
     """Each correction records how much assistant text had already streamed.
 
@@ -16300,6 +16333,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)

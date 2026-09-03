@@ -114,6 +114,12 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+# Durable rows with these presentation types are intentionally absent from the
+# model-fed resume projection. Their content reached the model through another
+# cache-safe channel (for example a mid-tool steer appended to a tool result),
+# while the physical row exists only so every UI can restore what the user saw.
+_DISPLAY_ONLY_MESSAGE_KINDS = frozenset({"steer_correction"})
+
 MAX_SAFE_RESUME_MESSAGES = 20_000
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
@@ -14066,6 +14072,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # whole accumulated lineage for every user row.
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
+            if (
+                repair_alternation
+                and row["display_kind"] in _DISPLAY_ONLY_MESSAGE_KINDS
+            ):
+                continue
             content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()

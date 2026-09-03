@@ -56,10 +56,15 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path)) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
+    const name = url.pathname.split('/').filter(Boolean).pop()
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
+    return name ? decodeURIComponent(name) : path
   } catch {
     return path.split(/[\\/]/).filter(Boolean).pop() || path
   }
@@ -112,6 +117,31 @@ export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
+function localMediaFileUrl(path: string): string {
+  if (/^file:/i.test(path)) {
+    try {
+      return new URL(path).toString()
+    } catch {
+      return path
+    }
+  }
+
+  const normalized = path.replace(/\\/g, '/')
+
+  if (normalized.startsWith('//')) {
+    const [host, ...segments] = normalized.slice(2).split('/')
+
+    return `file://${host}/${segments.map(encodeURIComponent).join('/')}`
+  }
+
+  const encoded = normalized
+    .split('/')
+    .map(segment => (/^[a-z]:$/i.test(segment) ? segment : encodeURIComponent(segment)))
+    .join('/')
+
+  return normalized.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`
+}
+
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
@@ -127,7 +157,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  return localMediaFileUrl(path)
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth
@@ -172,15 +202,33 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// WHATWG URL.pathname represents file:///C:/... as /C:/.... That leading
+// slash is not a Windows drive path and makes a remote Windows gateway join
+// the value to its cwd. Normalize it at the shared media-path boundary.
+const WHATWG_WINDOWS_DRIVE_PATHNAME = /^\/([A-Za-z]:)(\/.*)?$/
+
+export function stripWhatwgWindowsDrivePrefix(pathname: string): string {
+  const match = pathname.match(WHATWG_WINDOWS_DRIVE_PATHNAME)
+
+  return match ? `${match[1]}${match[2] || '/'}` : pathname
+}
+
 export function filePathFromMediaPath(path: string): string {
   if (!path.startsWith('file:')) {
-    return path
+    return stripWhatwgWindowsDrivePrefix(path)
   }
 
   try {
-    return decodeURIComponent(new URL(path).pathname)
+    const url = new URL(path)
+    const pathname = decodeURIComponent(url.pathname)
+
+    if (url.hostname && url.hostname !== 'localhost') {
+      return `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`
+    }
+
+    return stripWhatwgWindowsDrivePrefix(pathname)
   } catch {
-    return path.replace(/^file:\/\//, '')
+    return stripWhatwgWindowsDrivePrefix(path.replace(/^file:\/\//, ''))
   }
 }
 

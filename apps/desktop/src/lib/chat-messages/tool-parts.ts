@@ -279,11 +279,16 @@ function toolResult(
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  return parts.map(part =>
-    (part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined
-      ? ({ ...part, completedAt } as ChatMessagePart)
-      : part
-  )
+  return parts.map(part => {
+    const settled =
+      part.provisionalMediaSource === undefined
+        ? part
+        : (({ provisionalMediaSource: _source, ...rest }) => rest as ChatMessagePart)(part)
+
+    return (settled.type === 'text' || settled.type === 'reasoning') && settled.completedAt === undefined
+      ? ({ ...settled, completedAt } as ChatMessagePart)
+      : settled
+  })
 }
 
 export function upsertToolPart(

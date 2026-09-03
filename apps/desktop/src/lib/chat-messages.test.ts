@@ -9,6 +9,7 @@ import {
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
+  mediaPathsFromText,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
@@ -471,11 +472,359 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('keeps spaces in a standalone unquoted Windows MEDIA path', () => {
+    const path =
+      'C:\\Users\\ADMIN\\OneDrive\\Priv - Hermes Projects\\Person-researcher\\exports\\dos-20260724-olle-bergstedt.pdf'
+
+    expect(renderMediaTags(`MEDIA:${path}`)).toBe(
+      `[File: dos-20260724-olle-bergstedt.pdf](#media:${encodeURIComponent(path)})`
+    )
+  })
+
+  it.each([
+    ['LF', '\n'],
+    ['CRLF', '\r\n']
+  ])('keeps spaces in consecutive standalone MEDIA paths with %s line endings', (_label, newline) => {
+    const firstPath = 'C:\\Users\\ADMIN\\My Files\\first report.pdf'
+    const secondPath = '\\\\server\\Shared Files\\second report.pdf'
+
+    expect(renderMediaTags(`MEDIA:${firstPath}${newline}MEDIA:${secondPath}`)).toBe(
+      `[File: first report.pdf](#media:${encodeURIComponent(firstPath)})${newline}` +
+        `[File: second report.pdf](#media:${encodeURIComponent(secondPath)})`
+    )
+  })
+
+  it.each([
+    ['LF', '\n'],
+    ['CRLF', '\r\n']
+  ])('does not consume the following line when a MEDIA path is blank with %s', (_label, newline) => {
+    expect(renderMediaTags(`before${newline}MEDIA:   ${newline}not-a-path`)).toBe(
+      `before${newline}MEDIA:${newline}not-a-path`
+    )
+  })
+
+  it('leaves ordinary standalone MEDIA prose unchanged', () => {
+    expect(renderMediaTags('before\nMEDIA: the report is ready\nafter')).toBe(
+      'before\nMEDIA: the report is ready\nafter'
+    )
+  })
+
+  it.each(['MEDIA: note', 'MEDIA: /tmp is the default directory', 'This paragraph says MEDIA: coverage matters'])(
+    'leaves pathless MEDIA prose unchanged: %s',
+    source => {
+      expect(renderMediaTags(source)).toBe(source)
+      expect(mediaPathsFromText(source)).toEqual([])
+    }
+  )
+
+  it('keeps a line-leading inline MEDIA tag separate from trailing prose', () => {
+    expect(renderMediaTags('MEDIA:/tmp/voice.mp3 done')).toBe('[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3) done')
+  })
+
+  it('keeps a spaced standalone path separate from trailing prose', () => {
+    expect(renderMediaTags('MEDIA:/tmp/final report.pdf is ready')).toBe(
+      '[File: final report.pdf](#media:%2Ftmp%2Ffinal%20report.pdf) is ready'
+    )
+  })
+
+  it('keeps a quoted standalone path separate from trailing prose through final reconciliation', () => {
+    const source = 'MEDIA:"/tmp/final report.pdf" is ready'
+    const expected = '[File: final report.pdf](#media:%2Ftmp%2Ffinal%20report.pdf) is ready'
+    const streamed = appendAssistantTextPart([], source, 1)
+
+    expect(renderMediaTags(source)).toBe(expected)
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: streamed })).toBe(expected)
+
+    const settled = mergeFinalAssistantText(streamed, source, 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: settled })).toBe(expected)
+  })
+
+  it('keeps an extensionless inline MEDIA URL separate from trailing prose', () => {
+    expect(renderMediaTags('MEDIA:https://example.com/download done')).toBe(
+      '[File: download](#media:https%3A%2F%2Fexample.com%2Fdownload) done'
+    )
+  })
+
+  it('keeps spaces in a standalone unquoted file URL', () => {
+    const path = 'file:///C:/Program Files/final report.pdf'
+    const source = `MEDIA:${path}`
+    const expected = `[File: final report.pdf](#media:${encodeURIComponent(path)})`
+    const streamed = appendAssistantTextPart([], source, 1)
+
+    expect(renderMediaTags(source)).toBe(expected)
+    expect(mediaPathsFromText(source)).toEqual([path])
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: streamed })).toBe(expected)
+  })
+
+  it('renders consecutive inline MEDIA tags at the start of a line independently', () => {
+    expect(renderMediaTags('MEDIA:/tmp/a.png MEDIA:/tmp/b.png')).toBe(
+      '[Image: a.png](#media:%2Ftmp%2Fa.png) [Image: b.png](#media:%2Ftmp%2Fb.png)'
+    )
+  })
+
+  it('keeps spaces in consecutive standalone MEDIA paths', () => {
+    const source = 'MEDIA:/tmp/a one.png MEDIA:/tmp/b two.png'
+
+    expect(renderMediaTags(source)).toBe(
+      '[Image: a one.png](#media:%2Ftmp%2Fa%20one.png) [Image: b two.png](#media:%2Ftmp%2Fb%20two.png)'
+    )
+    expect(mediaPathsFromText(source)).toEqual(['/tmp/a one.png', '/tmp/b two.png'])
+  })
+
+  it('keeps spaces in prose-prefixed consecutive MEDIA paths across every split point', () => {
+    const source = 'Files: MEDIA:/tmp/a one.png MEDIA:/tmp/b two.png'
+
+    const expected =
+      'Files: [Image: a one.png](#media:%2Ftmp%2Fa%20one.png) [Image: b two.png](#media:%2Ftmp%2Fb%20two.png)\n'
+
+    expect(renderMediaTags(`${source}\n`)).toBe(expected)
+    expect(mediaPathsFromText(`${source}\n`)).toEqual(['/tmp/a one.png', '/tmp/b two.png'])
+
+    for (let split = 1; split < source.length; split += 1) {
+      let parts = appendAssistantTextPart([], source.slice(0, split), 1)
+
+      parts = appendAssistantTextPart(parts, `${source.slice(split)}\n`, 2)
+      expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(expected)
+    }
+  })
+
+  it.each(['', 'files: '])('keeps the final consecutive MEDIA path provisional while streaming: %s', prefix => {
+    let parts = appendAssistantTextPart([], `${prefix}MEDIA:/tmp/a.png MEDIA:/tmp/b`, 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    parts = appendAssistantTextPart(parts, '.png\n', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      `${prefix}[Image: a.png](#media:%2Ftmp%2Fa.png) [Image: b.png](#media:%2Ftmp%2Fb.png)\n`
+    )
+  })
+
+  it('keeps a consecutive sequence provisional when a chunk ends immediately after the next marker', () => {
+    let parts = appendAssistantTextPart([], 'MEDIA:/tmp/a one.png MEDIA:', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource', 'MEDIA:/tmp/a one.png MEDIA:')
+    parts = appendAssistantTextPart(parts, '/tmp/b two.png\n', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      '[Image: a one.png](#media:%2Ftmp%2Fa%20one.png) [Image: b two.png](#media:%2Ftmp%2Fb%20two.png)\n'
+    )
+  })
+
+  it.each(['MEDIA:/tmp/a one.png MEDIA:\n', 'MEDIA:/tmp/a one.png MEDIA: coverage matters\n'])(
+    'leaves an ambiguous consecutive MEDIA sequence unchanged: %s',
+    source => {
+      expect(renderMediaTags(source)).toBe(source)
+      expect(mediaPathsFromText(source)).toEqual([])
+    }
+  )
+
+  it('handles a long malformed consecutive MEDIA line without quadratic reparsing', () => {
+    const source = `${Array.from({ length: 4_000 }, (_, index) => `MEDIA:/tmp/${index}.png`).join(' ')} MEDIA: coverage`
+    const startedAt = performance.now()
+
+    expect(renderMediaTags(source)).toBe(source)
+    expect(performance.now() - startedAt).toBeLessThan(750)
+  })
+
+  it('rejects a long whitespace-only MEDIA line without quadratic backtracking', () => {
+    const source = `MEDIA:${' '.repeat(32_000)}`
+    const startedAt = performance.now()
+
+    expect(renderMediaTags(source)).toBe(source)
+    expect(performance.now() - startedAt).toBeLessThan(250)
+  })
+
+  it.each([
+    ['/tmp/foo.txt bar.pdf', 'foo.txt bar.pdf'],
+    ['/Users/me/v1.0 Final/report.md', 'report.md']
+  ])('does not truncate an unquoted path after an extension-like component: %s', (path, label) => {
+    expect(renderMediaTags(`MEDIA:${path}`)).toBe(`[File: ${label}](#media:${encodeURIComponent(path)})`)
+  })
+
+  it('does not finalize an extension-like directory while the path is streaming', () => {
+    let parts = appendAssistantTextPart([], 'MEDIA:/Users/me/v1.0 Final/re', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource', 'MEDIA:/Users/me/v1.0 Final/re')
+    parts = appendAssistantTextPart(parts, 'port.md', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      '[File: report.md](#media:%2FUsers%2Fme%2Fv1.0%20Final%2Freport.md)'
+    )
+  })
+
+  it.each(['`', '"', "'"])('keeps spaces in a standalone path quoted with %s', quote => {
+    const path = 'reports/the final report.pdf'
+
+    expect(renderMediaTags(`MEDIA:${quote}${path}${quote}`)).toBe(
+      `[File: the final report.pdf](#media:${encodeURIComponent(path)})`
+    )
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+
+  it('does not freeze a streamed path before later space-separated chunks arrive', () => {
+    const path = '/Users/zora/Documents/ZORA/hermes/operations/B17-B Value Extraction and Retirement Receipt.md'
+    let parts = appendAssistantTextPart([], 'ready\nMEDIA:/Users/zora/Documents/ZORA/hermes/operations/B17-B', 10.125)
+
+    parts = appendAssistantTextPart(parts, ' Value Ex', 10.5)
+    parts = appendAssistantTextPart(parts, 'traction and Retirement Receipt.md\n', 11)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      `ready\n[File: B17-B Value Extraction and Retirement Receipt.md](#media:${encodeURIComponent(path)})\n`
+    )
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ timestamp: 10.125, type: 'text' })
+    expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+  })
+
+  it('preserves the complete Hermes Projects markdown path across every streaming split point', () => {
+    const path =
+      '/Users/test/Documents/Hermes Projects/Monark-Inc/Bank-Charter/.hermes/plans/2026-09-03_204030-monark-i13-plus-time-thesis-deep-research.md'
+
+    const source = `MEDIA:${path}`
+    const expected = `[File: 2026-09-03_204030-monark-i13-plus-time-thesis-deep-research.md](#media:${encodeURIComponent(path)})\n`
+
+    expect(renderMediaTags(source)).toBe(expected.trimEnd())
+    expect(mediaPathsFromText(source)).toEqual([path])
+
+    for (let split = 1; split < source.length; split += 1) {
+      let parts = appendAssistantTextPart([], source.slice(0, split), 1)
+
+      parts = appendAssistantTextPart(parts, `${source.slice(split)}\n`, 2)
+      expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(expected)
+      expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+    }
+  })
+
+  it('does not reinterpret a legitimate trailing media link when more text streams in', () => {
+    const link = '[File: report.md](#media:%2Ftmp%2Freport.md)'
+    let parts = appendAssistantTextPart([], link, 1)
+
+    parts = appendAssistantTextPart(parts, ' continued', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(`${link} continued`)
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ timestamp: 1, type: 'text' })
+  })
+
+  it('treats a closing quote as the end of a streamed standalone MEDIA path', () => {
+    let parts = appendAssistantTextPart([], 'MEDIA:"/tmp/the report.pdf"', 1)
+
+    expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+    parts = appendAssistantTextPart(parts, ' continued', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      '[File: the report.pdf](#media:%2Ftmp%2Fthe%20report.pdf) continued'
+    )
+  })
+
+  it('treats a quote around the whole streamed MEDIA directive as closed', () => {
+    let parts = appendAssistantTextPart([], '"MEDIA:/tmp/the report.pdf"', 1)
+
+    expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+    parts = appendAssistantTextPart(parts, ' continued', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      '[File: the report.pdf](#media:%2Ftmp%2Fthe%20report.pdf) continued'
+    )
+  })
+
+  it('keeps prose outside a quote around the whole MEDIA directive', () => {
+    const source = '"MEDIA:/tmp/the report.pdf" is ready'
+    const expected = '[File: the report.pdf](#media:%2Ftmp%2Fthe%20report.pdf) is ready'
+    const streamed = appendAssistantTextPart([], source, 1)
+
+    expect(renderMediaTags(source)).toBe(expected)
+    expect(mediaPathsFromText(source)).toEqual(['/tmp/the report.pdf'])
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: streamed })).toBe(expected)
+
+    const settled = mergeFinalAssistantText(streamed, source, 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: settled })).toBe(expected)
+  })
+
+  it('preserves the separator when prose streams after a whole-directive quote', () => {
+    let parts = appendAssistantTextPart([], '"MEDIA:/tmp/the report.pdf" ', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    parts = appendAssistantTextPart(parts, 'is ready\n', 2)
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toBe(
+      '[File: the report.pdf](#media:%2Ftmp%2Fthe%20report.pdf) is ready\n'
+    )
+  })
+
+  it('does not carry provisional MEDIA state across a reasoning boundary', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'MEDIA:/tmp/partial', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource', 'MEDIA:/tmp/partial')
+    parts = appendReasoningPart(parts, 'thinking', 2)
+    parts = appendAssistantTextPart(parts, ' filename.pdf', 3)
+
+    expect(parts.map(part => part.type)).toEqual(['text', 'reasoning', 'text'])
+    expect(parts.map(part => part.timestamp)).toEqual([1, 2, 3])
+    expect(parts.map(part => part.completedAt)).toEqual([2, 3, undefined])
+    expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+    expect((parts[0] as { text: string }).text).toBe('[File: partial](#media:%2Ftmp%2Fpartial)')
+    expect((parts[2] as { text: string }).text).toBe(' filename.pdf')
+  })
+
+  it('clears provisional MEDIA state when the timeline part completes', () => {
+    const parts = appendAssistantTextPart([], 'MEDIA:/tmp/partial', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    const completed = completeOpenTimelineParts(parts, 2)
+
+    expect(completed[0]).not.toHaveProperty('provisionalMediaSource')
+    expect(completed[0]).toMatchObject({ completedAt: 2, timestamp: 1, type: 'text' })
+  })
+
+  it('clears provisional MEDIA state when a tool call closes the text segment', () => {
+    let parts = appendAssistantTextPart([], 'MEDIA:/tmp/partial', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-media' }, 'running', 2)
+
+    expect(parts[0]).not.toHaveProperty('provisionalMediaSource')
+    expect(parts[0]).toMatchObject({ completedAt: 2, timestamp: 1, type: 'text' })
+    expect(parts[1]).toMatchObject({ toolCallId: 'tc-media', type: 'tool-call' })
+  })
+
+  it('clears provisional MEDIA state during final-response reconciliation', () => {
+    const parts = appendAssistantTextPart([], 'MEDIA:/tmp/partial', 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    const settled = mergeFinalAssistantText(parts, 'MEDIA:/tmp/partial', 2)
+
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).not.toHaveProperty('provisionalMediaSource')
+    expect(settled[0]).toMatchObject({
+      text: '[File: partial](#media:%2Ftmp%2Fpartial)',
+      timestamp: 1,
+      type: 'text'
+    })
+  })
+
+  it('settles provisional MEDIA state before preserving a blank final completion', () => {
+    const path = '/tmp/final report.md'
+    const parts = appendAssistantTextPart([], `MEDIA:${path}`, 1)
+
+    expect(parts[0]).toHaveProperty('provisionalMediaSource')
+    const settled = mergeFinalAssistantText(parts, '', 2)
+
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).not.toHaveProperty('provisionalMediaSource')
+    expect(settled[0]).toMatchObject({
+      text: `[File: final report.md](#media:${encodeURIComponent(path)})`,
+      timestamp: 1,
+      type: 'text'
+    })
   })
 })
 

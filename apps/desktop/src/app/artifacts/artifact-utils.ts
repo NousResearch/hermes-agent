@@ -1,3 +1,4 @@
+import { mediaPathsFromText } from '@/lib/chat-messages'
 import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -28,7 +29,6 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
@@ -71,10 +71,12 @@ function unquoteMediaValue(value: string): string {
   return trimmed
 }
 
+function mediaValuesFromText(text: string): string[] {
+  return mediaPathsFromText(text).map(unquoteMediaValue)
+}
+
 function collectMediaValues(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MEDIA_RE)) {
-    pushValue(unquoteMediaValue(match[1] || ''))
-  }
+  mediaValuesFromText(text).forEach(pushValue)
 }
 
 function parseMaybeJson(value: string): unknown {
@@ -268,17 +270,50 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
-  collectMediaValues(text, pushValue)
+function maskMediaValueOccurrences(text: string, mediaValues: string[]): string {
+  // Keep source offsets stable for the generic scanners below, but mutate one
+  // code-unit array instead of rebuilding the entire string for every MEDIA
+  // value. The old repeated slice/concatenate loop was quadratic on histories
+  // containing many attachments.
+  const masked = text.split('')
+  let cursor = 0
 
-  for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
+  for (const value of mediaValues) {
+    const marker = text.indexOf('MEDIA:', cursor)
+
+    if (marker < 0) {
+      break
+    }
+
+    const start = text.indexOf(value, marker + 'MEDIA:'.length)
+
+    if (start < 0) {
+      cursor = marker + 'MEDIA:'.length
+
+      continue
+    }
+
+    masked.fill(' ', start, start + value.length)
+    cursor = start + value.length
+  }
+
+  return masked.join('')
+}
+
+function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+  const mediaValues = mediaValuesFromText(text)
+  const genericText = maskMediaValueOccurrences(text, mediaValues)
+
+  mediaValues.forEach(pushValue)
+
+  for (const match of genericText.matchAll(MARKDOWN_IMAGE_RE)) {
     pushValue(match[2] || '')
   }
 
-  for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
+  for (const match of genericText.matchAll(MARKDOWN_LINK_RE)) {
     const start = match.index ?? 0
 
-    if (start > 0 && text[start - 1] === '!') {
+    if (start > 0 && genericText[start - 1] === '!') {
       continue
     }
 
@@ -289,7 +324,7 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
     }
   }
 
-  for (const match of text.matchAll(URL_RE)) {
+  for (const match of genericText.matchAll(URL_RE)) {
     const value = match[0] || ''
 
     if (looksLikeArtifact(value)) {
@@ -297,11 +332,11 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
     }
   }
 
-  for (const match of text.matchAll(PATH_RE)) {
+  for (const match of genericText.matchAll(PATH_RE)) {
     pushValue(match[2] || '')
   }
 
-  for (const match of text.matchAll(WINDOWS_PATH_RE)) {
+  for (const match of genericText.matchAll(WINDOWS_PATH_RE)) {
     pushValue(match[2] || '')
   }
 }

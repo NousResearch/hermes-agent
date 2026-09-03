@@ -10,6 +10,9 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** Undecorated source for a trailing MEDIA directive that may receive more
+   * streamed path characters. Live-only and removed when the segment closes. */
+  provisionalMediaSource?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

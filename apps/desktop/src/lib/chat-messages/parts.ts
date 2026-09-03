@@ -10,9 +10,10 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+const MEDIA_LINE_RE =
+  /(^|\n)[\t ]*[`"']?MEDIA:(?![\t ]*(?:\r?\n|$))[\t ]*(?<line>`[^`\r\n]+`|"[^"\r\n]+"|'[^'\r\n]+'|[^\r\n]*?\S)[`"']?[\t ]*(?=\r?\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:[\t ]*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
@@ -21,21 +22,416 @@ function unquoteMediaPath(value: string): string {
   return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
 }
 
-function mediaLink(value: string): string {
+function mediaLink(value: string, onPath?: (path: string) => void): string {
   const path = unquoteMediaPath(value)
+
+  onPath?.(path)
 
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
+function isExplicitlyQuotedMediaPath(value: string): boolean {
+  const trimmed = value.trim()
+  const quote = trimmed[0]
+
+  return Boolean(quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote))
+}
+
+function isClosedQuotedMediaDirective(match: string, lead: string): boolean {
+  return isExplicitlyQuotedMediaPath(match.slice(lead.length))
+}
+
+function wholeDirectiveOpeningQuote(match: string, lead: string): string | undefined {
+  const directive = match.slice(lead.length).trimStart()
+  const quote = directive[0]
+
+  return quote && ['"', "'", '`'].includes(quote) && directive.slice(1).startsWith('MEDIA:') ? quote : undefined
+}
+
+function isPathShapedMediaValue(value: string): boolean {
+  return (
+    /^(?:file:|https?:|data:|\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\\\\)/i.test(value) ||
+    /\.[a-z0-9]{1,16}(?:[?#].*)?$/i.test(value)
+  )
+}
+
+type StandaloneMediaIntent = 'inline' | 'path' | 'prose'
+
+type StandaloneMediaValue = { intent: 'inline' | 'prose' } | { intent: 'path'; path: string; tail: string }
+
+const MEDIA_EXTENSION_RE = /\.[a-z0-9]{1,16}(?:[?#].*)?$/i
+
+/**
+ * Classify a line-leading MEDIA value before replacing it. A quoted value or
+ * `/tmp/the final report.pdf` is one path; `the report is ready` is prose;
+ * `/tmp/report.pdf is ready` splits at the extension so the suffix remains
+ * prose instead of becoming part of the filename.
+ */
+function parseStandaloneMediaValue(value: string): StandaloneMediaValue {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return { intent: 'prose' }
+  }
+
+  const quote = trimmed[0]
+
+  if (['"', "'", '`'].includes(quote)) {
+    const closingQuote = trimmed.indexOf(quote, 1)
+
+    if (closingQuote > 0) {
+      return {
+        intent: 'path',
+        path: trimmed.slice(0, closingQuote + 1),
+        tail: trimmed.slice(closingQuote + 1)
+      }
+    }
+  }
+
+  if (!/\s/.test(trimmed)) {
+    return isPathShapedMediaValue(trimmed) ? { intent: 'path', path: trimmed, tail: '' } : { intent: 'prose' }
+  }
+
+  if (/\bMEDIA:/.test(trimmed)) {
+    return { intent: 'inline' }
+  }
+
+  const firstToken = trimmed.match(/^\S+/)?.[0]
+
+  if (firstToken && /^(?:https?:|data:)/i.test(firstToken)) {
+    return { intent: 'path', path: firstToken, tail: trimmed.slice(firstToken.length) }
+  }
+
+  if (MEDIA_EXTENSION_RE.test(trimmed)) {
+    return { intent: 'path', path: trimmed, tail: '' }
+  }
+
+  if (isPathShapedMediaValue(trimmed)) {
+    const tokens = [...trimmed.matchAll(/\S+/g)]
+
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const token = tokens[index]
+
+      if (!MEDIA_EXTENSION_RE.test(token[0])) {
+        continue
+      }
+
+      const end = (token.index ?? 0) + token[0].length
+
+      return { intent: 'path', path: trimmed.slice(0, end), tail: trimmed.slice(end) }
+    }
+
+    return /^(?:file:|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\\\\|\/[^/\s]+[\\/])/i.test(trimmed)
+      ? { intent: 'path', path: trimmed, tail: '' }
+      : { intent: 'prose' }
+  }
+
+  if (firstToken && MEDIA_EXTENSION_RE.test(firstToken)) {
+    return { intent: 'path', path: firstToken, tail: trimmed.slice(firstToken.length) }
+  }
+
+  return { intent: 'prose' }
+}
+
+function standaloneMediaIntent(value: string): StandaloneMediaIntent {
+  return parseStandaloneMediaValue(value).intent
+}
+
+interface ConsecutiveMediaMarker {
+  end: number
+  index: number
+  mediaIndex: number
+}
+
+function isHorizontalWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\t'
+}
+
+function trimHorizontalWhitespaceBeforeNewlines(value: string): string {
+  let rendered = ''
+  let lineStart = 0
+
+  while (lineStart < value.length) {
+    const newline = value.indexOf('\n', lineStart)
+
+    if (newline < 0) {
+      rendered += value.slice(lineStart)
+
+      break
+    }
+
+    const carriageReturn = newline > lineStart && value[newline - 1] === '\r'
+    let contentEnd = carriageReturn ? newline - 1 : newline
+
+    while (contentEnd > lineStart && isHorizontalWhitespace(value[contentEnd - 1])) {
+      contentEnd -= 1
+    }
+
+    rendered += `${value.slice(lineStart, contentEnd)}${carriageReturn ? '\r' : ''}\n`
+    lineStart = newline + 1
+  }
+
+  return rendered
+}
+
+function consecutiveMediaMarkers(value: string): ConsecutiveMediaMarker[] {
+  const markers: ConsecutiveMediaMarker[] = []
+  let searchFrom = 0
+
+  while (searchFrom < value.length) {
+    const mediaIndex = value.indexOf('MEDIA:', searchFrom)
+
+    if (mediaIndex < 0) {
+      break
+    }
+
+    const quoted = ['`', '"', "'"].includes(value[mediaIndex - 1] || '')
+    const prefixEnd = quoted ? mediaIndex - 1 : mediaIndex
+
+    if (!isHorizontalWhitespace(value[prefixEnd - 1])) {
+      searchFrom = mediaIndex + 'MEDIA:'.length
+
+      continue
+    }
+
+    let index = prefixEnd - 1
+
+    while (index > 0 && isHorizontalWhitespace(value[index - 1])) {
+      index -= 1
+    }
+
+    let end = mediaIndex + 'MEDIA:'.length
+
+    while (end < value.length && isHorizontalWhitespace(value[end])) {
+      end += 1
+    }
+
+    markers.push({ end, index, mediaIndex })
+    searchFrom = end
+  }
+
+  return markers
+}
+
+function isOpenConsecutiveMediaMarker(value: string, markers: ConsecutiveMediaMarker[]): boolean {
+  const marker = markers.at(-1)
+
+  return marker ? /^[\t ]*$/.test(value.slice(marker.mediaIndex + 'MEDIA:'.length)) : false
+}
+
+function renderConsecutiveMediaValues(
+  value: string,
+  onPath: (path: string) => void,
+  markers = consecutiveMediaMarkers(value)
+): string | undefined {
+  if (!markers.length) {
+    return undefined
+  }
+
+  const values: string[] = []
+  let start = 0
+
+  for (const marker of markers) {
+    values.push(value.slice(start, marker.index).trim())
+    start = marker.end
+  }
+
+  values.push(value.slice(start).trim())
+  const parsed = values.map(parseStandaloneMediaValue)
+
+  if (parsed.some(entry => entry.intent !== 'path')) {
+    return undefined
+  }
+
+  return parsed
+    .map(entry => {
+      if (entry.intent !== 'path') {
+        return ''
+      }
+
+      return `${mediaLink(entry.path, onPath)}${entry.tail}`
+    })
+    .join(' ')
+}
+
+function renderMediaSequencesInText(text: string, onPath: (path: string) => void, onOpenSequence: () => void): string {
+  let rendered = ''
+  let lineStart = 0
+
+  while (lineStart < text.length) {
+    const newline = text.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? text.length : newline
+    const contentEnd = lineEnd > lineStart && text[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd
+    const line = text.slice(lineStart, contentEnd)
+    const marker = line.indexOf('MEDIA:')
+    let content = line
+
+    if (marker >= 0) {
+      const value = line.slice(marker + 'MEDIA:'.length)
+      const markers = consecutiveMediaMarkers(value)
+      const sequence = renderConsecutiveMediaValues(value, onPath, markers)
+
+      if (sequence !== undefined) {
+        content = `${line.slice(0, marker)}${sequence}`
+
+        if (newline === -1) {
+          onOpenSequence()
+        }
+      } else if (newline === -1 && isOpenConsecutiveMediaMarker(value, markers)) {
+        onOpenSequence()
+      }
+    }
+
+    rendered += content
+
+    if (newline === -1) {
+      break
+    }
+
+    rendered += text.slice(contentEnd, newline + 1)
+    lineStart = newline + 1
+  }
+
+  return rendered
+}
+
+function mediaSequenceIntentsByLine(source: string): Map<number, StandaloneMediaIntent> {
+  const intents = new Map<number, StandaloneMediaIntent>()
+  let lineStart = 0
+
+  while (lineStart <= source.length) {
+    const lineEnd = source.indexOf('\n', lineStart)
+    const line = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd)
+    const marker = line.indexOf('MEDIA:')
+
+    if (marker >= 0) {
+      const value = line.slice(marker + 'MEDIA:'.length)
+      const markers = consecutiveMediaMarkers(value)
+
+      if (markers.length) {
+        const intent = renderConsecutiveMediaValues(value, () => {}, markers) === undefined ? 'prose' : 'path'
+
+        intents.set(lineStart, intent)
+      }
+    }
+
+    if (lineEnd === -1) {
+      break
+    }
+
+    lineStart = lineEnd + 1
+  }
+
+  return intents
+}
+
+function lineLeadingMediaIntent(source: string, offset: number): StandaloneMediaIntent | undefined {
+  const lineStart = source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1
+
+  if (!/^[\t ]*$/.test(source.slice(lineStart, offset))) {
+    return undefined
+  }
+
+  const lineEnd = source.indexOf('\n', offset)
+  const line = source.slice(offset, lineEnd === -1 ? source.length : lineEnd)
+  const marker = line.indexOf('MEDIA:')
+
+  return marker === -1 ? undefined : standaloneMediaIntent(line.slice(marker + 'MEDIA:'.length))
+}
+
+function renderMediaText(text: string): { paths: string[]; provisional: boolean; text: string } {
+  const paths: string[] = []
+  let provisional = false
+
+  let rendered = text.replace(MEDIA_LINE_RE, (match, lead: string, value: string, offset: number, source: string) => {
+    if (/[\t ]+[`"']?MEDIA:[\t ]*$/.test(value) && offset + match.length === source.length) {
+      provisional = true
+
+      return match
+    }
+
+    const sequence = renderConsecutiveMediaValues(value, path => paths.push(path))
+
+    if (sequence !== undefined) {
+      provisional ||= offset + match.length === source.length
+
+      return `${lead}${sequence}`
+    }
+
+    const wholeDirectiveQuote = wholeDirectiveOpeningQuote(match, lead)
+    const closingWholeDirectiveQuote = wholeDirectiveQuote ? value.indexOf(wholeDirectiveQuote) : -1
+    let parsed = parseStandaloneMediaValue(value)
+    let wholeDirectiveClosed = isClosedQuotedMediaDirective(match, lead)
+    const trailingWhitespace = /[\t ]+$/.test(match)
+
+    if (closingWholeDirectiveQuote >= 0) {
+      parsed = {
+        intent: 'path',
+        path: value.slice(0, closingWholeDirectiveQuote),
+        tail: value.slice(closingWholeDirectiveQuote + 1)
+      }
+      wholeDirectiveClosed = true
+    }
+
+    if (parsed.intent !== 'path') {
+      return match
+    }
+
+    provisional ||=
+      !isExplicitlyQuotedMediaPath(parsed.path) &&
+      (!wholeDirectiveClosed || trailingWhitespace) &&
+      offset + match.length === source.length
+
+    return `${lead}${mediaLink(parsed.path, path => paths.push(path))}${parsed.tail}`
+  })
+
+  rendered = renderMediaSequencesInText(
+    rendered,
+    path => paths.push(path),
+    () => {
+      provisional = true
+    }
+  )
+
+  const sequenceIntents = mediaSequenceIntentsByLine(rendered)
+  let inlineLineStart = 0
+  let inlineLineEnd = rendered.indexOf('\n')
+
+  rendered = rendered.replace(MEDIA_TAG_RE, (match, value: string, offset: number, source: string) => {
+    while (inlineLineEnd >= 0 && offset > inlineLineEnd) {
+      inlineLineStart = inlineLineEnd + 1
+      inlineLineEnd = rendered.indexOf('\n', inlineLineStart)
+    }
+
+    const sequenceIntent = sequenceIntents.get(inlineLineStart)
+
+    if (sequenceIntent === 'prose') {
+      return match
+    }
+
+    const lineIntent = lineLeadingMediaIntent(source, offset)
+    const pathShaped = isExplicitlyQuotedMediaPath(value) || isPathShapedMediaValue(unquoteMediaPath(value))
+
+    if (lineIntent === 'prose' || (lineIntent === undefined && !pathShaped)) {
+      return match
+    }
+
+    provisional ||= !isExplicitlyQuotedMediaPath(value) && source.indexOf('\n', offset) === -1
+
+    return mediaLink(value, path => paths.push(path))
+  })
+
+  rendered = trimHorizontalWhitespaceBeforeNewlines(rendered).replace(/\n{3,}/g, '\n\n')
+
+  return { paths, provisional, text: rendered }
+}
+
 export function renderMediaTags(text: string): string {
-  return text
-    .replace(
-      MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
-    )
-    .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+  return renderMediaText(text).text
+}
+
+export function mediaPathsFromText(text: string): string[] {
+  return renderMediaText(text).paths
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -155,8 +551,11 @@ export function mergeFinalAssistantText(
   finalText: string,
   fallbackTimestamp?: number
 ): ChatMessagePart[] {
+  parts = clearProvisionalMediaSources(parts)
+
   // Empty / whitespace-only completion is not authoritative — keep streamed
-  // text, reasoning, and tool parts (#95514).
+  // text, reasoning, and tool parts (#95514). Provisional MEDIA metadata is
+  // still settled first so it cannot leak past the turn boundary.
   if (!finalText.trim()) {
     return parts
   }
@@ -214,11 +613,53 @@ export function mergeFinalAssistantText(
 
 /** Seal every still-open visible activity when the assistant turn stops. */
 export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  return parts.map(part =>
-    part.timestamp !== undefined && part.completedAt === undefined
-      ? ({ ...part, completedAt } as ChatMessagePart)
-      : part
-  )
+  return parts.map(part => {
+    const settled = clearProvisionalMediaSource(part)
+
+    return settled.timestamp !== undefined && settled.completedAt === undefined
+      ? ({ ...settled, completedAt } as ChatMessagePart)
+      : settled
+  })
+}
+
+function clearProvisionalMediaSource(part: ChatMessagePart): ChatMessagePart {
+  if (part.provisionalMediaSource === undefined) {
+    return part
+  }
+
+  const { provisionalMediaSource: _source, ...settled } = part
+
+  return settled as ChatMessagePart
+}
+
+function clearProvisionalMediaSources(parts: ChatMessagePart[]): ChatMessagePart[] {
+  let changed = false
+
+  const settled = parts.map(part => {
+    const next = clearProvisionalMediaSource(part)
+
+    changed ||= next !== part
+
+    return next
+  })
+
+  return changed ? settled : parts
+}
+
+function restoreOpenProvisionalMediaSource(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const tailIndex = parts.length - 1
+  const tail = parts[tailIndex]
+
+  if (tail?.type !== 'text' || tail.completedAt !== undefined || tail.provisionalMediaSource === undefined) {
+    return parts
+  }
+
+  const next = [...parts]
+  const settled = clearProvisionalMediaSource(tail)
+
+  next[tailIndex] = { ...settled, text: tail.provisionalMediaSource } as ChatMessagePart
+
+  return next
 }
 
 // Coalesce only adjacent deltas of the same channel. Switching between text
@@ -241,12 +682,13 @@ function appendStreamPart(
     return { index: tailIndex, parts: next }
   }
 
-  if (
-    timestamp !== undefined &&
-    (tail?.type === 'text' || tail?.type === 'reasoning') &&
-    tail.completedAt === undefined
-  ) {
-    next[tailIndex] = { ...tail, completedAt: timestamp } as ChatMessagePart
+  if ((tail?.type === 'text' || tail?.type === 'reasoning') && tail.completedAt === undefined) {
+    const settled = clearProvisionalMediaSource(tail)
+
+    next[tailIndex] = {
+      ...settled,
+      ...(timestamp !== undefined ? { completedAt: timestamp } : {})
+    } as ChatMessagePart
   }
 
   const STREAM_PART: Record<'reasoning' | 'text', (text: string, timestamp?: number) => ChatMessagePart> = {
@@ -268,7 +710,7 @@ export function appendAssistantTextPart(
   delta: string,
   timestamp?: number
 ): ChatMessagePart[] {
-  const { index, parts: next } = appendStreamPart(parts, 'text', delta, timestamp)
+  const { index, parts: next } = appendStreamPart(restoreOpenProvisionalMediaSource(parts), 'text', delta, timestamp)
   const part = next[index]
 
   if (part?.type !== 'text') {
@@ -279,10 +721,16 @@ export function appendAssistantTextPart(
     delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
 
   if (mayContainMedia || part.text.includes('MEDIA:')) {
-    const rendered = renderMediaTags(part.text)
+    const rendered = renderMediaText(part.text)
 
-    if (rendered !== part.text) {
-      next[index] = { ...part, text: rendered }
+    if (rendered.text !== part.text || rendered.provisional) {
+      const settled = clearProvisionalMediaSource(part)
+
+      next[index] = {
+        ...settled,
+        text: rendered.text,
+        ...(rendered.provisional ? { provisionalMediaSource: part.text } : {})
+      } as ChatMessagePart
     }
   }
 

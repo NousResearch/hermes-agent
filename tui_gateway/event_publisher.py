@@ -91,7 +91,7 @@ class WsPublisherTransport:
         if self._dead or self._ws is None or self._worker is None:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        line = json.dumps(obj, ensure_ascii=False) + "\n"
 
         try:
             self._q.put_nowait(line)

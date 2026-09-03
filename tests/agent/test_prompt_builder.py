@@ -319,6 +319,21 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_instructs_agent_to_reuse_skills_already_loaded_in_conversation(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: search\ndescription: Search stuff\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "load each matching skill at most once per conversation" in result
+        assert "reuse the content already in the conversation" in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

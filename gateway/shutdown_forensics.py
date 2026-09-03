@@ -352,18 +352,20 @@ def check_systemd_timing_alignment(
     # Try to identify our unit name and ask systemctl for its config.
     unit_name: Optional[str] = None
     try:
-        # /proc/self/cgroup gives us "0::/user.slice/.../hermes-gateway.service"
+        # /proc/self/cgroup may place the process below a delegated service
+        # subgroup. Walk upward to the nearest service, but stop at a scope so
+        # a transient worker cannot be misattributed to parent user@N.service.
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
             for line in fh:
-                # systemd cgroup line ends with the unit name
-                if ".service" in line:
-                    parts = line.strip().split("/")
-                    for p in reversed(parts):
-                        if p.endswith(".service"):
-                            unit_name = p
-                            break
-                    if unit_name:
+                parts = line.strip().split("/")
+                for p in reversed(parts):
+                    if p.endswith(".scope"):
                         break
+                    if p.endswith(".service"):
+                        unit_name = p
+                        break
+                if unit_name:
+                    break
     except (OSError, FileNotFoundError):
         pass
     if not unit_name:

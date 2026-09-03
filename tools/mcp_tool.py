@@ -6648,7 +6648,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        rpc_round_trip_completed = False
+
         async def _call():
+            nonlocal rpc_round_trip_completed
+            # ``_call`` may run twice after auth/session recovery. Classify
+            # each attempt independently so only the latest attempt informs
+            # the connectivity breaker.
+            rpc_round_trip_completed = False
             _mark_server_call_started(server)
             async with server._rpc_lock, _track_inflight_rpc(
                 server, server_name, f"tools/call {tool_name}"
@@ -6732,6 +6739,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             )
                 finally:
                     server._pending_call_context = None
+            rpc_round_trip_completed = True
             # The RPC round-trip completed — the session is demonstrably
             # healthy at the transport level (even if the tool itself
             # returned isError). Clear the rapid-drop budget (#62212).
@@ -6900,15 +6908,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            if rpc_round_trip_completed:
+                # CallToolResult.isError is a tool/application-level failure,
+                # not evidence that the server transport is unreachable.
+                _reset_server_error(server_name)
+            else:
+                # Pre-RPC connectivity errors (for example dead stdio
+                # children with a stale session) still count as failures.
+                try:
+                    if "error" in json.loads(result):
+                        _bump_server_error(server_name)
+                    else:
+                        _reset_server_error(server_name)
+                except (json.JSONDecodeError, TypeError):
+                    _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

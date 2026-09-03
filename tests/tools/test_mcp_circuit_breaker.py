@@ -101,6 +101,56 @@ def _cleanup(mcp_tool_module, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_application_errors_do_not_trip_server_circuit_breaker(monkeypatch, tmp_path):
+    """Tool-domain failures prove the MCP transport is still reachable.
+
+    A threshold's worth of ``CallToolResult.isError`` responses from one tool
+    must not open the server-wide connectivity breaker and block an unrelated
+    healthy tool on the same server.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    calls = []
+
+    async def _call_tool(tool_name, **kwargs):
+        calls.append(tool_name)
+        result = MagicMock()
+        block = MagicMock()
+        if tool_name == "domain_error":
+            result.is_error = True
+            block.text = "document not found"
+        else:
+            result.is_error = False
+            block.text = "healthy response"
+        result.content = [block]
+        result.structured_content = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        failing_handler = _make_tool_handler("srv", "domain_error", 10.0)
+        healthy_handler = _make_tool_handler("srv", "unrelated_tool", 10.0)
+
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            parsed = json.loads(failing_handler({}))
+            assert parsed.get("error") == "document not found", parsed
+
+        parsed = json.loads(healthy_handler({}))
+        assert parsed.get("result") == "healthy response", parsed
+        assert calls == (
+            ["domain_error"] * mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+            + ["unrelated_tool"]
+        )
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     """After a tripped breaker's cooldown elapses, the *next* call must
     actually execute against the session (half-open probe). When the

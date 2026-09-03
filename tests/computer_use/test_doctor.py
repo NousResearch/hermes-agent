@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import sys
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -285,7 +285,8 @@ class TestDriverCmdResolution:
             doctor.run_doctor(driver_cmd="/custom/path/cua-driver")
         # shutil.which should have been called with the explicit arg, not
         # the env-var / default resolver.
-        which_mock.assert_called_with("/custom/path/cua-driver")
+        assert call("/custom/path/cua-driver") in which_mock.call_args_list
+        assert call("cua-driver") not in which_mock.call_args_list
 
     def test_env_var_used_when_no_arg_given(self, monkeypatch):
         from tools.computer_use import doctor

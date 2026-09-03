@@ -354,13 +354,18 @@ def _computer_use_max_image_dimension() -> Optional[int]:
     return dim if dim > 0 else None
 
 
-def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def cua_driver_child_env(
+    base_env: Optional[Dict[str, str]] = None,
+    driver_cmd: Optional[str] = None,
+) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
     Starts from ``base_env`` (defaults to ``os.environ``), applies the Hermes
-    telemetry policy, and bridges an explicit native-Wayland config opt-in only
-    when the child has a Wayland display. Used by every cua-driver spawn site
-    so CLI and gateway runtimes share one policy.
+    telemetry policy, and bridges the single persistent native-Wayland opt-in.
+    When an exact ``driver_cmd`` is supplied by a real runtime spawn, the
+    opt-in is refined through Hermes' session-validity and feature-advertisement
+    policy before the process boundary. Calls without an exact driver retain the
+    raw current-main bridge, which keeps status/install helpers side-effect free.
     """
     env = dict(base_env if base_env is not None else os.environ)
     if _cua_telemetry_disabled():
@@ -371,6 +376,22 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
         and bool(_computer_use_cfg().get("native_wayland", False))
     ):
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
+
+    if (
+        sys.platform == "linux"
+        and driver_cmd
+        and env.get(_CUA_NATIVE_WAYLAND_ENV_VAR) == "1"
+    ):
+        try:
+            from tools.computer_use.linux_wayland import native_wayland_child_env
+
+            env = native_wayland_child_env(driver_cmd, _computer_use_cfg(), env)
+        except Exception:
+            logger.debug(
+                "computer_use: native Wayland runtime policy failed closed",
+                exc_info=True,
+            )
+            env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "0"
     return env
 
 
@@ -746,7 +767,7 @@ class _EmbeddedCuaDaemon:
             )
 
     def child_env(self) -> Dict[str, str]:
-        env = cua_driver_child_env()
+        env = cua_driver_child_env(driver_cmd=self._driver_cmd)
         env["CUA_DRIVER_PERMISSION_MODE"] = self.permission_mode
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
@@ -1716,7 +1737,7 @@ class _CuaDriverSession:
                 child_env = self._embedded_daemon.child_env()
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
-                child_env = cua_driver_child_env()
+                child_env = cua_driver_child_env(driver_cmd=driver_cmd)
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
@@ -2142,7 +2163,7 @@ class _CuaDriverSession:
         driver_command = resolve_cua_driver_cmd()
         if not driver_command:
             raise RuntimeError(cua_driver_install_hint())
-        child_env = cua_driver_child_env()
+        child_env = cua_driver_child_env(driver_cmd=driver_command)
         socket_args: List[str] = []
         embedded_daemon = getattr(self, "_embedded_daemon", None)
         if embedded_daemon is not None:

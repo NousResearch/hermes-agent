@@ -8,7 +8,12 @@ import { Codicon } from '@/components/ui/codicon'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
-import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import {
+  DESKTOP_PLUGIN_PROFILE_TOOLSETS,
+  $pluginRecords,
+  type PluginRecord,
+  setPluginEnabled
+} from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { getProfiles } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -313,6 +318,7 @@ function AgentPluginsSection() {
 function PluginRow({ record }: { record: PluginRecord }) {
   const { t } = useI18n()
   const p = t.settings.plugins
+  const { requestGateway } = useGatewayRequest()
 
   return (
     <PluginLine
@@ -330,7 +336,26 @@ function PluginRow({ record }: { record: PluginRecord }) {
             checked={record.status !== 'disabled'}
             onCheckedChange={on => {
               triggerHaptic('selection')
-              void setPluginEnabled(record.id, on)
+              void (async () => {
+                await setPluginEnabled(record.id, on)
+                const toolset = DESKTOP_PLUGIN_PROFILE_TOOLSETS[record.id]
+                if (!toolset) {
+                  return
+                }
+                try {
+                  await requestGateway('tools.configure', {
+                    action: on ? 'enable' : 'disable',
+                    names: [toolset]
+                  })
+                } catch (err) {
+                  notifyError(
+                    err,
+                    on
+                      ? `Could not enable the ${toolset} agent toolset`
+                      : `Could not disable the ${toolset} agent toolset`
+                  )
+                }
+              })()
             }}
           />
         </>

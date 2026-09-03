@@ -75,6 +75,11 @@ function saveDecisions(next: Record<string, boolean>) {
 
 export const $pluginRecords = atom<Record<string, PluginRecord>>({})
 
+/** Desktop plugin id → profile toolset. Mirrors backend PROFILE_OPT_IN_TOOLSETS. */
+export const DESKTOP_PLUGIN_PROFILE_TOOLSETS: Readonly<Record<string, string>> = {
+  kanban: 'kanban'
+}
+
 /** Loader-owned lifecycle controls for a plugin (activate/deactivate). */
 interface PluginHandle {
   activate: () => Promise<void> | void

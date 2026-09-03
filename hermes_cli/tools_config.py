@@ -167,6 +167,10 @@ _DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin",
 # existing tool" flow and the GUI provider matrix instead.
 _CONFIG_ONLY_TOOLSETS = {"stt"}
 
+# Opt-in toolsets on top-level ``toolsets:`` (check_fn / skill gates), not
+# ``platform_toolsets``. Desktop Plugins and ``tools.configure`` write here (#96969).
+PROFILE_OPT_IN_TOOLSETS = frozenset({"kanban"})
+
 
 def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.
@@ -6185,6 +6189,29 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     else:
         updated = enabled | set(toolset_names)
     _save_platform_tools(config, platform, updated)
+
+
+def _apply_profile_toolset_change(
+    config: dict, toolset_names: List[str], action: str
+) -> None:
+    """Add or remove profile opt-in toolsets on the top-level ``toolsets`` list.
+
+    Idempotent: repeated enable/disable converges to the same membership.
+    """
+    raw = config.get("toolsets")
+    current = [str(t) for t in raw] if isinstance(raw, list) else []
+    wanted = {str(name).strip() for name in toolset_names if str(name).strip()}
+    if not wanted:
+        return
+    if action == "disable":
+        updated = [name for name in current if name not in wanted]
+    else:
+        updated = list(current)
+        for name in toolset_names:
+            key = str(name).strip()
+            if key and key not in updated:
+                updated.append(key)
+    config["toolsets"] = updated
 
 
 def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:

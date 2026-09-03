@@ -1642,7 +1642,9 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.config import load_config, save_config
         from hermes_cli.tools_config import (
             CONFIGURABLE_TOOLSETS,
+            PROFILE_OPT_IN_TOOLSETS,
             _apply_mcp_change,
+            _apply_profile_toolset_change,
             _apply_toolset_change,
             _get_platform_tools,
             _get_plugin_toolset_keys,
@@ -1652,18 +1654,34 @@ def _(rid, params: dict) -> dict:
         valid_toolsets = {
             ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS
         } | _get_plugin_toolset_keys()
-        toolset_targets = [name for name in targets if ":" not in name]
+        bare_targets = [name for name in targets if ":" not in name]
         mcp_targets = [name for name in targets if ":" in name]
-        unknown = [name for name in toolset_targets if name not in valid_toolsets]
-        toolset_targets = [name for name in toolset_targets if name in valid_toolsets]
+        profile_targets = [
+            name for name in bare_targets if name in PROFILE_OPT_IN_TOOLSETS
+        ]
+        toolset_targets = [name for name in bare_targets if name in valid_toolsets]
+        unknown = [
+            name
+            for name in bare_targets
+            if name not in valid_toolsets and name not in PROFILE_OPT_IN_TOOLSETS
+        ]
 
         if toolset_targets:
             _apply_toolset_change(cfg, "cli", toolset_targets, action)
+        if profile_targets:
+            _apply_profile_toolset_change(cfg, profile_targets, action)
 
         missing_servers = (
             _apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
         )
         save_config(cfg)
+        if profile_targets:
+            try:
+                from tools.registry import invalidate_check_fn_cache
+
+                invalidate_check_fn_cache()
+            except Exception:
+                pass
 
         session = _sessions.get(params.get("session_id", ""))
         info = (

@@ -80,7 +80,8 @@ function KanbanCount() {
 const plugin: HermesPlugin = {
   id: 'kanban',
   name: 'Kanban',
-  description: 'Multi-agent task board — board page, sidebar entry, and a live in-flight count in the status bar.',
+  description:
+    'Multi-agent task board — board page, sidebar entry, live in-flight count, and the agent kanban toolset.',
   defaultEnabled: false,
   register(ctx) {
     ctx.i18n.register(KANBAN_LOCALES)

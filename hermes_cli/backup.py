@@ -410,6 +410,17 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
     if abs_path.is_symlink():
         return True
 
+    # Sockets, FIFOs, and device nodes are runtime state that zipfile.write()
+    # cannot archive — it raises OSError on them (e.g. the gateway control
+    # socket), which marks the whole backup incomplete. Skip them the way
+    # symlinks are skipped. A failed stat must NOT skip the file silently:
+    # leave it for the archive phase, which reports the failure as a warning.
+    try:
+        if not stat.S_ISREG(abs_path.stat().st_mode):
+            return True
+    except OSError:
+        return False
+
     try:
         return abs_path.resolve() == out_path.resolve()
     except (OSError, ValueError):

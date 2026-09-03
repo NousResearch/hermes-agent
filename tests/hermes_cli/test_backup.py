@@ -342,6 +342,75 @@ class TestBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX unix sockets")
+    def test_skips_unix_socket(self, tmp_path, monkeypatch, capsys):
+        """A running gateway leaves a unix socket at HERMES_HOME/gateway.sock.
+        zipfile.write() raises OSError on it, flipping the summary to "Backup
+        incomplete" even though the archive is fine — the socket must be
+        skipped the way symlinks are."""
+        import socket as socket_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        # sun_path is capped (~104 chars on macOS), shorter than the tmp_path
+        # prefix here — bind via a relative path so the limit doesn't apply.
+        monkeypatch.chdir(hermes_home)
+        sock = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        sock.bind("gateway.sock")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        try:
+            run_backup(args)
+        finally:
+            sock.close()
+
+        out = capsys.readouterr().out
+        assert "Backup complete" in out
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            assert "gateway.sock" not in zf.namelist()
+
+    def test_stat_failure_surfaces_as_warning_not_silent_skip(self, tmp_path, monkeypatch, capsys):
+        """A file whose stat() fails must NOT be dropped silently by the
+        non-regular-file skip: it falls through to the archive phase, where
+        the failure lands in the warnings and the summary stays honest."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        real_stat = Path.stat
+
+        def _raising_stat(self, *args, **kwargs):
+            # Only the follow_symlinks=True call fails — lstat (used by the
+            # is_symlink check) still works, so the failure reaches the new
+            # non-regular-file check and the archive phase.
+            if self.name == "agent.log" and kwargs.get("follow_symlinks", True):
+                raise OSError("simulated stat failure")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", _raising_stat)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        out = capsys.readouterr().out
+        assert "Backup incomplete" in out
+        assert "agent.log" in out
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            assert "logs/agent.log" in zf.namelist()
+
     def test_state_snapshots_not_nested_into_backup(self, tmp_path, monkeypatch):
         """A quick snapshot left under state-snapshots/ must not be re-shipped
         by the full backup — each snapshot already holds a copy of state.db, so

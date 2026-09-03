@@ -18,12 +18,15 @@ The fix is owned at chokepoints, not leaf sites:
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import json
 
 import pytest
 
+import agent.message_sanitization as message_sanitization
 from agent.message_sanitization import (
+    _sanitize_messages_surrogates,
     _sanitize_structure_surrogates,
     _sanitize_surrogates,
 )
@@ -186,6 +189,80 @@ def test_conversation_loop_sanitizes_api_kwargs_after_build():
 # ---------------------------------------------------------------------------
 # Helper semantics shared by every chokepoint
 # ---------------------------------------------------------------------------
+
+
+def test_sanitize_surrogates_skips_regex_for_ascii_text(monkeypatch):
+    regex_spy = MagicMock(wraps=message_sanitization._SURROGATE_RE)
+    monkeypatch.setattr(message_sanitization, "_SURROGATE_RE", regex_spy)
+
+    text = "plain ASCII request text"
+    assert _sanitize_surrogates(text) is text
+    regex_spy.search.assert_not_called()
+
+
+def test_structure_sanitizer_skips_regex_for_ascii_leaves(monkeypatch):
+    regex_spy = MagicMock(wraps=message_sanitization._SURROGATE_RE)
+    monkeypatch.setattr(message_sanitization, "_SURROGATE_RE", regex_spy)
+    payload = {
+        "messages": [{"role": "user", "content": "plain request"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a shell command",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                    },
+                },
+            }
+        ],
+    }
+
+    assert _sanitize_structure_surrogates(payload) is False
+    regex_spy.search.assert_not_called()
+
+
+def test_message_sanitizer_skips_regex_for_ascii_leaves(monkeypatch):
+    regex_spy = MagicMock(wraps=message_sanitization._SURROGATE_RE)
+    monkeypatch.setattr(message_sanitization, "_SURROGATE_RE", regex_spy)
+    messages = [
+        {"role": "user", "content": "plain request", "name": "user"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "plain response"}],
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+                }
+            ],
+            "reasoning_content": "plain reasoning",
+            "reasoning_details": [{"summary": "plain summary"}],
+        },
+        {"role": "tool", "content": "plain result", "tool_call_id": "call_1"},
+    ]
+
+    assert _sanitize_messages_surrogates(messages) is False
+    regex_spy.search.assert_not_called()
+
+
+def test_str_subclass_cannot_bypass_surrogate_checks():
+    class MisreportingStr(str):
+        def isascii(self):
+            return True
+
+    dirty = MisreportingStr(f"dirty {LONE_HIGH} text")
+    assert _sanitize_surrogates(dirty) == "dirty \ufffd text"
+
+    payload = {"nested": [dirty]}
+    assert _sanitize_structure_surrogates(payload) is True
+    assert payload == {"nested": ["dirty \ufffd text"]}
+
+    messages = [{"role": "user", "content": dirty}]
+    assert _sanitize_messages_surrogates(messages) is True
+    assert messages == [{"role": "user", "content": "dirty \ufffd text"}]
 
 
 def test_sanitize_surrogates_preserves_valid_astral_pairs():

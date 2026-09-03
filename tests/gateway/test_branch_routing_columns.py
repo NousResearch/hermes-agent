@@ -153,3 +153,54 @@ class TestBranchRoutingColumns:
 
         _ = real_switch_session  # silence unused
 
+
+class TestBranchPreservesDisplayKind:
+    """The history-copy loop must carry display_kind/display_metadata across.
+
+    Timeline markers (model_switch, personality_switch, auto_continue, ...)
+    ride as role=user rows. Dropping display_kind during the branch copy
+    re-plants them as bare user turns after a restart, corrupting the
+    truncate ordinal address space the same way #82756 did (327f7efab8
+    closed this exact gap for tui_gateway's session.branch and
+    _persist_branch_seed, but never touched gateway/slash_commands.py's own
+    independent, structurally identical history-copy site).
+    """
+
+    @pytest.mark.asyncio
+    async def test_display_kind_survives_gateway_branch(self, store):
+        # Realistic alternation: the marker follows an assistant turn, not
+        # another bare user row. Two adjacent role=user rows would hit
+        # load_transcript's repair_alternation=True wedge-merge, which is an
+        # unrelated pre-existing repair path (not what this test targets) —
+        # avoid it so the test isolates the display_kind-drop this PR fixes.
+        source = _make_source()
+        parent_entry = store.get_or_create_session(source)
+        store._db.append_message(parent_entry.session_id, role="user", content="hello")
+        store._db.append_message(parent_entry.session_id, role="assistant", content="world")
+        store._db.append_message(
+            parent_entry.session_id,
+            role="user",
+            content="[System: personality changed]",
+            display_kind="personality_switch",
+            display_metadata={"personality": "sage"},
+        )
+
+        runner = _make_branch_runner(store)
+
+        result = await runner._handle_branch_command(_make_event("/branch"))
+        assert "Failed" not in result and "failed" not in result
+
+        new_session_id = store.get_or_create_session(source).session_id
+        assert new_session_id != parent_entry.session_id
+
+        messages = store._db.get_messages_as_conversation(new_session_id)
+        marker = next(
+            (m for m in messages if m.get("display_kind") == "personality_switch"),
+            None,
+        )
+        assert marker is not None, (
+            "gateway /branch dropped display_kind: the marker re-entered the "
+            "truncate ordinal address space as a phantom user turn (#82756)"
+        )
+        assert marker["display_metadata"] == {"personality": "sage"}
+

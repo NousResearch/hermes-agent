@@ -292,6 +292,14 @@ def _log_tick_yield_once(reason: str) -> None:
     _last_yield_log = {"reason": reason, "at": now}
 
 
+# OSError repr signatures that embed user/script content in the message.
+# Provider errors from HTTP stacks never carry these tokens (#99988).
+_OS_ERROR_SIGNATURE_RE = re.compile(
+    r"^(?:[A-Za-z_][\w.]*:\s*)?\[(?:Errno|WinError)\s+\d+\]",
+    re.IGNORECASE,
+)
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -302,6 +310,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
     lower = text.lower()
+    first_line = text.splitlines()[0] if text else ""
+    first_lower = first_line.lower()
+    os_error_signature = bool(_OS_ERROR_SIGNATURE_RE.match(first_line))
 
     if "skipped to prevent unintended spend: global inference config drifted" in lower:
         if "finite one-shot job is consumed" in lower:
@@ -358,8 +369,8 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # Match 429 as a whole token (#83188 @cation98): bare substring matching
     # let identifiers containing those digits (job ids, ports, hashes) trip
     # a false "provider rate limit" alert.
-    if provider_reachable and (
-        re.search(r"\b429\b", text) or "rate limit" in lower or "usage limit" in lower
+    if provider_reachable and not os_error_signature and (
+        re.search(r"\b429\b", first_line) or "rate limit" in first_lower or "usage limit" in first_lower
     ):
         reason = "rate limit"
         if "weekly usage limit" in lower:
@@ -396,8 +407,8 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "quiet. Full details saved in cron output."
         )
 
-    if provider_reachable and (
-        "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+    if provider_reachable and not os_error_signature and (
+        "readtimeout" in first_lower or "timed out" in first_lower or "timeout" in first_lower
     ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
@@ -408,8 +419,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
     # not trip a misleading auth message.
-    if provider_reachable and (
-        re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text)
+    if provider_reachable and not os_error_signature and (
+        re.search(r"authenticat|authoriz", first_lower)
+        or re.search(r"\b(401|403)\b", first_line)
     ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "

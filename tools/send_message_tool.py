@@ -1446,6 +1446,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Teams: media via live adapter (or standalone fallback) ---
+    # Same shape as the SLACK branch: media rides the last chunk through
+    # _send_via_adapter; out-of-process callers fall back to the plugin's
+    # standalone sender, which emits Bot Framework attachments.
+    if platform == Platform.TEAMS and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- WeCom: native media attachment support via live gateway adapter ---
     if platform == Platform.WECOM and media_files:
         last_result = None
@@ -1471,7 +1493,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip() and platform.value != "buzz":
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and teams; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1479,7 +1501,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and platform.value != "buzz":
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and teams"
         )
 
     last_result = None

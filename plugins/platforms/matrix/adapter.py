@@ -58,6 +58,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -416,16 +417,21 @@ class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
     _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3",
-        "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "strike",
-        "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
+        "a", "b", "blockquote", "br", "code", "del", "div", "em", "h1", "h2",
+        "h3", "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "span",
+        "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
     }
+    # Tags that may carry Element's KaTeX attribute (MSC2191 `data-mx-maths`).
+    _MATHS_TAGS = {"div", "span"}
     _VOID_TAGS = {"br", "hr"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
         self._skip_depth = 0
+        # Depth counters for span/div, which are allowed ONLY as math carriers.
+        self._maths_open: dict[str, int] = {}
+        self._dropped: dict[str, int] = {}
 
     @staticmethod
     def _safe_url(value: str) -> str:
@@ -450,6 +456,16 @@ class _MatrixHtmlSanitizer(HTMLParser):
             elif tag == "code" and attr == "class":
                 if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
                     safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
+            elif tag in self._MATHS_TAGS and attr == "data-mx-maths":
+                # Element renders this attribute with KaTeX. The value is
+                # plain LaTeX, never markup: escape it and drop control
+                # characters so it cannot break out of the attribute. LaTeX
+                # commands that could navigate (`\href`) are inert under
+                # KaTeX's default `trust: false`, which Element does not
+                # override; we deliberately do not attempt to parse LaTeX here.
+                latex = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", "", raw_value)
+                if latex:
+                    safe.append(f' data-mx-maths="{_html_escape(latex, quote=True)}"')
         return "".join(safe)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -464,7 +480,17 @@ class _MatrixHtmlSanitizer(HTMLParser):
         if tag in self._VOID_TAGS:
             self._parts.append(f"<{tag}>")
             return
-        self._parts.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+        safe_attrs = self._safe_attrs(tag, attrs)
+        if tag in self._MATHS_TAGS:
+            # span/div exist in the allowlist purely to carry `data-mx-maths`.
+            # A bare one (raw HTML in model output) is dropped, tag only, so
+            # widening the allowlist for math does not also let arbitrary
+            # layout markup through.
+            if "data-mx-maths=" not in safe_attrs:
+                self._dropped[tag] = self._dropped.get(tag, 0) + 1
+                return
+            self._maths_open[tag] = self._maths_open.get(tag, 0) + 1
+        self._parts.append(f"<{tag}{safe_attrs}>")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -473,6 +499,13 @@ class _MatrixHtmlSanitizer(HTMLParser):
             return
         if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
             return
+        if tag in self._MATHS_TAGS:
+            if self._dropped.get(tag):
+                self._dropped[tag] -= 1
+                return
+            if not self._maths_open.get(tag):
+                return
+            self._maths_open[tag] -= 1
         self._parts.append(f"</{tag}>")
 
     def handle_data(self, data: str) -> None:
@@ -976,6 +1009,106 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
         "",
         result,
     )
+    return result
+
+
+_MATRIX_MATH_MAX_LEN = 4096
+
+# Regions where a ``$`` must never be read as math. Order matters: fenced
+# blocks first, then indented code, inline code, and Markdown link/image
+# destinations (a placeholder landing inside `href=` would corrupt the anchor).
+_MATRIX_MATH_PROTECTED = (
+    re.compile(r"(?m)^[ \t]*```[\s\S]*?^[ \t]*```[^\n]*$"),
+    re.compile(r"(?m)^[ \t]*~~~[\s\S]*?^[ \t]*~~~[^\n]*$"),
+    re.compile(r"(?m)(?:\A|(?<=\n\n))(?:(?:[ ]{4}|\t)[^\n]*\n?)+"),
+    re.compile(r"`+[^`\n]+`+"),
+    re.compile(r"!?\[[^\]\n]*\]\([^)\n]*\)"),
+)
+
+# Display and inline math are matched in ONE pass, so a placeholder emitted by
+# the display branch can never be re-consumed by the inline branch.
+_MATRIX_MATH_RE = re.compile(
+    r"(?<![\$\w\\])\$\$(?!\s)((?:(?!\n[ \t]*\n).)+?)(?<!\s)\$\$(?![\$\w])"
+    r"|(?<![\$\w\\])\$(?!\s)([^\$\n]+?)(?<!\s)\$(?![\$\w])",
+    re.DOTALL,
+)
+
+
+class _NotMath(Exception):
+    """Internal signal that a ``$...$`` span should be left as literal text."""
+
+
+def _extract_matrix_math(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Replace ``$...$`` / ``$$...$$`` with placeholders holding math HTML.
+
+    Returns ``(text_with_placeholders, replacements)`` where each replacement is
+    a ``(placeholder, html)`` pair for :func:`_restore_matrix_math`.
+
+    Code (fenced, indented, and inline) and Markdown link/image destinations are
+    stashed first, so shell snippets like ``` `echo $HOME and $PATH` ``` and
+    URLs are never rewritten. ``\\$`` is an explicit escape hatch for a literal
+    dollar sign.
+
+    Placeholders are alphanumeric and carry a per-call random token: Markdown
+    leaves them untouched, and a hostile message cannot forge one to smuggle
+    markup past the conversion step.
+    """
+    if "$" not in (text or ""):
+        return text or "", []
+
+    token = secrets.token_hex(8)
+    replacements: list[tuple[str, str]] = []
+    literals: list[str] = []
+
+    def _stash_literal(value: str) -> str:
+        literals.append(value)
+        return f"hermesraw{token}x{len(literals) - 1}x"
+
+    work = text
+    for pattern in _MATRIX_MATH_PROTECTED:
+        work = pattern.sub(lambda m: _stash_literal(m.group(0)), work)
+    # Escape hatch: ``\$`` is a literal dollar and never starts an equation.
+    work = re.sub(r"\\\$", lambda _m: _stash_literal("$"), work)
+
+    def _make(latex: str, tag: str) -> str:
+        latex = latex.strip()
+        if not latex or len(latex) > _MATRIX_MATH_MAX_LEN:
+            raise _NotMath
+        placeholder = f"hermesmath{token}x{len(replacements)}x"
+        replacements.append(
+            (
+                placeholder,
+                f'<{tag} data-mx-maths="{_html_escape(latex, quote=True)}">'
+                f"<code>{_html_escape(latex)}</code></{tag}>",
+            )
+        )
+        return placeholder
+
+    def _convert(match: re.Match[str]) -> str:
+        display, inline = match.group(1), match.group(2)
+        try:
+            if display is not None:
+                return _make(display, "div")
+            return _make(inline or "", "span")
+        except _NotMath:
+            return match.group(0)
+
+    work = _MATRIX_MATH_RE.sub(_convert, work)
+
+    for index, literal in enumerate(literals):
+        work = work.replace(f"hermesraw{token}x{index}x", literal)
+    return work, replacements
+
+
+def _restore_matrix_math(html: str, replacements: list[tuple[str, str]]) -> str:
+    """Substitute math placeholders back into converted HTML.
+
+    Runs BEFORE :func:`_sanitize_matrix_html`, so the allowlist remains the
+    single boundary that decides which tags and attributes are emitted.
+    """
+    result = html or ""
+    for placeholder, math_html in replacements:
+        result = result.replace(placeholder, math_html)
     return result
 
 
@@ -5033,6 +5166,11 @@ class MatrixAdapter(BasePlatformAdapter):
         Matrix HTML spec allows.
         """
         text = _pre_sanitize_matrix_markdown(text)
+        # LaTeX is stashed as placeholders so the Markdown converter cannot
+        # mangle it (``$a_1$`` would otherwise become emphasis). Math HTML is
+        # restored BEFORE `_sanitize_matrix_html`, so the allowlist still gets
+        # the final say over every tag and attribute we emit.
+        text, math_stash = _extract_matrix_math(text)
         try:
             import markdown as _md
 
@@ -5047,11 +5185,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return _sanitize_matrix_html(html)
+            return _sanitize_matrix_html(_restore_matrix_math(html, math_stash))
         except ImportError:
             pass
 
-        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
+        return _sanitize_matrix_html(
+            _restore_matrix_math(self._markdown_to_html_fallback(text), math_stash)
+        )
 
     # ------------------------------------------------------------------
     # Regex-based Markdown -> HTML (no extra dependencies)

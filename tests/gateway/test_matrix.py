@@ -1,5 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
+import builtins
 import re
 import stat
 import sys
@@ -718,6 +719,182 @@ class TestMatrixMarkdownToHtml:
         assert "<tbody>" in result
         assert "<th>Item</th>" in result
         assert "<td>Apples</td>" in result
+
+
+class TestMatrixLatexMath:
+    """`$...$` / `$$...$$` -> Element's `data-mx-maths` (MSC2191)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_inline_math_emits_span_with_attribute(self):
+        result = self.adapter._markdown_to_html(r"Energy is $E = mc^2$ exactly.")
+        assert 'data-mx-maths="E = mc^2"' in result
+        assert "<span" in result
+        # Non-supporting clients fall back to the <code> body.
+        assert "<code>E = mc^2</code>" in result
+
+    def test_display_math_emits_div(self):
+        result = self.adapter._markdown_to_html("$$\\int_0^1 x\\,dx$$")
+        assert "<div" in result
+        assert "data-mx-maths=" in result
+        assert "int_0^1" in result
+
+    def test_subscripts_survive_markdown_emphasis(self):
+        """`$a_1 + b_1$` must not be mangled into <em> by the converter."""
+        result = self.adapter._markdown_to_html("$a_1 + b_1$")
+        assert "<em>" not in result
+        assert "a_1 + b_1" in result
+
+    def test_inline_code_is_not_treated_as_math(self):
+        result = self.adapter._markdown_to_html("Run `echo $HOME and $USER` now")
+        assert "data-mx-maths" not in result
+        assert "$HOME" in result
+
+    def test_fenced_code_block_is_not_treated_as_math(self):
+        text = "```sh\ncost=$5\necho $PATH\n```"
+        result = self.adapter._markdown_to_html(text)
+        assert "data-mx-maths" not in result
+
+    def test_currency_prose_is_not_treated_as_math(self):
+        result = self.adapter._markdown_to_html("It costs $5 or maybe $10 total.")
+        assert "data-mx-maths" not in result
+
+    def test_hostile_latex_cannot_break_out_of_attribute(self):
+        """A payload that DOES become math must be fully escaped in the attr."""
+        result = self.adapter._markdown_to_html('$x"><img src=q>$')
+        assert 'data-mx-maths="x&quot;&gt;&lt;img src=q&gt;"' in result
+        assert "<img" not in result
+
+    def test_hostile_latex_cannot_inject_tags(self):
+        """`<script>` is removed upstream; other tags are escaped inside math."""
+        stripped = self.adapter._markdown_to_html("$<script>alert(1)</script>$")
+        assert "script" not in stripped.lower()
+        assert "alert(1)" not in stripped
+
+        result = self.adapter._markdown_to_html("$<img src=x onerror=y>$")
+        assert "<img" not in result
+        assert "onerror" not in result.lower()
+        assert "&lt;img src=x" in result
+
+    def test_display_math_currency_is_not_math(self):
+        result = self.adapter._markdown_to_html("Costs $$5 for A and $$10 for B.")
+        assert "data-mx-maths" not in result
+        assert "10 for B" in result
+
+    def test_display_math_does_not_span_paragraphs(self):
+        result = self.adapter._markdown_to_html("$$a\n\nb$$")
+        assert "data-mx-maths" not in result
+
+    def test_indented_code_block_is_not_treated_as_math(self):
+        result = self.adapter._markdown_to_html("    echo $x + y$")
+        assert "data-mx-maths" not in result
+        assert "<pre>" in result
+
+    def test_tilde_fence_is_not_treated_as_math(self):
+        result = self.adapter._markdown_to_html("~~~\ncost=$5 and $9\n~~~")
+        assert "data-mx-maths" not in result
+
+    def test_link_destination_is_not_corrupted(self):
+        result = self.adapter._markdown_to_html("[link]($x$)")
+        assert "data-mx-maths" not in result
+        assert ">link</a>" in result
+
+    def test_placeholder_cannot_leak_into_a_later_equation(self):
+        """Display and inline math are one pass — no re-matching placeholders."""
+        result = self.adapter._markdown_to_html("$x$$x$$x$")
+        assert "hermesmath" not in result
+
+    def test_backslash_dollar_is_an_escape_hatch(self):
+        result = self.adapter._markdown_to_html(r"Pay \$5 and \$9 today")
+        assert "data-mx-maths" not in result
+        assert "$5" in result and "$9" in result
+
+    def test_overlong_equation_is_left_as_text(self):
+        result = self.adapter._markdown_to_html("$" + "x" * 5000 + "$")
+        assert "data-mx-maths" not in result
+
+    def test_math_output_survives_the_sanitizer_allowlist(self):
+        """The emitted markup must be what the allowlist actually passes."""
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        html = self.adapter._markdown_to_html("$E=mc^2$")
+        assert _sanitize_matrix_html(html) == html
+
+    def test_sanitizer_still_strips_unrelated_span_attributes(self):
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        cleaned = _sanitize_matrix_html(
+            '<span style="color:red" onclick="x()" data-mx-maths="y">z</span>'
+        )
+        assert "style" not in cleaned
+        assert "onclick" not in cleaned
+        assert 'data-mx-maths="y"' in cleaned
+
+    def test_sanitizer_rejects_maths_attribute_on_other_tags(self):
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        cleaned = _sanitize_matrix_html('<code data-mx-maths="x">x</code>')
+        assert "data-mx-maths" not in cleaned
+
+    def test_bare_span_and_div_are_still_dropped(self):
+        """Allowing span/div for math must not admit arbitrary layout markup."""
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        cleaned = _sanitize_matrix_html("raw <span>hi</span> and <div>d</div>")
+        assert "<span" not in cleaned and "<div" not in cleaned
+        assert "hi" in cleaned and "d" in cleaned
+
+    def test_plain_message_without_math_is_unchanged(self):
+        result = self.adapter._markdown_to_html("**bold** and `code`")
+        assert "data-mx-maths" not in result
+        assert "<strong>bold</strong>" in result
+
+
+class TestMatrixLatexMathFallbackPath:
+    """Same contracts on the no-`markdown`-library regex fallback branch."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def _convert(self, text):
+        real_import = builtins.__import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "markdown":
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", _blocked):
+            return self.adapter._markdown_to_html(text)
+
+    def test_fallback_path_is_actually_exercised(self):
+        """Guard the guard: the patch must really force the fallback branch."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        with patch.object(
+            MatrixAdapter, "_markdown_to_html_fallback", return_value="SENTINEL"
+        ):
+            assert self._convert("plain") == "SENTINEL"
+
+    def test_fallback_renders_inline_math(self):
+        result = self._convert("Energy is $E = mc^2$ exactly.")
+        assert 'data-mx-maths="E = mc^2"' in result
+        assert "<span" in result
+
+    def test_fallback_renders_display_math(self):
+        result = self._convert("$$E=mc^2$$")
+        assert "<div" in result
+        assert 'data-mx-maths="E=mc^2"' in result
+
+    def test_fallback_excludes_inline_code(self):
+        result = self._convert("Run `echo $HOME and $USER` now")
+        assert "data-mx-maths" not in result
+
+    def test_fallback_escapes_hostile_latex(self):
+        result = self._convert('$x"><img src=q>$')
+        assert "<img" not in result
+        assert "&quot;&gt;&lt;img" in result
 
 
 # ---------------------------------------------------------------------------

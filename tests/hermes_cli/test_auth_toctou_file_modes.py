@@ -33,6 +33,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class _StatWithOwner:
+    """Keep the real stat payload while overriding only ownership fields."""
+
+    def __init__(self, result, uid, gid):
+        self._result = result
+        self.st_uid = uid
+        self.st_gid = gid
+
+    def __getattr__(self, name):
+        return getattr(self._result, name)
+
+
 # ---------------------------------------------------------------------------
 # _save_auth_store  (~/.hermes/auth.json — every native OAuth provider)
 # ---------------------------------------------------------------------------
@@ -67,6 +79,99 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
     # Content survived the rewrite
     data = json.loads(auth_path.read_text())
     assert data["providers"]["openai-codex"]["tokens"]["access_token"] == "secret-x"
+
+
+@pytest.mark.skipif(not hasattr(os, "fchown"), reason="fchown is unavailable on Windows")
+def test_save_auth_store_preserves_existing_owner_before_atomic_replace(tmp_path, monkeypatch):
+    """The replacement inode must retain the existing store's service owner.
+
+    This models an administrator rewriting a 0600 store owned by the gateway
+    account: ownership must be applied to the temporary inode *before*
+    ``atomic_replace`` exposes it.
+    """
+    from hermes_cli import auth as auth_mod
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"version": 1, "providers": {}}\n')
+    owner = (1234, 5678)
+
+    real_stat = os.stat
+
+    def stat_with_service_owner(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if os.fspath(path) == os.fspath(auth_path):
+            return _StatWithOwner(result, *owner)
+        return result
+
+    captured = []
+    monkeypatch.setattr(auth_mod.os, "stat", stat_with_service_owner)
+    monkeypatch.setattr(auth_mod.os, "fchown", lambda fd, uid, gid: captured.append((uid, gid)))
+
+    auth_mod._save_auth_store({"providers": {}}, target_path=auth_path)
+
+    assert captured == [owner]
+
+
+@pytest.mark.skipif(not hasattr(os, "fchown"), reason="fchown is unavailable on Windows")
+def test_save_auth_store_first_write_inherits_parent_owner(tmp_path, monkeypatch):
+    """A first store write belongs to the HERMES_HOME owner, not the CLI."""
+    from hermes_cli import auth as auth_mod
+
+    auth_path = tmp_path / "auth.json"
+    owner = (2345, 6789)
+    real_stat = os.stat
+
+    def stat_with_service_owner(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if os.fspath(path) == os.fspath(auth_path.parent):
+            return _StatWithOwner(result, *owner)
+        return result
+
+    captured = []
+    monkeypatch.setattr(auth_mod.os, "stat", stat_with_service_owner)
+    monkeypatch.setattr(auth_mod.os, "fchown", lambda fd, uid, gid: captured.append((uid, gid)))
+
+    auth_mod._save_auth_store({"providers": {}}, target_path=auth_path)
+
+    assert captured == [owner]
+
+
+@pytest.mark.skipif(not hasattr(os, "fchown"), reason="fchown is unavailable on Windows")
+def test_save_auth_store_skips_fchown_for_current_owner(tmp_path, monkeypatch):
+    """A same-user rewrite must not depend on a needless ownership syscall."""
+    from hermes_cli import auth as auth_mod
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"providers": {}}\n')
+    monkeypatch.setattr(auth_mod.os, "fchown", lambda *_args: pytest.fail("unexpected fchown"))
+
+    auth_mod._save_auth_store({"providers": {}}, target_path=auth_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "fchown"), reason="fchown is unavailable on Windows")
+def test_save_auth_store_does_not_replace_when_owner_transfer_fails(tmp_path, monkeypatch):
+    """A failed fchown must leave the old credential store untouched."""
+    from hermes_cli import auth as auth_mod
+
+    auth_path = tmp_path / "auth.json"
+    original = '{"version": 1, "providers": {"old": {}}}\n'
+    auth_path.write_text(original)
+    real_stat = os.stat
+
+    def stat_with_service_owner(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if os.fspath(path) == os.fspath(auth_path):
+            return _StatWithOwner(result, 1234, 5678)
+        return result
+
+    monkeypatch.setattr(auth_mod.os, "stat", stat_with_service_owner)
+    monkeypatch.setattr(auth_mod.os, "fchown", lambda *_args: (_ for _ in ()).throw(PermissionError("denied")))
+
+    with pytest.raises(PermissionError, match="denied"):
+        auth_mod._save_auth_store({"providers": {"new": {}}}, target_path=auth_path)
+
+    assert auth_path.read_text() == original
+    assert not list(tmp_path.glob("auth.json.tmp.*"))
 
 
 # ---------------------------------------------------------------------------

@@ -1923,6 +1923,8 @@ display:
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  reasoning_full: false   # Print complete reasoning instead of clamping streamed and recap reasoning (toggle with /reasoning full|clamp)
+  reasoning_clamp_lines: 10  # Reasoning lines shown before the clamp hides the rest (set with /reasoning clamp <N>)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript

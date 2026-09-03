@@ -105,6 +105,67 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
 
 
+    def test_clamp_with_line_count_persists_limit(self):
+        """/reasoning clamp N sets the shared streaming + recap line limit."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli()
+        stub.reasoning_full = True
+        stub.reasoning_clamp_lines = 10
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint") as cprint:
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning clamp 20")
+
+        self.assertFalse(stub.reasoning_full)
+        self.assertEqual(stub.reasoning_clamp_lines, 20)
+        save_config.assert_any_call("display.reasoning_clamp_lines", 20)
+        save_config.assert_any_call("display.reasoning_full", False)
+        printed = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("CLAMPED to 20 lines", printed)
+
+    def test_clamp_without_line_count_keeps_existing_limit(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli()
+        stub.reasoning_full = True
+        stub.reasoning_clamp_lines = 15
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint") as cprint:
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning clamp")
+
+        self.assertFalse(stub.reasoning_full)
+        self.assertEqual(stub.reasoning_clamp_lines, 15)
+        save_config.assert_called_once_with("display.reasoning_full", False)
+        printed = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("CLAMPED to 15 lines", printed)
+
+    def test_clamp_rejects_non_positive_line_count(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        for bad in ("0", "-3", "abc", "2.5"):
+            stub = self._make_cli()
+            stub.reasoning_full = True
+            stub.reasoning_clamp_lines = 10
+            with patch("cli.save_config_value") as save_config, patch("cli._cprint") as cprint:
+                CLICommandsMixin._handle_reasoning_command(stub, f"/reasoning clamp {bad}")
+
+            self.assertTrue(stub.reasoning_full, bad)
+            self.assertEqual(stub.reasoning_clamp_lines, 10, bad)
+            save_config.assert_not_called()
+            printed = "\n".join(call.args[0] for call in cprint.call_args_list)
+            self.assertIn("positive integer", printed)
+
+    def test_status_reports_configured_clamp_lines(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"}, show_reasoning=True)
+        stub.reasoning_full = False
+        stub.reasoning_clamp_lines = 8
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint") as cprint:
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning")
+
+        save_config.assert_not_called()
+        printed = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("clamped to 8 lines", printed)
+
     def test_new_session_clears_session_reasoning_override(self):
         """/new and /clear must not carry a session-only effort override forward."""
         from cli import CLI_CONFIG, HermesCLI

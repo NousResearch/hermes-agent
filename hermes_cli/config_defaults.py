@@ -1491,10 +1491,15 @@ DEFAULT_CONFIG = {
         # seconds, and with this off the user stares at a spinner the whole
         # time even though tokens are streaming. Set false for quiet output.
         "show_reasoning": True,
-        # When reasoning display is on, the post-response "Reasoning" recap box
-        # collapses long thinking to the first 10 lines. Set true to print the
-        # complete thinking text uncollapsed (live streaming is always full).
+        # When reasoning display is on, both the live streaming box and the
+        # post-response "Reasoning" recap collapse long thinking to the first
+        # reasoning_clamp_lines lines. Set true to print the complete thinking
+        # text uncollapsed (/reasoning full | clamp).
         "reasoning_full": False,
+        # Number of reasoning lines shown before the clamp hides the rest
+        # (/reasoning clamp <N>). Must be a positive integer; invalid values
+        # fall back to 10.
+        "reasoning_clamp_lines": 10,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)

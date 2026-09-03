@@ -1852,6 +1852,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _tool_content,
             tool_call_id,
             effect_disposition=effect_disposition,
+            args=args,
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -2774,6 +2775,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _tool_content,
             tool_call_id,
             effect_disposition="unknown" if _execution_timed_out else None,
+            args=function_args,
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")

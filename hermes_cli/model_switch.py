@@ -2384,7 +2384,11 @@ def switch_model(
     if _mandated_mode is not None:
         api_mode = _mandated_mode
     elif not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        # Pass the target model: dual-wire providers (Nous, Copilot) derive
+        # the wire from the catalog id — a model-less call stamps
+        # chat_completions, which then pins every Responses-only model out
+        # of the reachable catalog (#94881).
+        api_mode = determine_api_mode(target_provider, base_url, model=new_model)
 
     # --- Normalize model name for target provider ---
     new_model = _resolve_named_custom_model_id(

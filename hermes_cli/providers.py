@@ -757,12 +757,14 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     Resolution order:
       1. Host-mandated mode (special endpoints that only accept one protocol).
       2. Nous Portal dual-wire (model-derived; overlay alone is openai_chat).
-      3. Known provider → transport → TRANSPORT_TO_API_MODE.
-      4. Direct provider checks (bedrock).
-      5. Default: 'chat_completions'.
+      3. Copilot dual-wire (model-derived; GPT-5+ → Responses, the rest →
+         chat_completions).
+      4. Known provider → transport → TRANSPORT_TO_API_MODE.
+      5. Direct provider checks (bedrock).
+      6. Default: 'chat_completions'.
 
-    *model* is optional but required for dual-wire providers (Nous) whose
-    transport depends on the catalog id, not just the provider/host.
+    *model* is optional but required for dual-wire providers (Nous, Copilot)
+    whose transport depends on the catalog id, not just the provider/host.
     """
     mandated = host_mandated_api_mode(base_url)
     if mandated is not None:
@@ -775,6 +777,31 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     provider_norm = (provider or "").strip().lower()
     if provider_norm in {"nous", "nous-portal", "nousresearch"}:
         return nous_api_mode(model)
+
+    # Copilot is dual-wire the same way: GPT-5+ models (except gpt-5-mini)
+    # are only reachable via the Responses API, everything else via
+    # /chat/completions. Without this carve-out the transport lookup below
+    # returned chat_completions unconditionally, and the model-switch flow
+    # stamped that wrong value into config — every Responses-only model then
+    # 400'd with an error that read like an entitlement problem (#94881).
+    # Claude/Gemini Copilot slots stay on chat_completions (not
+    # anthropic_messages): Copilot's token/header scheme is handled by the
+    # OpenAI client path — see copilot_model_api_mode().
+    if provider_norm in {"copilot", "github-copilot", "github_copilot"}:
+        from hermes_cli.models import (
+            _should_use_copilot_responses_api,
+            normalize_copilot_model_id,
+        )
+
+        # Normalize first: the switch flow can hand a qualified form
+        # (`copilot/gpt-5.6-sol`) to this path before its own id resolution
+        # runs, and the raw prefix would make the pattern check miss and
+        # stamp chat_completions — the exact failure #94881 fixes. The
+        # no-argument normalize is local-only (no catalog fetch).
+        _normalized = normalize_copilot_model_id(model)
+        if _should_use_copilot_responses_api(_normalized):
+            return "codex_responses"
+        return "chat_completions"
 
     pdef = get_provider(provider)
     if pdef is not None:

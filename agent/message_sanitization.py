@@ -192,6 +192,13 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 _FULL_ARGS_LOG_BOUND = 100_000
 
 
+from agent.double_escape_repair import (
+    args_look_double_escaped,
+    remove_extra_escape_layer,
+    value_has_double_escape_signature,
+)
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -226,6 +233,26 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired unescaped control chars in tool_call arguments for %s",
                 tool_name,
             )
+        # Double-escape repair (#100730): a VALID blob whose string
+        # values were re-escaped once before serialisation parses cleanly
+        # and would pass through here untouched — every intended
+        # backslash+quote then lands on disk as three backslashes + quote.
+        # Detect the signature and strip exactly one escape layer.
+        if args_look_double_escaped(parsed):
+            repaired_values = {
+                k: (
+                    remove_extra_escape_layer(v)
+                    if value_has_double_escape_signature(v)
+                    else v
+                )
+                for k, v in parsed.items()
+            }
+            logger.warning(
+                "Repaired double-escaped tool_call arguments for %s "
+                "(string values carried one extra escape layer)",
+                tool_name,
+            )
+            return json.dumps(repaired_values, separators=(",", ":"))
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass

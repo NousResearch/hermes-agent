@@ -1255,6 +1255,319 @@ def check_macos_full_disk_access() -> None:
     )
 
 
+def _doctor_mcp_servers(manual_issues: list[str]) -> None:
+    """Static preflight for configured MCP servers.
+
+    Answers "are my MCP servers launchable?" without starting any of them:
+    no subprocess, no network. The live handshake stays behind
+    ``hermes doctor --live``, which initializes every server for real.
+
+    Each check mirrors the code path the real launch takes, so the report
+    reflects what the server would actually get rather than a re-reading of
+    the raw config.
+    """
+    try:
+        from tools.mcp_tool import (
+            _ENV_VAR_PATTERN,
+            InvalidMcpUrlError,
+            _build_safe_env,
+            _load_mcp_config,
+            _resolve_stdio_command,
+            _validate_remote_mcp_url,
+        )
+    except Exception as e:
+        check_warn(f"MCP server preflight unavailable: {e}")
+        return
+
+    # Validate the raw shape before using the runtime loader.  The loader
+    # deliberately drops malformed entries, so inspecting only its return
+    # value would turn a broken config into "No MCP servers configured".
+    try:
+        from hermes_cli.config import load_config
+
+        raw_servers = load_config().get("mcp_servers")
+        if raw_servers is None:
+            raw_servers = {}
+    except Exception as e:
+        check_warn(f"Could not read raw mcp_servers config: {e}")
+        raw_servers = {}
+
+    problems = 0
+    invalid_names = set()
+    if not isinstance(raw_servers, dict):
+        check_fail(
+            "mcp_servers: malformed configuration",
+            f"expected a mapping, got {type(raw_servers).__name__}",
+        )
+        manual_issues.append(
+            "Fix mcp_servers in config.yaml — it must be a mapping of server names to settings."
+        )
+        problems += 1
+        raw_servers = {}
+    else:
+        for raw_name, raw_entry in sorted(raw_servers.items(), key=lambda item: str(item[0])):
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                check_fail(
+                    f"MCP server name {raw_name!r}: invalid name",
+                    "expected a non-empty string",
+                )
+                manual_issues.append(
+                    f"Rename mcp_servers.{raw_name!r} in config.yaml to a non-empty string."
+                )
+                invalid_names.add(raw_name)
+                problems += 1
+                continue
+            if not isinstance(raw_entry, dict):
+                check_fail(
+                    f"MCP server '{raw_name}': malformed entry",
+                    f"expected a mapping, got {type(raw_entry).__name__}",
+                )
+                manual_issues.append(
+                    f"Fix mcp_servers.{raw_name} in config.yaml — it must be a mapping."
+                )
+                invalid_names.add(raw_name)
+                problems += 1
+
+    try:
+        servers = _load_mcp_config()
+    except Exception as e:
+        check_warn(f"Could not read mcp_servers: {e}")
+        return
+
+    if not servers:
+        if problems == 0:
+            check_info("No MCP servers configured")
+        return
+
+    for name in sorted(servers, key=str):
+        if name in invalid_names:
+            continue
+        entry = servers[name]
+        if not isinstance(entry, dict):
+            check_fail(
+                f"MCP server '{name}': malformed effective entry",
+                f"expected a mapping, got {type(entry).__name__}",
+            )
+            manual_issues.append(
+                f"Fix mcp_servers.{name} in config.yaml — it must be a mapping."
+            )
+            problems += 1
+            continue
+
+        has_url = "url" in entry
+        has_command = "command" in entry
+
+        if not has_url and not has_command:
+            check_fail(f"MCP server '{name}': no transport configured",
+                       "needs 'command' (stdio) or 'url' (http)")
+            manual_issues.append(
+                f"Add a 'command' (stdio) or 'url' (http) key to mcp_servers.{name}."
+            )
+            problems += 1
+            continue
+
+        if has_url and has_command:
+            # Matches the runtime warning in MCPServer.connect(): url wins.
+            check_warn(f"MCP server '{name}': both 'url' and 'command' set",
+                       "HTTP transport is used; 'command' is ignored")
+            problems += 1
+
+        if has_url:
+            http_valid = True
+            try:
+                _validate_remote_mcp_url(name, entry.get("url"))
+            except InvalidMcpUrlError as e:
+                check_fail(f"MCP server '{name}': invalid url", str(e))
+                manual_issues.append(
+                    f"Fix the 'url' for mcp_servers.{name} — it must be an http(s) URL."
+                )
+                problems += 1
+                http_valid = False
+            headers = entry.get("headers")
+            if headers is not None and not isinstance(headers, dict):
+                check_fail(
+                    f"MCP server '{name}': 'headers' is not a mapping",
+                    f"got {type(headers).__name__}",
+                )
+                manual_issues.append(
+                    f"Fix mcp_servers.{name}.headers — it must be a mapping of header names to string values."
+                )
+                problems += 1
+                http_valid = False
+            elif isinstance(headers, dict):
+                invalid_headers = sorted(
+                    str(k)
+                    for k, value in headers.items()
+                    if not isinstance(k, str)
+                    or not k.strip()
+                    or not isinstance(value, str)
+                )
+                if invalid_headers:
+                    check_fail(
+                        f"MCP server '{name}': invalid header name/value",
+                        ", ".join(invalid_headers),
+                    )
+                    manual_issues.append(
+                        f"Fix mcp_servers.{name}.headers — header names and values must be strings."
+                    )
+                    problems += 1
+                    http_valid = False
+            if http_valid:
+                check_ok(f"MCP server '{name}' (http)", "url and headers look valid")
+            continue
+
+        stdio_valid = True
+        args = entry.get("args", [])
+        if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+            check_fail(
+                f"MCP server '{name}': invalid 'args'",
+                "expected a list of strings",
+            )
+            manual_issues.append(
+                f"Fix mcp_servers.{name}.args — it must be a list of strings."
+            )
+            problems += 1
+            stdio_valid = False
+
+        configured_env = entry.get("env")
+        user_env = configured_env if isinstance(configured_env, dict) else None
+        if configured_env is not None and user_env is None:
+            check_fail(
+                f"MCP server '{name}': 'env' is not a mapping",
+                f"got {type(configured_env).__name__}",
+            )
+            manual_issues.append(
+                f"Fix mcp_servers.{name}.env — it must be a mapping of variable names to string values."
+            )
+            problems += 1
+            stdio_valid = False
+        elif user_env is not None:
+            invalid_env = sorted(
+                str(k)
+                for k, value in user_env.items()
+                if not isinstance(k, str) or not k or not isinstance(value, str)
+            )
+            if invalid_env:
+                check_fail(
+                    f"MCP server '{name}': invalid env name/value",
+                    ", ".join(invalid_env),
+                )
+                manual_issues.append(
+                    f"Fix mcp_servers.{name}.env — variable names and values must be strings."
+                )
+                problems += 1
+                stdio_valid = False
+
+        child_env = None
+        if configured_env is None or user_env is not None:
+            try:
+                child_env = _build_safe_env(user_env)
+            except Exception as e:
+                check_fail(
+                    f"MCP server '{name}': could not build child environment",
+                    f"{type(e).__name__}: {e}",
+                )
+                manual_issues.append(
+                    f"Fix the env configuration for mcp_servers.{name}."
+                )
+                problems += 1
+                stdio_valid = False
+
+        command = entry.get("command")
+        resolved = None
+        if isinstance(command, str) and command.strip() and child_env is not None:
+            try:
+                resolved, _ = _resolve_stdio_command(command, child_env)
+            except Exception as e:
+                check_fail(f"MCP server '{name}': could not resolve command", str(e))
+                manual_issues.append(
+                    f"Fix the command or PATH for mcp_servers.{name}."
+                )
+                problems += 1
+                stdio_valid = False
+        else:
+            if not isinstance(command, str) or not command.strip():
+                check_fail(
+                    f"MCP server '{name}': 'command' must be a non-empty string",
+                    f"got {type(command).__name__}",
+                )
+                manual_issues.append(f"Set a valid 'command' for mcp_servers.{name}.")
+                problems += 1
+                stdio_valid = False
+
+        if resolved is not None:
+            # _resolve_stdio_command echoes the input back when nothing on PATH
+            # matches, so a bare name here means resolution failed.
+            if os.sep not in resolved and not os.path.isabs(resolved):
+                check_fail(f"MCP server '{name}': command '{command}' not found on PATH")
+                check_info(
+                    f"Install it, or set an absolute path for mcp_servers.{name}.command"
+                )
+                manual_issues.append(
+                    f"MCP server '{name}': '{command}' is not on PATH — install it or use an absolute path."
+                )
+                problems += 1
+                stdio_valid = False
+            elif not os.path.isfile(resolved):
+                check_fail(f"MCP server '{name}': command not found", resolved)
+                manual_issues.append(
+                    f"MCP server '{name}': {resolved} is not a file."
+                )
+                problems += 1
+                stdio_valid = False
+            elif os.name != "nt" and not os.access(resolved, os.X_OK):
+                check_fail(f"MCP server '{name}': command is not executable", resolved)
+                manual_issues.append(
+                    f"MCP server '{name}': make {resolved} executable or configure a different command."
+                )
+                problems += 1
+                stdio_valid = False
+            else:
+                missing_env = sorted(
+                    k for k in (user_env or {})
+                    if isinstance(k, str)
+                    and isinstance((child_env or {}).get(k), str)
+                    and not (child_env or {}).get(k, "").strip()
+                )
+                if missing_env:
+                    check_warn(f"MCP server '{name}' (stdio): empty env value(s)",
+                               ", ".join(missing_env))
+                    check_info(
+                        "Set these in ~/.hermes/.env — the server subprocess receives them empty."
+                    )
+                    manual_issues.append(
+                        f"Set non-empty values for mcp_servers.{name}.env: {', '.join(missing_env)}."
+                    )
+                    problems += 1
+                    stdio_valid = False
+
+                unresolved_env = sorted(
+                    k for k, value in (user_env or {}).items()
+                    if isinstance(k, str)
+                    and isinstance(value, str)
+                    and _ENV_VAR_PATTERN.search(value)
+                )
+                if unresolved_env:
+                    check_fail(
+                        f"MCP server '{name}' (stdio): unresolved env reference(s)",
+                        ", ".join(unresolved_env),
+                    )
+                    check_info("Set the referenced variables in ~/.hermes/.env.")
+                    manual_issues.append(
+                        f"Resolve environment references for mcp_servers.{name}.env: {', '.join(unresolved_env)}."
+                    )
+                    problems += 1
+                    stdio_valid = False
+
+                if stdio_valid:
+                    check_ok(f"MCP server '{name}' (stdio)", os.path.basename(resolved))
+
+    if problems == 0:
+        check_ok(f"All {len(servers)} configured MCP server(s) look launchable")
+    else:
+        check_info("Run `hermes doctor --live` to actually start each server and list its tools")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1373,6 +1686,13 @@ def run_doctor(args):
             check_ok("No suspicious MCP stdio commands")
     except Exception as e:
         check_warn(f"MCP security check failed: {e}")
+
+    _section("MCP Servers")
+    try:
+        _doctor_mcp_servers(manual_issues)
+    except Exception as e:
+        # A preflight bug must never block the rest of doctor.
+        check_warn(f"MCP server preflight failed: {e}")
     
     _section("Python Environment")
     py_version = sys.version_info

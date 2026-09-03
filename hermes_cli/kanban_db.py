@@ -11565,6 +11565,139 @@ def add_notify_sub(
             )
 
 
+# ---------------------------------------------------------------------------
+# Configured home channels — shared auto-subscribe fallback
+# ---------------------------------------------------------------------------
+#
+# Tasks created with NO origin session (CLI, cron, background agents,
+# dispatcher-spawned workers) would otherwise reach terminal states nobody
+# is subscribed to. This is the ONE implementation shared by the dashboard,
+# the tool surface, and the CLI create path.
+
+
+def _home_chat_type(platform: str) -> str:
+    """Best-known chat_type for a home-channel subscription row.
+
+    Discord homes are typically guild text CHANNELS, not DMs — stamping
+    ``dm`` there made the notifier's wake/session resolution resolve the
+    wrong source shape. Telegram/Slack/other homes keep the historical
+    ``dm`` default (private 1:1 chats), which matches how /sethome is used.
+    """
+    return "channel" if (platform or "").lower() == "discord" else "dm"
+
+
+def configured_home_channels() -> list[dict]:
+    """Return every ENABLED platform with a home channel set, fully hydrated.
+
+    Reads the live GatewayConfig so env-var overlays (``TELEGRAM_HOME_CHANNEL``,
+    etc.) are honored alongside config.yaml. Platforms with
+    ``enabled: false`` are DROPPED — a disabled platform has no adapter to
+    deliver through, so subscribing its home would only create dead rows the
+    ownership gate skips every tick. Returns platforms in stable (alphabetical)
+    order. Best-effort: any failure yields [].
+    """
+    try:
+        from gateway.config import load_gateway_config
+
+        gw_cfg = load_gateway_config()
+    except Exception:
+        return []
+    homes: list[dict] = []
+    try:
+        for platform, pcfg in gw_cfg.platforms.items():
+            if not pcfg or not pcfg.home_channel:
+                continue
+            if not getattr(pcfg, "enabled", False):
+                # A disabled platform can never deliver — skip it entirely
+                # rather than writing a subscription row nothing consumes.
+                continue
+            hc = pcfg.home_channel
+            homes.append({
+                "platform": platform.value,
+                "chat_id": hc.chat_id,
+                "thread_id": hc.thread_id or "",
+                "name": hc.name or "Home",
+            })
+        homes.sort(key=lambda h: h["platform"])  # stable order
+    except Exception:
+        return []
+    return homes
+
+
+def subscribe_task_to_configured_homes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    notifier_profile: Optional[str] = None,
+) -> bool:
+    """Best-effort subscribe a task to every configured home channel.
+
+    Delivery fallback for tasks created with NO origin context (CLI, cron,
+    background agents, dispatcher-spawned workers): without it those tasks
+    reach terminal states nobody is subscribed to. Gated by
+    ``kanban.auto_subscribe_on_create`` (default True) — the same opt-out
+    knob as the gateway/TUI origin path.
+
+    Idempotent — :func:`add_notify_sub` ignores duplicate
+    ``(task_id, platform, chat_id, thread_id)`` rows — so retries and
+    origin+home overlap never duplicate notifications.
+
+    Delivery mode stays passive (``notify``): the fallback targets boards
+    owned by unattended creates, and an active wake against a stale home
+    config would interrupt unrelated conversations.
+
+    Returns True when at least one subscription row was written, False when
+    no eligible homes are configured, the gate is off, or everything failed.
+    Never raises: a broken/stale home-channel configuration must not fail
+    the task creation that is mid-flight.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
+            return False
+    except Exception:
+        # Unreadable config still defaults to on — mirrors the gateway /
+        # tool origin auto-subscribe behaviour.
+        pass
+    homes = configured_home_channels()
+    if not homes:
+        return False
+    if notifier_profile is None:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            notifier_profile = (
+                os.environ.get("HERMES_PROFILE")
+                or get_active_profile_name()
+                or "default"
+            )
+        except Exception:
+            notifier_profile = os.environ.get("HERMES_PROFILE") or "default"
+    subscribed_any = False
+    for home in homes:
+        try:
+            add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=home["platform"],
+                chat_id=home["chat_id"],
+                thread_id=home["thread_id"] or None,
+                chat_type=_home_chat_type(home["platform"]),
+                notifier_profile=notifier_profile,
+            )
+            subscribed_any = True
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "kanban home auto-subscribe failed for task %s on %s: %s",
+                task_id,
+                home.get("platform", "unknown") if isinstance(home, dict) else "unknown",
+                exc,
+            )
+    return subscribed_any
+
+
 def _notify_profile_filter(
     notifier_profiles: Optional[Iterable[str]],
     *,

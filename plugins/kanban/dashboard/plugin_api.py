@@ -649,6 +649,31 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             project_id=payload.project_id,
             board=board,
         )
+        # Auto-subscribe the new task to every configured home channel.
+        # Gated by kanban.auto_subscribe_on_create (default on) — an operator
+        # who disabled auto-subscription (e.g. opted out via the per-platform
+        # notification toggle) must not get silent re-subscription here.
+        # Best-effort and idempotent: a broken home config must never turn a
+        # successfully persisted task into a misleading HTTP 500.
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            _auto_sub_enabled = cfg_get(
+                load_config(), "kanban", "auto_subscribe_on_create", default=True
+            )
+        except Exception:
+            # Unreadable config defaults to on, mirroring every other
+            # auto-subscribe surface.
+            _auto_sub_enabled = True
+        if _auto_sub_enabled:
+            try:
+                _subscribe_task_to_configured_homes(conn, task_id)
+            except Exception as exc:
+                log.warning(
+                    "kanban dashboard auto-subscribe failed for task %s: %s",
+                    task_id,
+                    exc,
+                )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
         # Surface a dispatcher-presence warning so the UI can show a
@@ -2093,6 +2118,19 @@ def _active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
+
+
+def _subscribe_task_to_configured_homes(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Delegate to the shared kanban_db helper (idempotent, best-effort).
+
+    Kept as a dashboard-local wrapper so this module has a single integration
+    seam (tests patch this to prove home-fallback failures never fail task
+    creation). Shares ONE implementation with the CLI and tool create paths:
+    ``hermes_cli.kanban_db.subscribe_task_to_configured_homes``.
+    """
+    from hermes_cli import kanban_db as _kb
+
+    return _kb.subscribe_task_to_configured_homes(conn, task_id)
 
 
 def _home_sub_matches(sub: dict, home: dict) -> bool:

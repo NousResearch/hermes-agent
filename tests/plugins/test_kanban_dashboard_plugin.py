@@ -1230,3 +1230,110 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Dashboard auto-subscribe: configured-home fallback on create
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_created_task_subscribes_all_configured_home_channels(
+    client, with_home_channels,
+):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Notify homes when finished"},
+    )
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+
+    with kb.connect() as conn:
+        subscriptions = kb.list_notify_subs(conn, task_id)
+
+    assert {
+        (sub["platform"], sub["chat_id"], sub["thread_id"])
+        for sub in subscriptions
+    } == {
+        ("telegram", "1234567", "42"),
+        ("discord", "9999999", ""),
+    }
+    assert {sub["notifier_profile"] for sub in subscriptions} == {"default"}
+
+
+def test_dashboard_honors_auto_subscribe_gate(
+    client, with_home_channels, kanban_home, monkeypatch,
+):
+    """Security finding: the dashboard create path must honor
+    kanban.auto_subscribe_on_create=false like every other surface."""
+    (kanban_home / "config.yaml").write_text(
+        "gateway:\n  enabled: false\nkanban:\n  auto_subscribe_on_create: false\n",
+        encoding="utf-8",
+    )
+    # The plugin module was loaded at fixture time; reload so nothing cached
+    # matters — the gate is read per-request anyway.
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Gate keeps dashboard quiet"},
+    )
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, task_id) == []
+
+
+def test_dashboard_task_persists_when_home_channel_probe_fails(
+    client, monkeypatch, caplog,
+):
+    plugin_api = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    monkeypatch.setattr(
+        plugin_api.kanban_db,
+        "subscribe_task_to_configured_homes",
+        lambda conn, tid: (_ for _ in ()).throw(
+            RuntimeError("broken channels config")
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "Persist despite broken channels config"},
+        )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id) is not None
+    assert "kanban dashboard auto-subscribe failed" in caplog.text
+    assert "broken channels config" in caplog.text
+
+
+def test_dashboard_recreated_task_with_same_id_gets_no_duplicate_subs(
+    client, with_home_channels,
+):
+    """Re-subscribing the same task to the same homes (e.g. a retried
+    request) must not produce duplicate subscription rows —
+    add_notify_sub is idempotent on (task, platform, chat, thread)."""
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Idempotent dashboard task"},
+    )
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+
+    plugin_api = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    with kb.connect() as conn:
+        # The create endpoint itself must have subscribed (feature presence).
+        initial = kb.list_notify_subs(conn, task_id)
+        assert {s["platform"] for s in initial} == {"telegram", "discord"}
+        # A retried subscribe step for the SAME task adds nothing.
+        plugin_api._subscribe_task_to_configured_homes(conn, task_id)
+        subscriptions = kb.list_notify_subs(conn, task_id)
+
+    keys = sorted(
+        (s["platform"], s["chat_id"], s["thread_id"] or "") for s in subscriptions
+    )
+    assert keys == [
+        ("discord", "9999999", ""),
+        ("telegram", "1234567", "42"),
+    ]

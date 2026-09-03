@@ -175,7 +175,151 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# /kanban help / no-args / unknown-action UX (issue #21794)
+# CLI create → configured-home auto-subscription fallback
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def home_channels_env(monkeypatch):
+    """Simulate telegram + discord homes configured via env overlays."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:fake")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "42")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "disc_fake")
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "9999999")
+
+
+def _cli_sub_keys(task_id):
+    with kb.connect_closing() as conn:
+        subs = kb.list_notify_subs(conn, task_id)
+    return sorted(
+        (s["platform"], s["chat_id"], s.get("thread_id") or "") for s in subs
+    )
+
+
+def test_cli_create_auto_subscribes_configured_homes_when_unattached(
+    kanban_home, home_channels_env,
+):
+    """`hermes kanban create ...` from a plain shell (no gateway/TUI origin
+    session) must land notify subscriptions on every configured home channel
+    so dispatcher-completed tasks reach the board owner."""
+    raw = kc.run_slash(
+        'create "cli-orchestrated task" --assignee alice --json'
+    )
+    task = json.loads(raw)
+    assert task["id"], raw
+
+    assert _cli_sub_keys(task["id"]) == [
+        ("discord", "9999999", ""),
+        ("telegram", "1234567", "42"),
+    ]
+
+
+def test_cli_create_skips_homes_when_gateway_origin_present(
+    kanban_home, home_channels_env, monkeypatch,
+):
+    """A gateway-originated CLI create (session vars set, as the /kanban
+    slash handler does before run_slash) must NOT double-subscribe homes —
+    the origin subscription is owned by the slash handler."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-99")
+
+    raw = kc.run_slash(
+        'create "gateway-originated task" --assignee alice --json'
+    )
+    task = json.loads(raw)
+    assert task["id"], raw
+
+    # No home fallback row: the origin subscription is owned by the slash
+    # handler and the CLI must not add duplicate homes on top.
+    assert _cli_sub_keys(task["id"]) == []
+
+
+def test_cli_create_survives_broken_homes_config(
+    kanban_home, home_channels_env, monkeypatch,
+):
+    """A homes-config failure must not fail the CLI create (resilience),
+    and --json stdout must stay clean machine-parseable output."""
+    def _boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "subscribe_task_to_configured_homes", _boom)
+    raw = kc.run_slash(
+        'create "resilient create" --assignee alice --json'
+    )
+    task = json.loads(raw)
+    assert task["id"], raw
+
+
+def test_decompose_triage_task_inherits_root_notify_subscriptions(kanban_home):
+    """Swarm decomposition must not lose delivery: every child produced by
+    decompose_triage_task inherits the root task's notify subscriptions
+    (idempotent INSERT OR IGNORE on the subscription primary key), so the
+    originating channel still hears when a fan-out child BLOCKs or
+    completes even though only the root was explicitly subscribed — and a
+    background/CLI-created root gets that subscription from the home
+    fallback in the first place."""
+    conn = kb.connect()
+    try:
+        root = kb.create_task(
+            conn, title="triage root", triage=True, assignee="orchestrator",
+        )
+        _add_full_parent_sub(conn, root)
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "first child", "assignee": "worker1"},
+                {
+                    "title": "second child", "assignee": "worker2",
+                    "parents": [0],
+                },
+            ],
+            author="triager",
+            auto_promote=False,
+        )
+        assert child_ids is not None
+
+        subs = [kb.list_notify_subs(conn, cid) for cid in child_ids]
+
+        # The cursor starts caught up: no pre-link history replays.
+        _, old_events = kb.unseen_events_for_sub(
+            conn,
+            task_id=child_ids[0],
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            kinds=["blocked"],
+        )
+    finally:
+        conn.close()
+
+    assert len(subs) == 2
+    for s in subs:
+        _assert_full_inherited_sub(s)
+    assert old_events == []
+
+
+def _add_full_parent_sub(conn, parent):
+    kb.add_notify_sub(
+        conn, task_id=parent, platform="telegram", chat_id="chat1",
+        thread_id="topic1", user_id="user1",
+        chat_type="dm", notifier_profile="default",
+        delivery_mode="notify+wake",
+        delivery_metadata={"reply_fallback": "general"},
+    )
+
+
+def _assert_full_inherited_sub(subs):
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "telegram"
+    assert s["chat_id"] == "chat1"
+    assert s["thread_id"] == "topic1"
+    assert s["user_id"] == "user1"
+    assert s["chat_type"] == "dm"
+    assert s["delivery_mode"] == "notify+wake"
 
 

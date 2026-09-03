@@ -210,6 +210,86 @@ _HARDLINE_ALLOW = [
 ]
 
 
+_WINDOWS_ROOT_DELETE_BLOCK = [
+    "cmd /c rd /s /q " + "\\",
+    "cmd /c rd /s /q /",
+    "cmd.exe /c rmdir /q /s C:\\",
+    "cmd /k rd /s D:/",
+    "cmd /c rd /s /q \"E:\\\"",
+    "cmd /c rd F:\\ /s /q",
+    'cmd /c rmdir "G:\\" /s /q',
+    "cmd /c rd /q H:/ /s",
+    "cmd /d /s /c rd /s /q I:\\",
+    'cmd.exe /v:on /c "rmdir /s /q J:/"',
+    "echo $(cmd /d /c rd /s /q K:/)",
+    "cmd /c rd /s /q L:\\.",
+    "cmd /c rd M:/.. /s /q",
+    'powershell -ExecutionPolicy Bypass -Command "cmd /c rd /s /q N:\\"',
+    "command -- cmd /c rd /s /q O:/",
+    "C:\\Windows\\System32\\cmd.exe /c rd /s /q P:/",
+    "cmd /c rd /s /q Q:\\folder\\..",
+    "cmd /c rd /s /q \\\\server\\share\\folder\\..",
+    'cmd /c "echo ready & rd /s /q R:\\"',
+    "cmd /c r^d /s /q S:\\",
+    (
+        r'''powershell -NoProfile -Command 'cmd /c \"rd /s /q '''
+        r'''\\\"C:\Users\Art\Documents\ChatGPT\Software\clipsift-release\\\"\"' '''
+    ).rstrip(),
+]
+
+
+_WINDOWS_ROOT_DELETE_ALLOW = [
+    "cmd /c rd /s /q C:\\Users\\Art\\Documents\\clipsift-release",
+    "cmd /c rmdir /q /s D:/clipsift-release",
+    "cmd /c rd /q C:\\",
+    "cmd /d /c rd /s /q E:\\scoped",
+    "cmd /c rd /s /q F:\\...",
+    "cmd /c rd /s /q G:\\.config",
+    "cmd /c rd /s /q H:\\folder\\..\\kept",
+    'powershell -File script.ps1 -Command "cmd /c rd /s /q I:\\"',
+    r'''cmd /c "rd /s /q \"C:\Users\Art\Documents\clipsift-release\""''',
+    'echo "cmd /c rd /s /q C:\\"',
+    'echo "cmd /d /c rd /s /q D:\\"',
+    'echo "powershell -NoProfile -Command cmd /c rd /s /q C:\\"',
+    '''python -c "print('powershell -Command cmd /c rd /s /q C:\\')"''',
+    'cmd /c "echo rd /s /q J:\\"',
+    'cmd /c "echo ready ^& rd /s /q K:\\"',
+    'cmd /c "echo ready & rd /s /q L:\\scoped"',
+]
+
+
+_WINDOWS_DYNAMIC_ROOT_DELETE_BLOCK = [
+    "cmd /c rd /s /q %SYSTEMDRIVE%\\",
+    "cmd /c rd /s /q %HOMEDRIVE%/",
+    "cmd /v:on /c rd /s /q !SYSTEMDRIVE!\\",
+    "cmd /c rd /s /q %SystemRoot%\\..",
+    "cmd /c rd /s /q %TARGET%",
+    "cmd /c rd /s /q %TARGET%\\folder\\..",
+    'cmd /c "echo ready && rd /s /q %SYSTEMDRIVE%\\"',
+    "cmd /c r^d /s /q %TARGET%",
+    '''powershell -Command 'cmd /c "echo ready & rd /s /q $env:SystemDrive/"' ''',
+    "powershell -Command 'cmd /c rd /s /q ${env:SystemDrive}\\'",
+    "powershell -Command 'cmd /c rd /s /q ${env:SystemRoot}\\..'",
+    "powershell -Command 'cmd /c rd /s /q ${env:TARGET}'",
+    "cmd /c rd /s /q %SYSTEMDRIVE:~0,1%:\\",
+    "cmd /c rd /s /q %TARGET%:\\",
+]
+
+
+_WINDOWS_DYNAMIC_ROOT_DELETE_ALLOW = [
+    "cmd /c rd /s /q %SYSTEMDRIVE%\\scoped",
+    "cmd /v:on /c rd /s /q !SYSTEMDRIVE!\\scoped",
+    "cmd /c rd /s /q %SystemRoot%\\Temp",
+    "cmd /c rd /s /q %TARGET%\\scoped",
+    'cmd /c "echo ready & rd /s /q %TARGET%\\scoped"',
+    '''powershell -Command 'cmd /c "echo ready ^& rd /s /q $env:SystemDrive/"' ''',
+    "powershell -Command 'cmd /c rd /s /q ${env:SystemDrive}\\scoped'",
+    "powershell -Command 'cmd /c rd /s /q ${env:TARGET}\\scoped'",
+    "cmd /c rd /s /q %SYSTEMDRIVE:~0,1%:\\scoped",
+    "cmd /c rd /s /q %TARGET%:\\scoped",
+]
+
+
 @pytest.mark.parametrize("command", _HARDLINE_BLOCK)
 def test_hardline_detection_blocks(command):
     is_hl, desc = detect_hardline_command(command)
@@ -222,6 +302,65 @@ def test_hardline_detection_allows(command):
     is_hl, desc = detect_hardline_command(command)
     assert not is_hl, f"expected hardline NOT to match {command!r} (got: {desc})"
     assert desc is None
+
+
+@pytest.mark.parametrize("command", _WINDOWS_ROOT_DELETE_BLOCK)
+def test_windows_recursive_root_delete_is_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"Windows root delete bypassed hardline detection: {command!r}"
+    assert desc == "recursive delete of Windows filesystem root"
+
+
+@pytest.mark.parametrize("command", _WINDOWS_ROOT_DELETE_ALLOW)
+def test_windows_scoped_or_non_recursive_delete_is_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"scoped Windows delete was hardline-blocked: {command!r}"
+    assert desc is None
+
+
+@pytest.mark.parametrize("command", _WINDOWS_DYNAMIC_ROOT_DELETE_BLOCK)
+def test_windows_dynamic_recursive_root_delete_is_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"dynamic Windows root delete bypassed hardline detection: {command!r}"
+    assert desc == "recursive delete of Windows filesystem root"
+
+
+@pytest.mark.parametrize("command", _WINDOWS_DYNAMIC_ROOT_DELETE_ALLOW)
+def test_windows_scoped_dynamic_delete_is_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"scoped dynamic Windows delete was hardline-blocked: {command!r}"
+    assert desc is None
+
+
+@pytest.mark.parametrize("command", _WINDOWS_DYNAMIC_ROOT_DELETE_BLOCK)
+def test_windows_dynamic_root_delete_cannot_bypass_public_guards(
+    command, clean_session, monkeypatch
+):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for guard in (check_dangerous_command, check_all_command_guards):
+        result = guard(command, "local")
+        assert result["approved"] is False
+        assert result.get("hardline") is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        _WINDOWS_ROOT_DELETE_BLOCK[2],
+        _WINDOWS_ROOT_DELETE_BLOCK[5],
+        _WINDOWS_ROOT_DELETE_BLOCK[-6],
+        _WINDOWS_ROOT_DELETE_BLOCK[-3],
+        _WINDOWS_ROOT_DELETE_BLOCK[-1],
+    ],
+)
+def test_windows_root_delete_cannot_bypass_yolo(command, clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for guard in (check_dangerous_command, check_all_command_guards):
+        result = guard(command, "local")
+        assert result["approved"] is False
+        assert result.get("hardline") is True
 
 
 # Commands written with the ordinary quoting / brace shell idioms that

@@ -14,6 +14,7 @@ import fnmatch
 import functools
 import hashlib
 import logging
+import ntpath
 import os
 import re
 import shlex
@@ -548,7 +549,96 @@ _HARDLINE_SYSTEM_DIRS = (
 # catching `rm -rf "/"`.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
+# Windows ``rd`` / ``rmdir`` root deletion must stay below every approval
+# bypass just like ``rm -rf /``.  ``cmd`` accepts its own switches before
+# ``/c`` or ``/k``; those switches must be consumed by the cmd-owned prefix
+# rather than mistaken for the nested command payload.
+_WINDOWS_CMD_EXECUTABLE = (
+    r'["\']?'
+    r'(?:(?:[a-z]:)?[\\/]+)?(?:[^\s\\/"\']+[\\/])*'
+    r'cmd(?:\.exe)?["\']?'
+)
+_WINDOWS_COMMAND_WRAPPERS = (
+    r'(?:(?:command(?:\s+--)?|builtin\s+command(?:\s+--)?)\s+)*'
+)
+_WINDOWS_CMD_INVOKE = (
+    _WINDOWS_CMD_EXECUTABLE
+    + r'(?:\s+/(?:d|q|a|u|s|e:(?:on|off)|f:(?:on|off)|v:(?:on|off)))*'
+    + r'\s+/(?:c|k)\s+'
+)
+_WINDOWS_CMD_PREFIX = _CMDPOS + _WINDOWS_COMMAND_WRAPPERS + _WINDOWS_CMD_INVOKE
+_WINDOWS_POWERSHELL_OPTION_WITH_ARG = (
+    r'-(?:executionpolicy|inputformat|outputformat|windowstyle|workingdirectory|'
+    r'configurationname|settingsfile|version)\s+\S+'
+)
+_WINDOWS_POWERSHELL_CMD_PREFIX = (
+    _CMDPOS
+    + _WINDOWS_COMMAND_WRAPPERS
+    + r'(?:powershell|pwsh)(?:\.exe)?\b'
+    + r'(?:\s+(?:' + _WINDOWS_POWERSHELL_OPTION_WITH_ARG
+    + r'|-(?!(?:command|c)\b)\S+))*\s+'
+    + r'-(?:command|c)\s+["\']?'
+    + _WINDOWS_CMD_INVOKE
+)
+_WINDOWS_RD_PREFIX = (
+    r'\\?["\']?(?:rd|rmdir)\b\s+'
+)
+_WINDOWS_RECURSIVE_FLAGS_PREFIX = (
+    r'(?=(?:(?:/[sq])\s+)*/s(?:\s|$))'
+    r'(?:(?:/[sq])\s+)+'
+)
+_WINDOWS_COLLAPSING_ROOT = (
+    r'(?:[a-z]:)?[\\/]+'
+    r'(?:(?:\.\.?)?[\\/]+)*(?:\.\.?)?'
+)
+_WINDOWS_ROOT_TARGET = (
+    r'(?:["\'](?:' + _WINDOWS_COLLAPSING_ROOT + r')["\']|'
+    r'(?:' + _WINDOWS_COLLAPSING_ROOT
+    + r')(?=["\']?(?:[\s`;|&)]|$)))'
+)
+_WINDOWS_RECURSIVE_ROOT_ARGUMENTS = (
+    r'(?:'
+    # Flags-first spellings: rd /s /q C:\
+    + _WINDOWS_RECURSIVE_FLAGS_PREFIX + _WINDOWS_ROOT_TARGET
+    # Windows documents the path before /s [/q], and cmd also accepts /q
+    # before the path. Require /s in the post-target flag run so a root operand
+    # without recursive deletion remains outside the hardline floor.
+    + r'|(?:(?:/[sq])\s+)*' + _WINDOWS_ROOT_TARGET + r'\s+'
+    + r'(?=(?:(?:/[sq])\s+)*/s(?:\s|$))'
+    + r'(?:(?:/[sq])(?:\s+|$))+'
+    + r')'
+)
+_WINDOWS_ROOT_DELETE_PATTERN = (
+    r'(?:'
+    + r'(?:' + _WINDOWS_CMD_PREFIX + r'|' + _WINDOWS_POWERSHELL_CMD_PREFIX + r')'
+    + _WINDOWS_RD_PREFIX + _WINDOWS_RECURSIVE_ROOT_ARGUMENTS
+    # PowerShell does not interpret \" as an escaped quote.  In #82842 this
+    # leaves the preceding backslash as a standalone cmd root operand before
+    # the intended drive path; direct cmd under Bash does interpret \" and is
+    # deliberately excluded from this quote-collapse alternative.
+    + r'|' + _WINDOWS_POWERSHELL_CMD_PREFIX + _WINDOWS_RD_PREFIX
+    + _WINDOWS_RECURSIVE_FLAGS_PREFIX
+    + r'[\\/]+["\'][a-z]:[\\/]'
+    + r')'
+)
+_WINDOWS_RD_INVOCATION_PATTERN = (
+    r'(?:' + _WINDOWS_CMD_PREFIX + r'|' + _WINDOWS_POWERSHELL_CMD_PREFIX + r')'
+    + _WINDOWS_RD_PREFIX
+    + r'(?P<arguments>[^;\n|&)]*)'
+)
+_WINDOWS_RD_PAYLOAD_PATTERN = (
+    _CMDPOS + _WINDOWS_RD_PREFIX + _WINDOWS_RECURSIVE_ROOT_ARGUMENTS
+)
+_WINDOWS_RD_PAYLOAD_INVOCATION_PATTERN = (
+    _CMDPOS + _WINDOWS_RD_PREFIX + r'(?P<arguments>[^;\n|&)]*)'
+)
+_WINDOWS_CMD_PAYLOAD_SPECS = (
+    (_WINDOWS_CMD_PREFIX + r'(?P<payload>[^\n]*)', False),
+    (_WINDOWS_POWERSHELL_CMD_PREFIX + r'(?P<payload>[^\n]*)', True),
+)
+
 HARDLINE_PATTERNS = [
+    (_WINDOWS_ROOT_DELETE_PATTERN, "recursive delete of Windows filesystem root"),
     # rm recursive targeting the root filesystem or protected roots.
     # `${HOME}` brace form and quoted paths (`rm -rf "/"`, `rm -rf "$HOME"`)
     # are handled via _hardline_rm_path so the floor cannot be bypassed with
@@ -631,6 +721,141 @@ HARDLINE_PATTERNS_COMPILED = [
     )
     for pattern, description in HARDLINE_PATTERNS
 ]
+_WINDOWS_ROOT_DELETE_RE = re.compile(_WINDOWS_ROOT_DELETE_PATTERN, _RE_FLAGS)
+_WINDOWS_RD_INVOCATION_RE = re.compile(_WINDOWS_RD_INVOCATION_PATTERN, _RE_FLAGS)
+_WINDOWS_RD_PAYLOAD_RE = re.compile(_WINDOWS_RD_PAYLOAD_PATTERN, _RE_FLAGS)
+_WINDOWS_RD_PAYLOAD_INVOCATION_RE = re.compile(
+    _WINDOWS_RD_PAYLOAD_INVOCATION_PATTERN,
+    _RE_FLAGS,
+)
+_WINDOWS_CMD_PAYLOAD_RES = tuple(
+    (re.compile(pattern, re.IGNORECASE), strips_outer_quote)
+    for pattern, strips_outer_quote in _WINDOWS_CMD_PAYLOAD_SPECS
+)
+_WINDOWS_ARGUMENT_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_WINDOWS_DRIVE_VARIABLE_RE = re.compile(
+    r'%(?:systemdrive|homedrive)%|!(?:systemdrive|homedrive)!|'
+    r'\$env:(?:systemdrive|homedrive)\b|'
+    r'\$\{env:(?:systemdrive|homedrive)\}',
+    re.IGNORECASE,
+)
+_WINDOWS_SYSTEM_DIR_VARIABLE_RE = re.compile(
+    r'%(?:systemroot|windir)%|!(?:systemroot|windir)!|'
+    r'\$env:(?:systemroot|windir)\b|'
+    r'\$\{env:(?:systemroot|windir)\}',
+    re.IGNORECASE,
+)
+_WINDOWS_DYNAMIC_PATH_RE = re.compile(
+    r'%[^%]+%|![^!]+!|\$\{(?:env:)?[a-z_][a-z0-9_]*\}|'
+    r'\$(?:env:)?[a-z_][a-z0-9_]*|`',
+    re.IGNORECASE,
+)
+
+
+def _windows_literal_path_is_root(token: str) -> bool:
+    """Return whether a literal cmd path token normalizes to a filesystem root."""
+    token = token.strip().strip("\"'")
+    if not token or any(marker in token for marker in ("%", "$", "`")):
+        return False
+    normalized = ntpath.normpath(token.replace("/", "\\"))
+    drive, tail = ntpath.splitdrive(normalized)
+    return tail == "\\" and (bool(drive) or normalized == "\\")
+
+
+def _windows_path_is_root_or_unscoped_dynamic(token: str) -> bool:
+    """Classify roots and dynamic paths that cannot be proven scoped."""
+    token = token.strip().strip("\"'")
+    resolved = _WINDOWS_DRIVE_VARIABLE_RE.sub(lambda _: "C:", token)
+    resolved = _WINDOWS_SYSTEM_DIR_VARIABLE_RE.sub(lambda _: r"C:\Windows", resolved)
+    dynamic_matches = list(_WINDOWS_DYNAMIC_PATH_RE.finditer(resolved))
+    if not dynamic_matches:
+        return _windows_literal_path_is_root(resolved)
+
+    suffix = resolved[dynamic_matches[-1].end():].replace("/", "\\")
+    if re.match(r'^:\\', suffix):
+        # Cmd substring/replacement syntax can produce just the drive letter,
+        # with the literal ``:\`` supplied after the expansion. The colon is
+        # drive syntax, not a path component proving the target is scoped.
+        suffix = suffix[1:]
+    scoped_components = []
+    for component in suffix.split("\\"):
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            if scoped_components:
+                scoped_components.pop()
+            continue
+        scoped_components.append(component)
+    return not scoped_components
+
+
+def _windows_cmd_payload_variants(command: str):
+    """Yield cmd-owned payloads with cmd escapes and separators exposed."""
+    seen: set[str] = set()
+    for payload_re, strips_outer_quote in _WINDOWS_CMD_PAYLOAD_RES:
+        for match in payload_re.finditer(command):
+            payload = match.group("payload").strip()
+            # The PowerShell prefix consumes the opening quote that owns its
+            # command string. Remove the corresponding trailing quote before
+            # checking whether cmd itself wrapped the whole /c payload.
+            if strips_outer_quote and payload.endswith(("\"", "'")):
+                payload = payload[:-1].rstrip()
+            if (
+                len(payload) >= 2
+                and payload[0] == payload[-1]
+                and payload[0] in {"\"", "'"}
+            ):
+                payload = payload[1:-1]
+
+            chars: list[str] = []
+            quote = False
+            index = 0
+            while index < len(payload):
+                char = payload[index]
+                if char == "^" and index + 1 < len(payload):
+                    # cmd removes the caret and treats the next character as
+                    # literal.  In particular, an escaped ampersand is data,
+                    # while ``r^d`` still invokes the ``rd`` built-in.
+                    chars.append(payload[index + 1])
+                    index += 2
+                    continue
+                if char == '"':
+                    quote = not quote
+                    chars.append(char)
+                    index += 1
+                    continue
+                if not quote and char in "&|":
+                    chars.append("\n")
+                    if index + 1 < len(payload) and payload[index + 1] == char:
+                        index += 1
+                elif not quote and char == "(":
+                    chars.extend((char, "\n"))
+                else:
+                    chars.append(char)
+                index += 1
+
+            variant = "".join(chars)
+            if variant and variant not in seen:
+                seen.add(variant)
+                yield variant
+
+
+def _windows_recursive_delete_targets_root(
+    command: str,
+    invocation_re=_WINDOWS_RD_INVOCATION_RE,
+) -> bool:
+    """Parse cmd-owned rd arguments and classify root-equivalent targets."""
+    for match in invocation_re.finditer(command):
+        tokens = _WINDOWS_ARGUMENT_TOKEN_RE.findall(match.group("arguments"))
+        normalized_tokens = [token.strip("\"'").lower() for token in tokens]
+        if "/s" not in normalized_tokens:
+            continue
+        for token, normalized_token in zip(tokens, normalized_tokens):
+            if normalized_token in {"/s", "/q"}:
+                continue
+            if _windows_path_is_root_or_unscoped_dynamic(token):
+                return True
+    return False
 
 
 # Command names that hand a quoted argument to another shell/parser to
@@ -761,6 +986,25 @@ def detect_hardline_command(command: str) -> tuple:
     """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
+    # Preserve raw Windows separators for this check.  The general detection
+    # normalizer treats backslashes as POSIX shell escapes, which correctly
+    # deobfuscates command words but turns a quoted drive root such as ``C:\``
+    # into ``C:`` before the hardline regex can classify its target.
+    windows_command = _mark_command_starts(_mask_quoted_newlines(command))
+    if (
+        _WINDOWS_ROOT_DELETE_RE.search(windows_command)
+        or _windows_recursive_delete_targets_root(windows_command)
+    ):
+        return (True, "recursive delete of Windows filesystem root")
+    for payload in _windows_cmd_payload_variants(windows_command):
+        if (
+            _WINDOWS_RD_PAYLOAD_RE.search(payload)
+            or _windows_recursive_delete_targets_root(
+                payload,
+                _WINDOWS_RD_PAYLOAD_INVOCATION_RE,
+            )
+        ):
+            return (True, "recursive delete of Windows filesystem root")
     normalized = _normalize_command_for_detection(command)
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:

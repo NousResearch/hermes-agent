@@ -17,12 +17,13 @@ from agent.subagent_lifecycle import (
 
 
 class FakeChild:
-    def __init__(self, ident="sa-test"):
+    def __init__(self, ident="sa-test", reasoning_config=None):
         self._subagent_id = ident
         self._delegate_role = "leaf"
         self._delegate_depth = 1
         self.provider = "test"
         self.model = "test-model"
+        self.reasoning_config = reasoning_config
         self.interrupted = False
         self.interrupt_kind = None
         self.interrupt_message = None
@@ -84,6 +85,44 @@ def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     other_parent = SimpleNamespace(session_id="different-parent")
     other_service = SubagentLifecycleService(lambda: other_parent)
     assert other_service.status(handle).state is SubagentState.UNKNOWN
+
+
+def test_public_lifecycle_applies_and_attributes_exact_reasoning(monkeypatch):
+    parent = SimpleNamespace(session_id="parent-reasoning", enabled_toolsets=["file"])
+    captured = {}
+
+    def build(**kwargs):
+        captured.update(kwargs)
+        return FakeChild(
+            "sa-reasoning",
+            reasoning_config={
+                "enabled": True,
+                "effort": kwargs["override_reasoning_effort"],
+            },
+        )
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child",
+        lambda *_args, **_kwargs: {
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 0.01,
+        },
+    )
+    service = SubagentLifecycleService(lambda: parent)
+    handle = service.launch(
+        SubagentLaunchRequest(goal="reason", reasoning_effort="high")
+    )
+    assert captured["override_reasoning_effort"] == "high"
+    assert handle.reasoning_effort == "high"
+    assert service.wait(handle, timeout_seconds=1).state is SubagentState.SUCCEEDED
+
+
+def test_public_lifecycle_rejects_unknown_reasoning(lifecycle):
+    with pytest.raises(SubagentLifecycleError, match="reasoning_effort"):
+        lifecycle.launch(SubagentLaunchRequest(goal="x", reasoning_effort="extreme"))
 
 
 def test_cancel_uses_explicit_hard_interrupt(lifecycle):

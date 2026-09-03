@@ -121,6 +121,141 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert "not found" in result.message.lower()
 
 
+def test_file_reference_expands_utf8_sig_text(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "bom.csv"
+    payload.write_bytes("name,amount\nAlice,10\n".encode("utf-8-sig"))
+
+    result = preprocess_context_references(
+        "Summarize @file:bom.csv",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "decoded as utf-8-sig" in result.message
+    assert "name,amount\nAlice,10" in result.message
+
+
+def test_file_reference_expands_gb18030_csv(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "gb18030-sample.csv"
+    payload.write_bytes(
+        "交易时间,商户,金额\n2026-08-11,测试商户,19.80\n".encode("gb18030")
+    )
+
+    result = preprocess_context_references(
+        "Summarize @file:gb18030-sample.csv",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "decoded as gb18030" in result.message
+    assert "交易时间,商户,金额" in result.message
+    assert "测试商户" in result.message
+
+
+@pytest.mark.parametrize(
+    ("filename", "text", "expected"),
+    [
+        (
+            "short-big5.txt",
+            "這是繁體中文測試檔案\n第二行內容\n",
+            "這是繁體中文測試檔案",
+        ),
+        (
+            "big5-prose.txt",
+            "台灣繁體中文的處理需要正確的編碼設定,否則會出現亂碼問題。\n" * 8,
+            "編碼設定",
+        ),
+        (
+            "big5-names.csv",
+            "陳大文,林小美,黃志明,吳雅婷,張家豪\n" * 10,
+            "黃志明",
+        ),
+        (
+            "big5-statement.csv",
+            (
+                "日期,摘要,金額\n"
+                "2026-08-11,轉帳手續費,12.50\n"
+                "備註:這是一份繁體中文的銀行對帳單匯出檔案,\n"
+            )
+            * 6,
+            "轉帳手續費",
+        ),
+    ],
+)
+def test_file_reference_expands_big5_text_without_cjk_fallback_mojibake(
+    tmp_path: Path, filename: str, text: str, expected: str
+):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / filename
+    payload.write_bytes(text.encode("big5"))
+
+    result = preprocess_context_references(
+        f"Summarize @file:{filename}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "decoded as big5" in result.message
+    assert expected in result.message
+    assert "ｳoｬO" not in result.message
+
+
+def test_file_reference_expands_cp932_text_with_line_range(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "japanese.txt"
+    payload.write_bytes("一行目\n二行目\n三行目\n".encode("cp932"))
+
+    result = preprocess_context_references(
+        "Read @file:japanese.txt:2-2",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "decoded as cp932" in result.message
+    assert "二行目" in result.message
+    assert "一行目" not in result.message
+    assert "三行目" not in result.message
+
+
+def test_file_reference_warns_for_undecodable_text_bytes(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "bad.txt"
+    # 64 bytes of pure random data — long enough that charset-normalizer
+    # refuses to guess any encoding (shorter payloads may get low-confidence
+    # single-byte codec matches).
+    payload.write_bytes(
+        b"\xa3\xf1\x8c\xd7\x5e\xb2\x09\xce\x4f\x97\xe2\x38\xda\x71\xc5\x0b"
+        b"\xb8\x64\xe9\x1d\xaf\x53\xc8\x3e\xd6\x82\x4a\x91\xf0\x7c\xcd\x28"
+        b"\x95\xe1\x46\xbe\x33\xdf\x88\x61\xb4\x0f\xc7\x5a\xec\x39\xd1\x74"
+        b"\x8f\x62\xb6\x1b\xc9\x4e\xe0\x83\x35\xd8\x6a\x9d\xf2\x7e\xc3\x17"
+    )
+
+    result = preprocess_context_references(
+        "Read @file:bad.txt",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert result.warnings
+    assert "\ufffd" not in result.message
+
+
 def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path: Path, monkeypatch):
     """Docker backend: a staged binary attachment's host path is rendered as the
     bind-mounted in-container path so the agent's tools can read it.

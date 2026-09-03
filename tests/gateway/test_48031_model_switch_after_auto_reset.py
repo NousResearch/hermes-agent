@@ -12,7 +12,7 @@ two-sources-of-truth divergence).
 The fix consumes `was_auto_reset` at two sites:
   1. the cleanup block in gateway/run.py captures it into a local and sets the
      attribute False immediately (so it can't re-fire next message);
-  2. the slash-command model path in gateway/slash_commands.py consumes it
+  2. the slash-command model path in gateway/slash_commands/model.py consumes it
      before storing the override (so a /model-first-after-reset isn't wiped).
 
 These are AST invariants — load-bearing pins that fail if either consume is
@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 
 from gateway import run as gateway_run
-from gateway import slash_commands as gateway_slash
 
 
 def _assigns_false(node: ast.AST, attr: str) -> bool:
@@ -75,13 +75,17 @@ def test_run_consumes_was_auto_reset_in_cleanup_block():
 
 
 def test_slash_command_model_path_consumes_was_auto_reset():
-    """The slash-command model path in gateway/slash_commands.py must consume
+    """The slash-command model path in gateway/slash_commands/model.py must consume
     `was_auto_reset` before storing the new model override, so a
     /model-first-after-auto-reset isn't wiped by the next message's cleanup
     (#48031)."""
-    src = inspect.getsource(gateway_slash)
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    src = textwrap.dedent(
+        inspect.getsource(GatewaySlashCommandsMixin._handle_model_command)
+    )
     tree = ast.parse(src)
     assert _assigns_false(tree, "was_auto_reset"), (
-        "gateway/slash_commands.py model path must set "
+        "gateway/slash_commands/model.py model path must set "
         "`was_auto_reset = False` before storing the model override (#48031)."
     )

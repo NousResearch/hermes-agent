@@ -1063,7 +1063,7 @@ def resolve_persist_behavior(
 # Single-owner /model request parsing + effective-model resolution
 # ---------------------------------------------------------------------------
 #
-# Historically each surface (cli.py, gateway/slash_commands.py,
+# Historically each surface (cli.py, gateway/slash_commands/model.py,
 # tui_gateway/server.py) re-implemented flag parsing + conflict checks, and
 # each resolution surface (gateway/run.py, gateway/platforms/api_server.py)
 # re-implemented the session-override > channel/session > global precedence.
@@ -1136,7 +1136,7 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     The ONE parser for every /model surface.  Wraps
     :func:`parse_model_flags_detailed` (tokenization + Unicode-dash
     normalization) and layers on the flag-conflict validation that cli.py,
-    gateway/slash_commands.py, and tui_gateway/server.py each used to
+    gateway/slash_commands/model.py, and tui_gateway/server.py each used to
     re-implement:
 
     * ``--once`` + ``--global``  → ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``

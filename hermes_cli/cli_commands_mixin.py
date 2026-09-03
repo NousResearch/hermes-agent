@@ -4,7 +4,7 @@ This module hosts the ``_handle_*_command`` slash-command handlers lifted out of
 ``cli.py``'s ``HermesCLI`` class. ``HermesCLI`` inherits ``CLICommandsMixin`` so
 every ``self.<handler>`` call resolves unchanged via the MRO — behavior-neutral.
 
-Import discipline (mirrors gateway/slash_commands.py, PR #41886):
+Import discipline (mirrors gateway/slash_commands/, PR #41886):
   * Neutral, non-cyclic deps are imported at module top-level below.
   * cli.py-internal symbols (the ``_cprint``/``_ACCENT``/``save_config_value``…
     module-level helpers and constants) are imported LAZILY inside each handler
@@ -2306,7 +2306,7 @@ class CLICommandsMixin:
             # No live agent store (e.g. /memory approve invoked from the Desktop
             # GUI, or any context without an active agent). Apply against a freshly
             # loaded on-disk store, mirroring the gateway path
-            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md
+            # (gateway/slash_commands/memory.py): it persists to the same MEMORY/USER.md
             # and creates MEMORY.md on the first approved write. Without this the
             # shared handler returns "memory store unavailable". See #46783.
             # load_on_disk_store() honors the user's configured char limits, so

@@ -499,7 +499,7 @@ class SessionManager:
                 # (has_archived_messages) would fail OPEN into the destructive
                 # replace on any DB error and can race a concurrent
                 # archive_and_compact — the same probe failure mode #80216's
-                # /retry fix (gateway/slash_commands.py) deliberately avoids.
+                # /retry fix (gateway/slash_commands/session_lifecycle.py) deliberately avoids.
                 db.replace_messages(
                     state.session_id, state.history, active_only=True
                 )

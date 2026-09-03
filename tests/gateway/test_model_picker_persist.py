@@ -2,7 +2,7 @@
 
 #49066 made the typed ``/model <name>`` command persist the selected model to
 ``config.yaml`` by default. But the inline-keyboard picker callback
-(``_on_model_selected`` in ``gateway/slash_commands.py``) was left session-only:
+(``_on_model_selected`` in ``gateway/slash_commands/model.py``) was left session-only:
 it hard-coded ``is_global=False`` and never wrote ``config.yaml``, so *tapping* a
 model in the Telegram/Discord picker silently reverted on the next launch while
 *typing* the same model persisted — a contradiction the same PR introduced.

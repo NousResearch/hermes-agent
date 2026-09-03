@@ -152,7 +152,7 @@ def summarize_compress_preview(
     """Build the ``/compress --preview`` report — pure, no side effects.
 
     Shared by the CLI (``cli.py::_manual_compress``) and the gateway
-    (``gateway/slash_commands.py::_handle_compress_command``) so both
+    (``gateway/slash_commands/compress.py::_handle_compress_command``) so both
     surfaces report the same numbers the real run would use.
 
     Returns a dict with ``head_count``/``tail_count``/``lines`` where

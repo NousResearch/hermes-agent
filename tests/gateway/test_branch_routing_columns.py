@@ -1,6 +1,6 @@
 """Regression test for /branch losing gateway routing columns (#NNNNN).
 
-``_handle_branch_command`` (gateway/slash_commands.py) creates the branched
+``_handle_branch_command`` (gateway/slash_commands/session_lifecycle.py) creates the branched
 child session via ``create_session()`` WITHOUT chat_id/chat_type/thread_id —
 identical in shape to the compression-rotation bug fixed in
 agent/conversation_compression.py. The routing columns are only written

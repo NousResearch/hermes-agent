@@ -73,9 +73,8 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     def _fake_atomic_json_write(path, payload, **kwargs):
         calls.append((Path(path).name, payload, kwargs))
 
-    # _handle_restart_command lives in gateway/slash_commands.py (extracted from
-    # run.py); it uses that module's top-level atomic_json_write import.
-    import gateway.slash_commands as gateway_slash
+    # Patch the reference held by the leaf that runs the restart handler.
+    import gateway.slash_commands.agents_ops as gateway_slash
     monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
     monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
 
@@ -109,7 +108,9 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
         saved[key] = value
 
     monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
-    monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
+    monkeypatch.setattr(
+        "gateway.slash_commands.home.persist_home_channel", lambda home, **kwargs: None
+    )
 
     runner, _adapter = make_restart_runner()
     source = make_restart_source(chat_id="home-42")
@@ -142,7 +143,9 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
         saved[key] = value
 
     monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
-    monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
+    monkeypatch.setattr(
+        "gateway.slash_commands.home.persist_home_channel", lambda home, **kwargs: None
+    )
 
     runner, _adapter = make_restart_runner()
     source = make_restart_source(chat_id="parent-42", thread_id="topic-7")

@@ -7298,7 +7298,7 @@ def _compress_session_history(
     forms (``here [N]``, ``up to here``, ``--keep N``) trigger a partial
     compress — head summarized, most recent ``keep_last`` exchanges kept
     verbatim — on EVERY route, mirroring cli.py's ``_manual_compress`` and
-    gateway/slash_commands.py (PR #35252). Parsing at the choke point (not
+    gateway/slash_commands/compress.py (PR #35252). Parsing at the choke point (not
     per-route) is what fixes #35533: previously "/compress here 3" reached
     this helper unparsed and ran a FULL compress focused on the literal
     text "here 3".

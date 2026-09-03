@@ -44,7 +44,12 @@ def test_gateway_async_code_uses_one_awaited_session_store_boundary() -> None:
     """Loop-side store calls must use the facade; raw store remains sync-only."""
     root = Path(__file__).resolve().parents[2]
     violations: list[str] = []
-    for rel in ("gateway/run.py", "gateway/slash_commands.py"):
+    slash_files = tuple(
+        str(path.relative_to(root))
+        for path in sorted((root / "gateway" / "slash_commands").glob("*.py"))
+    )
+    assert slash_files, "gateway/slash_commands/*.py matched nothing"
+    for rel in ("gateway/run.py", *slash_files):
         tree = ast.parse((root / rel).read_text(encoding="utf-8"))
         parents = {
             child: parent

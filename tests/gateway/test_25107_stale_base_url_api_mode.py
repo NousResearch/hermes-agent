@@ -3,7 +3,7 @@
 custom provider whose resolver returned an empty ``base_url``.
 
 Root cause: both the picker-tap path (``_on_model_selected`` in
-``gateway/slash_commands.py``) and the typed ``/model X --global`` path
+``gateway/slash_commands/model.py``) and the typed ``/model X --global`` path
 (``_finish_switch``) guarded the persist block with two *independent*
 ``if``s:
 

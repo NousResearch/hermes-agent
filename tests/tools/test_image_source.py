@@ -8,6 +8,7 @@ media caches and every other path is read inside the sandbox via exec-read.
 
 import base64
 import importlib
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -72,6 +73,37 @@ class TestDataUrl:
         img.write_bytes(CORRUPT_PNG)
         with pytest.raises(isrc.NotAnImage):
             await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+
+
+class TestHttpDownload:
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_does_not_discard_downloaded_bytes(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        downloaded = {}
+
+        async def fake_download(_url, destination):
+            downloaded["path"] = destination
+            destination.write_bytes(PNG)
+
+        monkeypatch.setattr("tools.vision_tools._download_image", fake_download)
+
+        try:
+            with (
+                patch.object(Path, "unlink", side_effect=OSError("file is busy")),
+                caplog.at_level(logging.WARNING, logger="tools.image_source"),
+            ):
+                data = await isrc._download_to_bytes(
+                    "https://example.com/image.png"
+                )
+        finally:
+            path = downloaded.get("path")
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+        assert data == PNG
+        assert "Could not delete temporary image download" in caplog.text
 
 
 class TestLocalBackend:

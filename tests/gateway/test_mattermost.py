@@ -1,9 +1,13 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import aiohttp
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
@@ -265,6 +269,92 @@ class TestMattermostSend:
 # ---------------------------------------------------------------------------
 # WebSocket event parsing
 # ---------------------------------------------------------------------------
+
+
+class _FakeMattermostWebSocket:
+    def __init__(self, messages=(), *, block_when_empty=False):
+        self._messages = list(messages)
+        self._block_when_empty = block_when_empty
+        self._unblock = asyncio.Event()
+        self.iteration_started = asyncio.Event()
+        self.closed = False
+        self.close_calls = 0
+        self.sent_json = []
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        self.iteration_started.set()
+        if self._messages:
+            return self._messages.pop(0)
+        if self._block_when_empty:
+            await self._unblock.wait()
+        raise StopAsyncIteration
+
+    async def send_json(self, message):
+        self.sent_json.append(message)
+
+    async def close(self):
+        self.close_calls += 1
+        self.closed = True
+        self._unblock.set()
+
+
+class TestMattermostWebSocketLifecycle:
+    @pytest.mark.asyncio
+    async def test_handler_error_closes_socket_before_reconnect(self, monkeypatch):
+        from plugins.platforms.mattermost import adapter as mattermost_adapter
+
+        adapter = _make_adapter()
+        first_ws = _FakeMattermostWebSocket([
+            SimpleNamespace(
+                type=aiohttp.WSMsgType.TEXT,
+                data=json.dumps({"event": "test"}),
+            )
+        ])
+        second_ws = _FakeMattermostWebSocket()
+        sockets = iter([first_ws, second_ws])
+        first_closed_before_reconnect = []
+
+        async def ws_connect(*_args, **_kwargs):
+            ws = next(sockets)
+            if ws is second_ws:
+                first_closed_before_reconnect.append(first_ws.closed)
+                adapter._closing = True
+            return ws
+
+        adapter._session = MagicMock()
+        adapter._session.ws_connect = AsyncMock(side_effect=ws_connect)
+        adapter._handle_ws_event = AsyncMock(side_effect=RuntimeError("handler failed"))
+        monkeypatch.setattr(mattermost_adapter, "_RECONNECT_BASE_DELAY", 0)
+        monkeypatch.setattr(mattermost_adapter, "_RECONNECT_JITTER", 0)
+
+        await adapter._ws_loop()
+
+        assert first_closed_before_reconnect == [True]
+        assert first_ws.close_calls == 1
+        assert second_ws.close_calls == 1
+        assert adapter._ws is None
+
+    @pytest.mark.asyncio
+    async def test_cancelled_listener_closes_current_socket(self):
+        adapter = _make_adapter()
+        ws = _FakeMattermostWebSocket(block_when_empty=True)
+        adapter._session = MagicMock()
+        adapter._session.ws_connect = AsyncMock(return_value=ws)
+
+        listener = asyncio.create_task(adapter._ws_connect_and_listen())
+        await asyncio.wait_for(ws.iteration_started.wait(), timeout=5)
+        assert adapter._ws is ws
+
+        listener.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await listener
+
+        assert ws.close_calls == 1
+        assert adapter._ws is None
+
 
 class TestMattermostWebSocketParsing:
     def setup_method(self):
@@ -708,4 +798,3 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
-

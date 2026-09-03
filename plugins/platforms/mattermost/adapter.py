@@ -469,23 +469,30 @@ class MattermostAdapter(BasePlatformAdapter):
         """Single WebSocket session: connect, authenticate, process events."""
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"  # https→wss, http→ws
         logger.info("Mattermost: connecting to %s", ws_url)
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
-        await self._ws.send_json({"seq": 1, "action": "authentication_challenge", "data": {"token": self._token}})
-        logger.info("Mattermost: WebSocket connected and authenticated")
-
-        async for raw_msg in self._ws:
-            if self._closing:
-                return
-            kind = raw_msg.type
-            if kind in {kind.TEXT, kind.BINARY}:
-                try:
-                    event = json.loads(raw_msg.data)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                await self._handle_ws_event(event)
-            elif kind in {kind.ERROR, kind.CLOSE, kind.CLOSING, kind.CLOSED}:
-                logger.info("Mattermost: WebSocket closed (%s)", kind)
-                break
+        ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        self._ws = ws
+        try:
+            await ws.send_json({"seq": 1, "action": "authentication_challenge", "data": {"token": self._token}})
+            logger.info("Mattermost: WebSocket connected and authenticated")
+            async for raw_msg in ws:
+                if self._closing:
+                    return
+                kind = raw_msg.type
+                if kind in {kind.TEXT, kind.BINARY}:
+                    try:
+                        event = json.loads(raw_msg.data)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    await self._handle_ws_event(event)
+                elif kind in {kind.ERROR, kind.CLOSE, kind.CLOSING, kind.CLOSED}:
+                    logger.info("Mattermost: WebSocket closed (%s)", kind)
+                    break
+        finally:
+            try:
+                await ws.close()
+            finally:
+                if self._ws is ws:
+                    self._ws = None
 
     def _extra_or_env(self, key: str, env: str, default: str = "") -> Any:
         """config.yaml ``mattermost.<key>`` (PlatformConfig.extra) first, env var fallback."""

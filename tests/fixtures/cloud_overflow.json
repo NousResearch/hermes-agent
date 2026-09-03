@@ -1,0 +1,22 @@
+{
+  "boards": [
+    {
+      "board": "fixture-board",
+      "running": 3,
+      "max_spawn": 3,
+      "tasks": [
+        {
+          "id": "t_docs_fixture",
+          "title": "Write the isolated documentation draft",
+          "body": "Fixture body is not sent to any provider.",
+          "status": "ready",
+          "skills": ["docs"],
+          "parents_satisfied": true,
+          "workspace_kind": "worktree",
+          "workspace_path": "/tmp/isolated/t_docs_fixture",
+          "branch_name": "wt/t_docs_fixture"
+        }
+      ]
+    }
+  ]
+}

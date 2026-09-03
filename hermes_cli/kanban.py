@@ -250,6 +250,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- prepare-only cloud overflow ---
+    p_overflow = sub.add_parser(
+        "cloud-overflow",
+        help="Plan one isolated cloud overflow candidate (dry-run only)",
+        description=(
+            "Prepare-only, READY-only cloud overflow planning. This command "
+            "requires a fixture and never invokes a cloud provider."
+        ),
+    )
+    p_overflow.add_argument("--fixture", required=True, help="JSON fixture for deterministic planning")
+    p_overflow.add_argument("--state", required=True, help="SQLite state-store path")
+    p_overflow.add_argument("--max-concurrency", type=int, default=3)
+    p_overflow.add_argument("--pause", action="store_true")
+    p_overflow.add_argument("--kill-switch", action="store_true")
+    p_overflow.add_argument("--dry-run", action="store_true", default=True, help="Plan only; provider commands are never invoked")
+    p_overflow.add_argument("--json", action="store_true")
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -1137,6 +1154,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         # without ever reaching the repair path.
         if action == "repair":
             return _cmd_repair(args)
+        if action == "cloud-overflow":
+            return _cmd_cloud_overflow(args)
         try:
             kb.init_db()
         except Exception as exc:
@@ -3386,6 +3405,13 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_cloud_overflow(args: argparse.Namespace) -> int:
+    """Run the fixture-backed prepare-only overflow planner."""
+    from hermes_cli.cloud_overflow import cloud_overflow_command
+
+    return cloud_overflow_command(args)
 
 
 def _cmd_repair(args: argparse.Namespace) -> int:

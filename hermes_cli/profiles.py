@@ -1008,6 +1008,71 @@ def write_profile_meta(
     atomic_yaml_write(path, existing, sort_keys=False)
 
 
+def read_profile_ui_meta(profile_dir: Path, key: str):
+    """Read one ``ui_meta`` key from ``<profile_dir>/profile.yaml``.
+
+    Returns ``None`` when the file is missing/unreadable or the key is absent.
+    """
+    path = _profile_yaml_path(profile_dir)
+    if not path.is_file():
+        return None
+    import yaml
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    ui = data.get("ui_meta")
+    if not isinstance(ui, dict):
+        return None
+    return ui.get(key)
+
+
+def set_profile_ui_meta(profile_dir: Path, key: str, value) -> None:
+    """Set (or delete) one ``ui_meta`` key in ``<profile_dir>/profile.yaml``.
+
+    Mirrors the gateway ``profiles.configure`` ui_meta write: read the full
+    file, merge the key (``value=None`` deletes it), bump
+    ``_ui_meta_revisions[key]`` for the CAS contract, and write atomically.
+    All other fields are preserved.
+    """
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
+    import yaml
+
+    path = _profile_yaml_path(profile_dir)
+    existing: dict = {}
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    ui = existing.get("ui_meta")
+    if not isinstance(ui, dict):
+        ui = {}
+    if value is None:
+        ui.pop(key, None)
+    else:
+        ui[key] = value
+    revisions = existing.get("_ui_meta_revisions")
+    revisions = dict(revisions) if isinstance(revisions, dict) else {}
+    revisions[key] = int(revisions.get(key, 0) or 0) + 1
+    if ui:
+        existing["ui_meta"] = ui
+    else:
+        existing.pop("ui_meta", None)
+    existing["_ui_meta_revisions"] = revisions
+    from utils import atomic_yaml_write
+
+    atomic_yaml_write(path, existing, sort_keys=False)
+
+
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
     """Render a profile for display: ``display_name (canonical_id)``.
 

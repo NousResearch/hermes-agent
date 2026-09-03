@@ -474,6 +474,7 @@ from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.group import build_group_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
@@ -15013,6 +15014,13 @@ def main():
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
     # =========================================================================
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # group command  (parser in hermes_cli/subcommands/group.py)
+    # =========================================================================
+    from hermes_cli.groups import cmd_group
+
+    build_group_parser(subparsers, cmd_group=cmd_group)
 
     # =========================================================================
     # completion command

@@ -165,6 +165,21 @@ auxiliary:
 
 When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain before the built-in auxiliary discovery chain.
 
+### Customizing the session-title prompt
+
+By default titles are produced with a built-in prompt tuned for short, findable, sentence-case names. If you want your titles to follow a house style (a different length, tone, or naming convention), set a custom system prompt for the task. It fully replaces the built-in text as the titling model's system message:
+
+```yaml
+auxiliary:
+  title_generation:
+    prompt: |
+      You name chat sessions. Keep titles under 4 words, title case, and
+      lead with the project or component name when the message names one.
+      Reply with JSON only: {"title": "..."}
+```
+
+Leave `prompt` empty (the default) to keep the built-in template. The pinned `language` still applies on top of a custom prompt — set `auxiliary.title_generation.language` to force a language, or leave it empty to match the user's message. A custom prompt that forgets the `{"title": "..."}` JSON contract will still work via the parser's fallbacks, but the cleanest results come from keeping the "reply with JSON only" instruction.
+
 ## Per-provider request options
 
 Provider entries (`providers.<name>` in the `providers:` dict, or items in the legacy `custom_providers` list) accept knobs that shape how Hermes talks to the endpoint:

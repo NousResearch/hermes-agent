@@ -9,6 +9,7 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _title_prompt_override,
 )
 from hermes_state import SessionDB
 
@@ -29,6 +30,101 @@ class TestGenerateTitle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
          patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
+
+    def test_title_prompt_override_reads_config(self):
+        cfg = {"auxiliary": {"title_generation": {"prompt": "  My custom titler.  "}}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            assert _title_prompt_override() == "My custom titler."
+        with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert _title_prompt_override() == ""
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
+         patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
+            assert _title_prompt_override() == ""
+
+    def test_custom_prompt_is_used_as_system_message(self):
+        """A configured prompt replaces the built-in template, verbatim, as
+        the system message — that is the whole point of the knob."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Custom Titler Output"
+            return resp
+
+        cfg = {"auxiliary": {"title_generation": {"prompt": "Name it like a filing cabinet. 3-5 words."}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("fix the flaky test") == "Custom Titler Output"
+
+        system_message = captured["messages"][0]["content"]
+        assert system_message.startswith("Name it like a filing cabinet. 3-5 words.")
+        assert "You name chat sessions" not in system_message  # built-in not in play
+
+    def test_custom_prompt_keeps_language_match_rule(self):
+        """With no pinned language, the match-user rule is appended to a
+        custom prompt so language handling doesn't silently regress."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Some Title"
+            return resp
+
+        cfg = {"auxiliary": {"title_generation": {"prompt": "My custom titler."}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("hello")
+
+        assert "same language as the user's message" in captured["messages"][0]["content"]
+
+    def test_custom_prompt_respects_pinned_language(self):
+        """A pinned language overrides the match-user rule, even with a
+        custom prompt — the pin is a config-level contract."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Titre en Français"
+            return resp
+
+        cfg = {"auxiliary": {"title_generation": {"prompt": "My custom titler.", "language": "French"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("fix the bug")
+
+        system_message = captured["messages"][0]["content"]
+        assert "Write the title in French." in system_message
+        assert "same language as the user's message" not in system_message
+
+    def test_custom_prompt_strips_leftover_placeholder(self):
+        """Copy-pasting the built-in template into config leaves a bare
+        __LANGUAGE_RULE__ line behind; it must not ship to the model."""
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Some Title"
+            return resp
+
+        cfg = {"auxiliary": {"title_generation": {"prompt": "Custom rules.\n__LANGUAGE_RULE__"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("hello")
+
+        assert "__LANGUAGE_RULE__" not in captured["messages"][0]["content"]
 
     def test_default_timeout_delegates_to_auxiliary_config(self):
         captured_kwargs = {}

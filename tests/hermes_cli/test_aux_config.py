@@ -44,6 +44,8 @@ def test_title_generation_present_in_default_config():
     assert tg["prefer_fast_model"] is False
     assert tg["timeout"] > 0
     assert tg["extra_body"] == {}
+    assert tg["language"] == ""
+    assert tg["prompt"] == ""
 
 
 

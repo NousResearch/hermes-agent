@@ -167,6 +167,25 @@ def _title_language() -> str:
         return ""
 
 
+def _title_prompt_override() -> str:
+    """Return a user-supplied titling prompt, or empty for the built-in.
+
+    Mirrors _title_language(): read-only loader so agent code paths never
+    trigger config-migration writes, and fail open — a broken config must
+    fall back to the built-in template, not disable titling.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return str(
+            ((load_config_readonly() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("prompt", "")
+        ).strip()
+    except Exception:
+        return ""
+
+
 def _auto_title_enabled() -> bool:
     """Return whether automatic session title generation is enabled."""
     try:
@@ -390,9 +409,22 @@ def generate_title(
         if language
         else _LANGUAGE_RULE_MATCH_USER
     )
-    # Placeholder substitution, not str.format: the prompt embeds literal JSON
-    # braces as few-shot examples, which format() would try to interpolate.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace("__LANGUAGE_RULE__", language_rule)
+    custom_prompt = _title_prompt_override()
+    if custom_prompt:
+        # The user owns the prompt, but the language pin is a config-level
+        # contract, not template decoration — append it so `language` still
+        # wins over whatever the custom text says. A leftover placeholder
+        # from copy-pasting the built-in template is dropped first.
+        prompt = (
+            custom_prompt.replace("__LANGUAGE_RULE__", "").strip()
+            + "\n"
+            + language_rule
+        )
+    else:
+        # Placeholder substitution, not str.format: the prompt embeds literal
+        # JSON braces as few-shot examples, which format() would try to
+        # interpolate.
+        prompt = _TITLE_PROMPT_TEMPLATE.replace("__LANGUAGE_RULE__", language_rule)
 
     messages = [
         {"role": "system", "content": prompt},

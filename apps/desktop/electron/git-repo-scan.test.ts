@@ -50,6 +50,13 @@ describe('scanGitRepos', () => {
     expect(read).not.toHaveBeenCalled()
   })
 
+  it('does not fall back to scanning the home directory when roots are empty', async () => {
+    const read = vi.spyOn(fs.promises, 'readdir')
+
+    await expect(scanGitRepos([], { enabled: true })).resolves.toEqual([])
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('scans only configured roots and excludes complete subtrees', async () => {
     const root = tempDir()
     const included = path.join(root, 'included')

@@ -1494,7 +1494,7 @@ def try_recover_primary_transport(
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
+                timeout=get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1794,7 +1794,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
+                timeout=get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -3226,7 +3226,7 @@ def switch_model(
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
+                timeout=get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None)),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -3256,7 +3256,7 @@ def switch_model(
                 )
             except Exception:
                 logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
-            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None))
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
             # Reapply provider-specific headers (e.g. OpenRouter HTTP-Referer,

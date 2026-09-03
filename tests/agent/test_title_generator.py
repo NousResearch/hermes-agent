@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
     _EXAMPLE_ECHO_REJECT,
+    _derived_retry_last,
     build_title_input,
     derive_title,
     generate_title,
@@ -716,11 +717,17 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "Debug scheduler failures"
         assert db.get_session_title_source("sess-1") == "llm"
 
-    def test_a_placeholder_title_stops_retrying_after_the_third_turn(self, tmp_path):
-        """A derived name gets turns 2-3 to upgrade, not a model call on every later turn."""
+    def test_a_placeholder_title_retries_past_the_third_turn_on_a_cooldown(self, tmp_path):
+        """A derived name gets turns 2-3 to upgrade for free, then one retry per cooldown window.
+
+        The hard cap stranded a session on its opener's slice forever when the title
+        model was merely rate-limited at the time; the cooldown keeps the retry
+        without costing an auxiliary call on every later turn.
+        """
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="cli")
         db.set_auto_title("sess-1", "hi", source="derived")
+        _derived_retry_last.pop("sess-1", None)
         history = [{"role": "user", "content": f"turn {n}"} for n in range(3)]
         with patch("agent.title_generator.auto_title_session") as mock_auto, \
                 patch("agent.title_generator._auto_title_enabled", return_value=True), \
@@ -731,7 +738,26 @@ class TestMaybeAutoTitle:
             history.append({"role": "user", "content": "turn 3"})
             maybe_auto_title(db, "sess-1", "and now the real question", history)
             wait_for_title_upgrades(10)
-        assert mock_auto.call_count == 1  # turn 4: capped, no call
+            assert mock_auto.call_count == 2  # turn 4: first cooldown-gated retry
+            history.append({"role": "user", "content": "turn 4"})
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+        assert mock_auto.call_count == 2  # turn 5: inside the cooldown window, no call
+
+    def test_the_cooldown_retry_leaves_a_user_title_untouched(self, tmp_path):
+        """The retry lane is for ``derived`` only: a manual ``/title`` stays final."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_session_title("sess-1", "Manual name")
+        _derived_retry_last.pop("sess-1", None)
+        history = [{"role": "user", "content": f"turn {n}"} for n in range(5)]
+        with patch("agent.title_generator.auto_title_session") as mock_auto, \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+        mock_auto.assert_not_called()
+        assert db.get_session_title("sess-1") == "Manual name"
 
     def test_instant_title_declines_a_name_collision(self, tmp_path):
         """A colliding derived title is skipped, not scanned into 'hi #2'.

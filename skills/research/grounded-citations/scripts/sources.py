@@ -20,8 +20,9 @@ Fact-checking is evidence-backed citation: ``quote`` only accepts text that
 literally appears in the fetched page text you point it at, ``verify
 --evidence`` requires every cited source to carry at least one such quote, and
 ``render --style evidence`` prints the quotes under each source so the reader
-can check the chain themselves.  Claims from model knowledge are declared with
-an ``[unverified]`` marker rather than silently blended in.
+can check the chain themselves.  Non-URL provenance is declared with ``[tool:<name>]`` for deterministic tool
+facts, ``[policy]`` for user/skill rules, or ``[unverified]`` for model
+knowledge rather than silently blending any of them into sourced prose.
 
 Ledger path resolution (first wins):
   --ledger PATH
@@ -48,13 +49,26 @@ SCHEMA_VERSION = 1
 # A citation marker in prose: [12].  Markdown links ([text](url)) and
 # reference-style labels are excluded by requiring digits only and no
 # following "(" or ":".
-_CITE_RE = re.compile(r"\[(\d{1,4})\](?![(:])")
+_CITE_RE = re.compile(r"(?<![\w\[])\[(\d{1,4})\](?![\w\](:])")
 _SOURCES_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?sources:?(?:\*\*)?\s*$", re.IGNORECASE)
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d{1,4})\]\s*[-–:]?\s*(\S+)")
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
-# Explicit declaration that a claim comes from model knowledge, not a source.
-_UNVERIFIED_RE = re.compile(r"\[unverified\]", re.IGNORECASE)
+# Explicit declarations of non-URL provenance. Tool names are restricted to
+# non-empty tokens so bare or free-form markers cannot claim verification.
+_TOOL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+_TOOL_RE = re.compile(
+    rf"(?<![\w\[])\[tool:({_TOOL_NAME_PATTERN})\](?![\w\]])", re.IGNORECASE
+)
+_POLICY_RE = re.compile(r"(?<![\w\[])\[policy\](?![\w\]])", re.IGNORECASE)
+_UNVERIFIED_RE = re.compile(
+    r"(?<![\w\[])\[unverified\](?![\w\]])", re.IGNORECASE
+)
+_VALID_PROVENANCE_AT_RE = re.compile(
+    rf"(?:\[\d{{1,4}}\]|\[tool:{_TOOL_NAME_PATTERN}\]|\[policy\]|\[unverified\])",
+    re.IGNORECASE,
+)
+_PROVENANCE_CLOSERS = frozenset("*_~`\"'”’)]}）】")
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +397,19 @@ def _strip_sources_block(text: str) -> str:
     return "\n".join(lines[:header_idx])
 
 
+def _is_internal_period(text: str, index: int) -> bool:
+    """Keep decimal points and ordinary domain-like tokens unsplit."""
+    if text[index] != "." or index == 0 or index + 1 >= len(text):
+        return False
+    left, right = text[index - 1], text[index + 1]
+    if left.isdigit() and right.isdigit():
+        return True
+    if left.isalnum() and right.isalnum():
+        token = re.match(r"[A-Za-z0-9_-]+", text[index + 1 :])
+        return bool(token and len(token.group(0)) >= 2)
+    return False
+
+
 def _sentences(prose: str) -> list[str]:
     """Rough sentence split over prose lines, skipping headings and tables."""
     out: list[str] = []
@@ -392,10 +419,47 @@ def _sentences(prose: str) -> list[str]:
             continue
         if stripped.startswith(">"):
             stripped = stripped.lstrip("> ").strip()
-        for part in re.split(r"(?<=[.!?])\s+", stripped):
-            part = part.strip()
+        start = 0
+        cursor = 0
+        while cursor < len(stripped):
+            if stripped[cursor] not in ".!?":
+                cursor += 1
+                continue
+
+            punctuation_end = cursor + 1
+            marker_start = punctuation_end
+            while (
+                marker_start < len(stripped)
+                and stripped[marker_start] in _PROVENANCE_CLOSERS
+            ):
+                marker_start += 1
+
+            end = marker_start
+            while marker := _VALID_PROVENANCE_AT_RE.match(stripped, end):
+                end = marker.end()
+
+            if end < len(stripped) and not stripped[end].isspace():
+                # A bracket immediately after terminal punctuation looks like
+                # provenance but is malformed. Split before it so a later valid
+                # marker cannot cover the preceding unsupported sentence.
+                if stripped[marker_start] == "[":
+                    end = punctuation_end
+                elif _is_internal_period(stripped, cursor):
+                    cursor += 1
+                    continue
+                else:
+                    end = punctuation_end
+
+            part = stripped[start:end].strip()
             if len(part.split()) >= 4:
                 out.append(part)
+            start = end
+            while start < len(stripped) and stripped[start].isspace():
+                start += 1
+            cursor = start
+        remainder = stripped[start:].strip()
+        if len(remainder.split()) >= 4:
+            out.append(remainder)
     return out
 
 
@@ -461,13 +525,29 @@ def verify_draft(
 
     sentences = _sentences(prose)
     cited_sentences = [s for s in sentences if _CITE_RE.search(s)]
+    tool_verified_sentences = [s for s in sentences if _TOOL_RE.search(s)]
+    policy_sentences = [s for s in sentences if _POLICY_RE.search(s)]
     unverified_sentences = [s for s in sentences if _UNVERIFIED_RE.search(s)]
-    covered = [s for s in sentences if _CITE_RE.search(s) or _UNVERIFIED_RE.search(s)]
+    covered = [
+        s
+        for s in sentences
+        if _CITE_RE.search(s)
+        or _TOOL_RE.search(s)
+        or _POLICY_RE.search(s)
+        or _UNVERIFIED_RE.search(s)
+    ]
     coverage = (len(covered) / len(sentences)) if sentences else 0.0
+    provenance_breakdown = (
+        f"{len(cited_sentences)} cited, "
+        f"{len(tool_verified_sentences)} tool-verified, "
+        f"{len(policy_sentences)} policy, "
+        f"{len(unverified_sentences)} unverified"
+    )
     if min_coverage is not None and sentences and coverage < min_coverage:
         errors.append(
-            f"citation coverage {coverage:.0%} is below the required {min_coverage:.0%} "
-            f"({len(covered)}/{len(sentences)} sentences cited or marked [unverified])"
+            f"declared provenance coverage {coverage:.0%} is below the required "
+            f"{min_coverage:.0%} ({len(covered)}/{len(sentences)} sentences; "
+            f"{provenance_breakdown}; a sentence may carry multiple markers)"
         )
 
     if require_evidence:
@@ -488,8 +568,8 @@ def verify_draft(
     quoted = sum(1 for s in sources if s.get("quotes"))
     stats = (
         f"{len(sentences)} prose sentence(s), {len(covered)} with declared provenance "
-        f"({coverage:.0%}) — {len(cited_sentences)} cited, "
-        f"{len(unverified_sentences)} marked [unverified] (a sentence may be both); "
+        f"({coverage:.0%}) — {provenance_breakdown} "
+        f"(a sentence may carry multiple markers); "
         f"{len(cited_set)} distinct source(s) cited, "
         f"{len(by_id)} in ledger ({quoted} with evidence quotes)"
     )

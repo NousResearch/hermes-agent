@@ -406,6 +406,196 @@ def test_evidence_gate_only_applies_to_cited_sources(sources_mod, ledger: Path, 
     assert (code, errors) == (0, [])
 
 
+def test_tool_and_policy_markers_count_toward_coverage(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "The chart reports a deterministic current value.[tool:TradingView]\n"
+        "The OHLCV payload came from the named MCP tool.[tool:mcp__tradingview__data_get_ohlcv]\n"
+        "The playbook requires waiting for confirmation.[policy]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=1.0
+    )
+    assert (code, errors) == (0, [])
+    assert "0 cited, 2 tool-verified, 1 policy, 0 unverified" in warnings[0]
+
+
+def test_tool_marker_requires_nonempty_safe_token(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "This sentence names a valid tool source.[tool:TradingView]\n"
+        "This sentence uses the forbidden bare marker.[tool]\n"
+        "This sentence has no tool name after the colon.[tool:]\n"
+        "This sentence puts whitespace inside the name.[tool:bad name]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.5
+    )
+    assert code == 1
+    assert any("1 tool-verified" in error for error in errors)
+    assert "0 cited, 1 tool-verified, 0 policy, 0 unverified" in warnings[0]
+
+
+def test_marker_after_punctuation_preserves_same_line_sentence_boundaries(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A tool-backed sentence ends here.[tool:TradingView] "
+        "A separate sentence remains unmarked.\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.75
+    )
+    assert code == 1
+    assert any("1/2 sentences" in error for error in errors)
+    assert "2 prose sentence(s), 1 with declared provenance (50%)" in warnings[0]
+
+
+def test_marker_after_markdown_closer_preserves_sentence_boundary(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "*A tool-backed sentence ends here.*[tool:TradingView] "
+        "A separate policy sentence is covered.[policy]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=1.0
+    )
+    assert (code, errors) == (0, [])
+    assert "2 prose sentence(s), 2 with declared provenance (100%)" in warnings[0]
+
+
+def test_malformed_marker_after_markdown_closer_fails_closed(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "*An unsupported sentence ends here.*[tool:]] "
+        "A separate policy sentence is covered.[policy]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.75
+    )
+    assert code == 1
+    assert any("1/2 sentences" in error for error in errors)
+    assert "0 tool-verified, 1 policy" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "[tool:]",
+        "[tool bad]",
+        "[tool=bad]",
+        "[tool:]]",
+        "[[policy]]",
+        "[policy]]",
+        "[policy:]",
+        "[unverified:bad]",
+        "[12345]",
+    ],
+)
+def test_malformed_marker_cannot_hide_following_sentence(
+    sources_mod, ledger: Path, tmp_path: Path, marker: str
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        f"A malformed marker must not claim provenance.{marker} "
+        "A separate policy sentence is covered.[policy]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.75
+    )
+    assert code == 1
+    assert any("1/2 sentences" in error for error in errors)
+    assert "0 tool-verified, 1 policy" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "[[policy]]",
+        "[policy]]",
+        "word[policy]",
+        "[[tool:TradingView]]",
+        "[tool:TradingView]]",
+        "[tool:TradingView]junk",
+        "[[1]]",
+        "[1]junk",
+    ],
+)
+def test_nested_or_embedded_markers_do_not_count_as_provenance(
+    sources_mod, ledger: Path, tmp_path: Path, marker: str
+) -> None:
+    _seed(sources_mod, ledger)
+    text = f"A factual claim uses malformed provenance {marker}.\n"
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=1.0
+    )
+    assert code == 1
+    assert any("0/1 sentences" in error for error in errors)
+    assert "0 cited, 0 tool-verified, 0 policy" in warnings[0]
+
+
+@pytest.mark.parametrize("suffix", [")", "x"])
+def test_nonspace_suffix_cannot_merge_following_policy_sentence(
+    sources_mod, ledger: Path, tmp_path: Path, suffix: str
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        f"An unsupported sentence ends right here.{suffix} "
+        "A separate policy sentence is covered.[policy]\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.75
+    )
+    assert code == 1
+    assert any("1/2 sentences" in error for error in errors)
+    assert "2 prose sentence(s), 1 with declared provenance (50%)" in warnings[0]
+
+
+def test_coverage_failure_and_stats_distinguish_provenance_kinds(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A web claim is supported by a URL citation.[1]\n"
+        "A deterministic fact came from a named tool.[tool:TradingView]\n"
+        "A trading constraint came from the active playbook.[policy]\n"
+        "A model-knowledge claim is explicitly uncertain.[unverified]\n"
+        "A remaining web claim has no provenance marker.\n\n"
+        "Sources:\n[1] https://a.example\n"
+    )
+    code, errors, warnings = _verify(
+        sources_mod, ledger, tmp_path, text, min_coverage=0.9
+    )
+    assert code == 1
+    breakdown = "1 cited, 1 tool-verified, 1 policy, 1 unverified"
+    assert any(breakdown in error for error in errors)
+    assert breakdown in warnings[0]
+
+
+def test_evidence_gate_remains_limited_to_numeric_url_citations(
+    sources_mod, ledger: Path, tmp_path: Path
+) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A deterministic fact came from a named tool.[tool:TradingView]\n"
+        "A trading constraint came from the active playbook.[policy]\n"
+        "A model-knowledge claim is explicitly uncertain.[unverified]\n"
+    )
+    code, errors, _ = _verify(
+        sources_mod, ledger, tmp_path, text, require_evidence=True, min_coverage=1.0
+    )
+    assert (code, errors) == (0, [])
+
+
 def test_unverified_marker_counts_toward_coverage(sources_mod, ledger: Path, tmp_path: Path) -> None:
     _seed(sources_mod, ledger)
     text = (

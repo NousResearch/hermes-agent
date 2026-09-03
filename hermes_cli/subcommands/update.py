@@ -32,6 +32,17 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Check whether an update is available without installing anything",
     )
     update_parser.add_argument(
+        "--plan",
+        action="store_true",
+        default=False,
+        help=(
+            "Show the update plan and exit without changing anything: install "
+            "kind (git/docker/nix), every running Hermes service across all "
+            "profiles with its supervisor and running code version, and how "
+            "each will be restarted. Read-only; safe on a live fleet."
+        ),
+    )
+    update_parser.add_argument(
         "--no-backup",
         action="store_true",
         default=False,
@@ -48,7 +59,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "-y",
         action="store_true",
         default=False,
-        help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+        help="Run without blocking on prompts: accepts the config-migration and stash-restore prompts, skips the fork-upstream prompt without adding a remote. API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
     update_parser.add_argument(
         "--keep-stash",
@@ -71,6 +82,21 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "If the local checkout is on a different branch, hermes will "
             "switch to the requested branch first (auto-stashing any "
             "uncommitted changes)."
+        ),
+    )
+    update_parser.add_argument(
+        "--switch-branch",
+        action="store_true",
+        default=False,
+        help=(
+            "With updates.parked_branch_strategy: update_in_place configured, "
+            "override it for this run: switch to the update target and update "
+            "THERE instead of merging the target into the checked-out branch. "
+            "The branch is left exactly as it was — no merge commit is written "
+            "into its history. Use on long-lived feature branches where an "
+            "update-driven merge commit would pollute the branch. No effect "
+            "under the default strategy (switch), which already switches. "
+            "Still refuses to touch a dirty tree."
         ),
     )
     update_parser.add_argument(

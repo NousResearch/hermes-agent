@@ -99,6 +99,18 @@ export function saveHermesConfig(config: HermesConfigRecord, profile?: null | st
   })
 }
 
+/** Capability-scoped counterpart of saveHermesConfig — writes the config of
+ *  the profile/connection the Capabilities scope selector points at (possibly
+ *  on another registered gateway), mirroring getHermesConfigRecord. */
+export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
+    path: '/api/config',
+    method: 'PUT',
+    body: { config }
+  })
+}
+
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
     ...profileScoped(profile),

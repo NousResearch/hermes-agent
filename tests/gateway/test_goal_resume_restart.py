@@ -34,8 +34,27 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # get_hermes_home() prefers the context-local override over the env
+    # var, so a set_hermes_home_override() leaked by ANY earlier test in
+    # this xdist worker would silently point the goals DB at a dead tmp
+    # dir and make resume enqueue nothing (CI-only flake). Pin the
+    # override to THIS home so the fixture is immune to leaks.
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(str(home))
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from sync context so async GoalManager
+    # writes never race the bounded loop-thread bootstrap window on loaded
+    # CI runners (goal silently unpersisted; main run 33455779041).
+    goals._get_session_db()
     yield home
+    try:
+        reset_hermes_home_override(token)
+    except Exception:
+        pass
     goals._DB_CACHE.clear()
 
 

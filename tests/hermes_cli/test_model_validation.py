@@ -1,5 +1,6 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
@@ -298,6 +299,7 @@ class TestCopilotNormalization:
         # New Go models keep their family routing: GLM chat/completions,
         # Qwen anthropic_messages.
         assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "glm-5.3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
         # Custom opencode-go-* providers route according to opencode-go rules
         # (family-prefix providers, issue #85589).
@@ -504,6 +506,35 @@ class TestValidateCodexAutoCorrection:
         assert result["message"] is None
 
 
+class TestValidateCodex900kVariants:
+    """`-900k` is a Hermes picker convention: valid variants come from the
+    catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug
+    soft-accept (#92797 review)."""
+
+    _CATALOG = ["gpt-5.6-sol", "gpt-5.6-sol-900k", "gpt-5.5", "gpt-5.4-mini"]
+
+    def test_catalog_listed_variant_accepted(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    @pytest.mark.parametrize("alias", ["gpt-5.5-900k", "gpt-5.4-mini-900k", "gpt-5.6-sol-pro-900k"])
+    def test_ineligible_900k_alias_rejected_not_soft_accepted(self, alias):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model(alias, "openai-codex")
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "272K" in result["message"]
+
+    def test_valid_variant_missing_from_catalog_still_accepted(self):
+        """A verified variant not yet in the (possibly stale) catalog is
+        accepted via the eligibility predicate, not the soft-accept."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.6-sol"]):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+
+
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------
 
 class TestProbeApiModelsUserAgent:
@@ -564,3 +595,212 @@ class TestProbeApiModelsUserAgent:
         assert req.get_header("Authorization") is None
 
 
+
+
+# -- validate — OpenRouter routing-variant suffixes (:nitro / :floor / ...) ----
+
+class TestValidateOpenRouterVariantSuffixes:
+    """OpenRouter's `:nitro`, `:floor`, `:exacto`, `:online` are request-time
+    routing modifiers, not catalog models — /models lists only the base id.
+    Validation must accept `base:variant` when `base` is listed, preserve the
+    suffixed id (no auto-correct stripping the routing opt-in), and still
+    reject variants on unknown bases and unknown suffixes."""
+
+    _LISTING = [
+        "~x-ai/grok-latest",
+        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
+        "thinkingmachines/inkling:free",
+    ]
+
+    def _validate(self, model):
+        return _validate(model, "openrouter", api_models=self._LISTING)
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    def test_variant_on_listed_base_accepted_unmodified(self, suffix):
+        result = self._validate(f"~x-ai/grok-latest:{suffix}")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_variant_not_fuzzy_corrected_to_base(self):
+        """The old failure mode: get_close_matches would 'fix' model:nitro
+        to the bare base id and silently drop the routing behavior."""
+        result = self._validate("x-ai/grok-4.6:nitro")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_on_unknown_base_rejected(self):
+        result = self._validate("x-ai/notreal-model:nitro")
+        assert result["accepted"] is False
+
+    def test_unknown_suffix_keeps_old_behavior(self):
+        result = self._validate("x-ai/grok-4.6:bogus")
+        assert result["accepted"] is False
+
+    def test_free_sku_still_direct_matched(self):
+        """`:free` SKUs ARE catalog entries; direct membership handles them."""
+        result = self._validate("thinkingmachines/inkling:free")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_uppercase_suffix_accepted(self):
+        result = self._validate("x-ai/grok-4.6:NITRO")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_non_openrouter_provider_unaffected(self):
+        """The variant carve-out is OpenRouter-only; other providers keep
+        their existing behavior for colon-suffixed names."""
+        result = _validate(
+            "x-ai/grok-4.6:nitro",
+            "groq",
+            api_models=["x-ai/grok-4.6"],
+        )
+        assert result.get("corrected_model") != "x-ai/grok-4.6:nitro"
+
+    def test_static_catalog_fallback_accepts_variant(self):
+        """Gateway path: /models unreachable → static catalog validates the
+        base id and preserves the suffix."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 return_value=["x-ai/grok-4.6", "anthropic/claude-opus-4.6"],
+             ):
+            result = validate_requested_model(
+                "x-ai/grok-4.6:floor",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+
+
+class TestValidateRequestedModelNousPortalRecommendations:
+    """Regression tests for issue #71312: the Nous Telegram picker (and any
+    other messaging-platform /model validation, since they all share
+    validate_requested_model()) rejected models that are live Nous Portal
+    recommendations (/api/nous/recommended-models) but not yet in the
+    hardcoded curated catalog -- even though `hermes chat` already accepts
+    these via union_with_portal_free/paid_recommendations() at model-list
+    build time. The per-message validation path now checks the same Portal
+    feed as a fallback tier before rejecting, so Telegram/CLI agree.
+    """
+
+    PORTAL_PAYLOAD = {
+        "freeRecommendedModels": [
+            {"modelName": "inclusionai/ling-3.0-flash:free"},
+        ],
+        "paidRecommendedModels": [
+            {"modelName": "inclusionai/ling-3.0-pro"},
+        ],
+    }
+
+    def _validate_nous(self, model, api_models=None, portal_payload=None, portal_raises=False):
+        api_models = api_models if api_models is not None else ["inclusionai/ling-2.6-flash"]
+        probe_payload = {
+            "models": api_models,
+            "probed_url": "https://portal.nousresearch.com/v1/models",
+            "resolved_base_url": "https://portal.nousresearch.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+        def _fetch_portal(*a, **kw):
+            if portal_raises:
+                raise RuntimeError("portal unreachable")
+            return portal_payload if portal_payload is not None else self.PORTAL_PAYLOAD
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models.fetch_nous_recommended_models", side_effect=_fetch_portal), \
+             patch("hermes_cli.models._resolve_nous_portal_url", return_value="https://portal.nousresearch.com"), \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+            return validate_requested_model(model, "nous")
+
+    def test_free_portal_recommendation_accepted(self):
+        """The exact scenario from #71312: a free-tier Portal recommendation
+        missing from the curated catalog and the live /v1/models listing
+        must be accepted, not rejected."""
+        result = self._validate_nous("inclusionai/ling-3.0-flash:free")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert "Portal recommendation" in (result["message"] or "")
+
+    def test_paid_portal_recommendation_accepted(self):
+        result = self._validate_nous("inclusionai/ling-3.0-pro")
+        assert result["accepted"] is True
+
+    def test_model_absent_from_portal_and_catalog_still_rejected(self):
+        """A model that's genuinely nowhere (not live, not curated, not a
+        Portal recommendation) must still be rejected -- this fallback
+        tier must not make validation permissive for everything."""
+        result = self._validate_nous("totally-made-up-model-xyz")
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+
+    def test_portal_fetch_failure_falls_through_to_rejection_not_crash(self):
+        """A network/parse failure fetching the Portal feed must not crash
+        validation -- it degrades to the existing rejection path."""
+        result = self._validate_nous(
+            "inclusionai/ling-3.0-flash:free", portal_raises=True
+        )
+        assert result["accepted"] is False  # fails closed, doesn't crash
+
+    def test_non_string_model_name_entries_ignored(self):
+        """Malformed Portal entries (non-string / empty modelName) must be
+        skipped via _extract_model_name -- never stringified into garbage
+        matches (e.g. an int modelName 5 must not accept a model named "5")."""
+        payload = {
+            "freeRecommendedModels": [
+                {"modelName": 5},
+                {"modelName": ""},
+                {"modelName": None},
+                "not-a-dict",
+                {"modelName": "inclusionai/ling-3.0-flash:free"},
+            ],
+            "paidRecommendedModels": [],
+        }
+        assert self._validate_nous("5", portal_payload=payload)["accepted"] is False
+        result = self._validate_nous(
+            "inclusionai/ling-3.0-flash:free", portal_payload=payload
+        )
+        assert result["accepted"] is True
+
+    def test_non_nous_provider_does_not_consult_portal_feed(self):
+        """This fallback tier is Nous-specific; a non-Nous provider must
+        not have its rejection changed by (or trigger a call to) the Nous
+        Portal feed."""
+        probe_payload = {
+            "models": ["some/other-model"],
+            "probed_url": "https://api.example.com/v1/models",
+            "resolved_base_url": "https://api.example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["some/other-model"]), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal, \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+            result = validate_requested_model("inclusionai/ling-3.0-flash:free", "openrouter")
+        mock_portal.assert_not_called()
+        assert result["accepted"] is False
+
+    def test_curated_catalog_hit_short_circuits_before_portal_check(self):
+        """When the curated-catalog fallback already accepts the model, the
+        Portal feed should not need to be consulted at all (cheaper, and
+        avoids an unnecessary network call on the common path)."""
+        api_models = ["inclusionai/ling-2.6-flash"]
+        probe_payload = {
+            "models": api_models, "probed_url": "x", "resolved_base_url": "x",
+            "suggested_base_url": None, "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=True), \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal:
+            result = validate_requested_model("inclusionai/ling-2.6-flash", "nous")
+        mock_portal.assert_not_called()
+        assert result["accepted"] is True

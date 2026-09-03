@@ -20,6 +20,20 @@ Usage:
     allowed, reason = should_allow_install(result)
     if not allowed:
         print(format_scan_report(result))
+
+Known limitation — programmatic writes (out of scope for this static pass):
+the agent-config persistence tiers score shell write mechanics
+(">>" redirection, "sed -i") and imperative modification prose only.
+Language write APIs in bundled scripts — Python open(..., 'w'/'a'),
+pathlib.Path.write_text(), os.replace(), shutil.copy*, and Node
+fs.writeFileSync()/appendFile() — aimed at agent-config files surface
+only the low-severity *_ref finding, never a scored persistence tier.
+Static regexes cannot reliably tie such a call to the config-file
+destination (paths may be built dynamically) without executing the
+skill, so language-API persistence is left to runtime gates (install
+confirmation, sandboxing). If coverage is added later, it belongs as a
+fourth "mechanical" tier next to agent_config_mod_shell, requiring the
+config-file name as a literal argument at the call site.
 """
 
 import re
@@ -32,7 +46,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -98,21 +112,101 @@ class ScanResult:
 # Threat patterns — (regex, pattern_id, severity, category, description)
 # ---------------------------------------------------------------------------
 
+# Action verbs that signal file-modification intent. Used by the agent-config
+# persistence patterns: a verb within the same line as (and shortly before) an
+# agent config filename is scored as modification; a bare mention is not.
+MODIFY_VERB_RE = (
+    r'(?:\bwrit(?:e|es|ing)\b|\bwritten\b|\bedit(?:s|ed|ing)?\b'
+    r'|\bmodif(?:y|ies|ied|ying|ication)s?\b|\bupdat(?:e|es|ed|ing)\b'
+    r'|\bappend(?:s|ed|ing)?\b|\bprepend(?:s|ed|ing)?\b'
+    r'|\binject(?:s|ed|ing)?\b|\boverwrit(?:e|es|ing)\b|\boverwritten\b'
+    r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b)'
+)
+
+# Config-file groups shared by the agent-config persistence tiers below.
+_AGENT_CONFIG_FILES = r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)'
+_HERMES_CONFIG_FILES = r'\.hermes/(?:config\.yaml|SOUL\.md)'
+# Path prefixes (real files are e.g. .claude/settings.json), so consume any
+# trailing filename characters rather than requiring a clean end-of-word.
+_OTHER_AGENT_CONFIG_FILES = r'\.(?:claude/settings|codex/config)[\w.]*'
+
+
+def _shell_write_re(file_alt: str) -> str:
+    """Regex for a mechanical shell write into *file_alt*.
+
+    Covers redirection (``>``/``>>``), in-place ``sed -i``, ``tee`` (with the
+    target as its immediate argument, so a markdown table cell like
+    ``| tee output | AGENTS.md |`` does not match), and ``cp``/``mv`` with the
+    config file in destination position (a preceding source argument is
+    required, so ``cp AGENTS.md backup/`` — a read — does not match; a
+    trailing extension like ``AGENTS.md.bak`` is not the config file).
+    A single ``>`` must be preceded by a word/quote/paren character so that
+    markdown blockquotes (``> text``) and arrows (``-> file``) do not match.
+    """
+    return (
+        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}(?!\.?\w)'
+        rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
+        rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
+        rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)'
+    )
+
+
+def _prose_modify_re(file_alt: str) -> str:
+    """Regex for prose instructing modification of *file_alt*.
+
+    Two shapes: an imperative-position verb (start of line / bullet item),
+    or a mid-line verb strengthened by an explicit directive marker
+    ("you must", "please", "make sure to"). Descriptive mid-line prose
+    ("skills that edit AGENTS.md") matches neither. The verb→file gap
+    forbids commas so enumerations ("Write or refactor skills, AGENTS.md,
+    CLAUDE.md") — a doc listing its subject matter — do not match.
+    """
+    return (
+        rf'^\s*(?:[-*+]\s+|\d+[.)]\s+)?{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+        rf'|(?:\byou\s+(?:must|should|need\s+to)\s+|\bplease\s+'
+        rf'|\bmake\s+sure\s+(?:to\s+|you\s+)|\bbe\s+sure\s+to\s+)'
+        rf'{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+    )
+
+
+def _content_contract_re(file_alt: str) -> str:
+    """Regex for "<file> should contain/include ..." content-contract prose.
+
+    Ambiguous shape: authoring guides teach "Every AGENTS.md should contain
+    the project purpose" while an attack writes "AGENTS.md should contain
+    the bypass instructions". Not separable statically, so this tier is
+    scored high (caution → user confirmation), never critical.
+    """
+    return (
+        rf'{file_alt}\b[^\n]{{0,40}}?\b(?:should|must|needs?\s+to)\s+'
+        rf'(?:contain|say|include|have|list)\b'
+    )
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    # All five env_exfil_* patterns share a loopback exemption: a request
+    # whose same-line literal destination is scheme-anchored loopback
+    # (http(s)://localhost, 127.0.0.1, [::1]) cannot move data off the
+    # machine, so a secret-shaped query param on it is a local session
+    # token, not exfiltration (e.g. impeccable's live-mode
+    # `fetch('http://localhost:'+PORT+'/status?token='+TOKEN)`). The
+    # exemption requires the scheme immediately before the loopback host —
+    # `evil.com/?u=localhost` does not qualify. A hostile skill that hides
+    # its real destination behind a variable never matched these same-line
+    # literal patterns in the first place.
+    (r'curl\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_curl", "critical", "exfiltration",
      "curl command interpolating secret environment variable"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    (r'wget\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_wget", "critical", "exfiltration",
      "wget command interpolating secret environment variable"),
-    (r'fetch\s*\([^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|API)',
+    (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
      "env_exfil_fetch", "critical", "exfiltration",
      "fetch() call interpolating secret environment variable"),
-    (r'httpx?\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'httpx?\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_httpx", "critical", "exfiltration",
      "HTTP library call with secret variable"),
-    (r'requests\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'requests\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_requests", "critical", "exfiltration",
      "requests library call with secret variable"),
 
@@ -154,27 +248,35 @@ THREAT_PATTERNS = [
     # `os.environ` bare access (dict dump / iteration) is suspicious, but the
     # common `os.environ.get("SOME_CONFIG")` form is just a config read and is
     # the OPPOSITE of exfiltration (it reads a local var, sends nothing). The
-    # lookahead exempts `os.environ.get("<name>")` only when <name> is NOT a
-    # secret-shaped identifier — `os.environ.get("OPENAI_API_KEY")` still trips
-    # via the dedicated secret pattern just below.
-    (r'os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
+    # ^[^#\n]* prevents matching when a '#' comment appears anywhere before
+    # os.environ on the line — handles both full-line comments and inline
+    # comments like `x = 1  # os.environ`. The docstring pre-filter in
+    # scan_file() skips lines inside triple-quoted strings entirely.
+    # ANY `.get("<name>")` form is exempt here — non-secret names are plain
+    # config reads, and secret-shaped names are scored (medium) by the
+    # dedicated python_environ_get_secret pattern below; without the blanket
+    # exemption the high severity here would swamp that intended medium.
+    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\()',
      "python_os_environ", "high", "exfiltration",
-     "accesses os.environ (potential env dump)"),
+     "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_environ_get_secret", "critical", "exfiltration",
-     "reads secret via os.environ.get()"),
+     "python_environ_get_secret", "medium", "exfiltration",
+     "reads secret via os.environ.get() (normal API-key access; informational)"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_getenv_secret", "critical", "exfiltration",
-     "reads secret via os.getenv()"),
+     "python_getenv_secret", "medium", "exfiltration",
+     "reads secret via os.getenv() (normal API-key access; informational)"),
     (r'process\.env\[',
      "node_process_env", "high", "exfiltration",
      "accesses process.env (Node.js environment)"),
-    (r'ENV\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
+    # Case-sensitive ENV (Ruby constant) — the (?-i:) prevents matching
+    # Python lowercase `env[...]` dict accesses under IGNORECASE.
+    (r'(?-i:ENV)\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
      "ruby_env_secret", "critical", "exfiltration",
      "reads secret via Ruby ENV[]"),
 
     # ── Exfiltration: DNS and staging ──
-    (r'\b(dig|nslookup|host)\s+[^\n]*\$',
+    # Do not match flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
+    (r'(?<![-/])\b(dig|nslookup|host)\s+[^\n]*\$',
      "dns_exfil", "critical", "exfiltration",
      "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
@@ -196,8 +298,12 @@ THREAT_PATTERNS = [
     (r'you\s+are\s+(?:\w+\s+)*now\s+',
      "role_hijack", "high", "injection",
      "attempts to override the agent's role"),
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
-     "deception_hide", "critical", "injection",
+    # Only flag when the instruction is about concealing information, not
+    # ordinary UX guidance ("don't tell the user X unless Y confirms").
+    # The negative lookahead excludes patterns common in UX instructions
+    # like "unless", "except", "until", "confirm", "diagnose", "verify".
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
+     "deception_hide", "high", "injection",
      "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection",
@@ -458,15 +564,51 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
-    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+    # Mere mentions of agent config files are NOT threats by themselves —
+    # legitimate meta-skills discuss them constantly (authoring guides,
+    # setup docs, cross-references to other skills). Flagging any mention
+    # as critical produced permanent false-positive blocks for popular
+    # community skills (#92021). Tiers instead:
+    #   * Mechanical persistence (shell redirection, sed -i, tee, cp/mv
+    #     into the file) is critical — an unambiguous write path.
+    #   * Prose modification intent — an imperative-position verb or an
+    #     explicit directive ("you must edit ...") aimed at the file.
+    #     For AGENT config files (AGENTS.md/CLAUDE.md/...) this is critical:
+    #     that sentence shape is exactly how persistence attacks instruct
+    #     the agent, and project-skill quarantine only acts on "dangerous".
+    #     For Hermes/other config files it is high (caution) — legitimate
+    #     setup docs routinely instruct users to edit config.yaml.
+    #   * Bare references are informational (low) for auditability.
+    (_prose_modify_re(_AGENT_CONFIG_FILES),
      "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
+     "instructs modification of agent config files (could persist instructions across sessions)"),
+    (_shell_write_re(_AGENT_CONFIG_FILES),
+     "agent_config_mod_shell", "critical", "persistence",
+     "shell write (redirect/sed -i/tee/cp/mv) targeting agent config files (persistence mechanism)"),
+    (_content_contract_re(_AGENT_CONFIG_FILES),
+     "agent_config_contract", "high", "persistence",
+     "dictates agent config file contents (verify intent — authoring guides use this shape too)"),
+    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+     "agent_config_ref", "low", "persistence",
+     "references agent config files (informational; only modification intent is scored)"),
+    (_prose_modify_re(_HERMES_CONFIG_FILES),
+     "hermes_config_mod", "high", "persistence",
+     "modification language aimed at Hermes configuration files (verify intent)"),
+    (_shell_write_re(_HERMES_CONFIG_FILES),
+     "hermes_config_mod_shell", "critical", "persistence",
+     "shell write (redirect/sed -i/tee/cp/mv) targeting Hermes configuration files"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
-     "hermes_config_mod", "critical", "persistence",
-     "references Hermes configuration files directly"),
+     "hermes_config_ref", "low", "persistence",
+     "references Hermes configuration files (informational; only modification intent is scored)"),
+    (_prose_modify_re(_OTHER_AGENT_CONFIG_FILES),
+     "other_agent_config_mod", "high", "persistence",
+     "modifies other agents' configuration files"),
+    (_shell_write_re(_OTHER_AGENT_CONFIG_FILES),
+     "other_agent_config_mod_shell", "critical", "persistence",
+     "shell write (redirect/sed -i/tee/cp/mv) targeting other agents' configuration files"),
     (r'\.claude/settings|\.codex/config',
-     "other_agent_config", "high", "persistence",
-     "references other agent configuration files"),
+     "other_agent_config_ref", "low", "persistence",
+     "references other agent configuration files (informational; only modification intent is scored)"),
 
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
@@ -530,7 +672,7 @@ _COMPILED_THREAT_PATTERNS = [
 
 # Structural limits for skill directories
 MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
-MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
+MAX_TOTAL_SIZE_KB = 5120  # 5MB — large skills are informational only, not blocking
 MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
 
 # File extensions to scan (text files only — skip binary)
@@ -568,9 +710,46 @@ INVISIBLE_CHARS = {
 }
 
 
+def _compute_docstring_lines(lines: list) -> set:
+    """Return a set of 1-indexed line numbers inside triple-quoted strings.
+
+    Uses a simple state machine: toggles ``in_docstring`` each time a line
+    contains an odd number of ``\"\"\"`` or triple-single-quote markers.  Lines
+    that are *themselves* part of a docstring (opening line, interior lines,
+    and closing line) are all included in the returned set.
+
+    Single-line docstrings (e.g. ``x = \"\"\" ... \"\"\"``) where both the
+    opening and closing markers appear on the same line are also flagged,
+    since ``os.environ`` in such a context is not real exfiltration.
+
+    This is a heuristic -- it does not handle
+    ``'\\\"\"\"'  # triple quote inside a string literal``
+    or similar edge cases -- but it catches the common skill-content patterns
+    (docstrings, multiline comments containing prose samples) that trigger
+    false-positive ``python_os_environ`` matches.
+    """
+    doc_lines: set = set()
+    in_docstring = False
+    for i, line in enumerate(lines):
+        was_in = in_docstring
+        has_marker = False
+        for marker in ('"""', "'''"):
+            count = line.count(marker)
+            if count > 0:
+                has_marker = True
+            if count % 2 == 1:
+                in_docstring = not in_docstring
+        # Include line if we were already in a docstring, just entered one,
+        # or this is a self-contained single-line docstring (e.g. """foo""")
+        if was_in or in_docstring or (has_marker and not was_in and not in_docstring):
+            doc_lines.add(i + 1)
+    return doc_lines
+
+
 # ---------------------------------------------------------------------------
 # Scanning functions
 # ---------------------------------------------------------------------------
+
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
@@ -598,10 +777,16 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     lines = content.split('\n')
     seen = set()  # (pattern_id, line_number) for deduplication
 
+    # Pre-compute line numbers inside triple-quoted strings (docstrings)
+    # so code patterns like python_os_environ don't fire on prose.
+    docstring_lines = _compute_docstring_lines(lines)
+
     # Regex pattern matching
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
+                continue
+            if i in docstring_lines:
                 continue
             if pattern.search(line):
                 seen.add((pid, i))
@@ -996,11 +1181,12 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
             description=f"skill has {file_count} files (limit: {MAX_FILE_COUNT})",
         ))
 
-    # Total size limit
+    # Total size limit — informational only (low severity, non-verdict-gating).
+    # Large skills are legitimate for feature-rich capabilities.
     if total_size > MAX_TOTAL_SIZE_KB * 1024:
         findings.append(Finding(
             pattern_id="oversized_skill",
-            severity="high",
+            severity="low",
             category="structural",
             file="(directory)",
             line=0,

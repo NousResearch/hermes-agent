@@ -469,9 +469,9 @@ def _collect_image_b64(
     callers must not treat partial-only as an unconditional success.
     """
     import httpx
-    from agent.auxiliary_client import _codex_cloudflare_headers
+    from agent.codex_headers import codex_cloudflare_headers
 
-    headers = _codex_cloudflare_headers(token)
+    headers = codex_cloudflare_headers(token)
     headers.update({
         "Accept": "text/event-stream",
         "Authorization": f"Bearer {token}",

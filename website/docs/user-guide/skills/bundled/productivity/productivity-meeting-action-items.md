@@ -15,7 +15,7 @@ Turn meeting notes into cited decisions, owners, tickets.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/meeting-action-items` |
+| Path | `skills/productivity\meeting-action-items` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

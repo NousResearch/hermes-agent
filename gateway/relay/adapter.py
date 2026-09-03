@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 import time
 from collections import OrderedDict
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 # reader, and ws.close (~3s), the full drain path stays inside 5s.
 _RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S = 2.0
 _RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S = 1.0
+
+# Link detection for the fresh-final unfurl route: raw http(s) URLs, Slack
+# mrkdwn link syntax (<https://...|label>), and markdown links. Cheap and
+# permissive on purpose — a false positive costs one fresh (non-edited)
+# final message; a false negative silently loses the preview.
+_URL_RE = re.compile(r"https?://|<https?:|\]\(https?:")
 
 # How many already-answered prompt ids to remember, so a duplicate answer for
 # one of them (a double tap, or a connector redelivery of the same forward) is
@@ -317,10 +324,72 @@ class RelayAdapter(BasePlatformAdapter):
             if chat_id is not None
             else self.descriptor
         )
-        return (
+        if not (
             desc.supports_draft_streaming
             and "draft" in (desc.supported_ops or ())
-        )
+        ):
+            return False
+        # Slack chat.*Stream has no unfurl_links / unfurl_media. Native
+        # SlackAdapter already refuses streaming when those knobs are set
+        # so chat.postMessage can carry them. Mirror that here or a
+        # configured true never reaches Slack (bot default = no preview).
+        platform = None
+        if chat_id is not None:
+            platform = self._platform_by_chat.get(str(chat_id))
+        if platform is None:
+            platform = getattr(desc, "platform", None)
+        if self._slack_unfurl_hints(platform):
+            return False
+        return True
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Deliver streamed finals as a FRESH send when Slack unfurl is forced on.
+
+        Slack evaluates link previews exactly once, at ``chat.postMessage``
+        time (live-probed 2026-08-28: URL at post + ``unfurl_links: true``
+        unfurls; a ``chat.update`` that INTRODUCES the URL never does, stamps
+        or not). Edit-based streaming posts its first frame before the model
+        has produced any URL — a tool-progress card or an early text frame —
+        so a configured ``unfurl_links/media: true`` can never surface a
+        preview through the edit lane: the only post Slack evaluates has no
+        link in it.
+
+        Returning True routes the completed reply through the consumer's
+        fresh-final path: one new ``send`` carrying the full content, which
+        ``send()`` stamps with the unfurl hints — URL and flags present at
+        the single moment Slack looks.
+
+        Scope: ONLY when the hints contain an explicit True. False-only
+        hints (the enterprise fail-closed posture) keep the edit lane —
+        suppression rides the placeholder post and an edit can never add a
+        preview afterwards, so ``false`` inherits correctly with zero
+        streaming-UX cost.
+        """
+        platform = None
+        if chat_id is not None:
+            platform = self._platform_by_chat.get(str(chat_id))
+        # The stream consumer's hook call passes (content, metadata=...) only
+        # — no chat_id — so resolve through the turn metadata's platform when
+        # present before falling back to the primary descriptor.
+        if platform is None and isinstance(metadata, dict):
+            platform = metadata.get("platform")
+        if platform is None:
+            platform = getattr(self.descriptor, "platform", None)
+        hints = self._slack_unfurl_hints(platform)
+        if not hints:
+            return False
+        if not any(v is True for v in hints.values()):
+            return False
+        # Only link-bearing finals benefit: without a URL there is nothing to
+        # unfurl, and the relay has no delete op (connector contract v1), so
+        # the streamed preview stays behind the fresh final. Keep the edit
+        # lane for linkless replies to avoid a pointless duplicate message.
+        return bool(_URL_RE.search(content or ""))
 
     def stream_is_message_for_chat(self, chat_id: str) -> bool:
         """Per-chat stream-is-the-message semantic (review r2, finding 2).
@@ -1080,6 +1149,47 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True
 
+    def _slack_unfurl_hints(self, platform: Optional[str]) -> Optional[Dict[str, bool]]:
+        """Slack-only outbound link-preview suppression, relay-namespaced.
+
+        Mirrors the native SlackAdapter's unfurl controls
+        (``platforms.slack.extra.unfurl_links`` / ``unfurl_media``) but reads
+        the relay namespace (``platforms.relay.extra.slack.*``) per the
+        ``reply_in_thread`` seam: relay-fronted Slack reads its subset here;
+        the native ``platforms.slack`` block keeps meaning native-adapter
+        settings. Only explicitly-configured booleans are returned — omitted
+        keys preserve Slack's default unfurling. Non-Slack platforms return
+        None so the metadata is never polluted for other fronted platforms.
+        """
+        if str(platform or "").lower() != Platform.SLACK.value:
+            return None
+        extra = self._relay_slack_extra()
+        hints: Dict[str, bool] = {}
+        for knob in ("unfurl_links", "unfurl_media"):
+            val = extra.get(knob)
+            if val is None:
+                continue
+            # Railway / `hermes config set` write YAML strings ("true"/"false").
+            # A Slack bot that omits the fields does NOT get human-default
+            # previews — so a string "true" that we drop looks like
+            # suppression. Coerce the same way as reply_in_thread; still drop
+            # junk (empty, 0, "maybe") so omitted stays omitted.
+            if isinstance(val, bool):
+                hints[knob] = val
+                continue
+            if isinstance(val, str) and val.strip().lower() in {
+                "1",
+                "0",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "on",
+                "off",
+            }:
+                hints[knob] = val.strip().lower() in {"1", "true", "yes", "on"}
+        return hints or None
+
     def _stamp_slack_session_thread(self, event) -> None:
         """Native session-keying parity for fronted Slack DMs.
 
@@ -1138,25 +1248,39 @@ class RelayAdapter(BasePlatformAdapter):
             urls = list(getattr(event, "media_urls", None) or [])
             if not urls:
                 return
+            # media_types is INDEXED IN PARALLEL with media_urls by every
+            # downstream classifier (_event_media_type_at). Any URL we drop or
+            # rewrite here must carry its MIME with it, or the surviving
+            # attachments inherit a neighbour's type and get mis-routed (an
+            # image classified by a PDF's mime is not treated as an image).
+            # Carry (url, mime) as PAIRS through the whole loop.
+            types = list(getattr(event, "media_types", None) or [])
+            pairs = [
+                (u, types[i] if i < len(types) else "") for i, u in enumerate(urls)
+            ]
             client = self._get_media_client()
-            localized: list[str] = []
-            for url in urls:
+            localized: list[tuple[str, str]] = []
+            for url, mime in pairs:
                 if not isinstance(url, str) or not url:
                     continue
                 if client is None:
                     # No authenticated client: keep public URLs, drop re-hosts.
                     if "/relay/media/" not in url:
-                        localized.append(url)
+                        localized.append((url, mime))
                     continue
                 path = await client.download(url)
                 if path:
-                    localized.append(path)
+                    localized.append((path, mime))
                 elif "/relay/media/" not in url:
                     # A public URL that failed to download still has value as
                     # a URL (native adapters pass URLs to vision in some
                     # lanes); a dead re-host reference does not.
-                    localized.append(url)
-            event.media_urls = localized
+                    localized.append((url, mime))
+            event.media_urls = [u for u, _ in localized]
+            # Keep the parallel-array invariant: one mime slot per surviving
+            # url, always. A short/stale media_types would shift entries onto
+            # the wrong url the moment anything indexes or merges them.
+            event.media_types = [m for _, m in localized]
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
 
@@ -1496,6 +1620,13 @@ class RelayAdapter(BasePlatformAdapter):
             # how platform=RELAY home channels slipped through in the first
             # place. Set locally, never read off the wire.
             delivered_via_upstream_relay=True,
+            # The HERMES profile this interaction is routed to (multiplex
+            # mode) — mirrors _event_from_wire's profile stamping for plain
+            # relayed messages (#60586). Without this, a Team-Gateway's
+            # Discord slash-command/button/modal always fell back to the
+            # legacy agent:main namespace even when the connector resolved
+            # a specific profile for it.
+            profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
@@ -1720,6 +1851,9 @@ class RelayAdapter(BasePlatformAdapter):
             )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        _sfp_unfurl = self._slack_unfurl_hints(str(platform_value))
+        if _sfp_unfurl:
+            _sfp_metadata.update(_sfp_unfurl)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
@@ -1903,6 +2037,12 @@ class RelayAdapter(BasePlatformAdapter):
         effective_reply_to = self._apply_slack_thread_anchor(
             chat_id, reply_to, send_metadata
         )
+        _unfurl = self._slack_unfurl_hints(
+            self._platform_by_chat.get(str(chat_id))
+            or getattr(self.descriptor, "platform", None)
+        )
+        if _unfurl:
+            send_metadata.update(_unfurl)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
@@ -2165,6 +2305,44 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        """Delete a relayed message through the connector-owned platform API.
+
+        Consumer: the stream consumer's fresh-final cleanup — on the Slack
+        unfurl force-on route the completed reply is re-delivered as a new
+        stamped post and the sealed streamed preview must go away, or the
+        user sees the answer twice.
+
+        Gated on the negotiated descriptor advertising the ``delete`` op
+        (additive within contract_version 1): older connectors never receive
+        an op they can't dispatch, and this returns False so the consumer's
+        best-effort cleanup degrades to leaving the preview in place —
+        exactly the pre-delete behavior.
+        """
+        if self._transport is None:
+            return False
+        desc = self._descriptor_for_chat(str(chat_id))
+        if "delete" not in (desc.supported_ops or ()):
+            return False
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "delete",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "metadata": self._with_scope(chat_id, {}),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:
+            logger.debug("relay delete_message failed", exc_info=True)
+            return False
+        return bool(result.get("success"))
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Egress a typing indicator through the connector.
 
@@ -2399,6 +2577,12 @@ class RelayAdapter(BasePlatformAdapter):
         effective_reply_to = self._apply_slack_thread_anchor(
             chat_id, reply_to, media_metadata
         )
+        _media_unfurl = self._slack_unfurl_hints(
+            self._platform_by_chat.get(str(chat_id))
+            or getattr(self.descriptor, "platform", None)
+        )
+        if _media_unfurl:
+            media_metadata.update(_media_unfurl)
         action: Dict[str, Any] = {
             "op": "send_media",
             "chat_id": chat_id,

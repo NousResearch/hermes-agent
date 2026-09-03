@@ -206,6 +206,173 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
+def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkeypatch):
+    """A keyless local backend (e.g. searxng) has no credentials to detect,
+    but an explicit non-nous selection must still keep it out of
+    'unconfigured' — regression for #92647, where it was pre-checked and a
+    single Enter during `hermes model` overwrote it to `web.backend: nous`.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "web" not in unconfigured
+    assert "web" not in has_direct
+    assert "web" in explicit_configured
+    assert "web" not in already_managed
+
+
+def test_get_gateway_eligible_tools_treats_browser_use_selection_as_explicit(monkeypatch):
+    """An explicit BYOK `browser.cloud_provider: browser-use` selection must
+    land in explicit_configured, not unconfigured/has_direct — the same
+    protection as searxng above. This is distinct from the gateway's own
+    managed selection, which is always stored as `cloud_provider: nous`
+    (see apply_gateway_defaults); "browser-use" only appears here when the
+    user picked it directly, so it must never be treated as up for grabs.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": True},
+    )
+
+    config = {"model": {"provider": "nous"}, "browser": {"cloud_provider": "browser-use"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "browser" not in unconfigured
+    assert "browser" not in has_direct
+    assert "browser" in explicit_configured
+    assert "browser" not in already_managed
+
+
+def test_get_gateway_eligible_tools_not_entitled_returns_four_empty_lists(monkeypatch):
+    """A logged-in Nous account with no paid access and no free tool pool
+    must fail closed with a 4-tuple, not a 3-tuple — regression for a crash
+    where the early 'not entitled' return still had the pre-refactor arity
+    while the happy path and every caller had moved to 4 values."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
+
+    config = {"model": {"provider": "nous"}}
+    result = ns.get_gateway_eligible_tools(config)
+
+    assert result == ([], [], [], [])
+
+
+def test_prompt_enable_tool_gateway_not_entitled_does_not_crash(monkeypatch):
+    """The unconditional call site in model_setup_flows (no try/except) must
+    not raise when a Nous account is logged in but not entitled to the Tool
+    Gateway (i.e. an ordinary non-paid, non-pool account)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+
+def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
+    """The checklist itself must not list (let alone pre-check) a tool with
+    an explicit non-nous selection, so it can never be silently overwritten
+    by an accidental Enter."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    ns.prompt_enable_tool_gateway(config)
+
+    blob = " ".join(captured["items"]).lower()
+    assert "firecrawl" not in blob  # web (searxng-configured) NOT offered
+    assert "image" in blob  # other unconfigured tools still offered
+
+
+def test_gateway_direct_credentials_honor_env_configured_local_backends(monkeypatch):
+    """SEARXNG_URL / CAMOFOX_URL are env-configured keyless local backends
+    with no stored selection — they must still count as direct credentials
+    so the tool is offered unchecked, never pre-checked (#92647)."""
+    monkeypatch.setattr(
+        ns,
+        "get_env_value",
+        lambda name: "http://localhost:9377" if name in ("SEARXNG_URL", "CAMOFOX_URL") else "",
+    )
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: None)
+
+    direct = ns._get_gateway_direct_credentials()
+
+    assert direct["web"] is True
+    assert direct["browser"] is True
+    assert direct["image_gen"] is False
+
+
+def test_prompt_enable_tool_gateway_persists_decline(monkeypatch):
+    """Submitting the checklist with a tool left unchecked records it in
+    tool_gateway_declined_tools and never pre-checks it again (#92647:
+    acceptance was sticky, refusal was not)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    saved = []
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+    # First offer: everything pre-checked, decline recorded and saved.
+    assert captured["pre_selected"] == list(range(len(captured["items"])))
+    declined = config.get("tool_gateway_declined_tools")
+    assert isinstance(declined, list) and "web" in declined and "browser" in declined
+    assert saved, "decline must be persisted via save_config"
+
+    # Second offer with the recorded declines: nothing is pre-checked.
+    captured2 = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+    ns.prompt_enable_tool_gateway(config)
+    assert captured2["pre_selected"] == []
+
+
+def test_prompt_enable_tool_gateway_choosing_declined_tool_clears_decline(monkeypatch):
+    """Opting in to a previously-declined tool removes it from the decline
+    list, so state tracks the user's latest explicit choice."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[0])
+
+    config = {
+        "model": {"provider": "nous"},
+        "tool_gateway_declined_tools": ["browser", "web"],
+    }
+    ns.prompt_enable_tool_gateway(config)
+
+    # The first offered key was chosen; it must leave the decline list.
+    chosen_key = None
+    for key, label in ns._GATEWAY_TOOL_LABELS.items():
+        if captured["items"][0].startswith(label):
+            chosen_key = key
+            break
+    assert chosen_key is not None
+    assert chosen_key not in config["tool_gateway_declined_tools"]
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):

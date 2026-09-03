@@ -485,18 +485,24 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
-        # list_sessions_rich (include_children=False) already applies the
-        # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
-        # children, and /new-reset children are admitted (stable markers plus
-        # the legacy same-key heuristic), while delegation/compression
-        # children are hidden. Re-classifying rows here in Python duplicated
-        # that predicate and re-hid legacy pre-marker reset children the SQL
-        # deliberately admits — trust the query instead (#85756).
-        sessions = db.list_sessions_rich(
+        # Never use list_sessions_rich(order_by_last_active=True) here.  That
+        # generic query walks every compression chain and derives activity and
+        # previews from messages before LIMIT; on a multi-GB state.db it can
+        # monopolise a gateway callback for minutes.  The dedicated browse
+        # query preselects an indexed, bounded candidate set and carries a
+        # cooperative SQLite VM cancellation deadline.
+        bounded_list = getattr(db, "list_recent_sessions_bounded", None)
+        if bounded_list is None:
+            # Fail closed rather than silently returning to the exact
+            # whole-database query shape this path exists to eliminate.
+            raise RuntimeError(
+                "session database does not support bounded recent-session browse"
+            )
+        sessions = bounded_list(
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            order_by_last_active=True,
-        )  # fetch extra so we can skip current / compression roots
+            timeout_seconds=3.0,
+        )
 
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id)
@@ -670,6 +676,12 @@ def _scroll(
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
+        "hint": (
+            "Scroll forward: re-call with around_message_id = the LAST message's "
+            "id; backward: the FIRST message's id (the boundary message repeats "
+            "as an orientation marker). messages_before/messages_after < window "
+            "means you've hit that end of the session."
+        ),
     }
     if rebind_warning:
         response["warning"] = rebind_warning
@@ -797,7 +809,11 @@ def _discover(
             "detail": detail,
             "results": [],
             "count": 0,
-            "message": "No matching sessions found.",
+            "message": (
+                "No matching sessions found. FTS5 ANDs all terms by default — "
+                "broaden with OR (`alpha OR beta`), exact-match with quoted "
+                "phrases, exclude with NOT, or prefix-match with `deploy*`."
+            ),
         }
         _annotate_rebuild_status(db, _empty_payload)
         return json.dumps(_empty_payload, ensure_ascii=False)
@@ -928,6 +944,13 @@ def _discover(
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
+        "link_hint": (
+            "When referring the user to a session, write its `link` value "
+            "verbatim inline mid-sentence (it renders as a titled link) — never "
+            "as markdown, in backticks, on its own line, or next to the "
+            "title/id/date. To read more around a compact result, scroll: "
+            "session_search(session_id=..., around_message_id=match_message_id)."
+        ),
     }
     _annotate_rebuild_status(db, _final_payload)
     return json.dumps(_final_payload, ensure_ascii=False)
@@ -1083,9 +1106,9 @@ def session_search(
     owned_dbs: List[Any] = []
     if db is None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
-            db = SessionDB()
+            db = get_shared_session_db()
             owned_dbs.append(db)
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
@@ -1111,7 +1134,8 @@ def session_search(
     finally:
         for owned_db in reversed(owned_dbs):
             try:
-                owned_db.close()
+                from hermes_state import release_or_close
+                release_or_close(owned_db)
             except Exception:
                 logging.debug("Failed to close session_search SessionDB", exc_info=True)
 
@@ -1128,80 +1152,19 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past sessions stored in the local session DB, or scroll inside one. "
-        "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
-        "SOURCE-FIRST LIMIT\n\n"
-        "  This tool searches Hermes conversation history only. It is not evidence "
-        "about the current contents of external sources. If the user provided a "
-        "direct source such as a URL, phone number/contact, app/thread, file path, "
-        "account, website, or live system, inspect that original source before or "
-        "instead of session_search when accessible. Use session_search as secondary "
-        "context for what was previously said, not as primary proof of what the "
-        "source currently contains. If the original source is inaccessible, say so "
-        "and why before falling back to session history. Do not conclude 'not found' "
-        "or 'no prior correspondence' from session_search alone when a direct source "
-        "was provided.\n\n"
-        "FOUR CALLING SHAPES\n\n"
-        "  1) DISCOVERY — pass `query`:\n"
-        "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, and returns the top N "
-        "sessions. Adaptive detail is the default: the top-ranked result carries "
-        "full context, while lower-ranked results stay compact. Pass `detail=\"full\"` "
-        "to fully hydrate every result. Every result carries:\n"
-        "       - session_id, title, when, source\n"
-        "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - detail: `full` or `compact`\n"
-        "       - bookend_start/bookend_end: the first/last 3 user+assistant messages "
-        "for full results; empty lists for compact results\n"
-        "       - messages: ±5 messages around the FTS5 match for full results; only "
-        "the flagged anchor message for compact results\n"
-        "       - match_message_id, messages_before, messages_after\n"
-        "     The top result's bookends + window let you reconstruct goal → match → "
-        "resolution immediately. Scroll a compact result when another session looks "
-        "more promising.\n\n"
-        "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
-        "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
-        "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
-        "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
-        "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
-        "       - The boundary message appears in both windows — orientation marker.\n"
-        "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
-        "  3) READ — pass `session_id` only (no around_message_id):\n"
-        "     session_search(session_id=\"...\", profile=\"work\")\n"
-        "     Dumps the whole session by id (first 20 + last 10 messages when "
-        "large). This is how you resolve an `@session:<profile>/<id>` link the "
-        "user dropped into the chat: split the value on `/` into profile + id "
-        "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
-        "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
-        "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
-        "LINKING THE USER TO A SESSION\n\n"
-        "  When you refer the user to a session, write its `link` value inline in "
-        "your reply — every result carries one, e.g. "
-        "`@session:default/20260722_204335_d62c16`. Copy it verbatim; do not "
-        "reformat it as a markdown link or wrap it in backticks. Hermes renders "
-        "it as a link showing the session's title, so the link IS the title: "
-        "use it as a noun mid-sentence (\"that's @session:default/... — want me "
-        "to pick it up?\"), never alone on its own line, and never alongside the "
-        "title, id, or date spelled out — that shows the user the same session "
-        "twice.\n\n"
-        "FTS5 SYNTAX\n\n"
-        "  AND is the default — multi-word queries require all terms. Use OR explicitly "
-        "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
-        "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
-        "(`deploy*`).\n\n"
-        "WHEN TO USE\n\n"
-        "  Reach for this on questions about Hermes conversation history itself, such "
-        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
-        "session where Z\". If the user provided a direct source identifier, inspect "
-        "that source first when accessible; session_search can then supply historical "
-        "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
+        "scroll inside one. Four shapes, picked by args: `query` = discovery "
+        "(top-N matching sessions, top result fully hydrated); `session_id` + "
+        "`around_message_id` = scroll (window of messages around an anchor); "
+        "`session_id` alone = read a whole session — how you resolve an "
+        "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
+        "args = browse recent sessions. Results are actual DB messages, no LLM. "
+        "Searches conversation history ONLY — when the user gave a direct "
+        "source (URL, file, contact, live system), inspect that first; never "
+        "conclude 'not found' from history alone. Use for questions about past "
+        "conversations: 'what did we do about X', 'where did we leave Y'. When "
+        "referring the user to a session, write its `link` value verbatim "
+        "inline (it renders as a titled link)."
     ),
     "parameters": {
         "type": "object",
@@ -1228,12 +1191,9 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["newest", "oldest"],
                 "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
+                    "Discovery shape only. Temporal bias on top of FTS5 ranking: omit "
+                    "for relevance-only (exploratory recall), 'newest' for "
+                    "\"where did we leave X\", 'oldest' for \"how did X start\"."
                 ),
             },
             "detail": {
@@ -1258,10 +1218,9 @@ SESSION_SEARCH_SCHEMA = {
             "around_message_id": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
+                    "Scroll shape. Message id to center the window on — use "
+                    "match_message_id from a discovery result, or any id from a "
+                    "prior window."
                 ),
             },
             "window": {

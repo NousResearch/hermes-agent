@@ -107,6 +107,44 @@ class TestHandleResumeCommand:
         assert "/resume 1" in result
         db.close()
 
+    @pytest.mark.asyncio
+    async def test_resume_all_nonadmin_downgrade_is_announced(self, tmp_path):
+        """A non-admin `/resume --all` must say the widening was declined."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume --all")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "sess_001", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("sess_001", "Research")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+        assert "Research" in result
+        assert "requires a configured admin" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_plain_listing_has_no_scope_notice(self, tmp_path):
+        """No downgrade notice when `--all` wasn't requested."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "sess_001", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("sess_001", "Research")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+        assert "Research" in result
+        assert "requires a configured admin" not in result
+        db.close()
+
 
     @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
@@ -420,7 +458,9 @@ class TestHandleSessionsCommand:
         after_resume = await runner._handle_sessions_command(event)
 
         assert "Legacy reset child" in after_resume
-        assert "Legacy reset parent" not in after_resume
+        # The parent is now the CURRENT session: since #68547 it stays in the
+        # listing with a "(current)" marker instead of being hidden.
+        assert "**Legacy reset parent** (current)" in after_resume
         child_row = db.get_session(child_id)
         assert child_row is not None
         assert json.loads(child_row["model_config"])["_reset_from"] == root_id
@@ -489,7 +529,9 @@ class TestHandleSessionsCommand:
         assert "Greeting via Telegram" in result
         assert "Store memories with priority" in result
         assert "Extract AI news to Telegram" in result
-        assert "Current Telegram work" not in result
+        # The live tip is the current session — listed with the marker since
+        # #68547 rather than hidden.
+        assert "**Current Telegram work** (current)" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -535,12 +577,57 @@ class TestHandleSessionsCommand:
         )
         result = await runner._handle_sessions_command(event)
 
-        assert result.count("Lane Work") == 10
-        assert "Lane Work 1" in result
-        assert "Lane Work 0" not in result
+        # The current tip now occupies one of the 10 slots with a marker
+        # (#68547) instead of being hidden; its compressed-away root stays out.
+        assert "**Current compressed tip** (current)" in result
+        assert result.count("Lane Work") == 9
+        assert "`lane_root_2`" in result
+        assert "`lane_root_1`" not in result
+        assert "`lane_root_0`" not in result
         assert "Foreign Work" not in result
-        assert "current_tip" not in result
         assert "current_root" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_all_nonadmin_downgrade_is_announced(self, tmp_path):
+        """A non-admin `/sessions all` must say the widening was declined."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions all")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "sess_local", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("sess_local", "Local Work")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Local Work" in result
+        assert "requires a configured admin" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_plain_listing_has_no_scope_notice(self, tmp_path):
+        """No notice when the caller never asked for `all`."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "sess_local", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("sess_local", "Local Work")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Local Work" in result
+        assert "requires a configured admin" not in result
         db.close()
 
     @pytest.mark.asyncio

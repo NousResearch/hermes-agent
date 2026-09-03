@@ -124,15 +124,37 @@ describe('PaneTab hover close button', () => {
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 
-  it('can hide the hover ✕ while retaining the close handler', () => {
+  it('reserves a close-button runway only on closeable horizontal tabs', () => {
+    const onClose = vi.fn()
+
+    const { rerender } = render(
+      <PaneTab onClose={onClose}>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const horizontalTab = screen.getByText('BROWSER').parentElement?.parentElement
+    expect(horizontalTab?.className).toContain('pr-9')
+
+    rerender(
+      <PaneTab onClose={onClose} vertical>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+    const verticalTab = screen.getByText('BROWSER').parentElement?.parentElement
+    expect(verticalTab?.className).not.toContain('pr-9')
+  })
+
+  it('a closeable horizontal tab always shows its ✕ — the chip and the pointer gestures are one affordance', () => {
     const onClose = vi.fn()
     render(
-      <PaneTab onClose={onClose} showCloseButton={false}>
+      <PaneTab onClose={onClose}>
         <PaneTabLabel>tab</PaneTabLabel>
       </PaneTab>
     )
 
-    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
+
     const tab = screen.getByText('tab')
     fireEvent.pointerDown(tab, { button: 1 })
     fireEvent.pointerUp(tab, { button: 1 })

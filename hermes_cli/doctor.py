@@ -35,6 +35,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_state_common import FTS_STORAGE_VERSION
 from utils import base_url_host_matches
 
 
@@ -67,6 +68,7 @@ _PROVIDER_ENV_HINTS = (
     "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    "TOKENPLAN_API_KEY",
 )
 
 
@@ -404,6 +406,28 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
+    """Return the effective memory section used by doctor diagnostics."""
+    home = hermes_home if hermes_home is not None else HERMES_HOME
+    try:
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+
+        config_path = home / "config.yaml"
+        if not config_path.exists():
+            return {}
+        config = _expand_env_vars(read_user_config_raw(config_path))
+        try:
+            from hermes_cli import managed_scope
+
+            config = managed_scope.apply_managed_overlay(config)
+        except Exception:
+            pass
+        section = config.get("memory") if isinstance(config, dict) else None
+        return section if isinstance(section, dict) else {}
+    except Exception:
+        return {}
+
+
 # ── state.db health/stats thresholds (advisory only — module constants,
 # deliberately NOT config: doctor warnings are guidance, not policy) ──
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
@@ -461,21 +485,32 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             "",
         ))
 
-    # Advisory: oversized database. Suggest auto_prune, and — when the v23
-    # FTS rebuild is pending OR the DB still carries the legacy inline
-    # trigram layout (fts_storage_version marker absent) — the offline
+    deferral = stats.get("fts_rebuild_deferral")
+    if isinstance(deferral, dict):
+        attempts = deferral.get("attempts")
+        pids = deferral.get("holder_pids") or []
+        lines.append((
+            "warn",
+            f"state.db FTS repair is blocked after {attempts or '?'} "
+            f"deferral(s) by PID(s) {pids or 'unknown'}",
+            "(stop the listed processes, then run 'hermes sessions "
+            "optimize-storage' with the gateway stopped)",
+        ))
+
+    # Advisory: oversized database. Suggest auto_prune, and — when the FTS
+    # rebuild is pending OR the DB predates the current trigram layout — the offline
     # optimize-storage pass that migrates/compacts the FTS indexes.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = (
             "consider enabling sessions.auto_prune in config.yaml "
             "to bound growth"
         )
-        legacy_trigram = (
+        stale_trigram = (
             fts is not None
             and fts.get("messages_fts_trigram")
-            and stats.get("fts_storage_version") is None
+            and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION
         )
-        if stats.get("fts_rebuild_pending") or legacy_trigram:
+        if stats.get("fts_rebuild_pending") or stale_trigram:
             detail += (
                 "; run 'hermes sessions optimize-storage' offline "
                 "(with the gateway stopped) to compact FTS storage"
@@ -604,9 +639,15 @@ def collect_relay_plugin_cutover_findings(
                 )
 
     effective_env = dict(env_map or {})
-    for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
-        if name not in effective_env and os.environ.get(name) is not None:
-            effective_env[name] = os.environ[name]
+    # Fall through to process-level env ONLY when no explicit env_map was
+    # given: run_doctor passes None and wants live-process vars included, but
+    # callers (and tests) that hand in an explicit map are describing a
+    # complete environment — merging os.environ on top breaks hermeticity on
+    # any box that exports legacy relay vars (10-vs-2 findings, Aug 2026).
+    if env_map is None:
+        for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
+            if name not in effective_env and os.environ.get(name) is not None:
+                effective_env[name] = os.environ[name]
     if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
         for name in configured_legacy_relay_env_vars(effective_env):
             findings.append(
@@ -1031,6 +1072,189 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def check_macos_tcc_grants() -> None:
+    """Check macOS TCC grant persistence for a locally-built desktop bundle.
+
+    TCC keys permission grants (Screen Recording, Full Disk Access,
+    Accessibility, ...) to the app's code-signing requirement. A bundle
+    signed with the pre-#73681 cdhash-pinned ad-hoc identity gets a new DR on
+    every rebuild, so all grants silently stop matching — and the stale row
+    keeps the System Settings toggle ON while macOS re-prompts on every
+    capture (issue #86385).
+
+    Post-#73681 builds pin ``designated => identifier "com.nousresearch.hermes"``
+    (no cdhash), so new grants survive rebuilds — but grants made to older
+    binaries remain stale until re-granted once. The stale state is not
+    directly readable (TCC.db needs Full Disk Access), so this check reports
+    the DR class and, when the DR is stable, prints the exact one-time repair.
+    Silent on non-macOS and when no desktop bundle is installed.
+    """
+    if sys.platform != "darwin":
+        return
+    app = _desktop_app_bundle()
+    if app is None:
+        return
+    dr = _macos_desktop_dr(app)
+    if not dr:
+        check_warn(
+            "macOS TCC grant check",
+            "(could not read code-signing requirement of the desktop bundle)",
+        )
+        return
+    # The DR string is the only readable signal — TCC.db itself needs Full
+    # Disk Access. A cdhash anchor marks the pre-#73681 ad-hoc identity
+    # (rebuild ⇒ new cdhash ⇒ stale grants); its absence marks identifier-
+    # pinned. Treat the match as a proxy for the signing class, not a
+    # contract on DR wording.
+    if "cdhash" in dr.lower():
+        check_warn(
+            "macOS TCC grants will reset after every update",
+            "the desktop bundle's designated requirement is cdhash-pinned "
+            "(pre-#73681 build) — rebuilds invalidate all permission grants. "
+            "Run `hermes update` to get the stable identifier-pinned signing "
+            "identity, then re-grant permissions once.",
+        )
+        return
+    if "certificate" in dr.lower():
+        # Certificate-anchored DR (hermes desktop --setup-tcc-identity, or a
+        # notarized release build): the strongest anchor TCC can key on.
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(certificate-anchored DR; grants survive rebuilds)",
+        )
+    else:
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(identifier-pinned DR; grants survive rebuilds — for the strongest "
+            "anchor, see `hermes desktop --setup-tcc-identity`)",
+        )
+    check_info(
+        "If macOS still re-prompts for permissions (toggle shows ON): the stored "
+        "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` "
+        "(repeat per affected service), toggle it ON in System Settings, then "
+        "fully quit & relaunch Hermes once."
+    )
+
+
+def _desktop_app_bundle() -> Path | None:
+    """Locate the locally-built desktop app bundle, if any.
+
+    Mirrors the install layout the self-updater produces
+    (``apps/desktop/release/mac-<arch>/Hermes.app``) — the only layout whose
+    ad-hoc re-signed bundle can invalidate TCC grants. When multiple arch
+    trees coexist (stale cross-build), the newest wins, matching
+    ``_desktop_packaged_executable``'s selection. ``/Applications/Hermes.app``
+    is deliberately not probed: it is the separately-signed Hermes-Setup
+    launcher (``com.nousresearch.hermes.setup``, certificate-anchored), whose
+    grants are stable by construction and unaffected by rebuilds.
+    """
+    root = Path(__file__).resolve().parents[1]
+    release_dir = root / "apps" / "desktop" / "release"
+    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _macos_desktop_dr(app: Path) -> str | None:
+    """Return the bundle's designated requirement string, or None on failure."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return None
+    try:
+        proc = subprocess.run(
+            [codesign, "-d", "--requirements", "-", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # Never let a hanging codesign abort the whole doctor run — the
+        # caller falls through to its "could not read" warning.
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def check_macos_tcc_anchor(should_fix: bool = False) -> None:
+    """Report (and optionally install) the dylib-complete TCC anchor (#95596).
+
+    Silent on non-macOS and for interpreters that are not uv-managed.  Never
+    raises — a failed check must not crash doctor.  Install is gated by the
+    module's pre-install boot probe, so ``--fix`` cannot brick the CLI.
+    """
+    try:
+        from hermes_cli import macos_tcc_anchor as tcc
+
+        status, detail = tcc.tcc_anchor_state()
+        if status == "skip":
+            return
+        if status == "active":
+            check_ok("macOS TCC anchor active", f"({detail})")
+            return
+        if should_fix:
+            anchored = tcc.ensure_tcc_anchor()
+            if anchored is not None:
+                check_ok("macOS TCC anchor installed", f"({anchored})")
+                return
+        check_warn(
+            "macOS TCC anchor missing" if status == "missing" else "macOS TCC anchor stale",
+            f"({detail})",
+        )
+    except Exception as e:  # diagnostics must never crash
+        check_warn("macOS TCC anchor check failed", f"({e})")
+
+
+def check_macos_full_disk_access() -> None:
+    """One-grant guidance: Full Disk Access silences every folder prompt.
+
+    macOS TCC prompts per-category (Desktop, then Downloads, then Documents,
+    ...), so first-run agents drip-feed permission dialogs as they touch each
+    folder. ONE Full Disk Access grant covers all of them, permanently — and
+    with the stable signing identities now in place (#73681/#95091/#95131),
+    it survives updates too. This check probes whether the terminal context
+    already has FDA and, when it doesn't, prints the exact one-switch setup
+    with the System Settings deep link.
+
+    Probe: readability of ``~/Library/Application Support/com.apple.TCC`` —
+    the TCC database directory itself is FDA-gated, readable ONLY with the
+    grant, and (critically) probing it with os.access/listdir does NOT
+    trigger a prompt: TCC prompts fire for protected-CATEGORY paths (Desktop
+    etc.), while the TCC dir simply returns EPERM without one. Silent on
+    non-macOS.
+    """
+    if sys.platform != "darwin":
+        return
+    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
+    try:
+        os.listdir(tcc_dir)
+        has_fda = True
+    except PermissionError:
+        has_fda = False
+    except OSError:
+        # Missing dir / other error: can't tell — stay silent rather than
+        # nag on an indeterminate probe.
+        return
+    if has_fda:
+        check_ok(
+            "macOS Full Disk Access granted",
+            "(no per-folder permission prompts will occur)",
+        )
+        return
+    check_info(
+        "One switch silences all macOS folder prompts: grant your terminal "
+        "app Full Disk Access and Hermes will never trip per-folder dialogs "
+        "(Desktop/Downloads/Documents/...) again. Open: System Settings → "
+        "Privacy & Security → Full Disk Access — or run:\n"
+        "      open \"x-apple.systempreferences:com.apple.preference"
+        ".security?Privacy_AllFiles\"\n"
+        "    then enable your terminal (and Hermes.app if you use Desktop), "
+        "and restart them once. With Hermes' stable signing identities the "
+        "grant survives every update."
+    )
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1201,9 +1425,23 @@ def run_doctor(args):
     else:
         check_warn("Not in virtual environment", "(recommended)")
 
+    # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the
+    # mechanism reverted in #95563. Silent on non-macOS.
+    check_macos_tcc_anchor(should_fix=should_fix)
+
+    # macOS Full Disk Access (issue #52010 follow-up): one grant silences
+    # every per-folder prompt permanently. Silent on non-macOS.
+    check_macos_full_disk_access()
+
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
+
+    # macOS TCC grant persistence (issue #86385): a locally-built desktop
+    # bundle whose DR is cdhash-pinned loses every permission grant on each
+    # rebuild; a post-#73681 identifier-pinned DR survives, but grants made
+    # to older binaries stay stale (toggle shows ON while macOS re-prompts).
+    check_macos_tcc_grants()
 
     _section("SSL / CA Certificates")
     check_certificates(should_fix=should_fix, issues=manual_issues)
@@ -1764,8 +2002,19 @@ def run_doctor(args):
     else:
         check_warn(f"{_DHH} not found", "(will be created on first use)")
     
-    # Check expected subdirectories
-    expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    _memory_config = _doctor_memory_config(hermes_home)
+    _memory_enabled, _user_profile_enabled = get_builtin_memory_store_flags(
+        {"memory": _memory_config}
+    )
+
+    # Check expected subdirectories. The built-in file store does not create or
+    # consume memories/ when both targets are disabled, so stale migration files
+    # are not an active diagnostic surface.
+    expected_subdirs = ["cron", "sessions", "logs", "skills"]
+    if _memory_enabled or _user_profile_enabled:
+        expected_subdirs.append("memories")
     for subdir_name in expected_subdirs:
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
@@ -1800,22 +2049,28 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check only enabled built-in stores. External providers are additive, but
+    # users can explicitly disable either legacy file target; stale files left
+    # by a migration must not be presented as active memory usage.
     memories_dir = hermes_home / "memories"
-    if memories_dir.exists():
+    if not (_memory_enabled or _user_profile_enabled):
+        check_info("Built-in memory files disabled by config")
+    elif memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
         memory_file = memories_dir / "MEMORY.md"
         user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
-        else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+        if _memory_enabled:
+            if memory_file.exists():
+                size = len(memory_file.read_text(encoding="utf-8").strip())
+                check_ok(f"MEMORY.md exists ({size} chars)")
+            else:
+                check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+        if _user_profile_enabled:
+            if user_file.exists():
+                size = len(user_file.read_text(encoding="utf-8").strip())
+                check_ok(f"USER.md exists ({size} chars)")
+            else:
+                check_info("USER.md not created yet (will be created when the agent first writes a memory)")
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:
@@ -2241,6 +2496,34 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # Plugin-registered terminal backends (if one is the active backend)
+    if terminal_env not in {
+        "local", "docker", "singularity", "modal", "managed_modal",
+        "daytona", "vercel_sandbox", "ssh",
+    }:
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(terminal_env)
+        except Exception:
+            _provider = None
+        if _provider is None:
+            _fail_and_issue(
+                f"Unknown terminal backend '{terminal_env}'",
+                "(no built-in or plugin backend by that name)",
+                "Fix terminal.backend in config.yaml, or install/enable the plugin that provides it",
+                issues,
+            )
+        else:
+            for _ok, _label, _detail in _provider.doctor_checks():
+                if _ok:
+                    check_ok(_label, _detail)
+                else:
+                    _fail_and_issue(_label, _detail, _detail.strip("()"), issues)
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
@@ -2347,7 +2630,37 @@ def run_doctor(args):
             check_info(step)
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
-    
+
+    # Lightpanda engine (browser.engine / AGENT_BROWSER_ENGINE). Independent
+    # of Node: Browser Use mode spawns ``lightpanda serve`` itself.
+    try:
+        from tools.browser_tool import _using_lightpanda_engine, lightpanda_engine_status
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+    except Exception:
+        pass
+    else:
+        # _using_lightpanda_engine() is a cached config read — a failure
+        # there would be exceptional, not something to silently hide.
+        if _using_lightpanda_engine():
+            try:
+                _lp_used, _lp_reason = lightpanda_engine_status()
+            except Exception as e:
+                _lp_used, _lp_reason = False, f"status check failed: {e}"
+            if not _lp_used:
+                check_warn("browser.engine=lightpanda is shadowed", f"({_lp_reason})")
+                check_info(
+                    "Fix: pick Lightpanda in `hermes tools` → Browser Automation, "
+                    "or set browser.engine: auto"
+                )
+            elif find_lightpanda_binary():
+                check_ok("Lightpanda", f"({_lp_reason})")
+            else:
+                check_warn(
+                    "Lightpanda selected but binary not found",
+                    "(browser tools will fail until it is installed)",
+                )
+                check_info(LIGHTPANDA_INSTALL_HINT)
+
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
     if _npm_bin:
@@ -2969,21 +3282,7 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     _section("Memory Provider")
-    _active_memory_provider = ""
-    try:
-        from hermes_cli.config import read_user_config_raw as _read_raw_mem
-        _mem_cfg_path = HERMES_HOME / "config.yaml"
-        if _mem_cfg_path.exists():
-            # Raw-file diagnostic (+ managed overlay below, unchanged).
-            _raw_cfg = _read_raw_mem(_mem_cfg_path)
-            try:
-                from hermes_cli import managed_scope
-                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
-            except Exception:
-                pass
-            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
-    except Exception:
-        pass
+    _active_memory_provider = _memory_config.get("provider", "")
 
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")

@@ -116,6 +116,61 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
 
 
 
+def test_list_authenticated_providers_numeric_yaml_provider_dict_key(monkeypatch):
+    """Unquoted YAML `providers: {2070: ...}` must not 500 the Model tab."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+
+    rows = list_authenticated_providers(
+        current_provider=2070,
+        current_base_url="http://192.168.1.10:8082/v1",
+        current_model="Qwen3.5-9B-Q4_K_M.gguf",
+        user_providers={
+            2070: {
+                "name": 2070,
+                "base_url": "http://192.168.1.10:8082/v1",
+                "model": "Qwen3.5-9B-Q4_K_M.gguf",
+            }
+        },
+        custom_providers=[],
+        max_models=0,
+        probe_custom_providers=False,
+    )
+
+    match = next(p for p in rows if str(p.get("slug")) == "2070")
+    assert match["name"] == "2070"
+    assert match.get("is_current") is True
+
+
+def test_list_authenticated_providers_numeric_custom_provider_name(monkeypatch):
+    """Legacy custom_providers list with name: 2070 (int) must not .strip() crash."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+
+    rows = list_authenticated_providers(
+        current_provider=2070,
+        current_base_url="http://192.168.1.10:8082/v1",
+        current_model="Qwen3.5-9B-Q4_K_M.gguf",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": 2070,
+                "base_url": "http://192.168.1.10:8082/v1",
+                "model": "Qwen3.5-9B-Q4_K_M.gguf",
+            }
+        ],
+        max_models=0,
+        probe_custom_providers=False,
+    )
+
+    assert any(
+        str(p.get("name")) == "2070" or "2070" in str(p.get("slug"))
+        for p in rows
+    )
+
+
 def test_providers_singular_model_does_not_suppress_ollama_native_discovery(monkeypatch):
     """A saved selection in ``providers:`` is not an explicit catalog."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

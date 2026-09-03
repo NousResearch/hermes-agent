@@ -305,11 +305,30 @@ def _prune_check_fn_caches(now: float) -> None:
 def check_fn_cache_scope() -> Optional[str]:
     """Return the active profile key when availability is profile-scoped.
 
+    Browser-controller availability is request-bound and can change on every
+    attach/detach. A fully bound browser-control request therefore bypasses both
+    this check cache and model_tools' outer definition cache; the same sentinel
+    is consumed by both layers. This prevents one Browser session's live tools
+    from leaking into any unrelated session.
+
     Single-profile processes intentionally keep the historical process-wide
     cache. A multiplex gateway installs a Hermes-home override for every
     profile turn, so the canonical profile key is the stable isolation
     boundary across repeated turns for that profile.
     """
+    try:
+        from gateway.session_context import get_session_env
+
+        browser_identity = (
+            get_session_env("HERMES_SESSION_ID", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""),
+        )
+        if all(str(value or "").strip() for value in browser_identity):
+            return CHECK_FN_CACHE_BYPASS
+    except Exception:
+        pass
+
     try:
         from agent.secret_scope import is_multiplex_active
 
@@ -329,8 +348,33 @@ def check_fn_cache_scope() -> Optional[str]:
 
 def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
     """Run an availability check without cache/grace handling."""
+    from agent.secret_scope import UnscopedSecretError
+
     try:
         return bool(fn())
+    except UnscopedSecretError:
+        if unresolved_scope:
+            # Expected fail-closed probe: with multiplexing on, boot-time
+            # check_fns run before any profile secret scope exists, so
+            # get_secret raises by design. The tool re-probes on the first
+            # scoped turn — log without a traceback so this cannot be
+            # mistaken for a crashed check_fn (#100697).
+            logger.debug(
+                "check_fn %s hit the multiplex fail-closed path with no "
+                "profile secret scope active; dependent tools re-probe on "
+                "the first scoped turn",
+                getattr(fn, "__qualname__", fn),
+            )
+            return False
+        # The scope resolved but the read still failed closed: a genuinely
+        # lost scope. Keep the loud crash-style report.
+        logger.warning(
+            "check_fn %s raised UnscopedSecretError while the profile cache "
+            "scope was resolved; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            exc_info=True,
+        )
+        return False
     except Exception:
         detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(
@@ -862,12 +906,17 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, *, scope: Optional[str] = None) -> None:
         """Remove a tool from the registry.
 
         Also cleans up the toolset check if no other tools remain in the
         same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
         when a server sends ``notifications/tools/list_changed``.
+
+        ``scope`` selects a profile overlay explicitly (multiplexed MCP tools
+        live in the owning profile's overlay). Plugin callers keep their own
+        scope and may not name another one; non-plugin callers without
+        ``scope`` keep the historical process-global target.
 
         Gated by the same operator opt-in policy ``register(override=True)``
         enforces. Without this, a plugin could bypass that gate entirely by
@@ -886,14 +935,21 @@ class ToolRegistry:
                 if caller_owner is not None
                 else None
             )
+            if caller_owner is not None and scope is not None and scope != caller_scope:
+                raise PermissionError(
+                    f"Plugin module {caller_mod!r} cannot deregister tools "
+                    "outside its own profile scope."
+                )
+            if scope is None:
+                scope = caller_scope
             target = (
-                self._scoped_tools.get(caller_scope, {})
-                if caller_scope is not None
+                self._scoped_tools.get(scope, {})
+                if scope is not None
                 else self._tools
             )
             entry = target.get(name)
-            if entry is None and caller_scope is not None:
-                if name in self._tools:
+            if entry is None and scope is not None:
+                if caller_owner is not None and name in self._tools:
                     raise PermissionError(
                         f"Scoped plugin module {caller_mod!r} cannot deregister "
                         f"process-global tool {name!r}; register a scoped "
@@ -933,13 +989,13 @@ class ToolRegistry:
                         f"opt-in (allow_tool_override)."
                     )
             del target[name]
-            if caller_scope is not None and not target:
-                self._scoped_tools.pop(caller_scope, None)
+            if scope is not None and not target:
+                self._scoped_tools.pop(scope, None)
             # Drop the toolset check and aliases if this was the last tool in
             # that toolset.
             toolset_still_exists = any(
                 e.toolset == entry.toolset
-                for e in self._merged_tools(caller_scope).values()
+                for e in self._merged_tools(scope).values()
             )
             if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)

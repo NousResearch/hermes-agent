@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import importlib
 import os
 import shutil
 import sqlite3
@@ -347,6 +348,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -626,17 +631,21 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
         return None
 
-    try:
-        import agent.anthropic_adapter as _anthropic_adapter
-    except Exception:
-        return None
-
-    monkeypatch.setattr(
-        _anthropic_adapter,
-        "_read_claude_code_credentials_from_keychain",
-        lambda *_args, **_kwargs: None,
-        raising=False,
-    )
+    # Patch the implementation owner (agent.anthropic_credentials) AND the
+    # adapter re-export: after the adapter godfile split, the real call
+    # executes inside agent.anthropic_credentials, so patching only the
+    # adapter alias silently stopped intercepting Keychain reads.
+    for _module_name in ("agent.anthropic_credentials", "agent.anthropic_adapter"):
+        try:
+            _mod = importlib.import_module(_module_name)
+        except Exception:
+            continue
+        monkeypatch.setattr(
+            _mod,
+            "_read_claude_code_credentials_from_keychain",
+            lambda *_args, **_kwargs: None,
+            raising=False,
+        )
     return None
 
 

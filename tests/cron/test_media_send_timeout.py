@@ -66,7 +66,7 @@ class TestEmptyReasonFallback:
 
         monkeypatch.setattr(
             "gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
-            staticmethod(lambda files: [(str(media), False)]),
+            staticmethod(lambda files, session_key="": [(str(media), False)]),
         )
 
         def boom(coro, loop):

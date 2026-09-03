@@ -51,9 +51,6 @@ export type OpenContextMenu =
       y: number
       target: ContextMenuDomTarget
       spellcheck: SpellcheckContext | null
-      /** Whether the clipboard held text when the menu opened (grays out
-       *  Paste). Arrives async right after open; false until then. */
-      clipboardHasText: boolean
     }
   | {
       kind: 'guest'
@@ -67,7 +64,12 @@ export type OpenContextMenu =
       x: number
       y: number
       terminal: TerminalMenuHandle
-      /** Same async clipboard fact as the dom shape, for the paste item. */
+      /** Whether the clipboard held text when the menu opened (grays out
+       *  Paste). Arrives async right after open; false until then. Unlike
+       *  the dom menu — whose paste runs webContents.paste() in main and
+       *  must NOT depend on this probe (#91553) — the terminal paste item
+       *  inserts the readClipboard() text itself, so its gate and its
+       *  action share one mechanism. */
       clipboardHasText: boolean
     }
 
@@ -75,17 +77,18 @@ export type OpenContextMenu =
  *  menus can never be open at once. */
 export const $contextMenu = atom<null | OpenContextMenu>(null)
 
-/** Read the clipboard and flag the OPEN menu when text is available. The
- *  read is an IPC round-trip, so the menu opens first (empty-clipboard
- *  verdict) and the flag lands a tick later — same late-fact pattern as
- *  spellcheck. Guarded by identity: a stale read never flags a newer menu. */
-function probeClipboard(opened: OpenContextMenu): void {
+/** Read the clipboard and flag the OPEN terminal menu when text is
+ *  available. The read is an IPC round-trip, so the menu opens first
+ *  (empty-clipboard verdict) and the flag lands a tick later — same
+ *  late-fact pattern as spellcheck. Guarded by identity: a stale read
+ *  never flags a newer menu. */
+function probeClipboard(opened: Extract<OpenContextMenu, { kind: 'terminal' }>): void {
   void window.hermesDesktop
     ?.readClipboard?.()
     .then((text: string) => {
       const current = $contextMenu.get()
 
-      if (current === opened && (current.kind === 'dom' || current.kind === 'terminal') && text) {
+      if (current === opened && current.kind === 'terminal' && text) {
         $contextMenu.set({ ...current, clipboardHasText: true })
       }
     })
@@ -93,13 +96,7 @@ function probeClipboard(opened: OpenContextMenu): void {
 }
 
 export function openDomContextMenu(x: number, y: number, target: ContextMenuDomTarget): void {
-  const opened: OpenContextMenu = { kind: 'dom', x, y, target, spellcheck: null, clipboardHasText: false }
-
-  $contextMenu.set(opened)
-
-  if (target.editable) {
-    probeClipboard(opened)
-  }
+  $contextMenu.set({ kind: 'dom', x, y, target, spellcheck: null })
 }
 
 export function openGuestContextMenu(x: number, y: number, params: GuestMenuParams, guest: GuestMenuHandle): void {

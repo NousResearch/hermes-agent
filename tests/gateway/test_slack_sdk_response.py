@@ -223,7 +223,7 @@ class TestSendPaths:
     def test_upload_returns_the_message_id(self, make_response, tmp_path):
         """A lost message_id breaks threading of follow-up sends."""
         media = tmp_path / "note.txt"
-        media.write_text("x")
+        media.write_text("x", encoding="utf-8")
         client = MagicMock()
         client.files_upload_v2 = AsyncMock(
             return_value=make_response(
@@ -242,7 +242,7 @@ class TestSendPaths:
     @response_shape
     def test_upload_error_is_surfaced(self, make_response, tmp_path):
         media = tmp_path / "note.txt"
-        media.write_text("x")
+        media.write_text("x", encoding="utf-8")
         client = MagicMock()
         client.files_upload_v2 = AsyncMock(
             return_value=make_response({"ok": False, "error": "not_in_channel"})
@@ -355,6 +355,41 @@ class TestStandaloneSendMediaPath:
             )
         assert "channel_not_found" in result["error"]
         client.files_upload_v2.assert_not_awaited()
+
+    @response_shape
+    def test_caption_with_unfurl_controls_posts_text_separately(
+        self, make_response, tmp_path
+    ):
+        """Upload comments cannot carry unfurl flags, so configured text is separate."""
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 x")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": True, "ts": "111.222"})
+        )
+        client.files_upload_v2 = AsyncMock(
+            return_value=make_response({"ok": True, "file": {}})
+        )
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(
+                        token="xoxb-test",
+                        extra={"unfurl_links": False, "unfurl_media": False},
+                    ),
+                    "C_GEN",
+                    "",
+                    media_files=[(str(media), False)],
+                    caption="[Report](https://example.com/report)",
+                )
+            )
+
+        assert result["success"] is True
+        post_kwargs = client.chat_postMessage.await_args.kwargs
+        assert post_kwargs["text"] == "<https://example.com/report|Report>"
+        assert post_kwargs["unfurl_links"] is False
+        assert post_kwargs["unfurl_media"] is False
+        assert client.files_upload_v2.await_args.kwargs["initial_comment"] == ""
 
     @response_shape
     def test_caption_fallback_delivers_when_media_is_missing(

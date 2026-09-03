@@ -100,15 +100,23 @@ def _prune_replaced_custom_model_config_credentials(
     try:
         from agent.credential_pool import (
             CUSTOM_POOL_PREFIX,
-            get_custom_provider_pool_key,
+            custom_provider_pool_key_candidates,
         )
         from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-        active_pool_key = get_custom_provider_pool_key(
-            base_url,
-            provider_name=provider_name or None,
-        )
-        if not active_pool_key:
+        # A keyed ``providers.<key>`` endpoint stores under the durable slug
+        # while legacy-named pools keep the ``custom:<display-name>`` key, so
+        # every identity the active endpoint may occupy must be skipped —
+        # comparing against a single preferred key false-prunes the provider's
+        # own legacy-named pool (verified regression from PR #100413 review).
+        active_pool_keys = {
+            str(key).strip().lower()
+            for key in custom_provider_pool_key_candidates(
+                base_url,
+                provider_name=provider_name or None,
+            )
+        }
+        if not active_pool_keys:
             return
         pools = read_credential_pool(None)
         if not isinstance(pools, dict):
@@ -117,7 +125,7 @@ def _prune_replaced_custom_model_config_credentials(
             if (
                 not isinstance(pool_key, str)
                 or not pool_key.startswith(CUSTOM_POOL_PREFIX)
-                or pool_key == active_pool_key
+                or pool_key in active_pool_keys
                 or not isinstance(entries, list)
             ):
                 continue
@@ -531,6 +539,15 @@ def _model_flow_nous(config, current_model="", args=None):
     # of CLI release cadence.
     unavailable_models: list[str] = []
     unavailable_message = ""
+
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach. Narrow before the tier split, so an id the policy rescues
+    # still has to pass the free/paid predicate instead of going around it.
+    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+    _policy_allowed = nous_policy_allowed_ids()
+    _policy_narrowed = False
+
     if free_tier:
         try:
             from hermes_cli.nous_account import (
@@ -551,6 +568,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_free_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
         )
@@ -558,6 +580,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_paid_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")
@@ -572,6 +599,11 @@ def _model_flow_nous(config, current_model="", args=None):
             print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return
 
+    from hermes_cli.nous_account import nous_policy_notice
+
+    _policy_notice = nous_policy_notice(removed=_policy_narrowed)
+    if _policy_notice:
+        print(_policy_notice)
     print(
         f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )
@@ -2826,17 +2858,23 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
+    # OpenCode Free is keyless — the tier is served anonymously and any
+    # unrecognized bearer 401s, so there is no key to prompt for.
+    if provider_id == "opencode-free":
+        print("  OpenCode Free is keyless — no API key or account needed.")
+        existing_key = ""
+    else:
+        # Check / prompt for API key
+        existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the
@@ -3005,6 +3043,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     print(
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
+    elif provider_id == "opencode-free":
+        # Keyless free tier: the curated list is synced against anonymous
+        # live probes (models.dev's cost.input==0 filter lags reality —
+        # e.g. deepseek-v4-flash-free stayed "free" there after its promo
+        # ended and the relay started 401ing it keyless).
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                f'  Showing {len(model_list)} keyless free models — use "Enter custom model name" for others.'
+            )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -3053,7 +3101,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     )
             # else: no defaults either, will fall through to raw input
 
-    if provider_id in {"opencode-zen", "opencode-go"}:
+    if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
         model_list = [
             normalize_opencode_model_id(provider_id, mid) for mid in model_list
         ]
@@ -3088,7 +3136,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             selected = normalize_opencode_model_id(provider_id, selected)
 
         _save_model_choice(selected)
@@ -3102,7 +3150,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         clear_model_endpoint_credentials(model, clear_api_mode=False)
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)

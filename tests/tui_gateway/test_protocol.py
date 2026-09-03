@@ -618,6 +618,86 @@ def test_approval_response_correlates_request_id(server, monkeypatch):
     assert calls == [("agent-1", "once", {"resolve_all": False, "request_id": "req-1"})]
 
 
+def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
+    """A stale live sid must not 4001 an approval answer when the request_id
+    resolves to a live session (durable-identity fallback, #91684)."""
+    from tools import approval
+
+    live = {"session_key": "agent-live", "history": []}
+    server._sessions["ui-live"] = live
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "req-91684"}] if key == "agent-live" else [],
+    )
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-fallback",
+            "method": "approval.respond",
+            "params": {
+                "session_id": "gone-sid",
+                "request_id": "req-91684",
+                "choice": "once",
+            },
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("agent-live", "once", {"resolve_all": False, "request_id": "req-91684"})
+    ]
+
+
+def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
+    """session_id holding a STORED id maps to the live runtime record."""
+    from tools import approval
+
+    live = {"session_key": "stored-91684", "history": []}
+    server._sessions["ui-stored"] = live
+    calls = []
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-stored",
+            "method": "approval.respond",
+            "params": {"session_id": "stored-91684", "choice": "deny"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("stored-91684", "deny", {"resolve_all": False, "request_id": None})
+    ]
+
+
+def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    response = server.handle_request(
+        {
+            "id": "r-nope",
+            "method": "approval.respond",
+            "params": {"session_id": "nope", "request_id": "req-x", "choice": "once"},
+        }
+    )
+
+    assert response["error"]["code"] == 4001
+
+
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples
@@ -724,6 +804,122 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
 
     assert response["error"]["code"] == 4130
     assert "safe resume limit is 20000" in response["error"]["message"]
+
+
+def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, monkeypatch):
+    """A deep compression lineage behind a small tip must open on Desktop.
+
+    Desktop's cold resume sends ``defer_history`` + ``omit_messages`` and pages
+    the transcript over REST, so the process only ever holds the tip segment.
+    Counting the whole lineage there returned 4130 for the healthiest sessions
+    (85 compaction segments / ~29k rows / ~700-row tip: Bot Chat stuck on
+    "Waking up…"). The guard must count what each path loads.
+    """
+    calls = []
+
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid, "message_count": 28_730}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def assert_resume_safe(self, sid, max_messages=None, *, tip_only=False):
+            calls.append(tip_only)
+            if not tip_only:
+                from hermes_state import SessionResumeTooLargeError
+
+                raise SessionResumeTooLargeError(20_001, 20_000)
+            return 666
+
+        def reopen_session(self, _sid):
+            raise RuntimeError("stop before history load")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+
+    for params in (
+        {"defer_history": True, "omit_messages": True, "source": "desktop"},
+        {"omit_messages": True},
+        {"lazy": True},
+    ):
+        calls.clear()
+        response = server.handle_request(
+            {
+                "id": "r-tip",
+                "method": "session.resume",
+                "params": {"session_id": "deep-lineage", **params},
+            }
+        )
+        err = response.get("error") or {}
+        assert err.get("code") != 4130, params
+        assert calls == [True], params
+
+    # The non-deferred, non-omitted resume materializes the full lineage in
+    # memory, so it keeps the lineage-wide bound.
+    calls.clear()
+    response = server.handle_request(
+        {"id": "r-full", "method": "session.resume", "params": {"session_id": "deep-lineage"}}
+    )
+    assert response["error"]["code"] == 4130
+    assert calls == [False]
+
+
+def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server, monkeypatch):
+    """The hydration worker never loads a lineage the guard would refuse."""
+    import threading
+
+    from hermes_state import SessionResumeTooLargeError
+
+    tip = [{"role": "user", "content": "tip"}]
+    reads = []
+
+    class _DB:
+        def reopen_session(self, _sid):
+            return True
+
+        def assert_resume_safe(self, sid, max_messages=None, *, tip_only=False):
+            if not tip_only:
+                raise SessionResumeTooLargeError(20_001, 20_000)
+            return 1
+
+        def get_resume_conversations(self, _sid):
+            reads.append("lineage")
+            raise AssertionError("must not materialize the runaway lineage")
+
+        def get_ancestor_display_prefix(self, _sid):
+            reads.append("prefix")
+            raise AssertionError("must not materialize the runaway lineage")
+
+        def get_messages_as_conversation(self, sid, **kwargs):
+            reads.append(("tip", kwargs.get("repair_alternation")))
+            return list(tip)
+
+    built = threading.Event()
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: built.set())
+    monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_a, **_k: None)
+
+    session = server._deferred_session_record(
+        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None
+    )
+    session["resume_history_ready"] = threading.Event()
+    session["resume_hydrating"] = True
+    session["resume_message_count"] = 28_730
+    server._sessions["hyd"] = session
+    try:
+        server._schedule_resume_hydration("hyd", "deep-lineage", _DB())
+        assert session["resume_history_ready"].wait(timeout=5)
+        assert built.wait(timeout=5)
+        assert session.get("resume_history_error") is None
+        assert session["history"] == tip
+        assert session["display_history_prefix"] == []
+        assert session["resume_message_count"] == 1
+        assert reads == [("tip", True)]
+    finally:
+        server._sessions.pop("hyd", None)
 
 
 def test_session_resume_guard_failure_fails_open(server, monkeypatch):

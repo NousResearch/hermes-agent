@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
 
   background:
-    usage:                 "使い方: /background <プロンプト>\n例: /background 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
+    usage:                 "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
     started:               "🔄 バックグラウンドタスクを開始しました: 「{preview}」\nタスク ID: {task_id}\nチャットを続けられます — 完了したらここに結果が表示されます。"
+
+  btw:
+    usage:                 "使い方: /btw <質問>\n例: /btw あのエラーはどのファイルだった？\n\nこの会話について、作業を中断せずにちょっとした質問に答えます。独立したバックグラウンドタスクには /bg <プロンプト> を使ってください。"
+    no_history:            "まだ会話がありません — 質問は通常のメッセージとして送ってください。"
+    no_provider:           "❌ 質問に回答できません: プロバイダーの認証情報が設定されていません。"
+    started:               "💬 サイド質問: 「{preview}」\nこの会話のスナップショットから回答します — 現在の作業は継続します。"
+    answer:                "💬 /btw: 「{preview}」\n\n{answer}"
+    failed:                "❌ /btw が失敗しました: 「{preview}」\n{error}"
 
   branch:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ 要約の生成に失敗しました ({error})。{count} 件の履歴メッセージが削除され、プレースホルダーに置き換えられました。以前のコンテキストは復元できません。auxiliary.compression モデルの設定を確認してください。"
     aborted:               "⚠️ 圧縮が中止されました ({error})。メッセージは削除されていません — 会話はそのままです。再試行するには /compress、新しいセッションを開始するには /reset を実行するか、auxiliary.compression モデル設定を確認してください。"
     aux_failed:            "ℹ️ 構成された圧縮モデル `{model}` が失敗しました ({error})。メインモデルで復旧しました — コンテキストは無傷です — config.yaml の `auxiliary.compression.model` を確認するとよいでしょう。"
+    turnhold_deferred:     "ℹ️ コンテキスト圧縮を延期しました — 要約はまだストリーミング中です。このターンは圧縮せずに続行します。"
     failed:                "圧縮に失敗しました: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
     choice_fast:           "fast — Priority Processing オン"
     choice_normal:         "normal — 標準処理"
+    choice_auto:           "auto — 各ターンの最初の数秒間だけ高速"
+    choice_cold:           "cold — セッションの最初のターンのみ高速"
 
   footer:
     status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
@@ -166,10 +177,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -256,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "名前付きセッションが見つかりません。\n`/title セッション名` で現在のセッションに名前を付けると、後で `/resume セッション名` で戻れます。"
+    all_requires_admin: "_注: `--all`（チャット横断の一覧）には設定済みの管理者権限が必要です。このチャットのセッションのみ表示しています。_"
     list_header:           "📋 **名前付きセッション**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -280,6 +296,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無効なチェックポイント番号です。1-{max} を使用してください。"
     restored:              "✅ チェックポイント {hash} に復元しました: {reason}\nロールバック前のスナップショットが自動的に保存されました。"
     kept_user_edits:       "↷ 手動編集は保持されました: {files}\nそれらも復元するには /rollback <N> --all を使用してください。"
+    kept_oversize:         "↷ 保持しました（チェックポイントには大きすぎるため、戻せる保存コピーがありません）: {files}"
+    failed_deletes:        "⚠️ 削除できませんでした（そのまま残っています）: {files}"
     restore_failed:        "❌ {error}"
 
   diff:

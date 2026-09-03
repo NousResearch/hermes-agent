@@ -202,6 +202,10 @@ export class JsonRpcGatewayClient {
         return
       }
 
+      console.error(
+        `[gateway] socket close event code=${event.code} reason=${JSON.stringify(event.reason)}`
+      )
+
       if (this.options.onSocketClose(event)) {
         return
       }
@@ -288,6 +292,8 @@ export class JsonRpcGatewayClient {
     if (!socket) {
       return
     }
+
+    console.error(`[gateway] close() called state=${this.state}`)
 
     try {
       socket.close()
@@ -696,6 +702,10 @@ export class JsonRpcGatewayClient {
     if (this.socket !== socket) {
       return
     }
+
+    console.error(
+      `[gateway] invalidateSocket: ${error.message} lastInboundAgeMs=${Date.now() - this.lastInboundAt}`
+    )
 
     this.socket = null
     this.stopHeartbeat()

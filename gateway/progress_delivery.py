@@ -434,7 +434,27 @@ class ProgressDeliveryState:
 
         first_text = self.progress_text(groups[0])
         if self.progress_msg_id is not None:
-            result = await self.edit_message(self.progress_msg_id, first_text)
+            try:
+                result = await self.edit_message(self.progress_msg_id, first_text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The overflow edit may already be visible even though its
+                # acknowledgement failed. Preserve the exact operation so no
+                # wider edit or fresh suffix can replay these lines.
+                self.pending_ambiguous_edit = (
+                    self.progress_msg_id,
+                    first_text,
+                    list(groups[0]),
+                )
+                self.delivered_progress_lines = list(groups[0])
+                logger.warning(
+                    "[%s] Progress overflow edit raised with unknown outcome; "
+                    "retaining exact edit payload",
+                    self.adapter_name,
+                    exc_info=True,
+                )
+                return True
             if not result.success:
                 if getattr(result, "ambiguous", False):
                     self.pending_ambiguous_edit = (

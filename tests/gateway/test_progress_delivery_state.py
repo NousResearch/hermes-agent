@@ -35,6 +35,16 @@ class _AmbiguousEditCaptureAdapter(_CaptureProgressAdapter):
         )
 
 
+class _RaisingOverflowEditAdapter(_CaptureProgressAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.edited: list[str] = []
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edited.append(content)
+        raise RuntimeError("response decode failed after visible edit")
+
+
 def _state(adapter=None) -> ProgressDeliveryState:
     context = SimpleNamespace(
         progress_grouping="grouped",
@@ -142,3 +152,22 @@ async def test_drain_preserves_suffix_after_ambiguous_edit_retry() -> None:
     assert state.delivered_progress_lines == ["third"]
     assert state.progress_msg_id == "suffix-bubble"
     assert state.pending_ambiguous_edit is None
+
+
+@pytest.mark.asyncio
+async def test_raising_overflow_edit_retains_exact_ambiguous_operation() -> None:
+    adapter = _RaisingOverflowEditAdapter()
+    state = _state(adapter)
+    state.progress_msg_id = "existing-bubble"
+    state.progress_lines = ["abcdef", "ghij"]
+
+    assert await state.roll_overflow_if_needed()
+
+    assert adapter.edited == ["abcdef"]
+    assert adapter.sent == []
+    assert state.pending_ambiguous_edit == (
+        "existing-bubble",
+        "abcdef",
+        ["abcdef"],
+    )
+    assert state.delivered_progress_lines == ["abcdef"]

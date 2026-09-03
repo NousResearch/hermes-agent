@@ -464,6 +464,7 @@ def test_nvidia_vram_probe_hides_console_window(monkeypatch):
 
 
 def test_local_models_hardware_smi_hides_console_window(monkeypatch):
+    from hermes_cli import _subprocess_compat
     from hermes_cli.local_runtime import hardware as hw
     from hermes_cli.web_routers import local_models
 
@@ -481,6 +482,9 @@ def test_local_models_hardware_smi_hides_console_window(monkeypatch):
     )
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (16 << 30, 8 << 30))
     monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    # Router imports windows_hide_flags inside the handler; stub the source
+    # module so Linux CI does not assert against the POSIX helper's 0.
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     out = local_models.local_models_hardware()

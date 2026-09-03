@@ -794,14 +794,16 @@ Hermes will:
 3. Create and pin a **System** topic for status/commands (best-effort)
 4. Reply with a list of previous unlinked Telegram sessions the user can restore
 
-After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
+After activation, the **root DM is a lobby**: normal prompts are rejected, while
+system commands still work. Send `/new` or `/new <title>` there to create a new
+topic with a fresh Hermes session.
 
 ### Creating a new topic (end-user flow)
 
-1. Open the bot DM in Telegram
-2. Tap **All Messages** at the top of the bot interface, then send any message
-3. Telegram creates a new topic for that message
-4. Hermes responds inside that topic — the topic is now a standalone session
+1. Open the bot's root DM in Telegram
+2. Send `/new` or `/new <title>` (for example, `/new Database migration`)
+3. Hermes creates the Telegram topic and binds a fresh session to it
+4. Hermes posts a start message inside the new standalone topic
 
 Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
 
@@ -823,7 +825,7 @@ When this flag is on, Hermes still generates an internal session title (used by 
 
 ### `/new` inside a topic
 
-Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
+Resets the current topic's session (new session ID, fresh history) without touching other topics. For parallel work, return to the root DM and use `/new` instead.
 
 ### Restoring a previous session
 

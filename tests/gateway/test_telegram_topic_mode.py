@@ -4,6 +4,7 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -17,10 +18,10 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from hermes_state import AsyncSessionDB, SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.platforms.base import MessageEvent, SendResult
+from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:
@@ -258,27 +259,88 @@ async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
 
 
 @pytest.mark.asyncio
-async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
+@pytest.mark.parametrize("thread_id", [None, "1"])
+@pytest.mark.parametrize(
+    ("command", "topic_title", "session_title"),
+    [
+        ("/new", "Hermes Chat", None),
+        ("/new Project Alpha", "Project Alpha", "Project Alpha"),
+    ],
+)
+async def test_public_root_telegram_dm_new_creates_bound_topic(
+    tmp_path, monkeypatch, thread_id, command, topic_title, session_title
+):
     import gateway.run as gateway_run
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="***",
+                typing_indicator=False,
+            )
+        }
+    )
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    db = store._db
+    assert isinstance(db, SessionDB)
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+
+    previous_source = _make_source(thread_id="17585")
+    previous_entry = store.get_or_create_session(previous_source)
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=previous_entry.session_key,
+        session_id=previous_entry.session_id,
+    )
 
     runner = _make_runner()
-    runner._telegram_topic_mode_enabled = lambda source: True
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError("/new in root Telegram DM must not start an agent")
+    runner.config = config
+    runner.session_store = store
+    runner._session_db = AsyncSessionDB(db)
+    runner._handle_reset_command = AsyncMock(return_value="reset existing topic")
+
+    adapter = TelegramAdapter(config.platforms[Platform.TELEGRAM])
+    adapter.set_session_store(store)
+    adapter.set_topic_recovery_fn(runner._recover_telegram_topic_thread_id)
+    adapter.set_message_handler(runner._handle_message)
+    adapter.create_handoff_thread = AsyncMock(return_value="17586")
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="telegram-message")
     )
+    runner.adapters = {Platform.TELEGRAM: adapter}
 
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
 
-    result = await runner._handle_message(_make_event("/new"))
+    event = _make_event(command, thread_id=thread_id)
+    try:
+        await adapter.handle_message(event)
+        tasks = tuple(adapter._background_tasks)
+        assert tasks, "public adapter ingress did not start a processing task"
+        await asyncio.gather(*tasks)
 
-    assert "create a new topic" in result
-    assert "All Messages" in result
-    assert "Use /new inside" in result
-    runner._run_agent.assert_not_called()
-    runner.session_store.reset_session.assert_not_called()
-    runner.session_store.get_or_create_session.assert_not_called()
+        adapter.create_handoff_thread.assert_awaited_once_with("208214988", topic_title)
+        assert event.source.thread_id == thread_id
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17586")
+        assert binding is not None
+        assert binding["session_id"] != previous_entry.session_id
+        if session_title:
+            titled_session = db.get_session_by_title(session_title)
+            assert titled_session is not None
+            assert titled_session["id"] == binding["session_id"]
+        assert any(
+            call.kwargs.get("metadata", {}).get("thread_id") == "17586"
+            for call in adapter.send.await_args_list
+        )
+        runner._handle_reset_command.assert_not_awaited()
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio

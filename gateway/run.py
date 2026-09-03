@@ -8719,29 +8719,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _telegram_topic_root_lobby_message(self) -> str:
         return (
             "This main chat is reserved for system commands.\n\n"
-            "To start a new Hermes chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Hermes session."
+            "Send /new or /new <title> here to create a Telegram topic with "
+            "a fresh, independent Hermes session."
         )
 
-    def _telegram_topic_root_new_message(self) -> str:
-        return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
+    async def _handle_telegram_topic_root_new(self, event: MessageEvent) -> str:
+        """Create and bind one fresh session lane from the Telegram DM lobby."""
+        from hermes_state import SessionDB
+
+        raw_title = event.get_command_args().strip()
+        try:
+            session_title = SessionDB.sanitize_title(raw_title) if raw_title else None
+        except ValueError:
+            return "That title is invalid. Choose a shorter title and try /new again."
+        if raw_title and not session_title:
+            return "That title is invalid. Add some visible text and try /new again."
+
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return "Hermes session storage is unavailable. No topic was created."
+        if session_title and await session_db.get_session_by_title(session_title):
+            return f"A session named {session_title!r} already exists. Choose another title."
+
+        adapter = self._adapter_for_source(event.source)
+        create_topic = getattr(adapter, "create_handoff_thread", None)
+        if adapter is None or not callable(create_topic):
+            return "Telegram topic creation is unavailable. No session was created."
+
+        topic_title = self._sanitize_telegram_topic_title(
+            session_title or "Hermes Chat"
         )
+        try:
+            thread_id = await create_topic(str(event.source.chat_id), topic_title)
+        except Exception:
+            logger.warning("Telegram lobby /new topic creation failed", exc_info=True)
+            thread_id = None
+        if not thread_id:
+            return "Telegram could not create the new topic. No session was created."
+
+        topic_source = dataclasses.replace(
+            event.source,
+            thread_id=str(thread_id),
+            chat_topic=topic_title,
+        )
+        try:
+            entry = await self.async_session_store.get_or_create_session(
+                topic_source, force_new=True
+            )
+            if session_title:
+                await session_db.set_session_title(entry.session_id, session_title)
+            await asyncio.to_thread(
+                self._record_telegram_topic_binding, topic_source, entry
+            )
+        except Exception:
+            logger.error(
+                "Telegram lobby /new created topic %s but could not bind its session",
+                thread_id,
+                exc_info=True,
+            )
+            return (
+                "Telegram created the topic, but Hermes could not bind its session. "
+                "Remove that topic before retrying /new."
+            )
+
+        try:
+            sent = await adapter.send(
+                str(event.source.chat_id),
+                "New Hermes chat started.",
+                metadata={
+                    "thread_id": str(thread_id),
+                    "telegram_dm_topic_created_for_send": True,
+                },
+            )
+        except Exception:
+            sent = None
+            logger.warning("Telegram lobby /new start message failed", exc_info=True)
+        if not getattr(sent, "success", False):
+            return (
+                f"Created Telegram topic {topic_title!r} and bound its session, "
+                "but the start message could not be delivered."
+            )
+        return f"Created a new Telegram topic: {topic_title}."
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
             return None
         return (
             "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
+            "Tip: for parallel work, return to the main chat and send /new or "
+            "/new <title>. /new here replaces the session attached to this topic."
         )
 
     def _record_telegram_topic_binding(
@@ -19755,9 +19821,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "new":
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
+                return await self._handle_telegram_topic_root_new(event)
+
             async def _do_reset():
                 return await self._handle_reset_command(event)
+
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="new",

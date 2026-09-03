@@ -3978,6 +3978,22 @@ class BasePlatformAdapter(ABC):
         source = getattr(event, "source", None)
         if source is None:
             return
+
+        # Keep an explicit /new in the Telegram DM lobby on the root source.
+        # Recovering it to the latest topic would reset that topic instead of
+        # creating the fresh lane the user requested.
+        command = event.get_command()
+        if (
+            command
+            and source.platform == Platform.TELEGRAM
+            and source.chat_type == "dm"
+            and str(source.thread_id or "") in {"", "1"}
+        ):
+            from hermes_cli.commands import resolve_command
+
+            command_def = resolve_command(command)
+            if command_def is not None and command_def.name == "new":
+                return
         try:
             recovered = recover(source)
         except Exception:

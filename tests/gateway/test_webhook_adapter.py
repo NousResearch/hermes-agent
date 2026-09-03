@@ -1081,3 +1081,40 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+# ---------------------------------------------------------------------------
+# Blank HMAC secrets must fail closed
+#
+# ``if not secret`` accepts a whitespace-only value as a configured secret: it
+# looks unset to whoever wrote the config and is truthy to Python. A route
+# carrying ``secret: "   "`` therefore passed startup validation and served
+# requests, turning a network webhook into an unauthenticated agent-dispatch
+# surface — the exact outcome the comment above that check warns about.
+# ---------------------------------------------------------------------------
+
+
+class TestBlankRouteSecretFailsClosed:
+
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n", " \t "])
+    def test_connect_rejects_a_whitespace_only_route_secret(self, blank):
+        adapter = _make_adapter(routes={"hook": {"secret": blank}})
+        with pytest.raises(ValueError, match="HMAC secret"):
+            asyncio.run(adapter.connect())
+
+    @pytest.mark.parametrize("blank", ["   ", "\t\n"])
+    def test_connect_rejects_a_whitespace_only_global_secret(self, blank):
+        adapter = _make_adapter(routes={"hook": {}}, secret=blank)
+        with pytest.raises(ValueError, match="HMAC secret"):
+            asyncio.run(adapter.connect())
+
+    def test_connect_still_accepts_a_real_secret(self):
+        """The fix must not reject valid configurations."""
+        adapter = _make_adapter(routes={"hook": {"secret": "s3cr3t"}})
+        assert asyncio.run(adapter.connect()) is True
+
+    def test_connect_still_accepts_the_explicit_no_auth_opt_out(self):
+        """Bound to loopback, as that escape hatch requires."""
+        adapter = _make_adapter(routes={"hook": {"secret": _INSECURE_NO_AUTH}},
+                                host="127.0.0.1")
+        assert asyncio.run(adapter.connect()) is True

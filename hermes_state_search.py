@@ -2347,6 +2347,13 @@ class SessionSearchMixin:
 
         Returns the number of FTS indexes that were optimized.
         """
+        # Same quarantine guard as every canonical write path
+        # (_execute_write): a quarantined/replaced/split-generation handle
+        # must never issue FTS5 'optimize', which rewrites index segments
+        # in place and would compound structural damage instead of leaving
+        # it diagnosable.
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
             for tbl in self._FTS_TABLES:

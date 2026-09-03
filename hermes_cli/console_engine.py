@@ -1522,11 +1522,20 @@ def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions optimize")
 
     def _run() -> None:
-        from hermes_state import SessionDB
+        from hermes_state import SessionDB, StateDbCorruptError
 
         db = SessionDB()
         try:
-            count = db.vacuum()
+            try:
+                count = db.vacuum()
+            except StateDbCorruptError as exc:
+                # Not a RuntimeError (subclasses sqlite3.DatabaseError), so
+                # _capture_output would not catch it and it would escape
+                # execute() and kill the REPL / websocket session — convert
+                # to the console error type like the sibling RuntimeError
+                # quarantine errors (StateDbReplacedError,
+                # DeletedWalGenerationError) already get from _capture_output.
+                raise ConsoleCommandError(str(exc)) from exc
             print(f"Optimized {count} FTS index(es).")
         finally:
             db.close()

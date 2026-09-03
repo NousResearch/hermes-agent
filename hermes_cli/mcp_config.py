@@ -56,7 +56,14 @@ def _error(text: str):
     print(color(f"  ✗ {text}", Colors.RED))
 
 
-def _confirm(question: str, default: bool = True) -> bool:
+def _confirm(question: str, default: bool = True, *, yes: bool = False) -> bool:
+    """Yes/no prompt; with ``yes`` set, return ``default`` without prompting.
+
+    Lets callers thread an outer ``--yes`` flag through every confirmation
+    site without restructuring their control flow.
+    """
+    if yes:
+        return default
     default_str = "Y/n" if default else "y/N"
     try:
         val = input(color(f"  {question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
@@ -450,6 +457,12 @@ def cmd_mcp_add(args):
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+    # Non-interactive mode, threaded into every prompt below so scripts, cron
+    # and CI never block.  Confirmations take their documented default (so
+    # overwrite-protection stays off), the auth question is answered by the
+    # presence of --auth instead of a prompt, and a missing API key fails
+    # loudly rather than stalling on a password prompt nothing can answer.
+    assume_yes = getattr(args, "yes", False)
 
     server_config: Dict[str, Any] = {}
     try:
@@ -482,7 +495,11 @@ def cmd_mcp_add(args):
     # Check if server already exists
     existing = _get_mcp_servers()
     if name in existing:
-        if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
+        if not _confirm(
+            f"Server '{name}' already exists. Overwrite?",
+            default=False,
+            yes=assume_yes,
+        ):
             _info("Cancelled.")
             return
 
@@ -527,7 +544,7 @@ def cmd_mcp_add(args):
 
         if not oauth_ok:
             _info("This server may not support OAuth.")
-            if _confirm("Continue without authentication?", default=True):
+            if _confirm("Continue without authentication?", default=True, yes=assume_yes):
                 # Don't store auth: oauth — server doesn't support it
                 pass
             else:
@@ -538,13 +555,25 @@ def cmd_mcp_add(args):
         # Prompt for API key / Bearer token for HTTP servers
         print()
         _info(f"Connecting to {url}")
-        needs_auth = _confirm("Does this server require authentication?", default=True)
+        if assume_yes:
+            # Infer intent from --auth: passing it means "yes, authenticate";
+            # omitting it means "no auth".  Asking is not an option here.
+            needs_auth = bool(auth_type)
+        else:
+            needs_auth = _confirm("Does this server require authentication?", default=True)
         if needs_auth:
             if auth_type == "header" or not auth_type:
                 env_key = _env_key_for_server(name)
                 existing_key = get_env_value(env_key)
                 if existing_key:
                     _success(f"{env_key}: already configured")
+                elif assume_yes:
+                    _error(
+                        f"--yes: auth requested but {env_key} is not set. Add it to "
+                        f"{display_hermes_home()}/.env and re-run, or drop --auth to "
+                        f"add '{name}' without authentication."
+                    )
+                    return
                 else:
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
@@ -566,7 +595,11 @@ def cmd_mcp_add(args):
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
         _error(f"Failed to connect: {exc}")
-        if _confirm("Save config anyway (you can test later)?", default=False):
+        if _confirm(
+            "Save config anyway (you can test later)?",
+            default=False,
+            yes=assume_yes,
+        ):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
                 _success(f"Saved '{name}' to config (disabled)")
@@ -575,7 +608,7 @@ def cmd_mcp_add(args):
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True):
+        if _confirm("Save config anyway?", default=True, yes=assume_yes):
             if _save_mcp_server(name, server_config):
                 _success(f"Saved '{name}' to config")
         return
@@ -590,15 +623,20 @@ def cmd_mcp_add(args):
         print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
     print()
 
-    # Ask: enable all, select, or cancel
-    try:
-        choice = input(
-            color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
-        ).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        _info("Cancelled.")
-        return
+    # Ask: enable all, select, or cancel.  Under --yes take the documented
+    # [Y/n/select] default, which the empty string already routes to.
+    if assume_yes:
+        _info(f"--yes: auto-enabling all {len(tools)} tools.")
+        choice = ""
+    else:
+        try:
+            choice = input(
+                color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            _info("Cancelled.")
+            return
 
     if choice in {"n", "no"}:
         _info("Cancelled — server not saved.")

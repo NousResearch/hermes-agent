@@ -64,3 +64,17 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+@pytest.mark.parametrize("flag", ["-y", "--yes"])
+def test_mcp_add_accepts_yes_flag(flag):
+    # `hermes mcp add` must be drivable from scripts/cron/CI; the flag lives on
+    # the real builder, not on a hand-rolled parser (see #31970).
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+    ns = parser.parse_args(["mcp", "add", "srv", "--url", "https://x/mcp", flag])
+    assert ns.yes is True
+    # Absent by default — interactive behaviour is unchanged.
+    ns = parser.parse_args(["mcp", "add", "srv", "--url", "https://x/mcp"])
+    assert ns.yes is False

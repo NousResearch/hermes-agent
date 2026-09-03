@@ -71,6 +71,14 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         default=[],
         help="Environment variables for stdio servers (KEY=VALUE)",
     )
+    mcp_add_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Non-interactive: take the default answer for every prompt and "
+             "auto-enable all discovered tools (shell scripts, cron, CI). "
+             "Place before --args, which consumes the rest of the line",
+    )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")

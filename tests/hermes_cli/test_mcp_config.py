@@ -206,6 +206,70 @@ class TestMcpAdd:
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
+    def test_add_yes_skips_every_prompt(self, tmp_path, capsys, monkeypatch):
+        """--yes drives a full add without touching input() even once.
+
+        input() is wired to raise, so any surviving prompt site (auth,
+        save-anyway, tool selection) fails the test rather than hanging it.
+        """
+        fake_tools = [
+            FakeTool("create_service", "Deploy from repo"),
+            FakeTool("list_services", "List all services"),
+        ]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [(t.name, t.description) for t in fake_tools],
+        )
+
+        def _no_input(prompt=""):
+            raise AssertionError(f"--yes must not prompt; got {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="auto", url="https://mcp.example.com/mcp", yes=True))
+        out = capsys.readouterr().out
+        assert "auto-enabling" in out
+        assert "2/2 tools" in out
+
+        from hermes_cli.config import load_config
+
+        assert "auto" in load_config().get("mcp_servers", {})
+
+    def test_add_yes_with_auth_but_no_key_errors(self, tmp_path, capsys, monkeypatch):
+        """--yes --auth header without the env var fails loudly, never prompts.
+
+        Cron/CI that asked for auth but has no credential should get an
+        actionable error, not a password prompt nothing can answer.
+        """
+        def _probe_should_not_run(name, config, **kw):
+            raise AssertionError("must error before probing")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", _probe_should_not_run
+        )
+
+        def _no_input(prompt=""):
+            raise AssertionError(f"--yes must not prompt; got {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="needs-auth",
+            url="https://mcp.example.com/mcp",
+            auth="header",
+            yes=True,
+        ))
+        out = capsys.readouterr().out
+        assert "MCP_NEEDS_AUTH_API_KEY" in out
+
+        from hermes_cli.config import load_config
+
+        assert "needs-auth" not in load_config().get("mcp_servers", {})
 
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""

@@ -16,6 +16,30 @@ import {
   switchBranch
 } from './git-worktree-ops'
 
+/**
+ * Windows keeps brief handles on files a just-exited `git` touched (AV,
+ * search indexer), so an immediate recursive delete throws EPERM and fails
+ * an otherwise-passing test. Retry briefly, then leave the temp dir to the
+ * OS — cleanup is housekeeping, never the assertion.
+ */
+/**
+ * `fs.realpathSync` leaves Windows 8.3 short names (`C:\Users\ADMINI~1\…`)
+ * intact, while `git` reports the expanded long form — so comparing a git
+ * path against a plain-realpath temp dir fails on the alias, not the
+ * behaviour. Only the `.native` variant resolves both to one spelling.
+ */
+function canonicalPath(target: string): string {
+  return fs.realpathSync.native(target)
+}
+
+function removeTempDir(dir: string): void {
+  try {
+    fs.rmSync(dir, { force: true, maxRetries: 5, recursive: true, retryDelay: 20 })
+  } catch {
+    // best-effort: a leaked temp dir must not turn into a test failure
+  }
+}
+
 test('sanitizeBranch: spaces → hyphens, forbidden chars dropped, edges trimmed', () => {
   assert.equal(sanitizeBranch('beach vibes'), 'beach-vibes')
   assert.equal(sanitizeBranch('feat/cool thing'), 'feat/cool-thing')
@@ -74,7 +98,7 @@ test('ensureGitRepo: inits a plain dir with a root commit so worktrees branch', 
     await ensureGitRepo('git', dir)
     assert.equal(git('rev-list', '--count', 'HEAD'), '1')
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -90,7 +114,7 @@ test('switchBranch: switches a normal checkout branch', async () => {
 
     assert.equal(git('branch', '--show-current'), 'feature')
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -109,12 +133,12 @@ test('listBranches: lists locals and flags the checked-out branch', async () => 
     // The repo's own checkout is flagged; the unused branch is convertible.
     assert.equal(branches.find(b => b.name === current).checkedOut, true)
     assert.equal(branches.find(b => b.name === current).isDefault, true)
-    assert.equal(fs.realpathSync(branches.find(b => b.name === current).worktreePath), fs.realpathSync(dir))
+    assert.equal(canonicalPath(branches.find(b => b.name === current).worktreePath), canonicalPath(dir))
     assert.equal(branches.find(b => b.name === 'feature').checkedOut, false)
     assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
     assert.equal(branches.find(b => b.name === 'feature').worktreePath, null)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -134,7 +158,7 @@ test('listBranches: flags a free default branch as default, not checked out', as
     assert.equal(defaultBranch.isDefault, true)
     assert.equal(defaultBranch.worktreePath, null)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -154,7 +178,7 @@ test('listBranches: a branch claimed by a worktree is flagged checked out', asyn
 
     assert.equal(branches.find(b => b.name === 'feature').checkedOut, true)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -164,7 +188,7 @@ test('listBranches: empty on a non-repo path', async () => {
   try {
     assert.deepEqual(await listBranches(dir, 'git'), [])
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -189,7 +213,7 @@ test('addWorktree: existingBranch checks the branch out without a new branch', a
       'cool/feature'
     )
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -205,11 +229,11 @@ test('addWorktree: existing default branch switches the main checkout, not .work
     const result = await addWorktree(dir, { existingBranch: trunk }, 'git')
 
     assert.equal(result.branch, trunk)
-    assert.equal(fs.realpathSync(result.path), fs.realpathSync(dir))
+    assert.equal(canonicalPath(result.path), canonicalPath(dir))
     assert.equal(git('branch', '--show-current'), trunk)
     assert.equal(fs.existsSync(path.join(dir, '.worktrees', trunk)), false)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -235,7 +259,7 @@ test('listBaseBranches: lists local branches and flags the default', async () =>
     assert.equal(branches.find(b => b.name === trunk).isDefault, true)
     assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -245,7 +269,7 @@ test('listBaseBranches: empty on a non-repo path', async () => {
   try {
     assert.deepEqual(await listBaseBranches(dir, 'git'), [])
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -266,7 +290,7 @@ test('addWorktree: base param branches off a specified local branch', async () =
     assert.equal(result.branch, 'new-from-staging')
     assert.equal(git('-C', result.path, 'merge-base', 'HEAD', 'staging').length > 0, true)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -428,7 +452,7 @@ test('addWorktree: a remote default branch gets its own worktree, not a home swi
     // "switch home" applies to a local default branch. A remote ref always gets
     // a new worktree, so the main checkout stays where the user put it.
     assert.equal(result.branch, 'main')
-    assert.notEqual(fs.realpathSync(result.path), fs.realpathSync(cloneDir))
+    assert.notEqual(canonicalPath(result.path), canonicalPath(cloneDir))
     assert.equal(git('branch', '--show-current'), 'rawr')
   } finally {
     fs.rmSync(remoteDir, { recursive: true, force: true })
@@ -447,7 +471,7 @@ test('switchBranch: non-repo dir short-circuits instead of throwing', async () =
 
     assert.deepEqual(result, { branch: null })
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 
@@ -467,6 +491,6 @@ test('switchBranch: repo dir still validates the branch name and switches', asyn
     const result = await switchBranch(dir, 'main', 'git')
     assert.deepEqual(result, { branch: 'main' })
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })

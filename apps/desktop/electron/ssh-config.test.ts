@@ -26,6 +26,17 @@ test('parseSshConfigIncludes extracts include tokens', () => {
   assert.deepEqual(parseSshConfigIncludes(cfg), ['~/.ssh/config.d/*', 'work_hosts', 'personal_hosts'])
 })
 
+/**
+ * The fixtures below are keyed by POSIX paths, but `collectSshConfigHosts`
+ * joins Include targets with `path.join`, which emits backslashes on Windows.
+ * Normalizing separators inside the fake reader keeps the fixtures readable
+ * and tests the traversal logic itself on every platform, instead of the
+ * host's path spelling.
+ */
+function fakeReader(files: Record<string, string>) {
+  return (candidate: string) => files[candidate.split('\\').join('/')] ?? null
+}
+
 test('collectSshConfigHosts follows Include directives (read-only)', () => {
   const files = {
     '/home/u/.ssh/config': 'Host main\nInclude work\nInclude ~/abs_inc',
@@ -36,7 +47,7 @@ test('collectSshConfigHosts follows Include directives (read-only)', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null
+    readFile: fakeReader(files)
   })
 
   assert.deepEqual(hosts.sort(), ['deep', 'home-abs', 'main', 'work-box'].sort())
@@ -54,7 +65,7 @@ test('collectSshConfigHosts does not loop on a self-include cycle', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null
+    readFile: fakeReader(files)
   })
 
   assert.deepEqual(hosts.sort(), ['a', 'b'])
@@ -69,9 +80,13 @@ test('collectSshConfigHosts expands globbed includes via injected globSync', () 
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null,
+    readFile: fakeReader(files),
     globSync: pattern =>
-      pattern.endsWith('config.d/*') ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home'] : [pattern]
+      // Same separator caveat as fakeReader: the pattern arrives with the
+      // host's separators, the fixture keys are POSIX.
+      pattern.split('\\').join('/').endsWith('config.d/*')
+        ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home']
+        : [pattern]
   })
 
   assert.deepEqual(hosts.sort(), ['home', 'root', 'work'].sort())

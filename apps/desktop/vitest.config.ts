@@ -24,7 +24,11 @@ const electronNative: TestProjectConfiguration = {
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.
     include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
-    exclude: ['scripts/run-short-session-hang-repro.test.mjs']
+    exclude: ['scripts/run-short-session-hang-repro.test.mjs'],
+    // Several suites here shell out to real `git` many times per test. Process
+    // spawn on Windows costs far more than on POSIX, so the 5s default times
+    // out work that is progressing normally rather than hung.
+    testTimeout: 30_000
   }
 }
 

@@ -74,7 +74,17 @@ describe('scanGitRepos', () => {
   })
 })
 
-describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
+/**
+ * These cases inject a POSIX `platform` while building fixtures with the
+ * REAL filesystem. On Windows that combination is self-contradictory: the
+ * scanner switches to `path.posix` and then cannot normalize the `C:\…`
+ * fixture paths, so every scan returns empty for a reason that has nothing
+ * to do with the TCC exclusions under test.
+ *
+ * The exclusion logic itself is platform-pure and stays covered on CI (Linux)
+ * and on macOS. Skipping beats asserting a falsehood or mocking the scan.
+ */
+describe.skipIf(process.platform === 'win32')('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
   it('finds a normal repo but skips root-level media folders on darwin', async () => {
     const root = tempDir()
     const dev = makeRepoAt(root, 'dev', 'proj')

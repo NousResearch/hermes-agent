@@ -541,8 +541,15 @@ class TestOwnTabPreamble:
         # model code still present, after the preamble
         assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
 
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
+    def test_unnamed_session_on_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
+        """The default daemon attaches to the first page — often the user's
+        own tab — so it needs its own tab just as much as a named one."""
         result = self._run(tmp_path, monkeypatch, session="")
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" in result["output"]
+
+    def test_unnamed_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, session="", provider=True)
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
 
@@ -616,9 +623,27 @@ class TestHelpersPreamble:
             buf.clear()
             return out
 
-        g = {"cdp": cdp, "drain_events": drain_events}
+        g = {
+            "cdp": cdp, "drain_events": drain_events,
+            "page_info": lambda: {"url": "u", "title": "\U0001F434 Real Title"},
+            "current_tab": lambda: {"targetId": "T1", "title": "\U0001F434 Real Title"},
+            "list_tabs": lambda: [{"targetId": "T1", "title": "\U0001F434 Real Title"}],
+        }
         exec(bu_cli._HELPERS_PREAMBLE, g)
         return g, calls
+
+    def test_horse_marker_hidden_from_titles(self, tmp_path, monkeypatch):
+        g, _ = self._exec(tmp_path, monkeypatch, [])
+        assert g["page_info"]()["title"] == "Real Title"
+        assert g["current_tab"]()["title"] == "Real Title"
+        assert g["list_tabs"]()[0]["title"] == "Real Title"
+
+    def test_any_drain_is_journaled(self, tmp_path, monkeypatch):
+        """wait_for_network_idle() drains the daemon buffer too; its reads
+        must land in the journal instead of vanishing."""
+        g, _ = self._exec(tmp_path, monkeypatch, self.EVENTS)
+        assert len(g["drain_events"]()) == 4  # raw consumer sees events...
+        assert len(g["console_logs"]()) == 2  # ...and so does the journal
 
     def test_cdp_positional_dict_becomes_params(self, tmp_path, monkeypatch):
         g, calls = self._exec(tmp_path, monkeypatch, [])
@@ -1378,3 +1403,4 @@ class TestLightpandaStatusLine:
         out = self._status(monkeypatch, used=False, reason="cloud provider Browserbase is selected")
         assert "NOT in use" in out
         assert "Browserbase" in out
+

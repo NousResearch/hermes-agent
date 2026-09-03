@@ -30,15 +30,16 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # subprocess launches — never exported to the CLI.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Preamble prepended to the model's code for named sessions on SHARED
-# browsers (local Chrome / CDP override). The harness daemon attaches to the
-# first existing page at startup, so two fresh named daemons can land on the
-# SAME tab; steering this daemon onto a tab it created keeps concurrent named
-# sessions from clobbering each other before their first new_tab(). Runs
-# once per daemon (marker file keyed by BU_NAME under the harness runtime
-# state), costs one IPC round-trip on later calls.
+# Preamble prepended to the model's code on SHARED browsers (local Chrome /
+# CDP override). The harness daemon attaches to the first CDP target at
+# startup — for the default daemon that is whatever tab happens to be first
+# (often the user's), and two fresh named daemons can land on the SAME tab.
+# Pin every daemon to a tab it created, remember that tab's targetId in a
+# marker file keyed by daemon pid, and re-pin when the pinned tab is gone
+# (closed tab → the daemon silently fell back to the first shared page).
+# Costs one IPC round-trip per call after the first.
 _OWN_TAB_PREAMBLE = """\
-# hermes: pin this named session to its own tab (once per daemon process)
+# hermes: pin this session to its own tab (once per daemon process)
 def _hermes_ensure_own_tab():
     import os as _os, tempfile as _tf
     _name = _os.environ.get("BU_NAME", "default")
@@ -62,18 +63,38 @@ def _hermes_ensure_own_tab():
     _marker = _os.path.join(
         _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
     )
-    if _os.path.exists(_marker):
-        return
+    try:
+        _pinned = open(_marker).read().strip()
+    except OSError:
+        _pinned = None
+    if _pinned is not None:
+        try:
+            _pages = [t for t in cdp("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+            _live = {t["targetId"] for t in _pages}
+        except Exception:
+            return
+        if _pinned in _live:
+            return
+        # Pinned tab is gone. If the agent is on a tab it attached itself
+        # (harness marks those with the horse emoji), adopt it; otherwise
+        # the daemon fell back to a shared page — move off it.
+        try:
+            _cur = current_tab()
+            if _cur["targetId"] in _live and str(_cur.get("title", "")).startswith("\U0001F434"):
+                open(_marker, "w").write(_cur["targetId"])
+                return
+        except Exception:
+            pass
     try:
         # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
+        # which is exactly the tab a sibling daemon (or the user) may hold.
         _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
         if _tid:
             switch_tab(_tid)
     except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
+        return  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        open(_marker, "w").write(_tid or "")
     except OSError:
         pass
 _hermes_ensure_own_tab()
@@ -117,13 +138,7 @@ def _hermes_events_path():
     name = os.environ.get("BU_NAME", "default")
     return os.path.join(_tf.gettempdir(), "hermes-bu-events-%s-%s.jsonl" % (uid, name))
 
-def _hermes_flush_events():
-    # ponytail: daemon buffer is a 500-event deque shared by every reader;
-    # journal to disk so events survive across browser_exec calls.
-    try:
-        evs = drain_events()
-    except Exception:
-        return
+def _hermes_journal(evs):
     if not evs:
         return
     try:
@@ -132,6 +147,55 @@ def _hermes_flush_events():
                 f.write(json.dumps(e, default=str) + "\\n")
     except OSError:
         pass
+
+def _hermes_wrap_drain(_raw):
+    # ponytail: the daemon buffer is a 500-event deque and every reader
+    # (incl. the harness's own wait_for_network_idle) drains it destructively;
+    # journal on the way out so nothing is lost across browser_exec calls.
+    def drain_events():
+        evs = _raw()
+        _hermes_journal(evs)
+        return evs
+    drain_events.__doc__ = _raw.__doc__
+    drain_events.__hermes_journaled__ = True
+    return drain_events
+try:
+    import browser_harness.helpers as _hh
+    if not getattr(_hh.drain_events, "__hermes_journaled__", False):
+        _hh.drain_events = _hermes_wrap_drain(_hh.drain_events)
+    drain_events = _hh.drain_events
+    del _hh
+except Exception:
+    drain_events = _hermes_wrap_drain(drain_events)
+del _hermes_wrap_drain
+
+def _hermes_flush_events():
+    try:
+        drain_events()
+    except Exception:
+        pass
+
+def _hermes_untitle(obj):
+    # The harness prefixes attached tabs' titles with a horse emoji so the
+    # user can spot the agent's tab; hide it from what the model reads.
+    if isinstance(obj, dict) and isinstance(obj.get("title"), str) and obj["title"].startswith("\U0001F434"):
+        obj["title"] = obj["title"][1:].lstrip()
+    return obj
+
+def _hermes_wrap_untitle(_raw):
+    def wrapped(*a, **kw):
+        r = _raw(*a, **kw)
+        if isinstance(r, list):
+            for t in r:
+                _hermes_untitle(t)
+        return _hermes_untitle(r)
+    wrapped.__doc__ = _raw.__doc__
+    wrapped.__name__ = getattr(_raw, "__name__", "wrapped")
+    return wrapped
+page_info = _hermes_wrap_untitle(page_info)
+current_tab = _hermes_wrap_untitle(current_tab)
+list_tabs = _hermes_wrap_untitle(list_tabs)
+del _hermes_wrap_untitle
 
 def _hermes_read_events(clear=False):
     _hermes_flush_events()
@@ -778,11 +842,10 @@ def _resolve_backend_cdp(
             "the built-in browser tools for this provider."
         )
     env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
-    # A provider browser keyed bu-named-<name> is exclusive to this session —
-    # the own-tab preamble is unnecessary there (it would just leak a blank
-    # tab into a browser nobody else touches).
-    if session_name:
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
+    # A provider browser (per-task, or keyed bu-named-<name>) is exclusive to
+    # this daemon — the own-tab preamble is unnecessary there (it would just
+    # leak a blank tab into a browser nobody else touches).
+    env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return None
 
 
@@ -925,13 +988,13 @@ def browser_exec(
     if backend_err:
         return tool_error(backend_err)
 
-    # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
-    # attaches to the first existing page — the same page a sibling daemon
-    # may hold. Pin each named session to a tab it created before running
-    # the model's code. Private per-name browsers (provider-keyed or BU
-    # cloud) skip this: no one to collide with, and the extra tab would leak.
+    # On a SHARED browser (local Chrome / CDP override) a fresh daemon
+    # attaches to the first existing page — the user's tab, or the same page
+    # a sibling daemon holds. Pin each session to a tab it created before
+    # running the model's code. Private browsers (provider-keyed, BU cloud,
+    # Lightpanda) skip this: no one to collide with, and the tab would leak.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
-    if session and not private_browser:
+    if not private_browser:
         code = _OWN_TAB_PREAMBLE + code
     code = _HELPERS_PREAMBLE + code
 
@@ -1185,7 +1248,7 @@ BROWSER_EXEC_SCHEMA = {
             },
             "session": {
                 "type": "string",
-                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session.",
+                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Once you use a name, pass the SAME name on every later call of that task: omitting it lands on a different browser/tab (the shared default session).",
             },
             "timeout_s": {
                 "type": "integer",

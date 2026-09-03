@@ -93,16 +93,32 @@ def build_env(cols: int, rows: int) -> dict[str, str]:
 
 
 def launch_pty(argv: list[str], env: dict[str, str], cols: int, rows: int) -> tuple[int, int]:
+    """Spawn *argv* on a session-leading PTY (openpty + setsid).
+
+    ``pty.fork()`` only surfaced early mouse-mode CSI bytes here; Ink needs the
+    same slave-side setup the detached monitor uses.
+    """
     import fcntl
     import struct
     import termios
 
-    pid, fd = pty.fork()
+    master, slave = pty.openpty()
+    pid = os.fork()
     if pid == 0:
+        os.setsid()
+        os.close(master)
+        os.dup2(slave, 0)
+        os.dup2(slave, 1)
+        os.dup2(slave, 2)
+        if slave > 2:
+            os.close(slave)
+        os.chdir(str(_PROJECT_ROOT))
         os.execvpe(argv[0], argv, env)
+
+    os.close(slave)
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
-    return pid, fd
+    fcntl.ioctl(master, termios.TIOCSWINSZ, winsize)
+    return pid, master
 
 
 def run_component_acceptance() -> int:
@@ -156,6 +172,10 @@ def cmd_test(args: argparse.Namespace) -> int:
                 if any(h in plain for h in READY_HINTS) and COMPOSER_BORDER_RE.search(plain):
                     break
             else:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
                 time.sleep(0.1)
     finally:
         terminate_pid(pid)
@@ -177,26 +197,7 @@ def cmd_test(args: argparse.Namespace) -> int:
 
 
 def _monitor_worker(argv: list[str], env: dict[str, str], cols: int, rows: int) -> None:
-    import fcntl
-    import struct
-    import termios
-
-    master, slave = pty.openpty()
-    child = os.fork()
-    if child == 0:
-        os.setsid()
-        os.close(master)
-        os.dup2(slave, 0)
-        os.dup2(slave, 1)
-        os.dup2(slave, 2)
-        if slave > 2:
-            os.close(slave)
-        os.chdir(str(_PROJECT_ROOT))
-        os.execvpe(argv[0], argv, env)
-
-    os.close(slave)
-    winsize = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(master, termios.TIOCSWINSZ, winsize)
+    child, master = launch_pty(argv, env, cols, rows)
 
     with MONITOR_LOG.open("ab", buffering=0) as log_fp:
         while True:

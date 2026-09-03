@@ -16,6 +16,7 @@ off at all.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli.update_lock import UPDATE_LOCK_TAKEOVER_PID_ENV
 
 SHIM_NAMES = ["hermes.exe", "hermes-agent.exe", "hermes-acp.exe", "hermes-gateway.exe"]
 
@@ -37,6 +39,10 @@ def venv(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: scripts)
     monkeypatch.setattr(sys, "argv", ["hermes", "update"])
     monkeypatch.delenv(cli_main._UPDATE_REEXEC_ENV, raising=False)
+    monkeypatch.delenv(UPDATE_LOCK_TAKEOVER_PID_ENV, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.transfer_update_lock_to", lambda pid: True
+    )
     _fake_psutil(monkeypatch, [])
     return scripts
 
@@ -66,7 +72,7 @@ def _capture_popen(monkeypatch, raises: Exception | None = None):
         if raises is not None:
             raise raises
         calls.append((list(cmd), dict(env or {}), kwargs))
-        return object()
+        return types.SimpleNamespace(pid=4242, terminate=lambda: None)
 
     monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
     return calls
@@ -140,7 +146,42 @@ def test_reexec_runs_same_args_under_venv_python(venv, monkeypatch, capsys):
         str(venv / "python.exe"), "-m", "hermes_cli.main", "update", "--yes",
     ]
     assert env[cli_main._UPDATE_REEXEC_ENV] == "1"
+    assert env[UPDATE_LOCK_TAKEOVER_PID_ENV] == str(os.getpid())
     assert "under the venv Python" in capsys.readouterr().out
+
+
+def test_reexec_transfers_the_update_claim_before_returning(venv, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    transfers = []
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.transfer_update_lock_to",
+        lambda pid: transfers.append(pid) or True,
+    )
+    _capture_popen(monkeypatch)
+
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is True
+    assert transfers == [4242]
+
+
+def test_reexec_falls_back_when_the_update_claim_cannot_transfer(
+    venv, monkeypatch, capsys
+):
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    terminated = []
+    monkeypatch.setattr(
+        cli_main.subprocess,
+        "Popen",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            pid=4242, terminate=lambda: terminated.append(True)
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.transfer_update_lock_to", lambda pid: False
+    )
+
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is False
+    assert terminated == [True]
+    assert "Could not hand the dependency install off" in capsys.readouterr().out
 
 
 def test_reexec_child_runs_unattended(venv, monkeypatch):

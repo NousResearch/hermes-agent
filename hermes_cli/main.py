@@ -9625,11 +9625,23 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
     if python_exe.is_file():
         try:
-            subprocess.Popen(
+            from hermes_cli.update_lock import (
+                UPDATE_LOCK_TAKEOVER_PID_ENV,
+                transfer_update_lock_to,
+            )
+
+            child = subprocess.Popen(
                 cmd,
-                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
+                env={
+                    **os.environ,
+                    _UPDATE_REEXEC_ENV: "1",
+                    UPDATE_LOCK_TAKEOVER_PID_ENV: str(os.getpid()),
+                },
                 stdin=subprocess.DEVNULL,
             )
+            if not transfer_update_lock_to(child.pid):
+                child.terminate()
+                raise OSError("could not transfer the update lock to the hand-off child")
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
                 "finishing the dependency install under the venv Python."

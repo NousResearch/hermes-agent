@@ -46,6 +46,13 @@ Two mechanisms recognize the orchestrating parent, and either suffices:
   HANDOFF_PID_ENV export runs an old parent against a new child. Without the
   ancestry check those users get exit 2 ("Hermes is still running") on every
   GUI update forever, with no Hermes process actually running.
+
+The Windows console-shim re-exec is different: its parent must exit so the
+child can replace ``hermes.exe``. That parent transfers its marker to the
+spawned venv-Python child before returning the prompt. The child receives
+:data:`UPDATE_LOCK_TAKEOVER_PID_ENV`, adopts the transferred claim, and owns
+the marker until the update tail finishes. A second terminal update therefore
+cannot enter during the handoff gap.
 """
 
 from __future__ import annotations
@@ -72,6 +79,11 @@ MARKER_NAME = ".hermes-update-in-progress"
 # own parent's lock and the GUI update can never complete. See update_child_env
 # in apps/bootstrap-installer/src-tauri/src/update.rs — keep the name in sync.
 HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
+
+# Set only by the Windows console-shim re-exec parent. Unlike
+# HANDOFF_PID_ENV, this parent is about to exit and must transfer ownership to
+# its child rather than keep the child running under the parent's claim.
+UPDATE_LOCK_TAKEOVER_PID_ENV = "HERMES_UPDATE_LOCK_TAKEOVER_PID"
 
 # Exit code meaning "another updater/instance owns this install right now".
 # Already the de-facto contract: the Windows shim + venv-holder guards in
@@ -135,6 +147,94 @@ def _handoff_pid() -> int | None:
     except ValueError:
         return None
     return pid if pid > 0 else None
+
+
+def _takeover_pid() -> int | None:
+    """Pid of the console-shim parent whose claim this child must adopt."""
+    raw = os.environ.get(UPDATE_LOCK_TAKEOVER_PID_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _replace_marker_owner(
+    expected_pid: int,
+    new_pid: int,
+    *,
+    path: Path,
+) -> bool:
+    """Replace only ``expected_pid`` with ``new_pid`` in a marker.
+
+    The remaining marker fields are preserved so this stays compatible with
+    readers that extend the two-line format. A temporary file plus
+    :func:`os.replace` prevents another updater from observing a partial
+    handoff marker.
+    """
+    if expected_pid <= 0 or new_pid <= 0:
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+        lines = raw.splitlines()
+        owner = int(lines[0].strip())
+    except (OSError, IndexError, ValueError):
+        return False
+    if owner == new_pid:
+        return True
+    if owner != expected_pid or len(lines) < 2:
+        return False
+
+    replacement = path.with_name(
+        f"{path.name}.handoff-{os.getpid()}-{new_pid}-{time.time_ns()}"
+    )
+    try:
+        replacement.write_text(
+            "\n".join([str(new_pid), *lines[1:]]) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(replacement, path)
+        return True
+    except OSError as exc:
+        logger.debug(
+            "Could not transfer update marker %s from pid %s to %s: %s",
+            path,
+            expected_pid,
+            new_pid,
+            exc,
+        )
+        return False
+    finally:
+        try:
+            replacement.unlink()
+        except OSError:
+            pass
+
+
+def transfer_update_lock_to(pid: int, *, path: Path | None = None) -> bool:
+    """Transfer this process's live update claim to ``pid``.
+
+    Returns True when the marker now names the child or when another
+    orchestrating ancestor owns it. The latter needs no transfer because that
+    owner remains alive across the console-shim parent's exit.
+    """
+    marker = path or update_marker_path()
+    try:
+        raw = marker.read_text(encoding="utf-8")
+        owner = int(raw.splitlines()[0].strip())
+    except (OSError, IndexError, ValueError):
+        # Marker publication is already best-effort. If this invocation has no
+        # claim to transfer, preserve the existing behavior.
+        return True
+    if owner == pid:
+        return True
+    if owner != os.getpid():
+        # Tauri/install-mode parents keep their own marker across both Python
+        # processes, so the shim parent must not steal that claim.
+        return True
+    return _replace_marker_owner(os.getpid(), pid, path=marker)
 
 
 def _is_ancestor_pid(pid: int) -> bool:
@@ -242,8 +342,25 @@ class UpdateLock:
         the parent's marker untouched. The ancestry path exists because staged
         updaters older than the HANDOFF_PID_ENV export never send the env var.
         """
+        takeover_pid = _takeover_pid()
+        os.environ.pop(UPDATE_LOCK_TAKEOVER_PID_ENV, None)
         existing = read_live_update(path=self.path)
         if existing is not None:
+            if takeover_pid is not None and existing.pid == os.getpid():
+                # The shim parent published our pid before returning. Adopt
+                # that exact claim so our release removes it after the update.
+                self.acquired = True
+                return True
+            if (
+                takeover_pid is not None
+                and existing.pid == takeover_pid
+                and _is_ancestor_pid(existing.pid)
+                and _replace_marker_owner(existing.pid, os.getpid(), path=self.path)
+            ):
+                # We reached the lock before the parent published our pid.
+                # Taking it over here makes both scheduling orders safe.
+                self.acquired = True
+                return True
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing

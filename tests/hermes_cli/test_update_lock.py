@@ -23,11 +23,13 @@ import pytest
 
 from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
+    UPDATE_LOCK_TAKEOVER_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
     describe_holder,
     read_live_update,
     update_marker_path,
+    transfer_update_lock_to,
 )
 
 # A pid no live process owns. os.kill(pid, 0) must report it dead so a crashed
@@ -102,6 +104,65 @@ def test_release_leaves_a_marker_a_handoff_partner_now_owns(marker):
     lock.release()
 
     assert marker.exists(), "the partner's marker is not ours to remove"
+
+
+def test_console_handoff_keeps_second_update_refused(marker, monkeypatch):
+    """Returning the prompt must not reopen the update gate."""
+    parent = UpdateLock(path=marker)
+    assert parent.acquire() is True
+
+    child_pid = 424242
+    assert transfer_update_lock_to(child_pid, path=marker) is True
+    parent.release()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_lock._pid_alive", lambda pid: pid == child_pid
+    )
+    contender = UpdateLock(path=marker)
+    assert contender.acquire() is False
+    assert contender.holder is not None
+    assert contender.holder.pid == child_pid
+
+
+def test_console_handoff_leaves_an_orchestrator_claim_unchanged(marker):
+    orchestrator_pid = 424240
+    marker.write_text(
+        f"{orchestrator_pid}\n{int(time.time())}\n", encoding="utf-8"
+    )
+
+    assert transfer_update_lock_to(424242, path=marker) is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == orchestrator_pid
+
+
+def test_console_handoff_child_adopts_transferred_claim(marker, monkeypatch):
+    marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+    monkeypatch.setenv(UPDATE_LOCK_TAKEOVER_PID_ENV, str(os.getppid()))
+
+    child = UpdateLock(path=marker)
+    assert child.acquire() is True
+    assert child.acquired is True
+    assert UPDATE_LOCK_TAKEOVER_PID_ENV not in os.environ
+
+    child.release()
+    assert not marker.exists()
+
+
+def test_console_handoff_child_can_win_the_transfer_race(marker, monkeypatch):
+    parent_pid = 424241
+    marker.write_text(f"{parent_pid}\n{int(time.time())}\n", encoding="utf-8")
+    monkeypatch.setenv(UPDATE_LOCK_TAKEOVER_PID_ENV, str(parent_pid))
+    monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.update_lock._is_ancestor_pid", lambda pid: pid == parent_pid
+    )
+
+    child = UpdateLock(path=marker)
+    assert child.acquire() is True
+    assert child.acquired is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+    child.release()
+    assert not marker.exists()
 
 
 def test_dead_owner_is_reclaimed_not_honored(marker):

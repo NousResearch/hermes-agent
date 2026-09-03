@@ -357,6 +357,18 @@ async function waitForRelayConnection(
             await new Promise<void>(resolve => setTimeout(resolve, RELAY_ROUTE_RECONNECT_POLL_MS))
           }
         }
+
+        // Retention is an optimization and a readiness hint, not delivery
+        // authority. The registry lookup above already proved this exact
+        // connection id still exists. Let the routed request perform one
+        // final lazy dial so a renderer-retention race cannot turn a healthy
+        // SSH gateway into the misleading "not connected" terminal reply.
+        // Any real dial failure is then returned by bot_relay.deliver and is
+        // correlated to the claimed envelope instead of being misclassified
+        // as missing inventory.
+        if (!relay.disposed) {
+          return recovered
+        }
       }
     } catch {
       // Fall through to bounded route inventory polling.

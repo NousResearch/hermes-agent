@@ -680,6 +680,46 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
+  it('attempts the registered route after bounded retention recovery fails', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }, { id: 'b', kind: 'ssh' }])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+    hostMock.retainProfile = vi.fn(async () => {
+      throw new Error('renderer route is still reconciling')
+    })
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'direct lazy dial complete' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    const drain = pushAndSettle()
+    await vi.advanceTimersByTimeAsync(RELAY_ROUTE_RECONNECT_GRACE_MS + 1000)
+    await drain
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'direct lazy dial complete'
+    })
+
+    stopBotRelay()
+  })
+
   it('waits for the registered target warm dial before using its synthesized route', async () => {
     let finishWarm!: () => void
 

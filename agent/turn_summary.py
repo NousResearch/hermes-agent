@@ -215,9 +215,9 @@ class TurnSummaryCollector:
     def tally(self) -> TurnTally:
         return self._tally
 
-    def render(self, elapsed_seconds: float) -> str:
+    def render(self, elapsed_seconds: float, *, cost_usd: float | None = None) -> str:
         """Render this turn's summary line (see :func:`format_turn_summary`)."""
-        return format_turn_summary(elapsed_seconds, self._tally)
+        return format_turn_summary(elapsed_seconds, self._tally, cost_usd=cost_usd)
 
 
 def format_elapsed(seconds: float) -> str:
@@ -257,11 +257,15 @@ def format_turn_summary(
     tally: TurnTally | None,
     *,
     max_segments: int = _MAX_SEGMENTS,
+    cost_usd: float | None = None,
 ) -> str:
     """Render the per-turn accounting line, or ``""`` when there's nothing to say.
 
     Pure function — no config lookups, no terminal access, no I/O. Gating
     (``display.turn_summary``, quiet mode, CLI-only) is the caller's job.
+
+    ``cost_usd`` (local patch): when not None, appends ``· $X.XXXX`` (or the
+    exact sub-cent value) so the footer carries the turn's estimated spend.
     """
     if tally is None:
         tally = TurnTally()
@@ -280,7 +284,7 @@ def format_turn_summary(
     if tally.other_tools:
         segments.append(f"called {_pluralize(tally.other_tools, 'tools')}")
 
-    if not segments and tally.total_tools == 0 and elapsed_seconds < _MIN_TOOLLESS_SECONDS:
+    if not segments and tally.total_tools == 0 and elapsed_seconds < _MIN_TOOLLESS_SECONDS and cost_usd is None:
         return ""
 
     if max_segments > 0 and len(segments) > max_segments:
@@ -288,6 +292,14 @@ def format_turn_summary(
         segments = segments[:max_segments] + [f"+{hidden} more"]
 
     pieces = [format_elapsed(elapsed_seconds)] + segments
+    if cost_usd is not None:
+        try:
+            amount = float(cost_usd)
+        except (TypeError, ValueError):
+            amount = 0.0
+        # Sub-cent turns show 4 decimals so a real-but-tiny spend isn't
+        # rendered as a misleading "$0.00".
+        pieces.append(f"${amount:.2f}" if amount >= 0.01 else f"${amount:.4f}")
     return f"{SUMMARY_PREFIX} " + " · ".join(pieces)
 
 

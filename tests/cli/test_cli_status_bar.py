@@ -120,6 +120,54 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def _cost_cli(self, *, enabled: bool, cost: float = 1.2345, status: str = "estimated"):
+        """Status-bar CLI with display.show_cost wired and a priced session."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=5000,
+            total_tokens=15000,
+            api_calls=7,
+            context_tokens=50000,
+            context_length=200_000,
+        )
+        cli_obj._show_cost_enabled = enabled
+        cli_obj.agent.session_estimated_cost_usd = cost
+        cli_obj.agent.session_cost_status = status
+        return cli_obj
+
+    def test_session_cost_shown_when_show_cost_enabled(self):
+        cli_obj = self._cost_cli(enabled=True)
+        assert "$1.23" in cli_obj._build_status_bar_text(width=120)
+
+    def test_session_cost_hidden_when_pricing_unknown(self):
+        # An unpriced route must show nothing rather than a misleading $0.00.
+        cli_obj = self._cost_cli(enabled=True, cost=0.0, status="unknown")
+        assert "$" not in cli_obj._build_status_bar_text(width=120)
+
+    def test_session_cost_sub_cent_keeps_four_decimals(self):
+        cli_obj = self._cost_cli(enabled=True, cost=0.0004)
+        assert "$0.0004" in cli_obj._build_status_bar_text(width=120)
+
+    def test_session_cost_absent_from_narrow_status_bar(self):
+        # Narrow tiers have no width budget for a cost segment.
+        cli_obj = self._cost_cli(enabled=True)
+        assert "$" not in cli_obj._build_status_bar_text(width=60)
+        assert "$" not in cli_obj._build_status_bar_text(width=40)
+
+    def test_session_cost_survives_missing_agent(self):
+        cli_obj = _make_cli()
+        cli_obj._show_cost_enabled = True
+        assert "$" not in cli_obj._build_status_bar_text(width=120)
+
+    def test_format_session_cost_edge_cases(self):
+        fmt = cli_mod.HermesCLI._format_session_cost
+        assert fmt(None) == ""
+        assert fmt("not-a-number") == ""  # type: ignore[arg-type]  # defensive path
+        assert fmt(-5.0) == "$0.00"
+        assert fmt(0.0) == "$0.00"
+        assert fmt(12.5) == "$12.50"
+
 
     def test_input_height_counts_prompt_only_on_first_wrapped_row(self):
         # Regression for prompt_toolkit classic CLI resize glitches: the prompt

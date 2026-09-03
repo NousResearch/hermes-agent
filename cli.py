@@ -5326,9 +5326,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._spinner_token_flow_enabled = bool(
             CLI_CONFIG["display"].get("spinner_token_flow", True)
         )
+        # display.show_cost: surface the live session spend on the status bar.
+        # Off by default, so the default bar stays cost-free (see
+        # test_build_status_bar_text_no_cost_in_status_bar).
+        self._show_cost_enabled = bool(CLI_CONFIG["display"].get("show_cost", False))
         self._turn_summary_collector = None
         self._turn_summary_start = 0.0
         self._turn_token_baseline = 0
+        self._turn_cost_baseline = 0.0
         # True only while an interactive (run()-loop) turn is in flight. Single
         # query, -Q, and gateway paths never set it, which is what keeps the
         # summary line out of non-interactive surfaces.
@@ -6483,6 +6488,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _format_session_cost(amount_usd: Optional[float]) -> str:
+        """Format cumulative session spend for the status bar.
+
+        Sub-cent sessions keep 4 decimals so a real-but-tiny spend never reads
+        as a flat ``$0.00``; anything larger uses plain cents.
+        """
+        if amount_usd is None:
+            return ""
+        try:
+            amount = float(amount_usd)
+        except (TypeError, ValueError):
+            return ""
+        if amount < 0:
+            amount = 0.0
+        if 0 < amount < 0.01:
+            return f"${amount:.4f}"
+        return f"${amount:.2f}"
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -6582,6 +6606,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
+            "session_cost_label": "",
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
@@ -6676,6 +6701,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+
+        # Live session spend (display.show_cost). Uses the same accumulator the
+        # turn-summary footer and /insights read, so the bar can't drift from
+        # them. Suppressed when pricing is unknown for the route — a flat
+        # "$0.00" on an unpriced model is worse than showing nothing.
+        if getattr(self, "_show_cost_enabled", False):
+            cost_status = getattr(agent, "session_cost_status", "unknown")
+            if cost_status != "unknown":
+                snapshot["session_cost_label"] = self._format_session_cost(
+                    getattr(agent, "session_estimated_cost_usd", 0.0)
+                )
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -7092,6 +7128,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._turn_token_baseline = (
                 getattr(agent, "session_output_tokens", 0) or 0
             ) if agent is not None else 0
+            # Local patch: baseline the session cost accumulator so the footer
+            # can show this turn's spend (not the whole session's).
+            self._turn_cost_baseline = (
+                getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0
+            ) if agent is not None else 0.0
         except Exception:
             self._turn_summary_collector = None
 
@@ -7113,7 +7154,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             elapsed = max(0.0, time.monotonic() - started) if started else 0.0
-            line = collector.render(elapsed)
+            # Local patch: this turn's estimated spend = session accumulator
+            # delta since the turn began.
+            agent = getattr(self, "agent", None)
+            cost_usd = None
+            if agent is not None:
+                try:
+                    cost_usd = max(
+                        0.0,
+                        (getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                        - (getattr(self, "_turn_cost_baseline", 0.0) or 0.0),
+                    )
+                except Exception:
+                    cost_usd = None
+            line = collector.render(elapsed, cost_usd=cost_usd)
             if line:
                 _cprint(f"  {_DIM}{line}{_RST}")
         except Exception:
@@ -7639,6 +7693,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _avg_vel = snapshot.get("avg_velocity_label") or ""
             if _avg_vel and _ok("tps"):
                 parts.append(f"↑ {_avg_vel}")
+            cost_label = snapshot.get("session_cost_label") or ""
+            if cost_label:
+                parts.append(cost_label)
             if compressions and _ok("compressions"):
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -7804,6 +7861,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _avg_vel = snapshot.get("avg_velocity_label") or ""
                     if _avg_vel and _ok("tps"):
                         _append(frags, " │ ", ("class:status-bar-dim", f"↑ {_avg_vel}"))
+                    cost_label = snapshot.get("session_cost_label") or ""
+                    if cost_label:
+                        _append(frags, " │ ", ("class:status-bar-strong", cost_label))
                     if compressions and _ok("compressions"):
                         _append(frags, " │ ", (self._compression_count_style(compressions), f"🗜️ {compressions}"))
                     if bg_count and _ok("bg_tasks"):

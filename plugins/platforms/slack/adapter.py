@@ -590,10 +590,79 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
                     _append_line(rendered, quote_depth=quote_depth, bullet=bullet)
 
     for block in blocks:
-        if (block or {}).get("type") == "rich_text":
+        block_type = (block or {}).get("type")
+        if block_type == "rich_text":
             _walk_elements(block.get("elements", []))
+        elif block_type == "table":
+            table_text = _render_slack_table_block(block)
+            if table_text:
+                parts.append(table_text)
 
     return "\n".join(parts)
+
+
+#: Cap on a single rendered pasted-table projection. Slack lets a user paste
+#: arbitrarily large spreadsheets; the projection must not grow unboundedly
+#: with whatever was pasted. 20k chars comfortably covers real tables while
+#: staying well under Slack's own 40k message ceiling.
+_SLACK_TABLE_MAX_CHARS = 20_000
+
+
+def _collect_slack_table_cell_text(value: Any) -> str:
+    """Collect the text leaves in a Slack table cell's raw/rich-text subtree.
+
+    Cells arrive as ``raw_text`` objects or nested rich-text trees depending
+    on formatting; walking every ``text`` leaf keeps formatted cells intact
+    without enumerating Slack's cell schema.
+    """
+    parts: list[str] = []
+
+    def _visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        text = node.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        for child in node.values():
+            _visit(child)
+
+    _visit(value)
+    return " ".join(p for p in parts if p).strip()
+
+
+def _render_slack_table_block(
+    block: dict, max_chars: int = _SLACK_TABLE_MAX_CHARS
+) -> str:
+    """Render a Slack ``table`` block as ``cell | cell | cell`` lines.
+
+    Slack represents a **pasted table** as ``blocks[]`` entries of type
+    ``table`` (usually nested inside ``attachments[].blocks[]``). The table
+    appears in neither the message ``text`` nor the file list, so without
+    this projection the agent receives the sentence before the table and
+    nothing else — the table silently does not exist.
+
+    Ported from qwibitai/nanoclaw#3666 (``slack-raw-text.ts``).
+    """
+    rows = block.get("rows") if isinstance(block, dict) else None
+    if not isinstance(rows, list):
+        return ""
+    lines: list[str] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        rendered = " | ".join(_collect_slack_table_cell_text(cell) for cell in row)
+        if rendered.strip(" |"):
+            lines.append(rendered)
+    text = "\n".join(lines)
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[: max_chars - 20].rstrip() + "\n[table truncated]"
+    return text
 
 
 def _extract_text_from_slack_attachments(attachments: list) -> str:
@@ -730,7 +799,16 @@ def _extract_additional_text_from_slack_blocks(
     parts: list[str] = []
 
     for block in blocks or []:
-        if (block or {}).get("type") != "rich_text":
+        block_type = (block or {}).get("type")
+        if block_type == "table":
+            # Pasted tables (qwibitai/nanoclaw#3666): a top-level ``table``
+            # block never appears in the plain text, and the JSON serializer
+            # drops ``rows``, so this is the only path that surfaces it.
+            table_text = _render_slack_table_block(block)
+            if table_text:
+                parts.append(table_text)
+            continue
+        if block_type != "rich_text":
             continue
         for element in block.get("elements", []):
             element_type = element.get("type", "")
@@ -763,8 +841,13 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
     ``actions``, ``accessory``, …), so a single such block must not drag the
     authored text along with it.
     """
+    # ``table`` blocks are rendered as readable text by
+    # :func:`_render_slack_table_block`; the allowlist below drops ``rows``,
+    # so serializing them here would emit an empty ``{"type": "table"}`` husk.
     inspectable = [
-        block for block in (blocks or []) if (block or {}).get("type") != "rich_text"
+        block
+        for block in (blocks or [])
+        if (block or {}).get("type") not in ("rich_text", "table")
     ]
     if not inspectable:
         return ""
@@ -6269,6 +6352,17 @@ class SlackAdapter(BasePlatformAdapter):
                     body = body.strip()
                     if len(body) > 500:
                         body = body[:497] + "..."
+
+                # Pasted tables live ONLY in attachment-nested blocks: Slack
+                # puts a pasted table in ``attachments[].blocks[]`` as a
+                # ``table`` block, absent from ``text``/``fallback``/files.
+                # Without this the agent gets the sentence before the table
+                # and nothing else (qwibitai/nanoclaw#3666).
+                nested_blocks = att.get("blocks")
+                if nested_blocks:
+                    nested_text = _extract_text_from_slack_blocks(nested_blocks)
+                    if nested_text and nested_text not in body:
+                        body = f"{body}\n{nested_text}".strip() if body else nested_text
 
                 if header and body:
                     section = f"{header}\n   {body}"

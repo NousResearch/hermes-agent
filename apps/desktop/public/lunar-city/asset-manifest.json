@@ -5,6 +5,9 @@
   "units": "meters",
   "renderProfile": "desktop-interactive",
   "glb": "lunar-city/lunar-city-baseline.glb",
+  "generated3dManifest": "lunar-city/generated-3d/generated-assets-metadata.json",
+  "generated3dBoardGlb": "lunar-city/generated-3d/lunar-city-generated-assets-board.glb",
+  "generated3dBoardPreview": "lunar-city/generated-3d/lunar-city-generated-assets-board.png",
   "profileManifest": "lunar-city/profile-assets.json",
   "validation": {
     "blenderScript": "scripts/generate_lunar_city_baseline.py",

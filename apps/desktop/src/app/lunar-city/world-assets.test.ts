@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { LUNAR_CITY_ASSET_MANIFEST } from './world-assets'
@@ -8,6 +8,15 @@ describe('Lunar City asset manifest', () => {
   it('covers the full interactive world asset contract', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.schemaVersion).toBe(2)
     expect(LUNAR_CITY_ASSET_MANIFEST.glb).toBe('lunar-city/lunar-city-baseline.glb')
+    expect(LUNAR_CITY_ASSET_MANIFEST.generated3dBoardGlb).toBe(
+      'lunar-city/generated-3d/lunar-city-generated-assets-board.glb'
+    )
+    expect(LUNAR_CITY_ASSET_MANIFEST.generated3dBoardPreview).toBe(
+      'lunar-city/generated-3d/lunar-city-generated-assets-board.png'
+    )
+    expect(LUNAR_CITY_ASSET_MANIFEST.generated3dManifest).toBe(
+      'lunar-city/generated-3d/generated-assets-metadata.json'
+    )
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetGlb).toBe('lunar-city/hero-assets/lunar-city-hero-assets.glb')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetManifest).toBe('lunar-city/hero-assets/hero-assets-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetPreview).toBe('lunar-city/hero-assets/lunar-city-hero-assets.png')
@@ -139,5 +148,79 @@ describe('Lunar City asset manifest', () => {
       expect(quality?.retopologyTarget).toBe('quad_dominant_smart_low_poly')
       expect(Object.keys(lod?.levels ?? {}).sort()).toEqual(['hero', 'high', 'low', 'medium'])
     }
+  })
+
+  it('tracks local image-to-3D meshes generated from the approved reference crops', () => {
+    const referenceManifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/generated-3d/reference-crops/reference-crops-manifest.json'), 'utf8')
+    ) as {
+      cards: Array<{ id: string; kind: string; targetMesh: string; uri: string }>
+      privacy: {
+        containsPrivateProfileIdentifiers: boolean
+        usesRawSoulContent: boolean
+      }
+    }
+    const generatedManifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/generated-3d/generated-assets-metadata.json'), 'utf8')
+    ) as {
+      assetCount: number
+      assets: Array<{ id: string; kind: string; mesh: string; pbrStatus: string; sourceReferenceCrop: string; status: string }>
+      importedCount: number
+      missingCount: number
+      privacy: {
+        containsPrivateProfileIdentifiers: boolean
+        usesRawSoulContent: boolean
+      }
+    }
+
+    expect(referenceManifest.cards).toHaveLength(23)
+    expect(referenceManifest.privacy.usesRawSoulContent).toBe(false)
+    expect(referenceManifest.privacy.containsPrivateProfileIdentifiers).toBe(false)
+    expect(generatedManifest.assetCount).toBe(23)
+    expect(generatedManifest.importedCount).toBe(23)
+    expect(generatedManifest.missingCount).toBe(0)
+    expect(generatedManifest.privacy.usesRawSoulContent).toBe(false)
+    expect(generatedManifest.privacy.containsPrivateProfileIdentifiers).toBe(false)
+
+    const expectedIds = [
+      'building-library',
+      'building-research-lab',
+      'building-arts-studio',
+      'building-engineering',
+      'building-operations-depot',
+      'building-release-gatehouse',
+      'building-triage-clinic',
+      'building-council-hall',
+      'building-review-office',
+      'building-archive',
+      'leader-owl-archivist',
+      'leader-fox-scientist',
+      'leader-raccoon-artist',
+      'leader-eagle-councillor',
+      'leader-badger-engineer',
+      'leader-hawk-reviewer',
+      'leader-owl-historian',
+      'worker-bot-round',
+      'worker-bot-carrying',
+      'worker-bot-review',
+      'child-bot-garden',
+      'vehicle-bus',
+      'prop-break-garden'
+    ]
+    expect(referenceManifest.cards.map(card => card.id)).toEqual(expectedIds)
+    expect(generatedManifest.assets.map(asset => asset.id)).toEqual(expectedIds)
+
+    for (const asset of generatedManifest.assets) {
+      expect(asset.status).toBe('imported')
+      expect(['source_materials', 'needs_rebake']).toContain(asset.pbrStatus)
+      expect(asset.mesh).toBe(`lunar-city/generated-3d/meshes/${asset.id}.glb`)
+      expect(asset.sourceReferenceCrop).toBe(`lunar-city/generated-3d/reference-crops/${asset.id}.png`)
+      expect(existsSync(join(process.cwd(), 'public', asset.mesh))).toBe(true)
+      expect(existsSync(join(process.cwd(), 'public', asset.sourceReferenceCrop))).toBe(true)
+    }
+
+    expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.blend'))).toBe(true)
+    expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.glb'))).toBe(true)
+    expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.png'))).toBe(true)
   })
 })

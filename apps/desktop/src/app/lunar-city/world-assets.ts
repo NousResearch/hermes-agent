@@ -53,11 +53,34 @@ export interface WorldValidationManifest {
   requires: string[]
 }
 
+export interface WorldGenerated3DAssetManifestEntry {
+  id: string
+  kind: 'building' | 'child' | 'leader' | 'prop' | 'vehicle' | 'worker'
+  mesh: string
+  pbrStatus: 'needs_rebake' | 'source_materials'
+  sourceReferenceCrop: string
+  status: 'imported' | 'missing'
+}
+
+export interface WorldGenerated3DManifest {
+  assetCount: number
+  assets: WorldGenerated3DAssetManifestEntry[]
+  blend: string
+  glb: string
+  importedCount: number
+  missingCount: number
+  preview: string
+  sourceManifest: string
+}
+
 export interface WorldAssetManifest {
   animationClips: WorldAnimationManifestEntry[]
   assets: WorldAssetManifestEntry[]
   collections: WorldCollectionManifestEntry[]
   glb: string
+  generated3dBoardGlb?: string
+  generated3dBoardPreview?: string
+  generated3dManifest?: string
   heroAssetGlb?: string
   heroAssetManifest?: string
   heroAssetPreview?: string
@@ -231,6 +254,9 @@ export const LUNAR_CITY_ASSET_MANIFEST: WorldAssetManifest = {
     { id: 'Character Asset Library', purpose: 'Hidden source prototypes for runtime instancing.', render: false }
   ],
   glb: 'lunar-city/lunar-city-baseline.glb',
+  generated3dBoardGlb: 'lunar-city/generated-3d/lunar-city-generated-assets-board.glb',
+  generated3dBoardPreview: 'lunar-city/generated-3d/lunar-city-generated-assets-board.png',
+  generated3dManifest: 'lunar-city/generated-3d/generated-assets-metadata.json',
   heroAssetGlb: 'lunar-city/hero-assets/lunar-city-hero-assets.glb',
   heroAssetManifest: 'lunar-city/hero-assets/hero-assets-manifest.json',
   heroAssetPreview: 'lunar-city/hero-assets/lunar-city-hero-assets.png',

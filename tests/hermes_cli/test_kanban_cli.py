@@ -175,6 +175,116 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Workflow CLI
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_cli_create_show_add_outcome_and_cancel_json(kanban_home):
+    with kb.connect() as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        implementation = kb.create_task(
+            conn, title="implement", assignee="builder", tenant="tenant-a"
+        )
+
+    created = json.loads(kc.run_slash(
+        f"workflow create wf_cli --name release --tenant tenant-a "
+        f"--acceptance-task {acceptance} --mutation-id create-cli --json"
+    ))
+    assert created["workflow"]["state"] == "ACTIVE"
+
+    added = json.loads(kc.run_slash(
+        f"workflow add-member wf_cli {implementation} --tenant tenant-a "
+        "--stage-key implementation --stage-role implementation --required "
+        "--expected-version 1 --mutation-id add-cli --json"
+    ))
+    assert len(added["members"]) == 2
+
+    outcome = json.loads(kc.run_slash(
+        f"workflow outcome wf_cli {implementation} PASS --tenant tenant-a "
+        "--expected-version 2 --mutation-id outcome-cli --json"
+    ))
+    assert outcome["workflow"]["state"] == "ACTIVE"
+
+    shown = json.loads(kc.run_slash("workflow show wf_cli --tenant tenant-a --json"))
+    assert shown["workflow"]["version"] == 3
+
+    cancelled = json.loads(kc.run_slash(
+        "workflow cancel wf_cli --tenant tenant-a --reason stop "
+        "--expected-version 3 --mutation-id cancel-cli --json"
+    ))
+    assert cancelled["workflow"]["state"] == "CANCELLED"
+
+
+def test_workflow_cli_reopen_subscribe_plain_json_and_auth_error(kanban_home):
+    with kb.connect() as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+    json.loads(kc.run_slash(
+        f"workflow create wf_cli_reopen --name release --tenant tenant-a "
+        f"--acceptance-task {acceptance} --mutation-id create-reopen-cli --json"
+    ))
+    passed = json.loads(kc.run_slash(
+        f"workflow outcome wf_cli_reopen {acceptance} PASS --tenant tenant-a "
+        "--expected-version 1 --mutation-id pass-reopen-cli --json"
+    ))
+    assert passed["workflow"]["state"] == "PASS"
+    with kb.connect() as conn:
+        next_acceptance = kb.create_task(
+            conn, title="accept 2", assignee="orchestrator", tenant="tenant-a"
+        )
+        remediation = kb.create_task(
+            conn, title="fix", assignee="builder", tenant="tenant-a"
+        )
+        reverification = kb.create_task(
+            conn, title="verify", assignee="x_qa", tenant="tenant-a"
+        )
+    members = json.dumps([
+        {"task_id": next_acceptance, "stage_key": "acceptance-2",
+         "stage_role": "acceptance", "required": True},
+        {"task_id": remediation, "stage_key": "remediation-2",
+         "stage_role": "remediation", "required": True},
+        {"task_id": reverification, "stage_key": "reverification-2",
+         "stage_role": "reverification", "required": True},
+    ])
+    reopened = json.loads(kc.run_slash(
+        "workflow reopen wf_cli_reopen --tenant tenant-a "
+        f"--acceptance-task {next_acceptance} --members-json '{members}' "
+        "--reason defect --expected-version 2 --mutation-id reopen-cli --json"
+    ))
+    assert reopened["workflow"]["active_generation"] == 2
+    plain = kc.run_slash("workflow show wf_cli_reopen --tenant tenant-a")
+    assert "Workflow wf_cli_reopen: ACTIVE v3 (generation 2)" in plain
+    subscribed = kc.run_slash(
+        "workflow subscribe wf_cli_reopen --tenant tenant-a --platform api_server "
+        "--chat-id origin-session --notifier-profile default --expected-version 3 "
+        "--mutation-id subscribe-cli"
+    )
+    assert "Workflow wf_cli_reopen: ACTIVE v4" in subscribed
+    denied = kc.run_slash("workflow show wf_cli_reopen --tenant tenant-b")
+    assert "tenant" in denied.lower()
+
+
+def test_workflow_cli_generates_mutation_id_and_reports_conflict(kanban_home):
+    with kb.connect() as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+    output = kc.run_slash(
+        f"workflow create wf_generated --name generated --tenant tenant-a "
+        f"--acceptance-task {acceptance}"
+    )
+    assert "wf_generated" in output
+    conflict = kc.run_slash(
+        "workflow cancel wf_generated --tenant tenant-a --reason stale "
+        "--expected-version 99 --mutation-id stale-cancel"
+    )
+    assert "current version" in conflict.lower()
+
+
+# ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
 

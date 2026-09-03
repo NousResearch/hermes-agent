@@ -7,6 +7,7 @@ import types
 import io
 import contextlib
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -197,6 +198,154 @@ class TestDoctorEnvFileEncoding:
 
         with pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=False))
+
+
+def test_workflow_health_is_quiet_for_clean_legacy_board(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db(path)
+    assert doctor._check_kanban_workflow_health(path) == []
+
+
+def test_workflow_health_reports_active_dead_letter_and_integrity(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test", profile_name="orchestrator",
+            board_identity="board:test", tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}), source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn, workflow_id="wf_doctor", name="doctor", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor,
+            mutation_id="create-doctor", subscription={
+                "platform": "telegram", "chat_id": "origin",
+                "notifier_profile": "default",
+            },
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET dead_lettered_at=1,last_error_class='SendError' "
+            "WHERE workflow_id='wf_doctor'"
+        )
+        conn.execute("UPDATE kanban_workflows SET state='PASS' WHERE id='wf_doctor'")
+
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    text = "\n".join(diagnostics)
+    assert "dead-letter" in text
+    assert "integrity" in text
+    assert "older binaries" in text
+
+
+def test_workflow_health_uses_keyword_integrity_api_and_errors_key(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test",
+            profile_name="orchestrator",
+            board_identity="board:test",
+            tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}),
+            source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_keyword",
+            name="doctor",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance,
+            actor=actor,
+            mutation_id="create-keyword",
+        )
+
+    def keyword_only_report(conn, *, workflow_id=None):
+        assert workflow_id == "wf_keyword"
+        return {"ok": False, "errors": ["orphan designation"], "warnings": []}
+
+    monkeypatch.setattr(kb, "workflow_integrity_report", keyword_only_report)
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    assert any("orphan designation" in item for item in diagnostics)
+    assert not any("health check failed" in item for item in diagnostics)
+
+
+def test_workflow_health_terminal_delivery_semantics_include_superseded(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test",
+            profile_name="orchestrator",
+            board_identity="board:test",
+            tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}),
+            source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_superseded",
+            name="doctor",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance,
+            actor=actor,
+            mutation_id="create-superseded",
+            subscription={
+                "platform": "telegram",
+                "chat_id": "origin",
+                "notifier_profile": "default",
+            },
+        )
+        kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_superseded",
+            task_id=acceptance,
+            outcome="SUPERSEDED",
+            actor=kb.KanbanActorContext(
+                principal_id="doctor-test",
+                profile_name="orchestrator",
+                board_identity="board:test",
+                tenant="tenant-a",
+                capabilities=frozenset({"workflow.outcome"}),
+                source_kind="orchestrator",
+            ),
+            mutation_id="supersede",
+            expected_version=1,
+        )
+
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    assert any("undelivered" in item for item in diagnostics)
+    with kb.connect(path) as conn:
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=("
+            "SELECT last_event_id FROM kanban_workflows WHERE id='wf_superseded') "
+            "WHERE workflow_id='wf_superseded'"
+        )
+    assert doctor._check_kanban_workflow_health(path) == []
 
 
 class TestDoctorToolAvailabilityOverrides:
@@ -777,19 +926,30 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "npm install -g agent-browser && agent-browser install" in out
 
 
+def _isolate_doctor_fix_paths(monkeypatch, tmp_path):
+    """Keep Doctor's --fix launcher paths inside this test's tmp directory."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(doctor_mod.Path, "home", lambda: home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    return home, project
+
+
 def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
     """Shared non-Termux fixture setup for the agent-browser npx-resolution
     branch in run_doctor (hermes_cli/doctor.py ~1557-1605)."""
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    project = tmp_path / "project"
-    project.mkdir(exist_ok=True)
+    _, project = _isolate_doctor_fix_paths(monkeypatch, tmp_path)
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
     monkeypatch.setattr(
         doctor_mod.shutil,
@@ -1428,6 +1588,7 @@ class TestDoctorStaleMaxIterationsDrift:
             env_lines.append(f"HERMES_MAX_ITERATIONS={ghost}\n")
         (hermes_home / ".env").write_text("".join(env_lines), encoding="utf-8")
 
+        _isolate_doctor_fix_paths(monkeypatch, tmp_path)
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
         monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
         # Point the config helpers at the temp home.
@@ -1470,6 +1631,24 @@ class TestDoctorStaleMaxIterationsDrift:
         env_after = (hermes_home / ".env").read_text(encoding="utf-8")
         assert "HERMES_MAX_ITERATIONS" not in env_after
         assert "OPENAI_API_KEY=sk-test" in env_after  # other keys preserved
+
+    def test_fix_uses_only_disposable_launcher_paths(self, monkeypatch, tmp_path):
+        """--fix must never target the caller's launcher or worktree venv."""
+        external_launcher = tmp_path / "external" / ".local" / "bin" / "hermes"
+        external_launcher.parent.mkdir(parents=True)
+        external_launcher.write_text("external sentinel", encoding="utf-8")
+        sentinel_before = (external_launcher.lstat(), external_launcher.read_bytes())
+
+        _, hermes_home = self._run_config_section(
+            monkeypatch, tmp_path, fix=True, ghost=90, cfg_turns=400,
+            os_environ_value=400,
+        )
+
+        assert doctor_mod.HERMES_HOME == hermes_home
+        assert Path.home().is_relative_to(tmp_path)
+        assert doctor_mod.PROJECT_ROOT.is_relative_to(tmp_path)
+        assert external_launcher.lstat() == sentinel_before[0]
+        assert external_launcher.read_bytes() == sentinel_before[1]
 
 
     def test_no_drift_when_ghost_absent(self, monkeypatch, tmp_path):

@@ -8,9 +8,7 @@ import socket
 import pytest
 
 
-@pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix datagram sockets are unavailable"
-)
+@pytest.mark.linux_only  # abstract Unix sockets ("\0"-prefixed) are Linux-only
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
     name = "\0hermes-test-notify"
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

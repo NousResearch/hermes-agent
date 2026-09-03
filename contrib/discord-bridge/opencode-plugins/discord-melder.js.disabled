@@ -1,0 +1,123 @@
+/**
+ * Discord-Melder — schreibt am Ende jeder opencode-Antwort eine kurze
+ * Meldung in einen Discord-Kanal, über einen Kanal-Webhook.
+ *
+ * Warum Webhook statt eigenem Bot: für reine Meldungen braucht es kein
+ * Bot-Konto, keinen Token-Prozess und keinen laufenden Dienst. Der Webhook
+ * erscheint in Discord mit eigenem Namen („OpenCode“) und gilt als Bot-
+ * Nachricht — der Hermes-Bot ignoriert Bot-Nachrichten (DISCORD_ALLOW_BOTS
+ * steht standardmäßig auf „none“) und antwortet deshalb nicht darauf.
+ * Interaktive Rückfragen (Buttons) kann ein Webhook nicht; die laufen weiter
+ * über die Bridge im Hermes-Gateway (siehe befehlswaechter.js).
+ *
+ * Einrichtung: Webhook-URL im Kanal anlegen (Kanal-Einstellungen →
+ * Integrationen → Webhooks) und in `~/.config/opencode/discord-webhook.txt`
+ * ablegen (oder Umgebungsvariable OPENCODE_DISCORD_WEBHOOK). Fehlt beides,
+ * bleibt das Plugin still.
+ */
+
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+const WEBHOOK_DATEI = path.join(os.homedir(), ".config/opencode/discord-webhook.txt")
+const MAX_ZEICHEN = 1500 // Discord erlaubt 2000; Rest ist Kopfzeile
+const NAME = "OpenCode"
+
+export function webhookUrl() {
+  const env = (process.env.OPENCODE_DISCORD_WEBHOOK || "").trim()
+  if (env) return env
+  try {
+    return fs.readFileSync(WEBHOOK_DATEI, "utf8").trim()
+  } catch {
+    return ""
+  }
+}
+
+function kuerzen(text, max = MAX_ZEICHEN) {
+  const t = String(text || "").trim()
+  if (t.length <= max) return t
+  return t.slice(0, max - 1).trimEnd() + "…"
+}
+
+/** Baut den Nachrichtentext für eine abgeschlossene Antwort. */
+export function meldung({ projekt, sitzung, text, titel }) {
+  const kopf = `**${NAME}** · \`${path.basename(projekt || "") || projekt}\`` + (titel ? ` · ${kuerzen(titel, 80)}` : "")
+  const koerper = kuerzen(text)
+  return `${kopf}\n${koerper || "_(keine Textantwort)_"}\n-# Session ${String(sitzung || "").slice(0, 12)}`
+}
+
+/** Sammelt Assistententexte je Session und meldet beim Leerlauf. */
+export function meldeZustand() {
+  const rollen = new Map() // messageID → role
+  const texte = new Map() // sessionID → letzter abgeschlossener Assistententext
+  const titel = new Map() // sessionID → Titel
+  const gemeldet = new Map() // sessionID → zuletzt gemeldeter Text
+
+  function verarbeite(ev) {
+    const p = ev?.properties ?? {}
+    switch (ev?.type) {
+      case "message.updated": {
+        const info = p.info ?? {}
+        if (info.id && info.role) rollen.set(info.id, info.role)
+        return null
+      }
+      case "message.part.updated": {
+        const part = p.part ?? {}
+        if (part.type !== "text" || !part.sessionID) return null
+        if (rollen.get(part.messageID) !== "assistant") return null
+        if (!part.time?.end) return null
+        texte.set(part.sessionID, part.text ?? "")
+        return null
+      }
+      case "session.updated": {
+        const info = p.info ?? {}
+        if (info.id && info.title) titel.set(info.id, info.title)
+        return null
+      }
+      case "session.idle":
+      case "session.status": {
+        if (ev.type === "session.status" && p.status?.type !== "idle") return null
+        const sid = p.sessionID
+        if (!sid || !texte.has(sid)) return null
+        const text = texte.get(sid)
+        if (gemeldet.get(sid) === text) return null // Doppelmeldung vermeiden
+        gemeldet.set(sid, text)
+        return { sitzung: sid, text, titel: titel.get(sid) }
+      }
+      default:
+        return null
+    }
+  }
+  return { verarbeite }
+}
+
+export async function senden(url, inhalt, fetchFn = fetch) {
+  // Gegen den Plugin-Fabrik-Aufruf beim Laden (Kontextobjekt statt URL).
+  if (typeof url !== "string" || !/^https:\/\//.test(url)) return false
+  const antwort = await fetchFn(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: NAME, content: inhalt, allowed_mentions: { parse: [] } }),
+    signal: AbortSignal.timeout(8000),
+  })
+  return antwort.ok
+}
+
+export const DiscordMelder = async ({ directory }) => {
+  const url = webhookUrl()
+  if (!/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(url)) return {}
+  const projekt = path.resolve(directory ?? process.cwd())
+  const zustand = meldeZustand()
+  return {
+    event: async ({ event }) => {
+      const fertig = zustand.verarbeite(event)
+      if (!fertig) return
+      try {
+        await senden(url, meldung({ projekt, ...fertig }))
+      } catch {
+        // Meldungen dürfen die Arbeit nie anhalten
+      }
+    },
+  }
+}

@@ -1212,6 +1212,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # shutdown from a runtime websocket crash.
         self._disconnecting = False
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
+        # OpenCode permission bridge (opt-in via config extra "opencode_bridge").
+        self._opencode_bridge: Optional[Any] = None
+        self._opencode_bridge_checked = False
         from hermes_constants import get_hermes_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
         self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
@@ -1460,6 +1463,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+                adapter_self._ensure_opencode_bridge()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -2260,6 +2264,14 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._opencode_bridge is not None:
+            try:
+                await self._opencode_bridge.aclose()
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[%s] Error stopping OpenCode bridge: %s", self.name, e)
+            self._opencode_bridge = None
+            self._opencode_bridge_checked = False
+
         self._running = False
         self._client = None
         self._ready_event.clear()
@@ -2626,6 +2638,36 @@ class DiscordAdapter(BasePlatformAdapter):
                 runner._startup_restore_tasks = tasks
             tasks.append(task)
         return task
+
+    def _ensure_opencode_bridge(self) -> None:
+        """Start the OpenCode permission bridge once, when configured (opt-in).
+
+        Mirrors ``_define_discord_view_classes``'s lazy-start posture: the
+        bridge is only constructed after a live connection exists. Misconfig
+        (non-loopback base_url, empty allowlist, missing channel) disables it
+        fail-closed with a one-time warning; absence/disabled stay silent.
+        """
+        if self._opencode_bridge_checked:
+            return
+        self._opencode_bridge_checked = True
+        try:
+            from plugins.platforms.discord.opencode_bridge import (
+                OpenCodeBridge,
+                parse_bridge_config,
+            )
+
+            config = parse_bridge_config(self.config.extra)
+            if not config.enabled:
+                if config.disabled_reason not in ("not configured", "disabled"):
+                    logger.warning(
+                        "[Discord] OpenCode permission bridge disabled: %s",
+                        config.disabled_reason,
+                    )
+                return
+            self._opencode_bridge = OpenCodeBridge(self, config)
+            self._opencode_bridge.start()
+        except Exception as e:
+            logger.warning("[Discord] Failed to start OpenCode bridge: %s", e)
 
     async def _run_missed_message_backfill(self) -> None:
         """Find and enqueue recent Discord messages missed while the bot was down.

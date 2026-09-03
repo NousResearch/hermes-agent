@@ -3,13 +3,14 @@
 import json
 import urllib.error
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from tools.discord_tool import (
     DiscordAPIError,
     _ACTIONS,
+    _ACTION_MANIFEST,
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
@@ -283,15 +284,20 @@ class TestCreateThread:
     @patch("tools.discord_tool._discord_request")
     def test_create_standalone_thread(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        mock_req.return_value = {"id": "800", "name": "New Thread"}
+        mock_req.side_effect = [
+            {"id": "11", "type": 0},               # GET /channels/11 → text
+            {"id": "800", "name": "New Thread"},   # POST /channels/11/threads
+        ]
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
-        # Verify the API call
-        mock_req.assert_called_once_with(
-            "POST", "/channels/11/threads", "test-token",
-            body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
-        )
+        # Two API calls: channel-type lookup, then thread creation.
+        # Text channels keep the legacy payload — no starter message field.
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/11", "test-token"),
+            call("POST", "/channels/11/threads", "test-token",
+                 body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11}),
+        ]
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_from_message(self, mock_req, monkeypatch):
@@ -301,10 +307,346 @@ class TestCreateThread:
             action="create_thread", channel_id="11", name="Discussion", message_id="1001",
         ))
         assert result["success"] is True
+        # Anchored path needs no channel-type lookup.
         mock_req.assert_called_once_with(
             "POST", "/channels/11/messages/1001/threads", "test-token",
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_forum_post_with_content(self, mock_req, monkeypatch):
+        """Forum channel (type 15): name + content become a forum post via
+        the Start-Thread-in-Forum payload."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "15", "type": 15},               # GET /channels/15 → forum
+            {"id": "900", "name": "Build Status"},  # POST /channels/15/threads
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="15", name="Build Status",
+            content="All checks passed.",
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "900"
+        assert result["forum_post"] is True
+        assert result["starter_content"] == "All checks passed."
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/15", "test-token"),
+            call("POST", "/channels/15/threads", "test-token",
+                 body={
+                     "name": "Build Status",
+                     "auto_archive_duration": 1440,
+                     "type": 11,
+                     "message": {"content": "All checks passed."},
+                 }),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_forum_post_without_content_falls_back_to_name(self, mock_req, monkeypatch):
+        """Discord requires a message object for forum posts; without
+        content the thread name doubles as the starter content."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "15", "type": 15},
+            {"id": "901", "name": "Weekly Digest"},
+        ]
+        result = json.loads(discord_core(action="create_thread", channel_id="15", name="Weekly Digest"))
+        assert result["success"] is True
+        assert result["forum_post"] is True
+        assert result["starter_content"] == "Weekly Digest"
+        assert mock_req.call_args_list[1] == call(
+            "POST", "/channels/15/threads", "test-token",
+            body={
+                "name": "Weekly Digest",
+                "auto_archive_duration": 1440,
+                "type": 11,
+                "message": {"content": "Weekly Digest"},
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_media_channel_post_treated_like_forum(self, mock_req, monkeypatch):
+        """Media channels (type 16) share the forum creation payload."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "16", "type": 16},
+            {"id": "902", "name": "Screenshots"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="16", name="Screenshots",
+            content="See attached.",
+        ))
+        assert result["success"] is True
+        assert result["forum_post"] is True
+        assert mock_req.call_args_list[1] == call(
+            "POST", "/channels/16/threads", "test-token",
+            body={
+                "name": "Screenshots",
+                "auto_archive_duration": 1440,
+                "type": 11,
+                "message": {"content": "See attached."},
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_thread_with_content_sends_starter_message(self, mock_req, monkeypatch):
+        """Normal threads have no starter-message field — optional content
+        is delivered as the thread's first message after creation."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "11", "type": 0},
+            {"id": "800", "name": "New Thread"},
+            {"id": "5000", "content": "first message"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="New Thread",
+            content="first message",
+        ))
+        assert result["success"] is True
+        assert result["starter_message_id"] == "5000"
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/11", "test-token"),
+            call("POST", "/channels/11/threads", "test-token",
+                 body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11}),
+            call("POST", "/channels/800/messages", "test-token",
+                 body={"content": "first message"}),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_from_message_with_content(self, mock_req, monkeypatch):
+        """Anchored creation ignores no channel lookup; content still lands
+        in the new thread afterwards."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "801", "name": "Discussion"},
+            {"id": "5001"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Discussion",
+            message_id="1001", content="kickoff note",
+        ))
+        assert result["success"] is True
+        assert result["starter_message_id"] == "5001"
+        assert mock_req.call_args_list == [
+            call("POST", "/channels/11/messages/1001/threads", "test-token",
+                 body={"name": "Discussion", "auto_archive_duration": 1440}),
+            call("POST", "/channels/801/messages", "test-token",
+                 body={"content": "kickoff note"}),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_channel_lookup_failure_returns_error_without_creation(self, mock_req, monkeypatch):
+        """If the channel-type lookup fails, no thread creation is attempted."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = DiscordAPIError(404, '{"message": "Unknown Channel"}')
+        result = json.loads(discord_core(action="create_thread", channel_id="99", name="X"))
+        assert "error" in result
+        assert "404" in result["error"]
+        assert mock_req.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Action: send_message
+# ---------------------------------------------------------------------------
+
+class TestSendMessage:
+    @patch("tools.discord_tool._discord_request")
+    def test_send_to_text_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "5000", "channel_id": "11", "content": "hello"}
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="hello"))
+        assert result["success"] is True
+        assert result["message_id"] == "5000"
+        assert result["channel_id"] == "11"
+        # Single call — no channel-type lookup needed for text channels.
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/messages", "test-token",
+            body={"content": "hello"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_send_to_existing_thread(self, mock_req, monkeypatch):
+        """Threads ARE channels in Discord's API — the same endpoint works,
+        with no channel-type lookup round trip."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "6000"}
+        result = json.loads(discord_core(
+            action="send_message", channel_id="800", content="thread reply",
+        ))
+        assert result["success"] is True
+        assert result["message_id"] == "6000"
+        mock_req.assert_called_once_with(
+            "POST", "/channels/800/messages", "test-token",
+            body={"content": "thread reply"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_send_to_existing_forum_post(self, mock_req, monkeypatch):
+        """A forum post is a thread — addressed by its own channel ID."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "7000"}
+        result = json.loads(discord_core(
+            action="send_message", channel_id="900", content="follow-up on the post",
+        ))
+        assert result["success"] is True
+        assert result["message_id"] == "7000"
+        mock_req.assert_called_once_with(
+            "POST", "/channels/900/messages", "test-token",
+            body={"content": "follow-up on the post"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_missing_content_rejected(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="send_message", channel_id="11"))
+        assert "error" in result
+        assert "content" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_whitespace_only_content_rejected(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="   "))
+        assert "error" in result
+        assert "non-empty" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_missing_channel_id_rejected(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="send_message", content="hi"))
+        assert "error" in result
+        assert "channel_id" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_api_error_handled(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = DiscordAPIError(400, '{"message": "Cannot send to a forum channel"}')
+        result = json.loads(discord_core(action="send_message", channel_id="15", content="hi"))
+        assert "error" in result
+        assert "400" in result["error"]
+        assert "forum channel" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_403_is_enriched(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = DiscordAPIError(403, '{"message": "Missing Access"}')
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="hi"))
+        assert "error" in result
+        assert "SEND_MESSAGES" in result["error"]
+        assert "Missing Access" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_unexpected_error_handled(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = RuntimeError("boom")
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="hi"))
+        assert "error" in result
+        assert "boom" in result["error"]
+
+    def test_send_message_in_core_schema_only(self):
+        """send_message is a participation action — core tool, not admin."""
+        from tools.discord_tool import _STATIC_ADMIN_SCHEMA, _STATIC_CORE_SCHEMA
+        core_actions = _STATIC_CORE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        admin_actions = _STATIC_ADMIN_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        assert "send_message" in core_actions
+        assert "send_message" not in admin_actions
+        # Manifest line describes all three target kinds.
+        manifest = {m[0]: m for m in _ACTION_MANIFEST}
+        assert "thread" in manifest["send_message"][2]
+        assert "forum" in manifest["send_message"][2]
+
+
+# ---------------------------------------------------------------------------
+# Fake-Discord E2E: real HTTP transport against a localhost REST stub
+# ---------------------------------------------------------------------------
+
+class TestFakeDiscordE2E:
+    """Exercise the tool's REAL urllib request path against a local HTTP
+    server that stubs the Discord REST API — no mocks between handler and
+    transport, no live network (localhost only)."""
+
+    @pytest.fixture
+    def fake_discord(self, monkeypatch):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        received = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def _reply(self, status, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                received.append({"method": "POST", "path": self.path,
+                                 "body": payload,
+                                 "auth": self.headers.get("Authorization")})
+                if "/messages" in self.path:
+                    channel_id = self.path.split("/")[2]
+                    if channel_id == "missing-channel":
+                        self._reply(404, {"message": "Unknown Channel", "code": 10003})
+                    else:
+                        self._reply(200, {"id": f"msg-{channel_id}",
+                                          "channel_id": channel_id,
+                                          "content": payload.get("content", "")})
+                else:
+                    self._reply(404, {"message": "Unknown endpoint", "code": 0})
+
+            def log_message(self, *args):  # silence request logging
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        monkeypatch.setattr(
+            "tools.discord_tool.DISCORD_API_BASE",
+            f"http://127.0.0.1:{server.server_address[1]}",
+        )
+        yield received
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    @pytest.mark.parametrize("channel_id,kind", [
+        ("11", "text-channel"),
+        ("800", "thread"),
+        ("900", "forum-post"),
+    ])
+    def test_send_message_real_transport(self, fake_discord, monkeypatch, channel_id, kind):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(
+            action="send_message", channel_id=channel_id, content=f"hi from {kind}",
+        ))
+        assert result["success"] is True
+        assert result["message_id"] == f"msg-{channel_id}"
+        assert result["channel_id"] == channel_id
+        assert len(fake_discord) == 1
+        req = fake_discord[0]
+        assert req["path"] == f"/channels/{channel_id}/messages"
+        assert req["body"] == {"content": f"hi from {kind}"}
+        assert req["auth"] == "Bot test-token"
+
+    def test_error_response_propagates_through_real_transport(
+        self, fake_discord, monkeypatch,
+    ):
+        """HTTP error responses surface as tool errors end-to-end: the stub
+        404s the designated channel → real urllib HTTPError → tool_error with
+        the real response body preserved."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(
+            action="send_message", channel_id="missing-channel", content="hi",
+        ))
+        assert "error" in result
+        assert "Unknown Channel" in result["error"]
+        assert fake_discord[0]["path"] == "/channels/missing-channel/messages"
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +689,16 @@ class TestRegistration:
         """Core + admin actions should cover all known actions."""
         assert set(_CORE_ACTIONS.keys()) | set(_ADMIN_ACTIONS.keys()) == set(_ACTIONS.keys())
         assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
+
+    def test_create_thread_schema_exposes_content_param(self):
+        """The discord tool schema must document the optional content param
+        (starter message / forum post body) so the model can use it."""
+        from tools.discord_tool import _STATIC_CORE_SCHEMA
+        assert _STATIC_CORE_SCHEMA is not None
+        props = _STATIC_CORE_SCHEMA["parameters"]["properties"]
+        assert "content" in props
+        assert props["content"]["type"] == "string"
+        assert "forum" in props["content"]["description"]
 
 
 # ---------------------------------------------------------------------------

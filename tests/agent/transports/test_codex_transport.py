@@ -1543,3 +1543,115 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestCopilotResponsesTemperatureStrip:
+    """GitHub Copilot's GPT-5.x models on the Responses API reject
+    ``temperature`` at any non-default value (HTTP 400 "Unsupported parameter:
+    temperature is not supported with this model"), live-verified on
+    gpt-5.6-luna and gpt-5.5 (400 on temperature=0.3 AND 0.0; only the default
+    value 1 or an omitted field is accepted). temperature leaks in via
+    request_overrides. The strip is scoped to the gpt-5 family on the
+    GitHub/Copilot Responses surface only: grok-4.6 / mai-code on the same
+    surface accept temperature, and native codex/openai backends accept it too,
+    so neither must be touched.
+    See issue #72351.
+    """
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.5"])
+    @pytest.mark.parametrize("temperature", [0.3, 0.0])
+    def test_gpt5_on_copilot_strips_temperature(self, transport, model, temperature):
+        """gpt-5.6 / gpt-5.5 on Copilot Responses must have temperature
+        stripped at both 0.3 and 0.0 (the live-verified 400 values)."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"temperature": temperature},
+        )
+        assert "temperature" not in kw, (
+            f"temperature must be stripped for {model} on Copilot Responses, "
+            f"got {kw.get('temperature')!r}"
+        )
+
+    @pytest.mark.parametrize("model", ["openai/gpt-5.6", "openai/gpt-5.5-codex"])
+    def test_vendor_prefixed_gpt5_on_copilot_strips_temperature(self, transport, model):
+        """Vendor-prefixed ids (e.g. ``openai/gpt-5.6``) reach the strip via the
+        ``"/gpt-5" in _model_lower`` substring branch, not ``startswith``. Both
+        existing cases use bare names, so this pins that branch: the strip must
+        still apply when the gpt-5 family id carries a vendor prefix."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"temperature": 0.3},
+        )
+        assert "temperature" not in kw, (
+            f"temperature must be stripped for vendor-prefixed {model} on "
+            f"Copilot Responses, got {kw.get('temperature')!r}"
+        )
+
+    def test_non_gpt5_prefixed_model_on_copilot_keeps_temperature(self, transport):
+        """A non-gpt-5 id that merely carries a vendor prefix (e.g.
+        ``openai/o4-mini``) must NOT match the ``"/gpt-5"`` substring and so must
+        keep its temperature. This guards the substring logic against
+        over-matching any ``openai/*`` id."""
+        kw = transport.build_kwargs(
+            model="openai/o4-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"temperature": 0.3},
+        )
+        assert kw.get("temperature") == 0.3, (
+            "openai/o4-mini does not match the gpt-5 family and must keep "
+            f"temperature, got {kw.get('temperature')!r}"
+        )
+
+    def test_gpt5_on_copilot_keeps_supported_default_temperature(self, transport):
+        """The supported default value is not part of the compatibility strip."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"temperature": 1},
+        )
+        assert kw.get("temperature") == 1
+
+    def test_grok_on_copilot_keeps_temperature(self, transport):
+        """grok-4.6 on the same Copilot Responses surface accepts
+        temperature (200 @ 0.3), so it must NOT be stripped."""
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"temperature": 0.3},
+        )
+        assert kw.get("temperature") == 0.3, (
+            "grok-4.6 on Copilot Responses accepts temperature and must keep it"
+        )
+
+    def test_native_codex_gpt5_keeps_temperature(self, transport):
+        """The strip is Copilot/GitHub-only. Native codex (OpenAI's own
+        Responses endpoint) accepts temperature for gpt-5.x, so stripping
+        there would silently drop a valid caller parameter."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=False,
+            is_codex_backend=True,
+            request_overrides={"temperature": 0.3},
+        )
+        assert kw.get("temperature") == 0.3, (
+            "native codex must keep temperature for gpt-5.x"
+        )

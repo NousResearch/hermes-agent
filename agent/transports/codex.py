@@ -836,6 +836,32 @@ class ResponsesApiTransport(ProviderTransport):
             ):
                 kwargs.pop("service_tier", None)
 
+        # GitHub Copilot's GPT-5.x models on the Responses API reject any
+        # non-default ``temperature`` (HTTP 400 "Unsupported parameter:
+        # temperature is not supported with this model"): live-verified on
+        # gpt-5.6-luna and gpt-5.5, which 400 on temperature=0.3 AND 0.0.
+        # Only the default value (1) or an omitted field is accepted (200),
+        # so callers that hardcode a non-default temperature — e.g. title
+        # generation at 0.3 (issue #72351) — silently 400 every turn. The
+        # safe fix is to drop the field so the server default applies.
+        # grok-4.6 / mai-code on the same Copilot Responses surface accept
+        # temperature (200 @ 0.3), and native codex/openai backends accept it
+        # too, so the strip is scoped to the gpt-5 family on the Copilot/GitHub
+        # Responses backend only. temperature arrives here via request_overrides.
+        # NB: ``startswith("gpt-5")`` (and the "/gpt-5" substring) also matches
+        # any as-yet-unnamed gpt-5 successor (gpt-5.7, gpt-50, gpt-51, ...). That
+        # breadth is intentional: every gpt-5 variant probed so far rejects a
+        # non-default temperature, so silently dropping the field for a future
+        # sibling is the safe default and beats a hard 400 on a model we have
+        # not enumerated. Do not narrow this into a per-version allowlist.
+        if is_github_responses:
+            _model_lower = str(model or "").strip().lower()
+            if (
+                kwargs.get("temperature", 1) != 1
+                and (_model_lower.startswith("gpt-5") or "/gpt-5" in _model_lower)
+            ):
+                kwargs.pop("temperature", None)
+
         # Forward per-request timeout to the SDK so OpenAI/Anthropic clients
         # honor it.  Without this, ``providers.<id>.request_timeout_seconds``
         # is silently dropped on the main agent Codex path while the

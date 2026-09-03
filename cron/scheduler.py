@@ -4759,6 +4759,30 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+_CRON_RESPONSE_HEADING = "\n## Response\n"
+_CRON_ERROR_HEADING = "\n## Error\n"
+
+
+def _extract_cron_output_body(output_text: str) -> str:
+    """Return just the response (or error) body of a cron run's output file.
+
+    Run files are written ``## Prompt`` first, and the prompt they record is
+    the *augmented* one — including any context injected into that run. Feeding
+    a whole file back as context therefore nests each run inside the next, and
+    once the character cap bites it truncates away the very response the
+    injection exists to carry.
+
+    Slicing the trailing body out keeps continuity carrying content rather than
+    history, and it recovers correctly from files that already nested. Anything
+    not in the known format is returned unchanged.
+    """
+    for heading in (_CRON_RESPONSE_HEADING, _CRON_ERROR_HEADING):
+        idx = output_text.rfind(heading)
+        if idx != -1:
+            return output_text[idx + len(heading):].strip()
+    return output_text.strip()
+
+
 def _build_job_prompt(
     job: dict,
     prerun_script: Optional[tuple] = None,
@@ -4858,7 +4882,9 @@ def _build_job_prompt(
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_output = _extract_cron_output_body(
+                    output_files[0].read_text(encoding="utf-8")
+                )
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:

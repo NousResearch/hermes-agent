@@ -132,6 +132,12 @@ class CommandDef:
     # Desktop availability. ``None`` = offered; ``hidden`` = runs but stays out
     # of the popover; otherwise a reason (terminal / messaging / settings / …).
     desktop: str | None = None
+    # Desktop subcommand scope.  When set, the desktop surface only offers
+    # (completion) and forwards (exec) these subcommands — the first argument
+    # token must be one of them.  Use when a command family mixes desktop-
+    # relevant review actions with CLI-hub mutations (e.g. /skills install),
+    # so offering the command doesn't widen the whole family.
+    desktop_subcommands: tuple[str, ...] | None = None
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
@@ -328,7 +334,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_config_gate="skills.write_approval",
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
-               desktop="settings"),
+               # Desktop exposes only the write-approval review slice — the
+               # same surface the gateway handler offers.  The hub mutations
+               # (search/browse/inspect/install/audit) run a full interactive
+               # CLI hub that must not be reachable from a desktop exec
+               # (#98330 review).
+               desktop_subcommands=("pending", "approve", "reject", "diff",
+                                    "approval")),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills",
                args_hint="[pending|approve|reject|approval] [id|on|off]",
@@ -438,9 +450,12 @@ def infer_argument_mode(cmd: CommandDef) -> str | None:
     return None
 
 
-def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
+def command_desktop_meta(cmd: CommandDef) -> dict[str, object]:
     """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
-    return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    meta: dict[str, object] = {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    if cmd.desktop_subcommands is not None:
+        meta["desktop_subcommands"] = list(cmd.desktop_subcommands)
+    return meta
 
 
 # ---------------------------------------------------------------------------

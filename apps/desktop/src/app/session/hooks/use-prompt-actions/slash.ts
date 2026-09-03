@@ -11,6 +11,7 @@ import {
   type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
@@ -269,6 +270,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its write-approval review slice here — the CLI hub mutations
+        // must not be reachable from a desktop exec) stop at the client.
+        const subcommandBlocked = desktopSubcommandUnavailableMessage(name, arg)
+
+        if (subcommandBlocked) {
+          renderSlashOutput(subcommandBlocked)
+
+          return
+        }
+
         let slashExecError: unknown = null
 
         const handleDispatch = async (
@@ -382,7 +394,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         try {
           const result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,
-            command: command.replace(/^\/+/, '')
+            command: command.replace(/^\/+/, ''),
+            surface: 'desktop'
           })
 
           const dispatch = parseCommandDispatch(result)
@@ -432,7 +445,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // the real error, so don't bury it under the routing noise.
           const dispatchMessage = err instanceof Error ? err.message : String(err)
 
-          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
             const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
             renderSlashOutput(`error: /${name} failed: ${original}`)
 

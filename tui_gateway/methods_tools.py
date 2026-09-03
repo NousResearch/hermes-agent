@@ -266,7 +266,7 @@ def _(rid, params: dict) -> dict:
 
         all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
-        commands: dict[str, dict[str, str | None]] = {}
+        commands: dict[str, dict[str, object]] = {}
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
@@ -1202,6 +1202,71 @@ def _(rid, params: dict) -> dict:
     _cmd_parts = _cmd_text.split(maxsplit=1)
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
+
+    # /skills has an interactive hub for the stdio TUI and the server-spawned
+    # TUI WebSocket. Other transports get the registry's review-only slice.
+    # Bind that decision to server-authenticated transport state: an RPC param
+    # claiming ``surface=tui`` is not authority.
+    transport = current_transport()
+    identity = getattr(transport, "auth_identity", None)
+    server_internal_tui = identity == {
+        "user_id": "server-internal",
+        "provider": "server-internal",
+    }
+    if (
+        _cmd_base == "skills"
+        and transport is not _stdio_transport
+        and not server_internal_tui
+    ):
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools import write_approval as wa
+
+        command_spec = resolve_command("skills")
+        allowed = {
+            sub.lower()
+            for sub in (getattr(command_spec, "desktop_subcommands", ()) or ())
+        }
+        review_args = _cmd_arg.split()
+        review_subcommand = review_args[0].lower() if review_args else ""
+        if review_subcommand not in allowed:
+            available = ", ".join(sorted(allowed))
+            return _err(
+                rid,
+                4018,
+                f"/skills slash.exec only supports review subcommands: {available}",
+            )
+
+        home_token = None
+        profile_home = session.get("profile_home")
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
+        try:
+            def _set_skills_approval(enabled: bool) -> None:
+                from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+                config_path = get_hermes_home() / "config.yaml"
+                user_config = read_user_config_raw(config_path)
+                user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+                atomic_config_write(config_path, user_config)
+
+            review_output = handle_pending_subcommand(
+                wa.SKILLS,
+                review_args,
+                set_mode_fn=_set_skills_approval,
+            )
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+
+        if review_output is None:
+            return _err(rid, 4018, "unsupported /skills review subcommand")
+        return _ok(rid, {"output": review_output or "(no output)"})
 
     live_output = _live_slash_command_output(
         params.get("session_id", ""), session, _cmd_base, _cmd_arg

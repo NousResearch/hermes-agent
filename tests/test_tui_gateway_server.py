@@ -679,6 +679,178 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+def test_slash_exec_refuses_non_review_skills_subcommands_before_worker(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for blocked /skills subcommands")
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-install",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills install example",
+                    "session_id": "sid",
+                    "surface": "desktop",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert response["error"]["code"] == 4018
+    assert "review subcommands" in response["error"]["message"]
+
+
+def test_slash_exec_keeps_tui_skills_commands_on_the_worker_path():
+    worker = Mock()
+    worker.run.return_value = "audit complete"
+    server._sessions["sid"] = _session(slash_worker=worker)
+
+    try:
+        response = _dispatch_sync(
+            {
+                "id": "skills-audit",
+                "method": "slash.exec",
+                "params": {"command": "skills audit", "session_id": "sid"},
+            },
+            server._stdio_transport,
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert response["result"]["output"] == "audit complete"
+    worker.run.assert_called_once_with("skills audit")
+
+
+def test_slash_exec_keeps_server_internal_tui_skills_commands_on_the_worker_path():
+    worker = Mock()
+    worker.run.return_value = "audit complete"
+    server._sessions["sid"] = _session(slash_worker=worker)
+    transport = types.SimpleNamespace(
+        auth_identity={"user_id": "server-internal", "provider": "server-internal"}
+    )
+
+    try:
+        response = _dispatch_sync(
+            {
+                "id": "skills-audit-ws",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills audit",
+                    "session_id": "sid",
+                    "surface": "tui",
+                },
+            },
+            transport,
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert response["result"]["output"] == "audit complete"
+    worker.run.assert_called_once_with("skills audit")
+
+
+def test_slash_exec_refuses_spoofed_tui_surface_without_stdio_transport(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for an untrusted surface label")
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-install",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills install example",
+                    "session_id": "sid",
+                    "surface": "tui",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert response["error"]["code"] == 4018
+    assert "review subcommands" in response["error"]["message"]
+
+
+def test_slash_exec_runs_skills_pending_without_worker(tmp_path, monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for /skills pending")
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    server._sessions["sid"] = _session(profile_home=str(home))
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-pending",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills pending",
+                    "session_id": "sid",
+                    "surface": "desktop",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        reset_hermes_home_override(token)
+
+    assert response is not None
+    assert response["result"]["output"] == "No pending skills writes."
+
+
+def test_slash_exec_skills_approval_persists_to_session_profile(tmp_path, monkeypatch):
+    from hermes_cli.config import read_user_config_raw
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for /skills approval")
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    server._sessions["sid"] = _session(profile_home=str(home))
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-approval",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills approval on",
+                    "session_id": "sid",
+                    "surface": "desktop",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        reset_hermes_home_override(token)
+
+    assert response is not None
+    assert response["result"]["output"] == "skills.write_approval set to 'on'."
+    assert read_user_config_raw(home / "config.yaml")["skills"]["write_approval"] is True
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):
@@ -11366,6 +11538,12 @@ def test_commands_catalog_includes_desktop_meta_without_skills():
 
     commands = resp["result"]["commands"]
     assert commands["/review"] == {"argument_mode": "text", "desktop": None}
+    assert "desktop_subcommands" not in commands["/review"]
+    assert commands["/skills"] == {
+        "argument_mode": "options",
+        "desktop": None,
+        "desktop_subcommands": ["pending", "approve", "reject", "diff", "approval"],
+    }
     assert commands["/clear"]["desktop"] == "terminal"
     assert commands["/model"]["desktop"] == "hidden"
     assert commands["/compact"]["argument_mode"] == commands["/compress"]["argument_mode"]

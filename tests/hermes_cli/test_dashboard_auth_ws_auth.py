@@ -201,11 +201,19 @@ def _fake_ws(
 
 
 class TestWsAuthOkLoopback:
-    """Gate OFF — legacy token path."""
+    """Gate OFF — legacy token plus server-internal child paths."""
 
     def test_correct_token_accepted(self, loopback_app):
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert web_server._ws_auth_ok(ws) is True
+
+    def test_server_internal_credential_accepted_and_stamped(self, loopback_app):
+        ws = _fake_ws(query={"internal": internal_ws_credential()}, path="/api/ws")
+        assert web_server._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_identity == {
+            "user_id": "server-internal",
+            "provider": "server-internal",
+        }
 
 
 class TestWsAuthOkGated:
@@ -455,13 +463,21 @@ class TestSidecarUrl:
 
 # ---------------------------------------------------------------------------
 # _build_gateway_ws_url — the TUI child's primary JSON-RPC backend WS.
-# Loopback uses ?token=; gated mode uses the multi-use internal credential
-# (NOT a single-use ticket — the child reuses this URL across reconnects).
+# Every mode uses the multi-use internal credential: the child is server-spawned,
+# and the authenticated transport identity distinguishes it from browser/native
+# WebSocket clients while surviving reconnects.
 # ---------------------------------------------------------------------------
 
 
 class TestGatewayWsUrl:
 
+    def test_loopback_uses_server_internal_credential(self, loopback_app):
+        url = web_server._build_gateway_ws_url()
+        assert url is not None
+        assert "token=" not in url
+        assert "internal=" in url
+        cred = url.split("internal=")[1].split("&")[0]
+        assert consume_internal_credential(cred)["provider"] == "server-internal"
 
     def test_gated_credential_matches_sidecar(self, gated_app):
         """Both server-internal builders share one process credential, so a

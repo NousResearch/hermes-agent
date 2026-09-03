@@ -468,7 +468,8 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
       command: 'skills check',
-      session_id: null
+      session_id: null,
+      surface: 'tui'
     })
   })
 

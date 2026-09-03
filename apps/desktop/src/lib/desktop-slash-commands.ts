@@ -8,6 +8,8 @@ export interface CommandsCatalogSection {
 export interface CommandCatalogMeta {
   argument_mode?: 'mixed' | 'options' | 'text' | null
   desktop?: string | null
+  /** Subcommands the desktop surface may offer and forward; absent = all. */
+  desktop_subcommands?: readonly string[] | null
 }
 
 export interface CommandsCatalogLike {
@@ -143,6 +145,14 @@ export interface DesktopCommandSpec {
   hidden?: boolean
   /** Composer behavior for text following the command token. */
   argumentMode?: DesktopSlashArgumentMode
+  /**
+   * Subcommands (first argument token) the desktop may forward when the
+   * command is exec-routed. Absent = the whole family is allowed. Registry
+   * commands declare this as `desktop_subcommands` so a desktop-relevant
+   * review slice can be exposed without widening CLI-hub mutations
+   * (e.g. `/skills install`).
+   */
+  desktopSubcommands?: readonly string[]
 }
 
 const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
@@ -277,6 +287,17 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/status',
     description: 'Show current session status',
     surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
+  },
+  {
+    // Keep this explicit so a current Desktop can review staged writes even
+    // when connected to an older backend whose catalog still says the Skills
+    // sidebar owns the command. The sidebar manages installed skills; it does
+    // not expose the write-approval queue (#98330).
+    name: '/skills',
+    description: 'Review staged skill writes and approval mode',
+    surface: exec(),
+    argumentMode: 'options',
+    desktopSubcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
   }
 ]
 
@@ -317,7 +338,7 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
     '/verbose'
   ],
   messaging: ['/approve', '/deny'],
-  settings: ['/skills', '/pets'],
+  settings: ['/pets'],
   advanced: [
     '/curator',
     '/fast',
@@ -424,8 +445,17 @@ function specFromCatalog(command: string): DesktopCommandSpec | null {
     name,
     surface: exec(),
     hidden: entry.desktop === 'hidden',
-    argumentMode: asArgumentMode(entry.argument_mode)
+    argumentMode: asArgumentMode(entry.argument_mode),
+    desktopSubcommands: asSubcommandList(entry.desktop_subcommands)
   }
+}
+
+function asSubcommandList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+
+  return value.filter((sub): sub is string => typeof sub === 'string' && sub.trim() !== '')
 }
 
 function isAliasCommand(command: string): boolean {
@@ -470,7 +500,111 @@ export function canonicalDesktopSlashCommand(command: string): string {
 
 /** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
 export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command)) ?? specFromCatalog(command)
+  const staticSpec = SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))
+  const catalogSpec = specFromCatalog(command)
+
+  // Static rows keep old backends from hiding a current Desktop surface.
+  // When a live catalog names subcommands, that allowlist wins so a newer
+  // backend can narrow (or expand) without a Desktop rebuild.
+  if (staticSpec) {
+    const catalogSubs = catalogSpec?.desktopSubcommands
+
+    if (catalogSubs !== undefined) {
+      return { ...staticSpec, desktopSubcommands: catalogSubs }
+    }
+
+    return staticSpec
+  }
+
+  return catalogSpec
+}
+
+/** Subcommands the desktop may forward for *command*; null = unrestricted. */
+export function desktopSubcommandAllowlist(command: string): readonly string[] | null {
+  return resolveDesktopCommand(command)?.desktopSubcommands ?? null
+}
+
+/**
+ * Execution gate for exec-routed commands whose spec narrows the family to a
+ * subcommand allowlist (see `desktop_subcommands` on the Python registry).
+ * The first argument token must name an allowed subcommand — anything else
+ * (including a bare command, which the CLI would answer with its interactive
+ * hub) stays off the desktop exec path. Returns the message to render instead
+ * of forwarding, or null when the command may run.
+ */
+export function desktopSubcommandUnavailableMessage(command: string, arg: string): string | null {
+  const allowed = desktopSubcommandAllowlist(command)
+
+  if (!allowed) {
+    return null
+  }
+
+  const display = command.trim().startsWith('/') ? command.trim() : `/${command.trim()}`
+
+  if (allowed.length === 0) {
+    return `${display} is not available in the desktop app — use the terminal for it.`
+  }
+
+  const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+  if (!first) {
+    return `${display} needs a subcommand here: ${allowed.join(', ')}.`
+  }
+
+  if (!allowed.some(sub => sub.toLowerCase() === first)) {
+    return `${display} ${first} is not available in the desktop app — use the terminal for it. Available here: ${allowed.join(', ')}.`
+  }
+
+  return null
+}
+
+/**
+ * Drop backend `complete.slash` items whose subcommand token the exec gate
+ * above would refuse, so the popover never suggests a dead end. Command-stage
+ * completions pass through. When `stage.isArgCompletion` is provided, that
+ * backend `replace_from` flag wins over re-parsing whitespace in `text`.
+ */
+export function filterDesktopSubcommandCompletions<T extends { text?: string }>(
+  text: string,
+  items: readonly T[],
+  stage?: { isArgCompletion: boolean }
+): T[] {
+  const command = normalizeCommand(text)
+  const allowed = desktopSubcommandAllowlist(command)
+  const trimmedText = text.trimStart()
+  const normalizedText = trimmedText.startsWith('/') ? trimmedText : `/${trimmedText}`
+  const rest = normalizedText.slice(command.length)
+  // Prefer the backend's replace_from stage when the caller has it. Re-parsing
+  // the query from whitespace disagrees with that flag in both directions.
+  const inArgStage = stage?.isArgCompletion ?? /^\s/.test(rest)
+
+  // Only the argument stage (`/skills …`, including a bare trailing space)
+  // carries subcommand items; command-token completions pass through.
+  if (!allowed || !inArgStage) {
+    return [...items]
+  }
+
+  const argumentText = rest.trimStart()
+  const secondTokenBoundary = argumentText.search(/\s/)
+
+  // Once an allowed first argument is complete, the backend owns completion
+  // of its value (for example `approval on` or `approve <id>`). Keep refusing
+  // value completions for a hub mutation that the execution gate would block.
+  if (secondTokenBoundary >= 0) {
+    const first = argumentText.slice(0, secondTokenBoundary).toLowerCase()
+
+    return allowed.some(entry => entry.toLowerCase() === first) ? [...items] : []
+  }
+
+  return items.filter(item => {
+    if (typeof item.text !== 'string') {
+      return false
+    }
+
+    const sub = item.text.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+    return sub !== '' && allowed.some(entry => entry.toLowerCase() === sub)
+  })
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {
@@ -540,7 +674,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
   const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden
+    return spec.surface.kind !== 'unavailable' && !spec.hidden && spec.desktopSubcommands?.length !== 0
   }
 
   // Skill / quick commands the backend provides.

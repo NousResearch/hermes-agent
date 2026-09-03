@@ -1,6 +1,6 @@
 import { normalize } from '@/lib/text'
 
-import type { Locale } from './types'
+import type { Locale } from './locale'
 
 export const DEFAULT_LOCALE: Locale = 'en'
 
@@ -40,6 +40,12 @@ export const LOCALE_OPTIONS = [
     name: 'Русский',
     englishName: 'Russian',
     configValue: 'ru'
+  },
+  {
+    id: 'uk',
+    name: 'Українська',
+    englishName: 'Ukrainian',
+    configValue: 'uk'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -94,7 +100,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   russian: 'ru',
   'russian-russian': 'ru',
   русский: 'ru',
-  руский: 'ru'
+  руский: 'ru',
+  uk: 'uk',
+  'uk-ua': 'uk',
+  uk_ua: 'uk'
 }
 
 export function isLocale(value: unknown): value is Locale {

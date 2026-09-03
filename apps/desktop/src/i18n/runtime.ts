@@ -1,6 +1,6 @@
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE } from './languages'
-import type { Locale } from './types'
+import type { Locale } from './locale'
 
 let runtimeLocale: Locale = DEFAULT_LOCALE
 

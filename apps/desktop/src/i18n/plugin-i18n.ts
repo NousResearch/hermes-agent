@@ -16,8 +16,8 @@ import { atom } from 'nanostores'
 import { useCallback } from 'react'
 
 import { useI18n } from './context'
+import type { Locale } from './locale'
 import { getRuntimeI18nLocale, translateFrom } from './runtime'
-import type { Locale } from './types'
 
 /** A leaf message: a literal or an interpolator (`n => `${n} left``). */
 export type PluginMessageValue = string | ((...args: never[]) => string)

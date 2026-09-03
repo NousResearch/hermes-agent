@@ -7397,6 +7397,8 @@ def run_conversation(
             if agent.api_mode == "anthropic_messages":
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
+            # Success: consume ephemeral output cap now that request succeeded
+            agent._ephemeral_max_output_tokens = None
             assistant_message = normalized
             finish_reason = normalized.finish_reason
             

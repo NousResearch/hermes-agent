@@ -197,13 +197,14 @@ class TestEphemeralMaxOutputTokens:
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] == 5_000
 
-    def test_ephemeral_override_is_consumed_after_one_call(self):
-        """After one call the ephemeral override is cleared to None."""
+    def test_ephemeral_override_persists_through_build_api_kwargs(self):
+        """Ephemeral override survives _build_api_kwargs so retry sees it."""
         agent = self._make_agent()
         agent._ephemeral_max_output_tokens = 5_000
 
         agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert agent._ephemeral_max_output_tokens is None
+        # Not consumed yet — caller must clear after successful response
+        assert agent._ephemeral_max_output_tokens == 5_000
 
 
 

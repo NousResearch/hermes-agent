@@ -26,6 +26,12 @@ _SUBCENT_THRESHOLD = Decimal("0.01")
 # distinguish "free because subscription" from "free because $0 pricing".
 _INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
 
+# Cache for pricing.overrides read out of config.yaml, keyed on the file's
+# mtime so an operator editing rates mid-session takes effect without a
+# restart. None = not yet loaded.
+_PRICING_OVERRIDE_CACHE: Optional[Dict[tuple[str, str], "PricingEntry"]] = None
+_PRICING_OVERRIDE_MTIME: float = -1.0
+
 
 def format_cost_label(amount: Decimal) -> str:
     """Format a cost amount as a display label.
@@ -76,6 +82,10 @@ class CanonicalUsage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Subset of ``cache_write_tokens`` that Anthropic reports as 1h-TTL writes
+    # (``cache_creation.ephemeral_1h_input_tokens``). Billed at the higher 1h
+    # rate; the remainder bills at the 5m rate. Always <= cache_write_tokens.
+    cache_write_1h_tokens: int = 0
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
@@ -102,6 +112,7 @@ class CanonicalUsage:
             output_tokens=self.output_tokens + other.output_tokens,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            cache_write_1h_tokens=self.cache_write_1h_tokens + other.cache_write_1h_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             request_count=self.request_count + other.request_count,
             raw_usage=None,
@@ -122,6 +133,12 @@ class PricingEntry:
     output_cost_per_million: Optional[Decimal] = None
     cache_read_cost_per_million: Optional[Decimal] = None
     cache_write_cost_per_million: Optional[Decimal] = None
+    # Anthropic bills a longer cache TTL at a higher write rate: the 5m write
+    # carries a 1.25x premium over base input, the 1h write carries 2x. The
+    # field above is the 5m (default) rate; this one is the 1h rate and is only
+    # consulted for the token count the API reports as 1h writes. Left None for
+    # routes that do not offer a 1h tier — those fall back to the 5m rate.
+    cache_write_1h_cost_per_million: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
@@ -204,6 +221,93 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
     ),
+    # ── Anthropic Claude Opus 5 / Fable 5 / Mythos 5 (+ 5.1) ─────────────
+    # Opus 5 launched 2026-07-24 at the same $5/$25 base as Opus 4.8.
+    # Fable 5 / Mythos 5 sit at $10/$50. The 5.1 refresh keeps the same base
+    # rates but drops cache hits to 0.025x base input (vs the standard 0.1x)
+    # — that footnote is why 5.1 needs its own entries rather than an alias.
+    # 1h cache writes bill at 2x base input; 5m writes at 1.25x.
+    # Source: https://docs.claude.com/en/docs/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-opus-5-fast",
+    ): PricingEntry(
+        # Fast mode is a research-preview serving tier at exactly 2x standard.
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5-1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        # 0.025x base input on 5.1, not the standard 0.1x.
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-mythos-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-mythos-5-1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
+    ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).
@@ -216,6 +320,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -228,15 +333,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("50.00"),
         cache_read_cost_per_million=Decimal("1.00"),
         cache_write_cost_per_million=Decimal("12.50"),
+        cache_write_1h_cost_per_million=Decimal("20.00"),
         source="official_docs_snapshot",
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
     # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
-    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
-    # through 2026-08-31, after which it reverts to $3/$15 (matching
-    # Sonnet 4.6). Update this entry when the intro window closes.
-    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    # Launched 2026-06-30 at $2/$10 per MTok, originally announced as
+    # introductory pricing through 2026-08-31. Anthropic has since confirmed
+    # this IS the standard price and the scheduled increase to $3/$15 on
+    # 2026-09-01 will NOT occur — do not "restore" the higher rates.
+    # Source: https://docs.claude.com/en/docs/about-claude/pricing
     (
         "anthropic",
         "claude-sonnet-5",
@@ -245,9 +352,10 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("10.00"),
         cache_read_cost_per_million=Decimal("0.20"),
         cache_write_cost_per_million=Decimal("2.50"),
+        cache_write_1h_cost_per_million=Decimal("4.00"),
         source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-06-intro",
+        source_url="https://docs.claude.com/en/docs/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-09",
     ),
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
@@ -261,6 +369,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -273,6 +382,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -286,6 +396,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -298,6 +409,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -310,6 +422,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
+        cache_write_1h_cost_per_million=Decimal("6.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -322,6 +435,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
+        cache_write_1h_cost_per_million=Decimal("6.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -335,6 +449,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_1h_cost_per_million=Decimal("10.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -347,6 +462,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
+        cache_write_1h_cost_per_million=Decimal("6.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -359,6 +475,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("5.00"),
         cache_read_cost_per_million=Decimal("0.10"),
         cache_write_cost_per_million=Decimal("1.25"),
+        cache_write_1h_cost_per_million=Decimal("2.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -372,6 +489,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("75.00"),
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
+        cache_write_1h_cost_per_million=Decimal("30.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -384,6 +502,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
+        cache_write_1h_cost_per_million=Decimal("6.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -475,6 +594,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
+        cache_write_1h_cost_per_million=Decimal("6.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -487,6 +607,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("4.00"),
         cache_read_cost_per_million=Decimal("0.08"),
         cache_write_cost_per_million=Decimal("1.00"),
+        cache_write_1h_cost_per_million=Decimal("1.60"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -499,6 +620,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("75.00"),
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
+        cache_write_1h_cost_per_million=Decimal("30.00"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -511,6 +633,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("1.25"),
         cache_read_cost_per_million=Decimal("0.03"),
         cache_write_cost_per_million=Decimal("0.30"),
+        cache_write_1h_cost_per_million=Decimal("0.50"),
         source="official_docs_snapshot",
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-05",
@@ -1260,6 +1383,94 @@ def _pricing_entry_from_metadata(
     )
 
 
+def _config_pricing_overrides() -> Dict[tuple[str, str], PricingEntry]:
+    """Build pricing entries from ``pricing.overrides`` in config.yaml.
+
+    Lets an operator price a model the shipped table doesn't know about (a
+    same-day model launch) or correct a rate that changed after release,
+    without patching code. Shape:
+
+        pricing:
+          overrides:
+            "anthropic/claude-opus-9":
+              input: 5.00          # USD per MILLION tokens
+              output: 25.00
+              cache_read: 0.50
+              cache_write: 6.25
+              cache_write_1h: 10.00
+
+    The key is ``provider/model``; a bare ``model`` applies to any provider.
+    Rates are per MILLION tokens to match how vendors publish them. Result is
+    cached per config mtime so a live edit is picked up without a restart.
+    """
+    global _PRICING_OVERRIDE_CACHE, _PRICING_OVERRIDE_MTIME
+    try:
+        from hermes_constants import get_hermes_home
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0.0
+    except Exception:
+        return {}
+
+    if _PRICING_OVERRIDE_CACHE is not None and mtime == _PRICING_OVERRIDE_MTIME:
+        return _PRICING_OVERRIDE_CACHE
+
+    entries: Dict[tuple[str, str], PricingEntry] = {}
+    try:
+        if mtime:
+            import yaml
+
+            with open(cfg_path, "r", encoding="utf-8") as fh:
+                raw = yaml.safe_load(fh) or {}
+            overrides = ((raw.get("pricing") or {}).get("overrides") or {})
+            for key, spec in overrides.items():
+                if not isinstance(spec, dict):
+                    continue
+                key_s = str(key).strip().lower()
+                prov, _, model = key_s.rpartition("/")
+                entries[(prov, model)] = PricingEntry(
+                    input_cost_per_million=_to_decimal(spec.get("input")),
+                    output_cost_per_million=_to_decimal(spec.get("output")),
+                    cache_read_cost_per_million=_to_decimal(spec.get("cache_read")),
+                    cache_write_cost_per_million=_to_decimal(spec.get("cache_write")),
+                    cache_write_1h_cost_per_million=_to_decimal(
+                        spec.get("cache_write_1h")
+                    ),
+                    source="official_docs_snapshot",
+                    source_url=str(cfg_path),
+                    pricing_version="config-override",
+                )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("pricing.overrides in config.yaml could not be read: %s", exc)
+        entries = {}
+
+    _PRICING_OVERRIDE_CACHE = entries
+    _PRICING_OVERRIDE_MTIME = mtime
+    return entries
+
+
+def _lookup_config_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    """Config override for this route, if any. Provider-specific wins."""
+    overrides = _config_pricing_overrides()
+    if not overrides:
+        return None
+    model = route.model.lower()
+    candidates = [model]
+    if route.provider == "anthropic":
+        normalized = _normalize_anthropic_model_name(model)
+        if normalized != model:
+            candidates.append(normalized)
+    for name in candidates:
+        entry = overrides.get((route.provider, name))
+        if entry:
+            return entry
+    for name in candidates:
+        entry = overrides.get(("", name))
+        if entry:
+            return entry
+    return None
+
+
 def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
@@ -1267,6 +1478,12 @@ def get_pricing_entry(
     api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    # Operator overrides win over every built-in source: they exist precisely
+    # to correct a shipped rate that has gone stale or to price a model the
+    # table has never heard of.
+    override = _lookup_config_pricing(route)
+    if override:
+        return override
     if route.billing_mode == "subscription_included":
         return PricingEntry(
             input_cost_per_million=_ZERO,
@@ -1316,6 +1533,9 @@ def normalize_usage(
 
     provider_name = (provider or "").strip().lower()
     mode = (api_mode or "").strip().lower()
+    # Only the Anthropic wire reports a TTL split today; other branches leave
+    # this at 0 so the whole write count bills at the single (5m) rate.
+    cache_write_1h_tokens = 0
 
     if mode == "anthropic_messages" or provider_name == "anthropic":
         input_tokens = _usage_count(_usage_get(response_usage, "input_tokens", 0))
@@ -1324,6 +1544,18 @@ def normalize_usage(
         cache_write_tokens = _usage_count(
             _usage_get(response_usage, "cache_creation_input_tokens", 0)
         )
+        # Anthropic breaks writes out by TTL under `cache_creation`. The 1h
+        # tier bills at 2x base input vs 1.25x for 5m, so the split has to
+        # survive into estimate_usage_cost — collapsing it undercounts any
+        # deployment running prompt_caching.cache_ttl: "1h".
+        _cache_creation = _usage_get(response_usage, "cache_creation", None)
+        cache_write_1h_tokens = _usage_count(
+            _usage_get(_cache_creation, "ephemeral_1h_input_tokens", 0)
+            if _cache_creation
+            else 0
+        )
+        if cache_write_1h_tokens > cache_write_tokens:
+            cache_write_1h_tokens = cache_write_tokens
     elif mode == "codex_responses":
         input_total = _usage_count(_usage_get(response_usage, "input_tokens", 0))
         output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
@@ -1445,6 +1677,7 @@ def normalize_usage(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_write_1h_tokens=cache_write_1h_tokens,
         reasoning_tokens=reasoning_tokens,
     )
 
@@ -1523,7 +1756,17 @@ def estimate_usage_cost(
     if cache_read_rate is not None:
         amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
     if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+        # Split the write count by TTL: the 1h subset bills at the 1h rate
+        # (2x base input), the remainder at the 5m rate (1.25x). Routes with
+        # no published 1h rate fall back to the 5m rate for the whole count,
+        # which is the old behaviour.
+        _write_1h = min(usage.cache_write_1h_tokens, usage.cache_write_tokens)
+        _write_5m = usage.cache_write_tokens - _write_1h
+        _rate_1h = entry.cache_write_1h_cost_per_million
+        if _rate_1h is None:
+            _rate_1h = entry.cache_write_cost_per_million
+        amount += Decimal(_write_5m) * entry.cache_write_cost_per_million / _ONE_MILLION
+        amount += Decimal(_write_1h) * _rate_1h / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 

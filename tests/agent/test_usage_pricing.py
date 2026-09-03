@@ -909,3 +909,108 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_current_claude_5_series_models_are_priced():
+    """Models Hermes routes to must resolve to a price.
+
+    Not asserting the rate (that changes) — only that lookup succeeds.
+    An absent model books every call as $0.00 with cost_status="unknown",
+    which is indistinguishable from a genuinely free call.
+    """
+    for model in (
+        "claude-opus-5",
+        "claude-opus-5-fast",
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-sonnet-5",
+    ):
+        assert get_pricing_entry(model, provider="anthropic") is not None, (
+            f"{model} has no pricing entry - usage books as $0.00"
+        )
+
+
+def test_anthropic_1h_cache_write_is_twice_base_input():
+    """Anthropic prices 1h cache writes at 2x base input on every model.
+
+    A relationship rather than a frozen number, so it survives price
+    changes while still catching a mistyped rate.
+    """
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    checked = 0
+    for (provider, model), entry in _OFFICIAL_DOCS_PRICING.items():
+        if provider != "anthropic":
+            continue
+        if entry.cache_write_1h_cost_per_million is None:
+            continue
+        if entry.input_cost_per_million is None:
+            continue
+        checked += 1
+        assert entry.cache_write_1h_cost_per_million == entry.input_cost_per_million * Decimal("2"), (
+            f"{model}: 1h cache-write rate is not 2x base input"
+        )
+    assert checked > 0, "no Anthropic 1h rates found to check"
+
+
+def test_fable_5_1_cache_hits_use_the_reduced_multiplier():
+    """Fable 5.1 / Mythos 5.1 price cache hits at 0.025x base input.
+
+    Every other model uses 0.1x. Aliasing 5.1 to the 5.0 entry would
+    overcharge cache reads by 4x, so they need their own entries.
+    """
+    for model in ("claude-fable-5-1", "claude-mythos-5-1"):
+        entry = get_pricing_entry(model, provider="anthropic")
+        assert entry is not None
+        assert entry.cache_read_cost_per_million == entry.input_cost_per_million * Decimal("0.025")
+
+    base = get_pricing_entry("claude-fable-5", provider="anthropic")
+    assert base is not None
+    assert base.cache_read_cost_per_million == base.input_cost_per_million * Decimal("0.1")
+
+
+def test_1h_cache_writes_bill_more_than_5m_writes():
+    """The TTL split must reach the arithmetic, not just the table."""
+    all_5m = CanonicalUsage(cache_write_tokens=1_000_000)
+    all_1h = CanonicalUsage(cache_write_tokens=1_000_000, cache_write_1h_tokens=1_000_000)
+
+    cost_5m = estimate_usage_cost("claude-opus-5", all_5m, provider="anthropic")
+    cost_1h = estimate_usage_cost("claude-opus-5", all_1h, provider="anthropic")
+
+    # 5m writes bill at 1.25x base input, 1h writes at 2x.
+    assert cost_5m.amount_usd == Decimal("6.25")
+    assert cost_1h.amount_usd == Decimal("10.00")
+
+
+def test_normalize_usage_reads_anthropic_1h_cache_write_split():
+    """Anthropic reports the TTL split under cache_creation."""
+    usage = SimpleNamespace(
+        input_tokens=10,
+        output_tokens=5,
+        cache_creation_input_tokens=1000,
+        cache_creation=SimpleNamespace(
+            ephemeral_5m_input_tokens=400,
+            ephemeral_1h_input_tokens=600,
+        ),
+    )
+    canonical = normalize_usage(usage, provider="anthropic")
+    assert canonical.cache_write_tokens == 1000
+    assert canonical.cache_write_1h_tokens == 600
+
+
+def test_unknown_model_returns_no_pricing_rather_than_guessing():
+    """An unpriced model must resolve to None, never to a nearby entry.
+
+    Silently substituting another model's rate card produces a confident
+    wrong number; None lets callers report the cost as unknown.
+    """
+    assert get_pricing_entry("claude-opus-9", provider="anthropic") is None
+    result = estimate_usage_cost(
+        "claude-opus-9",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+        provider="anthropic",
+    )
+    assert result.amount_usd is None
+    assert result.status == "unknown"

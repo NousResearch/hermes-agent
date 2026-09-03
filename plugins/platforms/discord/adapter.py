@@ -7004,6 +7004,64 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _progress_query_settings(self) -> dict[str, Any]:
+        """Return validated, explicitly opted-in progress-query settings."""
+        raw = self.config.extra.get("progress_queries")
+        if not isinstance(raw, dict):
+            return {"enabled": False}
+        enabled = raw.get("enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"true", "1", "yes", "on"}
+        board = raw.get("board")
+        if not enabled or not isinstance(board, str) or not board.strip():
+            return {"enabled": False}
+        return {"enabled": True, "board": board.strip()}
+
+    async def _maybe_answer_progress_event(self, event: MessageEvent) -> bool:
+        """Answer a source-scoped status question before normal model routing."""
+        settings = self._progress_query_settings()
+        if not settings.get("enabled") or event.message_type is not MessageType.TEXT:
+            return False
+        if not (event.text or "").strip() or getattr(event.source, "is_bot", False):
+            return False
+        try:
+            from gateway.progress_queries import (
+                ProgressSource,
+                is_progress_query,
+                resolve_progress_query,
+            )
+
+            if not is_progress_query(event.text):
+                return False
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            source = ProgressSource(
+                platform=str(platform),
+                chat_id=str(event.source.chat_id),
+                thread_id=(str(event.source.thread_id) if event.source.thread_id else None),
+                reply_to_message_id=(
+                    str(event.reply_to_message_id)
+                    if event.reply_to_message_id
+                    else None
+                ),
+            )
+            result = await asyncio.to_thread(
+                resolve_progress_query,
+                event.text,
+                source=source,
+                board=settings["board"],
+            )
+        except Exception:
+            logger.warning("[Discord] progress query lookup failed", exc_info=True)
+            return False
+        if not result.handled:
+            return False
+        await self.send(
+            event.source.chat_id,
+            content=result.response,
+            reply_to=event.message_id,
+        )
+        return True
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -8659,6 +8717,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+
+        if not recovered and await self._maybe_answer_progress_event(event):
+            return True
 
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.

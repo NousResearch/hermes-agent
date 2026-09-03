@@ -532,11 +532,23 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     duration_param = dict(static_props["duration"])
-    if min_duration and max_duration:
+    if min_duration is not None:
         duration_param["minimum"] = int(min_duration)
+    if max_duration is not None:
         duration_param["maximum"] = int(max_duration)
+    if min_duration is not None and max_duration is not None:
         duration_param["description"] = (
             f"Video duration in seconds ({min_duration}-{max_duration}). "
+            "Omit for the provider default."
+        )
+    elif min_duration is not None:
+        duration_param["description"] = (
+            f"Video duration in seconds (at least {min_duration}). "
+            "Omit for the provider default."
+        )
+    elif max_duration is not None:
+        duration_param["description"] = (
+            f"Video duration in seconds (up to {max_duration}). "
             "Omit for the provider default."
         )
     properties["duration"] = duration_param

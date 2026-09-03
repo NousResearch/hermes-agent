@@ -220,6 +220,30 @@ class TestDynamicParamGating(unittest.TestCase):
             self.assertNotIn(p, props, p)
         self.assertIn("text-to-video only", schema["description"])
 
+    def test_duration_bounds_are_emitted_independently(self):
+        """A declared one-sided duration limit remains visible in the schema."""
+        shared_caps = {
+            "modalities": ["text"],
+            "supports_audio": False, "supports_negative_prompt": False,
+            "supports_seed": False, "supports_upscale": False,
+            "max_reference_images": 0,
+        }
+        cases = (
+            ({"max_duration": 8}, {"maximum": 8}),
+            ({"min_duration": 2}, {"minimum": 2}),
+            ({"min_duration": 2, "max_duration": 8},
+             {"minimum": 2, "maximum": 8}),
+            ({}, {}),
+        )
+        for caps, expected in cases:
+            with self.subTest(caps=caps):
+                schema = self._schema_with({**shared_caps, **caps})
+                duration = schema["parameters"]["properties"]["duration"]
+                self.assertEqual(
+                    {key: duration[key] for key in ("minimum", "maximum") if key in duration},
+                    expected,
+                )
+
     def test_i2v_only_model_overrides_backend_union(self):
         # gemini-omni-flash case: dual-modality backend, i2v-only model.
         schema = self._schema_with(

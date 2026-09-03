@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
+import { $sessions, resolveComposerSessionKey } from '@/store/session'
 
 export interface ComposerAttachment {
   id: string
@@ -362,6 +363,22 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
   return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
 }
 
+export interface ComposerSessionAppendDetail {
+  sessionKey: string
+  text: string
+  attachments: ComposerAttachment[]
+  handled: boolean
+}
+
+const sessionAppendListeners = new Set<(detail: ComposerSessionAppendDetail) => void>()
+
+export function onComposerSessionAppendRequest(
+  listener: (detail: ComposerSessionAppendDetail) => void
+): () => void {
+  sessionAppendListeners.add(listener)
+  return () => sessionAppendListeners.delete(listener)
+}
+
 function persistDraftTexts() {
   try {
     const entries = [...draftsBySession]
@@ -391,6 +408,23 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
 
   persistDraftTexts()
   publishDraftTitle(key, deriveDraftTitle(text))
+}
+
+export function appendComposerToSessionDraft(
+  scope: string,
+  text: string,
+  attachments: ComposerAttachment[] = []
+): void {
+  const key = draftKey(resolveComposerSessionKey(scope, $sessions.get()) || scope)
+  const current = takeSessionDraft(key)
+  const value = text.trim()
+  const separator = current.text && value && !current.text.endsWith('\n') ? '\n\n' : ''
+  const mergedAttachments = attachments.reduce(upsertAttachment, current.attachments)
+  stashSessionDraft(key, `${current.text}${separator}${value}`, mergedAttachments)
+  const detail: ComposerSessionAppendDetail = { sessionKey: key, text: value, attachments, handled: false }
+  sessionAppendListeners.forEach(listener => {
+    if (!detail.handled) listener(detail)
+  })
 }
 
 export function takeSessionDraft(scope: string | null | undefined): SessionDraft {

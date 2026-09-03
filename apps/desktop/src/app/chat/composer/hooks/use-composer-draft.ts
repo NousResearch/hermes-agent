@@ -16,6 +16,7 @@ import {
   type ComposerAttachment,
   type ComposerDraftSyncMode,
   onComposerDraftSyncRequest,
+  onComposerSessionAppendRequest,
   reloadPersistedDrafts,
   stashSessionDraft,
   takeSessionDraft
@@ -464,6 +465,18 @@ export function useComposerDraft({
       }),
     [target]
   )
+
+  // Session-scoped external append: the browser annotator (or any plugin)
+  // queues text + attachments into a durable draft even while the target
+  // session's ChatBar is hidden behind another pane; the matching mounted
+  // composer repaints it live instead of waiting for the next focus.
+  useLayoutEffect(() => onComposerSessionAppendRequest(detail => {
+    if (detail.handled || detail.sessionKey !== draftScopeRef.current) return
+    if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) return
+    detail.handled = true
+    appendExternalText(detail.text, 'block')
+    detail.attachments.forEach(attachment => attachmentScope.add(attachment))
+  }), [appendExternalText, attachmentScope, queueEditRef])
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.

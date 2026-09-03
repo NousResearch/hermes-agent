@@ -43,6 +43,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { appendComposerToSessionDraft, type ComposerAttachment } from '@/store/composer'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -578,6 +579,13 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  composer: {
+    /** Append text and attachments to a durable session draft, even when its
+     *  ChatBar is currently hidden behind another pane. */
+    appendToSession: (sessionKey: string, text: string, attachments: ComposerAttachment[] = []) => {
+      appendComposerToSessionDraft(sessionKey, text, attachments)
+    }
+  },
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -1172,6 +1180,12 @@ export const host = {
     ownerKey: null | string = null,
     newSessionTarget: WorkspaceNewSessionTarget | null = null
   ): boolean => publishWorkspaceScope(mode, ownerKey, newSessionTarget),
+
+  /** Reveal and front an existing contributed pane in its docked zone. */
+  revealPane: (paneId: string): void => {
+    const key = paneId.trim()
+    if (key) revealTreePane(key)
+  },
 
   /** Start a fresh chat draft, optionally pointed at another profile (its
    *  backend spins up in the background — same door the sidebar's per-profile

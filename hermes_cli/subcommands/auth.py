@@ -51,6 +51,15 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
     auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
     auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
+    auth_list.add_argument(
+        "--all-profiles",
+        dest="all_profiles",
+        action="store_true",
+        help=(
+            "Show every profile's credential store and flag refresh tokens "
+            "stored in more than one file (copies revoke each other on rotation)"
+        ),
+    )
     auth_remove = auth_subparsers.add_parser(
         "remove", help="Remove a pooled credential by index, id, or label"
     )

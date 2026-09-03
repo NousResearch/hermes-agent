@@ -23,7 +23,10 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}),
+        encoding="utf-8",
+    )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
@@ -58,6 +61,21 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
+def test_upstream_main_sha_disables_git_prompts(monkeypatch):
+    """The passive HTTPS probe must never inherit the interactive terminal."""
+    from hermes_cli import banner
+
+    completed = MagicMock(returncode=1, stdout="", stderr="auth required")
+    run = MagicMock(return_value=completed)
+    monkeypatch.setattr(banner.subprocess, "run", run)
+
+    assert banner._upstream_main_sha() is None
+    kwargs = run.call_args.kwargs
+    assert kwargs["stdin"] is banner.subprocess.DEVNULL
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+
 def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
     """When git fetch fails and the stale origin/main ref is not ahead,
     _check_via_local_git must return None (#82166).
@@ -90,8 +108,12 @@ def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
     stale_zero_proc.returncode = 0
     stale_zero_proc.stdout = "0"
 
+    fetch_kwargs = None
+
     def mock_run(args, **kwargs):
+        nonlocal fetch_kwargs
         if args[:2] == ["git", "fetch"]:
+            fetch_kwargs = kwargs
             return failed_proc
         if args[:2] == ["git", "rev-list"]:
             return stale_zero_proc
@@ -104,6 +126,10 @@ def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
     assert result is None, (
         "Fetch failure with stale 0-behind must return None, not 'up to date'"
     )
+    assert fetch_kwargs is not None
+    assert fetch_kwargs["stdin"] is banner.subprocess.DEVNULL
+    assert fetch_kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert fetch_kwargs["env"]["GCM_INTERACTIVE"] == "Never"
 
 
 def test_check_via_local_git_fetch_failure_keeps_positive_stale_count(tmp_path, monkeypatch):

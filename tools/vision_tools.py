@@ -290,6 +290,30 @@ _ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset(
 )
 
 
+def _supported_media_types() -> frozenset:
+    """Formats the ACTIVE main model's server can decode.
+
+    Cloud providers take everything in _ANTHROPIC_SUPPORTED_MEDIA_TYPES.
+    The managed llama-server decodes with stb_image — no WebP — and an
+    undecodable image part fails SILENTLY (no error; the model never sees
+    an image and confabulates). Narrow the set so normalization converts
+    those formats to PNG before they enter the request or history."""
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+        from hermes_cli.local_runtime.capabilities import (
+            ACCEPTED_IMAGE_MIMES,
+            is_managed_provider,
+        )
+
+        if is_managed_provider(
+                str(_runtime_main_value("provider") or ""),
+                str(_runtime_main_value("base_url") or "")):
+            return ACCEPTED_IMAGE_MIMES
+    except Exception:  # noqa: BLE001 — best-effort narrowing only
+        pass
+    return _ANTHROPIC_SUPPORTED_MEDIA_TYPES
+
+
 def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     """Best-effort SVG → PNG rasterization. Returns True on success.
 
@@ -353,7 +377,7 @@ def _normalize_to_supported_image(
     the image is base64-embedded into conversation history, so an unsupported
     media_type can never reach the provider and wedge the session.
     """
-    if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+    if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
 
     out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
@@ -1053,6 +1077,22 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 
+def _profile_rejects_tool_media(provider: str) -> bool:
+    """Hard veto: the provider's ``ProviderProfile`` declares
+    ``supports_vision_tool_messages=False`` — images are accepted in user
+    messages but list-type tool-result content is rejected with 400
+    (xiaomi/MiMo "text is not set"). ``supports_vision`` alone must not
+    override this, or the multimodal tool-result envelope 400s every turn
+    and the image never enters context (#89981).
+    """
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return profile is not None and profile.supports_vision_tool_messages is False
+    except Exception:
+        return False
+
+
 def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     """Whether the given provider+model combination accepts image content
     inside a tool-result message.
@@ -1076,7 +1116,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if not isinstance(provider, str):
         return False
     p = provider.strip().lower()
-    if not p:
+    if not p or _profile_rejects_tool_media(p):
         return False
 
     # Aggregators that route to multiple vendors — assume support since
@@ -1145,6 +1185,11 @@ def _should_use_native_vision_fast_path() -> bool:
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
+            return False
+        # The profile veto applies ahead of the capability lookup too: a
+        # model marked vision-capable by models.dev / custom_providers must
+        # not re-open the multimodal-envelope route the profile rejects.
+        if _profile_rejects_tool_media(provider):
             return False
         return (
             _supports_media_in_tool_results(provider, model)

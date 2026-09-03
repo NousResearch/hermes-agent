@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -33,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -171,5 +172,31 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+
+  it("keeps every OAuth operation on the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      flow: "device_code",
+      session_id: "oauth-session",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getOAuthProviders();
+    await api.disconnectOAuthProvider("anthropic");
+    await api.startOAuthLogin("openai-codex");
+    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
+    await api.pollOAuthSession("anthropic", "oauth-session");
+    await api.cancelOAuthSession("oauth-session");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/providers/oauth?profile=worker",
+      "/api/providers/oauth/anthropic?profile=worker",
+      "/api/providers/oauth/openai-codex/start?profile=worker",
+      "/api/providers/oauth/anthropic/submit?profile=worker",
+      "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
+      "/api/providers/oauth/sessions/oauth-session?profile=worker",
+    ]);
   });
 });

@@ -53,7 +53,7 @@ describe('clarify.request stream hydration', () => {
   beforeEach(() => {
     clearClarifyRequest()
     scrollToBottom.mockClear()
-    stopScrollListener = onScrollToBottomRequest(scrollToBottom)
+    stopScrollListener = onScrollToBottomRequest(scrollToBottom, SID)
   })
 
   afterEach(() => {

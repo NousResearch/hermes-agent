@@ -11,7 +11,15 @@ import json
 
 import pytest
 
-from tools.setup_mcp_tool import setup_mcp_tool
+from tools.setup_mcp_tool import SETUP_MCP_SCHEMA, setup_mcp_tool
+
+
+def test_schema_forbids_hand_editing_mcp_servers_config():
+    # Nothing else teaches the model this: the tool is desktop_ui-only, so
+    # without it a model could just write_file into mcp_servers config
+    # directly, bypassing the consent-card/OAuth flow this tool exists for.
+    assert "hand-edit" in SETUP_MCP_SCHEMA["description"]
+    assert "mcp_servers" in SETUP_MCP_SCHEMA["description"]
 
 
 def test_requires_desktop_callback():

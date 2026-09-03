@@ -67,7 +67,11 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch(
+             "hermes_cli.update_cmd._post_update_sqlite_runtime_status",
+             return_value=(True, None),
+         ):
         yield
 
 
@@ -349,6 +353,108 @@ class TestCmdUpdateBranchFallback:
         assert "official repo not checked" in captured.out
         assert "Already up to date!" not in captured.out
 
+    @pytest.mark.parametrize(
+        ("health_after_repair", "runtime_status", "expected_runtime_checks"),
+        [
+            (True, (False, SimpleNamespace(sqlite_version_string="3.46.1")), 1),
+            (False, (True, None), 0),
+        ],
+    )
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_python_repair_failure_is_durable(
+        self,
+        mock_run,
+        _mock_which,
+        mock_args,
+        health_after_repair,
+        runtime_status,
+        expected_runtime_checks,
+    ):
+        """Python repair must not bypass runtime and durable outcome checks."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[
+                (False, "broken before repair"),
+                (health_after_repair, "broken after repair"),
+            ],
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd,
+            "_post_update_sqlite_runtime_status",
+            return_value=runtime_status,
+        ) as runtime_check, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        assert runtime_check.call_count == expected_runtime_checks
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_node_repair_verification_failure_is_durable(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """A failed Node-path runtime check must fail durable outcomes."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_repair_node_deps_on_current_checkout",
+            return_value=False,
+        ), patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
@@ -1416,3 +1522,117 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestGitTrampolineSelfHeal:
+    """Proactive Git-for-Windows trampoline self-heal (#87876).
+
+    A broken bin\\git.exe / cmd\\git.exe shim (~46KB) refuses every git call
+    with a "BUG (fork bomb)" guard instead of re-execing the real git-core
+    binary. _ensure_non_trampoline_git detects this up front and swaps in a
+    real git binary when one can be located, so the normal git update path
+    survives instead of degrading to the ZIP fallback.
+    """
+
+    @staticmethod
+    def _fake_run_healthy(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, stdout="git version 2.50.0.windows.1\n", stderr=""
+        )
+
+    @staticmethod
+    def _fake_run_trampoline(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="BUG (fork bomb): tried to spawn itself, check your PATH\n",
+        )
+
+    def test_healthy_git_command_unchanged(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_healthy,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git") as locate,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        locate.assert_not_called()
+
+    def test_trampoline_swaps_to_real_git(self, capsys):
+        from pathlib import Path
+
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch(
+                "hermes_cli.update_cmd._locate_real_git", return_value=real
+            ),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == [str(real), "-c", "windows.appendAtomically=false"]
+        out = capsys.readouterr().out
+        assert "switching to real git" in out
+
+    def test_trampoline_no_real_git_keeps_command(self, capsys):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git", return_value=None),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        out = capsys.readouterr().out
+        assert "ZIP path" in out
+
+    def test_off_windows_noop(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git"]
+        with (
+            patch("sys.platform", "linux"),
+            patch("hermes_cli.update_cmd.subprocess.run") as run,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        run.assert_not_called()
+
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+        # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
+        # PortableGit tree lives under the SHARED root (monerostar review on
+        # #88136). The candidate list must check get_default_hermes_root()
+        # before the profile home.
+        from hermes_cli import update_cmd
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / "foo"
+
+        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
+
+        candidates = update_cmd._portable_git_candidates()
+        assert candidates[0] == (
+            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )
+        assert candidates[1] == (
+            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )

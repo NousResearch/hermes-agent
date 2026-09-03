@@ -2,10 +2,11 @@
 """
 Todo Tool Module - Planning & Task Management
 
-Provides an in-memory task list the agent uses to decompose complex tasks,
-track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+Provides an in-memory, revisioned task list the agent uses to decompose
+complex tasks, track progress, and maintain focus across long conversations.
+The state lives on the AIAgent instance (one per session), is re-injected into
+the conversation after context compression events, and every write bumps a
+monotonic revision so UI clients can reject stale updates.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -15,7 +16,7 @@ Design:
 """
 
 import json
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 # Valid status values for todo items
@@ -56,6 +57,7 @@ class TodoStore:
 
     def __init__(self):
         self._items: List[Dict[str, str]] = []
+        self._revision = 0
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
@@ -66,6 +68,7 @@ class TodoStore:
             merge: if False, replace the entire list. If True, update
                    existing items by id and append new ones.
         """
+        before = self.read()
         if not merge:
             # Replace mode: new list entirely
             self._items = self._normalize_order(
@@ -113,6 +116,8 @@ class TodoStore:
         if len(self._items) > MAX_TODO_ITEMS:
             self._items = self._items[:MAX_TODO_ITEMS]
         self._sanitize_parents(self._items)
+        if self._items != before:
+            self._revision += 1
         return self.read()
 
     def read(self) -> List[Dict[str, str]]:
@@ -122,6 +127,26 @@ class TodoStore:
     def has_items(self) -> bool:
         """Check if there are any items in the list."""
         return bool(self._items)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return the full state clients can reconcile atomically."""
+        return {"todos": self.read(), "revision": self._revision}
+
+    def restore(
+        self,
+        todos: List[Dict[str, Any]],
+        *,
+        revision: Any = 0,
+    ) -> List[Dict[str, str]]:
+        """Restore a trusted snapshot without manufacturing a new revision."""
+        self._items = self._normalize_order(
+            [self._validate(t) for t in self._dedupe_by_id(todos)]
+        )[:MAX_TODO_ITEMS]
+        try:
+            self._revision = max(0, int(revision or 0))
+        except (TypeError, ValueError):
+            self._revision = 0
+        return self.read()
 
     def format_for_injection(self) -> Optional[str]:
         """
@@ -330,6 +355,7 @@ def todo_tool(
 
     return json.dumps({
         "todos": items,
+        "revision": store.snapshot()["revision"],
         "summary": {
             "total": len(items),
             "pending": pending,
@@ -352,12 +378,12 @@ def check_todo_requirements() -> bool:
 # static tool schema (cached, never changes mid-conversation).
 
 TODO_SCHEMA = {
-    "name": "todo",
+    "name": "todo_list",
     # Dieted (#95681): the item shape and merge semantics live ONLY in the
     # parameter schema below — the description teaches behavior, not
     # structure the params already define.
     "description": (
-        "Manage your task list for the current session. Use for complex tasks "
+        "Track a task list for multi-step work (3+ steps). Use for complex tasks "
         "with 3+ steps or when the user provides multiple tasks. "
         "For 'all N items' tasks, enumerate every instance as its own checklist "
         "item so none are silently dropped. "
@@ -414,7 +440,7 @@ TODO_SCHEMA = {
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="todo",
+    name="todo_list",
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(

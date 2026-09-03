@@ -132,6 +132,27 @@ class UpdateReceipt:
                 for entry in fresh_recovery.get("skipped", [])
                 if isinstance(entry, dict)
             ]
+            # Serve/dashboard coverage (#92145). ``hermes serve`` hosts
+            # tui_gateway and is not a gateway profile, so neither the
+            # per-profile buckets above nor the fleet-version matrix can
+            # describe it. Persist its unit outcomes and any process that
+            # survived on the pre-update generation, or the receipt keeps
+            # claiming a clean recovery the operator's box contradicts.
+            serve_units = fresh_recovery.get("serve_units") or {}
+            persisted["serve_units"] = {
+                key: [str(unit) for unit in (serve_units.get(key) or [])]
+                for key in ("verified", "failed")
+            }
+            persisted["stale_runtimes"] = [
+                {
+                    "pid": int(entry.get("pid", 0) or 0),
+                    "kind": str(entry.get("kind", "")),
+                    "profile": str(entry.get("profile", "")),
+                    "supervisor": str(entry.get("supervisor", "")),
+                }
+                for entry in fresh_recovery.get("stale_runtimes", [])
+                if isinstance(entry, dict)
+            ]
             result["fresh_recovery"] = persisted
         self.data["gateway_restart"] = result
 

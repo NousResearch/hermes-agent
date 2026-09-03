@@ -141,6 +141,10 @@ STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+CODEX_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+CODEX_OAUTH_SCOPE = "openai.chatgpt.experimental"
+CODEX_OAUTH_AUTHCODE_REDIRECT_PATH = "/callback"
+CODEX_OAUTH_AUTHCODE_CALLBACK_TIMEOUT = 300.0  # 5 min browser round-trip
 try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.
     from hermes_cli import __version__ as _HERMES_CLI_VERSION
 except Exception:  # pragma: no cover - version import should always succeed
@@ -8799,9 +8803,12 @@ def _login_openai_codex(
     *,
     force_new_login: bool = False,
 ) -> None:
-    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    """OpenAI Codex login. Default is the browser authorization-code + PKCE flow;
+    falls back to the device-code flow when ``--device-code`` is set or no
+    graphical browser is available (e.g. over SSH). Tokens stored in
+    ~/.hermes/auth.json."""
 
-    del args, pconfig  # kept for parity with other provider login helpers
+    del pconfig  # kept for signature parity with other provider login helpers
 
     # Check for existing Hermes-owned credentials
     if not force_new_login:
@@ -8849,13 +8856,34 @@ def _login_openai_codex(
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
                 return
 
-    # Run a fresh device code flow — Hermes gets its own OAuth session
-    print()
-    print("Signing in to OpenAI Codex...")
-    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
-    print()
-
-    creds = _codex_device_code_login()
+    # Run a fresh OAuth flow — Hermes gets its own session. Default is the
+    # browser authorization-code + PKCE flow; fall back to device-code when the
+    # user asks for it (``--device-code``) or when no graphical browser is
+    # available (e.g. over SSH / a headless host).
+    force_device_code = bool(getattr(args, "device_code", False))
+    open_browser = not getattr(args, "no_browser", False)
+    use_authcode = (
+        not force_device_code
+        and open_browser
+        and not _is_remote_session()
+        and _can_open_graphical_browser()
+    )
+    if use_authcode:
+        creds = _codex_authcode_login(
+            open_browser=True,
+            timeout_seconds=getattr(args, "timeout", None),
+            scope_override=getattr(args, "scope", None),
+        )
+    else:
+        if force_device_code:
+            print("Using the device-code OAuth flow (--device-code).")
+        elif not use_authcode:
+            print("No graphical browser available; falling back to the device-code flow.")
+        print()
+        print("Signing in to OpenAI Codex...")
+        print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
+        print()
+        creds = _codex_device_code_login()
 
     # Save tokens to Hermes auth store
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
@@ -9316,6 +9344,310 @@ def _codex_device_code_login() -> Dict[str, Any]:
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "auth_mode": "chatgpt",
         "source": "device-code",
+    }
+
+
+# --------------------------------------------------------------------------------------
+# OpenAI Codex Authorization Code (browser + PKCE) OAuth flow
+# --------------------------------------------------------------------------------------
+# Alternative to the device-code flow above. Opens the system browser to OpenAI's
+# authorize endpoint, receives the authorization code on a loopback HTTP callback,
+# and exchanges it for tokens at the same CODEX_OAUTH_TOKEN_URL the device-code flow
+# uses. Token storage / refresh / pool wiring is identical (same return shape), so
+# callers (``_login_openai_codex`` and ``auth_add_command``) treat both flows the
+# same. The device-code flow remains available as a fallback (``--device-code`` or
+# when no graphical browser is available, e.g. over SSH).
+
+_CODEX_AUTHCODE_PORT_RANGE = (8765, 8785)
+
+
+def _codex_authcode_free_port() -> int:
+    """Return a free loopback port for the OAuth callback server."""
+    import socket
+
+    for port in range(_CODEX_AUTHCODE_PORT_RANGE[0], _CODEX_AUTHCODE_PORT_RANGE[1]):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    # Fall back to an OS-chosen port if the preferred range is exhausted.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _codex_authcode_build_authorize_url(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    scope: str,
+    state: str,
+    code_challenge: str,
+) -> str:
+    query = urlencode(
+        {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": state,
+            "code_challenge_method": "S256",
+            "code_challenge": code_challenge,
+        }
+    )
+    return f"{CODEX_OAUTH_AUTHORIZE_URL}?{query}"
+
+
+def _codex_authcode_make_callback_handler(expected_path: str) -> tuple[type, dict[str, Any]]:
+    result: dict[str, Any] = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+
+    class _CodexAuthcodeCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+            params = parse_qs(parsed.query)
+            result["code"] = params.get("code", [None])[0]
+            result["state"] = params.get("state", [None])[0]
+            result["error"] = params.get("error", [None])[0]
+            result["error_description"] = params.get("error_description", [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if result.get("error"):
+                body = (
+                    "<html><body><h2>Authorization failed.</h2>"
+                    f"<p>{result.get('error')}: {result.get('error_description') or ''}</p>"
+                    "<p>You may close this window.</p>"
+                    "<script>window.close();</script>"
+                    "</body></html>"
+                )
+            else:
+                body = (
+                    "<html><body><h2>Authorization successful.</h2>"
+                    "<p>You may close this window and return to Hermes.</p>"
+                    "<script>window.close();</script>"
+                    "</body></html>"
+                )
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, *args: Any) -> None:  # noqa: D401
+            pass
+
+    return _CodexAuthcodeCallbackHandler, result
+
+
+def _codex_authcode_wait_for_callback(
+    *,
+    host: str,
+    port: int,
+    path: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    handler_cls, result = _codex_authcode_make_callback_handler(path)
+    try:
+        server = HTTPServer((host, port), handler_cls)
+    except OSError as exc:
+        raise AuthError(
+            f"Could not start the local OAuth callback server on {host}:{port}: {exc}",
+            provider="openai-codex",
+            code="authcode_callback_bind_failed",
+        )
+    server.timeout = 1.0
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    try:
+        while time.monotonic() < deadline:
+            server.handle_request()
+            if result.get("code") or result.get("error"):
+                break
+    finally:
+        server.server_close()
+    if not (result.get("code") or result.get("error")):
+        raise AuthError(
+            "Login timed out waiting for the browser callback.",
+            provider="openai-codex",
+            code="authcode_timeout",
+        )
+    return result
+
+
+def _codex_authcode_login(
+    *,
+    open_browser: bool = True,
+    timeout_seconds: float | None = None,
+    scope_override: str | None = None,
+) -> Dict[str, Any]:
+    """OpenAI Codex login via the browser Authorization Code + PKCE flow.
+
+    Returns the same credential dict shape as ``_codex_device_code_login`` so the
+    two flows are interchangeable to callers. Tokens are NOT persisted here; the
+    caller saves them via ``_save_codex_tokens`` / the pool-entry path.
+    """
+    client_id = CODEX_OAUTH_CLIENT_ID
+    scope = (scope_override or "").strip() or CODEX_OAUTH_SCOPE
+
+    code_verifier = _oauth_pkce_code_verifier()
+    code_challenge = _oauth_pkce_code_challenge(code_verifier)
+    state_nonce = uuid.uuid4().hex
+
+    port = _codex_authcode_free_port()
+    host = "127.0.0.1"
+    redirect_uri = f"http://{host}:{port}{CODEX_OAUTH_AUTHCODE_REDIRECT_PATH}"
+    authorize_url = _codex_authcode_build_authorize_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        state=state_nonce,
+        code_challenge=code_challenge,
+    )
+
+    print()
+    print("Signing in to OpenAI Codex (browser authorization)...")
+    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
+    print()
+    print("Open this URL to authorize Hermes:")
+    print(f"  {authorize_url}")
+    print()
+    _print_loopback_ssh_hint(redirect_uri)
+
+    if open_browser and not _is_remote_session() and _can_open_graphical_browser():
+        try:
+            opened = webbrowser.open(authorize_url)
+        except Exception:
+            opened = False
+        if opened:
+            print("Browser opened for OpenAI authorization.")
+        else:
+            print("Could not open the browser automatically; use the URL above.")
+    else:
+        print("Open the URL above in your browser to continue.")
+
+    wait_timeout = float(timeout_seconds or CODEX_OAUTH_AUTHCODE_CALLBACK_TIMEOUT)
+    print(f"Waiting for authorization... (timeout {int(wait_timeout)}s, Ctrl+C to cancel)")
+
+    try:
+        callback = _codex_authcode_wait_for_callback(
+            host=host,
+            port=port,
+            path=CODEX_OAUTH_AUTHCODE_REDIRECT_PATH,
+            timeout_seconds=wait_timeout,
+        )
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        if callback["error"] == "access_denied":
+            raise AuthError(
+                f"Authorization cancelled: {detail}",
+                provider="openai-codex",
+                code="authcode_access_denied",
+            )
+        raise AuthError(
+            f"Authorization failed: {callback['error']} — {detail}",
+            provider="openai-codex",
+            code="authcode_callback_error",
+        )
+
+    authorization_code = callback.get("code") or ""
+    returned_state = callback.get("state") or ""
+    if not authorization_code:
+        raise AuthError(
+            "Authorization callback did not return a code.",
+            provider="openai-codex",
+            code="authcode_no_code",
+        )
+    if returned_state != state_nonce:
+        raise AuthError(
+            "Authorization state mismatch — possible CSRF. Aborting.",
+            provider="openai-codex",
+            code="authcode_state_mismatch",
+        )
+
+    # Exchange the authorization code for tokens at the same token endpoint the
+    # device-code flow uses. PKCE verifier binds the code to this request.
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            token_resp = client.post(
+                CODEX_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "code_verifier": code_verifier,
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": CODEX_OAUTH_USER_AGENT,
+                },
+            )
+    except Exception as exc:
+        raise AuthError(
+            f"Token exchange failed: {exc}",
+            provider="openai-codex",
+            code="token_exchange_failed",
+        )
+
+    if token_resp.status_code == 429:
+        retry_after = _parse_retry_after_seconds(getattr(token_resp, "headers", None))
+        wait_hint = (
+            f" Try again in about {retry_after}s."
+            if retry_after is not None
+            else " Wait a minute and run the login again."
+        )
+        raise AuthError(
+            "OpenAI is rate-limiting Codex login requests (HTTP 429) during "
+            "token exchange. This is a temporary throttle on OpenAI's side, "
+            f"not a credential problem.{wait_hint}",
+            provider="openai-codex",
+            code=CODEX_RATE_LIMITED_CODE,
+        )
+
+    if token_resp.status_code != 200:
+        raise AuthError(
+            f"Token exchange returned status {token_resp.status_code}.",
+            provider="openai-codex",
+            code="token_exchange_error",
+        )
+
+    tokens = token_resp.json()
+    access_token = tokens.get("access_token", "")
+    refresh_token = tokens.get("refresh_token", "")
+
+    if not access_token:
+        raise AuthError(
+            "Token exchange did not return an access_token.",
+            provider="openai-codex",
+            code="token_exchange_no_access_token",
+        )
+
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+
+    return {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        },
+        "base_url": base_url,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "auth_mode": "chatgpt",
+        "source": "authcode",
     }
 
 

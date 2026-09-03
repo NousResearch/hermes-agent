@@ -41,6 +41,13 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="Do not auto-open a browser for OAuth login",
     )
     auth_add.add_argument(
+        "--device-code",
+        dest="device_code",
+        action="store_true",
+        help="Force the legacy device-code OAuth flow (openai-codex default is "
+        "the browser authorization-code flow)",
+    )
+    auth_add.add_argument(
         "--timeout", type=float, help="OAuth/network timeout in seconds"
     )
     auth_add.add_argument(

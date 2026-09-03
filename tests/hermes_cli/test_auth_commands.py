@@ -533,6 +533,10 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
         ]
     )
     monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    # Keep this regression on the device-code path so it stays independent of
+    # whether a graphical browser is available on the test host.
+    monkeypatch.setattr("hermes_cli.auth._can_open_graphical_browser", lambda: False)
+    monkeypatch.setattr("hermes_cli.auth._is_remote_session", lambda: False)
 
     from hermes_cli.auth_commands import auth_add_command
     from agent.credential_pool import load_pool
@@ -542,6 +546,10 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
         auth_type = "oauth"
         api_key = None
         label = None
+        device_code = False
+        no_browser = False
+        timeout = None
+        scope = None
 
     auth_add_command(_Args())
     auth_add_command(_Args())
@@ -568,6 +576,92 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert "openai-codex" not in payload.get("providers", {})
     # First add activated the provider; second add left it as-is.
     assert payload["active_provider"] == "openai-codex"
+
+
+def test_auth_add_codex_defaults_to_authcode_when_browser_available(tmp_path, monkeypatch):
+    """``hermes auth add openai-codex`` uses the browser auth-code flow when a
+    graphical browser is available, unless ``--device-code`` is set."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("authcode@example.com")
+    called = {"authcode": 0, "device": 0}
+
+    def _authcode(**kwargs):
+        called["authcode"] += 1
+        return {
+            "tokens": {"access_token": token, "refresh_token": "rt"},
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+            "source": "authcode",
+        }
+
+    def _device():
+        called["device"] += 1
+        raise AssertionError("device-code flow should not run when a browser is available")
+
+    monkeypatch.setattr("hermes_cli.auth._codex_authcode_login", _authcode)
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", _device)
+    monkeypatch.setattr("hermes_cli.auth._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_cli.auth._is_remote_session", lambda: False)
+
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        device_code = False
+        no_browser = False
+        timeout = None
+        scope = None
+
+    auth_add_command(_Args())
+    assert called == {"authcode": 1, "device": 0}
+    entries = load_pool("openai-codex").entries()
+    assert len(entries) == 1
+    assert entries[0].access_token == token
+    assert entries[0].source == "manual:device_code"
+
+
+def test_auth_add_codex_device_code_flag_forces_legacy_flow(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("device@example.com")
+    called = {"authcode": 0, "device": 0}
+
+    def _authcode(**kwargs):
+        called["authcode"] += 1
+        raise AssertionError("--device-code must not start the auth-code flow")
+
+    def _device():
+        called["device"] += 1
+        return {
+            "tokens": {"access_token": token, "refresh_token": "rt"},
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth._codex_authcode_login", _authcode)
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", _device)
+    monkeypatch.setattr("hermes_cli.auth._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_cli.auth._is_remote_session", lambda: False)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        device_code = True
+        no_browser = False
+        timeout = None
+        scope = None
+
+    auth_add_command(_Args())
+    assert called == {"authcode": 0, "device": 1}
 
 
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):

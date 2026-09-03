@@ -395,7 +395,29 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
-        creds = auth_mod._codex_device_code_login()
+        # Default is the browser authorization-code + PKCE flow; fall back to the
+        # device-code flow on ``--device-code`` or when no graphical browser is
+        # available. Both flows return the same credential dict shape.
+        force_device_code = bool(getattr(args, "device_code", False))
+        open_browser = not getattr(args, "no_browser", False)
+        use_authcode = (
+            not force_device_code
+            and open_browser
+            and not auth_mod._is_remote_session()
+            and auth_mod._can_open_graphical_browser()
+        )
+        if use_authcode:
+            creds = auth_mod._codex_authcode_login(
+                open_browser=True,
+                timeout_seconds=getattr(args, "timeout", None),
+                scope_override=getattr(args, "scope", None),
+            )
+            source = SOURCE_MANUAL_DEVICE_CODE  # OAuth pool source; refresh path is identical
+        else:
+            if force_device_code:
+                print("Using the device-code OAuth flow (--device-code).")
+            creds = auth_mod._codex_device_code_login()
+            source = SOURCE_MANUAL_DEVICE_CODE
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -416,7 +438,7 @@ def auth_add_command(args) -> None:
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
-            source=SOURCE_MANUAL_DEVICE_CODE,
+            source=source,
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),

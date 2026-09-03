@@ -102,6 +102,12 @@ logger = logging.getLogger(__name__)
 
 FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": {
+        # managed_gateway_no_edit: the Nous Portal FAL proxy allows the base
+        # model endpoint (fal-ai/flux-2/klein/9b) but not the /edit variant.
+        # When using the managed gateway and image_url is supplied, the tool
+        # routes to the base endpoint instead of edit_endpoint so image-to-image
+        # works on Nous Subscription without requiring FAL_KEY (#87621).
+        "managed_gateway_no_edit": True,
         "display": "FLUX 2 Klein 9B",
         "speed": "<1s",
         "strengths": "Fast, crisp text",
@@ -1236,6 +1242,19 @@ def image_generate_tool(
                 source_images.append(ref.strip())
 
     edit_endpoint = meta.get("edit_endpoint")
+    # When the model declares managed_gateway_no_edit and the managed (Nous
+    # Subscription) gateway is active, suppress the /edit variant: the Portal
+    # FAL proxy only allows the base model endpoint, not the edit sub-path
+    # (#87621).  The base endpoint still accepts image_url on some models;
+    # for others the fallback is text-to-image with the supplied prompt only.
+    if edit_endpoint and meta.get("managed_gateway_no_edit"):
+        try:
+            _mgw = _resolve_managed_fal_gateway()
+        except Exception:
+            _mgw = None
+        if _mgw is not None and not fal_key_is_configured():
+            # Strictly managed — edit endpoint unavailable on portal proxy.
+            edit_endpoint = None
     use_edit = bool(source_images) and bool(edit_endpoint)
     modality = "image" if use_edit else "text"
 

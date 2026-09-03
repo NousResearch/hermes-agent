@@ -1,8 +1,10 @@
 # MCP OAuth Chunk 6 — Apple Keychain Backend
 
-Status: design proposal (not yet implemented)
+Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: versioned bundle store protocol (Chunk 5)
 Platform: macOS
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §8.3, §8.4, §10, §14, §17.1
+Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-6 duplicate-item ambiguity, F-1 probe cost, F-0 identity)
 
 ## Purpose
 
@@ -19,7 +21,9 @@ Label:   Hermes MCP OAuth — <server display name>
 Secret:  UTF-8 JSON versioned bundle envelope
 ```
 
-The stable service/account identity does not depend on Hermes application signing or install path. Profile isolation is encoded in the identity digest and validated inside the envelope.
+`<identity-digest>` is the SHA-256 of the canonical identity — `hermes_home_key()`-canonicalized `profile_home` plus normalized server URL and name (architecture §4.1) — the same digest Chunk 5 uses for the bundle filename and Chunk 3 for lock filenames.
+
+The stable service/account identity does not depend on Hermes application signing or install path. Profile isolation is the account name: on load the backend recomputes the digest from the requesting identity and matches it against the account, the same way the file backend matches it against the filename. The envelope itself carries no profile identifier (Chunk 5 removed `profile_id`); its `server_name` / `server_url` are validated against the runtime expectation for server binding.
 
 ## Backend interface
 
@@ -45,31 +49,43 @@ Secret-handling rule:
 - Secret JSON must not appear in process arguments, logs, or exception text.
 - If `security` cannot perform a required non-interactive write with secret input through stdin, implement that operation with Security.framework bindings instead of passing `-w <secret>`.
 
-The backend adapter hides this choice from lifecycle callers.
+Probe cost: the stored revision is checked only at rebuild decision points (before a flow, during 401 recovery, on explicit refresh or status), and between those the provider entry serves from the Chunk 5 in-memory revision cache (10 s TTL, backoff, last-known-good). A resource request therefore never spawns `security`. If profiling shows the `security find-generic-password` spawn is itself a hot-path cost at those decision points, the escalation is Security.framework bindings for `load` and the revision probe — the same CLI→framework path already used for the secret-write case.
+
+Duplicate-item detection (see Operations) needs an "all matches" query, which the `security` CLI does not offer; `SecItemCopyMatching` with `kSecMatchLimitAll` is the expected mechanism.
+
+The backend adapter hides these choices from lifecycle callers.
 
 ## Operations
 
+Every operation first resolves how many items match the exact service/account:
+
+- Zero: `credential_not_found` (for load/delete) or proceed (for create).
+- Exactly one: proceed.
+- More than one: **`credential_ambiguous`** — refuse; never operate on an arbitrary match. The error message names the exact remediation (`security delete-generic-password -s com.nousresearch.hermes.mcp-oauth.v1 -a <account>` for each stale item). A `hermes mcp credentials repair` command is deferred to Chunk 7.
+
 ### Load
 
-- Query exact service/account.
-- Bound output size.
+- Resolve match count (above).
+- Query the single item; bound output size.
 - Parse and validate the envelope.
-- Verify identity, schema, and revision.
-- Map missing item to `credential_not_found`.
+- Verify schema and revision; verify the recomputed identity digest equals the account name.
+- Map a missing item to `credential_not_found`.
 
 ### Create and replacement
 
 - Hold mutation lock.
+- Resolve match count; `credential_ambiguous` if more than one existing item.
 - Verify create/revision precondition.
-- Replace the generic-password payload.
+- Replace the generic-password payload (one atomic Keychain operation; the revision travels inside the envelope, no separate revision item).
 - Read back the exact item.
-- Verify identity, revision, and complete bundle equality.
+- Verify the account digest, revision, and complete bundle equality.
 - Report uncertain write outcomes rather than assuming success.
 
 ### Delete
 
 - Hold administrative and mutation locks.
-- Delete exact service/account only.
+- Resolve match count; `credential_ambiguous` if more than one item (do not delete an arbitrary one).
+- Delete the single exact service/account item.
 - Report local deletion independently from optional remote revocation.
 
 ## Configuration
@@ -122,7 +138,8 @@ Run in a unique service namespace or account prefix:
 
 - Create/load/replace/delete.
 - CAS conflict across processes.
-- Identity isolation.
+- Identity isolation: a recomputed digest that does not match the account fails closed; `{tilde, trailing slash, embedded ``..``, symlinked parent, ``/var`` vs ``/private/var``}` spellings of one profile home resolve to one account.
+- Duplicate-item ambiguity: with two generic-password items matching one service/account, `load`, `compare_and_swap`, `replace_authorized`, and `delete` each return `credential_ambiguous` and never touch an arbitrary match; the error names the `security delete-generic-password` remediation.
 - Read-back verification failure.
 - Locked/denied/timeout mapping.
 - No file fallback.
@@ -140,7 +157,7 @@ Cleanup deletes only exact test items created by the run.
 ### Secret exposure
 
 - Captured subprocess arguments contain no bundle or token.
-- Logs and errors contain no secrets.
+- Logs and errors contain no secrets; any revision value in a log line or error is truncated to at most 8 hex characters (bound established in Chunk 4).
 - Debug export excludes Keychain payloads.
 - Renderer-facing RPC payloads contain no secrets.
 
@@ -159,11 +176,15 @@ Configure `apple-keychain`, authorize a fake/local MCP through CLI, restart the 
 - Do not add Windows or Linux secure backends here.
 - Do not silently migrate without verified destination write.
 - Do not make Keychain contents model-visible.
+- Do not add a `hermes mcp credentials repair` command for duplicate items here; the `credential_ambiguous` error names the manual `security` remediation, and the repair command is Chunk 7.
+- Do not auto-delete a duplicate item.
 
 ## Completion criteria
 
 - All local Hermes Python surfaces share Keychain credentials.
 - Backend contract tests pass on macOS.
-- Secure-backend failures are typed and fail closed.
+- Secure-backend failures are typed and fail closed, including `credential_ambiguous` for duplicate items.
+- Identity is validated by recomputing the digest against the account name; a mismatch fails closed.
+- The revision probe never spawns `security` on the per-request path.
 - No secret is exposed through argv, logs, UI, or fallback files.
 - Ordinary Hermes updates do not change Keychain item identity.

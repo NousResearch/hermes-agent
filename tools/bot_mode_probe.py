@@ -34,6 +34,7 @@ import threading
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+_BOT_MODE_PROTOCOL_VERSION = 3
 
 # The canonical per-bot conversation title — the only session shape that
 # receives the protocol section. Must match the desktop plugin's
@@ -273,10 +274,13 @@ def _build_section(home: Path) -> str:
         "ONE clearly relevant teammate; don't fan out to several unless the user "
         "explicitly asked.\n"
         f'When YOU receive a "Message from 🤖 <name> (@<handle>):" message, a '
-        "teammate agent is talking to you (not the user): address them, reply "
-        "concisely via message_agent to their handle, and if it is a pure FYI "
-        "with nothing to add, staying silent is fine — never ping-pong "
-        "acknowledgements.\n"
+        "teammate agent is talking to you (not the user): address them and return "
+        "your concise, substantive reply as this turn's final response. Do not call "
+        "message_agent merely to reply; the transport already captures your final "
+        "response and delivers it to the sender. Use message_agent only to initiate "
+        "a separate message or independent follow-up. If it is a pure FYI with "
+        "nothing to add, staying silent is fine — never generate acknowledgement "
+        "chains.\n"
         f"You are `@{handle}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
@@ -382,8 +386,9 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = []
     # Protocol-text version salt: bumping this refreshes every eternal Bot
     # Chat prompt ONCE so existing bots adopt a new protocol section (e.g.
-    # the v2 message_agent tool replacing the shellout instructions).
-    surface["protocol_version"] = 2
+    # the v2 message_agent tool replacing the shellout instructions, or the
+    # v3 single-reply contract replacing the message_agent reply bounce).
+    surface["protocol_version"] = _BOT_MODE_PROTOCOL_VERSION
     try:
         # Peer gateways are part of the messaging surface: registering one
         # must refresh eternal Bot Chat prompts so the cross-machine DM

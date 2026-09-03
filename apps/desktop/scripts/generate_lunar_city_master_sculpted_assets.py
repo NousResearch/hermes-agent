@@ -141,6 +141,7 @@ def collection_triangle_count(collection):
     sculpted = 0
     rig_wires = 0
     finished_components = 0
+    anatomical_heads = 0
     material_names = set()
     for obj in collection.objects:
         if obj.get("component") == "animation-wire-rig" or obj.type == "CURVE":
@@ -152,6 +153,8 @@ def collection_triangle_count(collection):
             sculpted += 1
         if str(obj.get("asset_component", "")).startswith("finished-"):
             finished_components += 1
+        if obj.get("asset_component") == "finished-anatomical-species-head":
+            anatomical_heads += 1
         for slot in obj.material_slots:
             if slot.material:
                 material_names.add(slot.material.name)
@@ -161,7 +164,7 @@ def collection_triangle_count(collection):
             total += sum(max(1, len(poly.vertices) - 2) for poly in mesh.polygons)
         finally:
             evaluated.to_mesh_clear()
-    return total, mesh_count, sculpted, rig_wires, finished_components, sorted(material_names)
+    return total, mesh_count, sculpted, rig_wires, finished_components, anatomical_heads, sorted(material_names)
 
 
 def add_wrapped_density_skin(asset_id, kind, role, collection, mats, scale=(1.0, 1.0, 1.0), material_key="shell"):
@@ -294,6 +297,62 @@ def add_reference_grade_building_finish(asset_id, role, title, accent, collectio
             hero.ellipsoid(f"{asset_id}_finished_garden_plant_{i}", (-1.2 + i * 0.27, -0.45 + 0.08 * (i % 3), 0.28), (0.045, 0.035, 0.11), mats["green"], collection, asset_id, "building", role, "finished-garden-plant", 10, 6)
 
 
+def anthropomorphic_head_mesh(asset_id, role, label_text, collection, mats):
+    lower = label_text.lower()
+    skin_mat = hero.leader_skin_material(label_text, role, mats)
+    verts = []
+    faces = []
+    rings = 20
+    segments = 48
+    z = 1.74
+    for ring in range(rings + 1):
+        theta = pi * ring / rings
+        for segment in range(segments):
+            phi = 2 * pi * segment / segments
+            sx = sin(theta) * cos(phi)
+            sy = sin(theta) * sin(phi)
+            sz = cos(theta)
+            front = max(0.0, -sy)
+            side = abs(sx)
+            crown = max(0.0, sz)
+            jaw = max(0.0, -sz)
+            if "fox" in lower:
+                rx, ry, rz = 0.24 + 0.03 * side, 0.22 + 0.08 * front, 0.28
+            elif "raccoon" in lower or "badger" in lower:
+                rx, ry, rz = 0.28 + 0.03 * side, 0.22 + 0.06 * front, 0.23 + 0.05 * crown
+            elif "eagle" in lower or "hawk" in lower:
+                rx, ry, rz = 0.24 + 0.02 * side, 0.22 + 0.08 * front, 0.29 + 0.04 * crown
+            elif "owl" in lower:
+                rx, ry, rz = 0.3 + 0.02 * side, 0.2 + 0.05 * front, 0.31 + 0.03 * crown
+            else:
+                rx, ry, rz = 0.26, 0.21 + 0.05 * front, 0.26
+            px = sx * rx * (1.0 - 0.08 * jaw)
+            py = -0.18 + sy * ry - 0.08 * front * (1.0 - side)
+            pz = z + sz * rz - 0.05 * jaw
+            if front > 0.45 and abs(sx) < 0.45 and -0.65 < sz < 0.25:
+                py -= 0.06 + (0.055 if "fox" in lower else 0.035)
+                px *= 0.72
+                pz -= 0.03 * jaw
+            verts.append((px, py, pz))
+    for ring in range(rings):
+        for segment in range(segments):
+            a = ring * segments + segment
+            b = ring * segments + (segment + 1) % segments
+            c = (ring + 1) * segments + (segment + 1) % segments
+            d = (ring + 1) * segments + segment
+            faces.append((a, b, c, d))
+    mesh = bpy.data.meshes.new(f"{asset_id}_anatomical_head_mesh")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    mesh.materials.append(skin_mat)
+    obj = bpy.data.objects.new(f"{asset_id}_finished_anatomical_species_head_skin", mesh)
+    collection.objects.link(obj)
+    obj["mesh_construction"] = "integrated_anthropomorphic_species_head_skin"
+    obj["retopology_target"] = "quad_face_loops_with_muzzle_and_brow_flow"
+    set_master_metadata(obj, asset_id, "character", role, "finished-anatomical-species-head")
+    return hero.polish_surface(obj, subdivision=1, bevel=0.003)
+
+
 def add_reference_grade_leader_finish(asset_id, role, label_text, collection, mats, accent):
     """Add the visible anthropomorphic finish missing from rough blob passes."""
     lower = label_text.lower()
@@ -355,11 +414,11 @@ def add_reference_grade_leader_finish(asset_id, role, label_text, collection, ma
     # Face and posture are the first-read features in the reference. These
     # are deliberately large and frontal so the leader does not collapse into
     # a generic pawn when viewed at desktop game scale.
-    hero.ellipsoid(f"{asset_id}_finished_forward_head_mass", (0, -0.2, z), (0.28, 0.22, 0.26), skin_mat, collection, asset_id, "character", role, "finished-head-mass", 64, 28)
-    hero.ellipsoid(f"{asset_id}_finished_muzzle_volume", (0, -0.49, z - 0.08), (0.15, 0.07, 0.1), mats["fur_light"], collection, asset_id, "character", role, "finished-muzzle-volume", 36, 16)
+    anthropomorphic_head_mesh(asset_id, role, label_text, collection, mats)
+    hero.ellipsoid(f"{asset_id}_finished_muzzle_highlight_patch", (0, -0.62, z - 0.08), (0.13, 0.018, 0.088), mats["fur_light"], collection, asset_id, "character", role, "finished-muzzle-highlight-patch", 32, 14)
     for side in (-1, 1):
-        hero.ellipsoid(f"{asset_id}_finished_eye_white_{side}", (side * 0.13, -0.53, z + 0.05), (0.07, 0.018, 0.052), mats["white"], collection, asset_id, "character", role, "finished-eye-white", 24, 12)
-        hero.ellipsoid(f"{asset_id}_finished_eye_pupil_{side}", (side * 0.135, -0.548, z + 0.048), (0.03, 0.008, 0.026), mats["black"], collection, asset_id, "character", role, "finished-eye-pupil", 16, 8)
+        hero.ellipsoid(f"{asset_id}_finished_eye_white_{side}", (side * 0.13, -0.66, z + 0.05), (0.07, 0.014, 0.052), mats["white"], collection, asset_id, "character", role, "finished-eye-white", 24, 12)
+        hero.ellipsoid(f"{asset_id}_finished_eye_pupil_{side}", (side * 0.135, -0.674, z + 0.048), (0.03, 0.006, 0.026), mats["black"], collection, asset_id, "character", role, "finished-eye-pupil", 16, 8)
         hero.ellipsoid(f"{asset_id}_finished_shoulder_pad_{side}", (side * 0.42, -0.08, 1.15), (0.2, 0.14, 0.085), accent_mat, collection, asset_id, "character", role, "finished-shoulder-pad", 32, 12)
         hero.sculpted_limb(f"{asset_id}_finished_robed_sleeve_{side}", (side * 0.38, -0.06, 1.08), (side * 0.58, -0.34, 0.75), 0.075, 0.047, accent_mat, collection, asset_id, role, "finished-robed-sleeve", 18)
         hero.ellipsoid(f"{asset_id}_finished_hand_{side}", (side * 0.62, -0.38, 0.72), (0.075, 0.05, 0.055), mats["fur_light"], collection, asset_id, "character", role, "finished-hand", 20, 10)
@@ -374,7 +433,7 @@ def add_reference_grade_leader_finish(asset_id, role, label_text, collection, ma
             set_master_metadata(feather, asset_id, "character", role, "finished-layered-chest-feather")
         hero.cone(f"{asset_id}_finished_short_beak", (0, -0.61, z - 0.05), 0.07, 0.01, 0.22, mats["beak"], collection, asset_id, "character", role, "finished-beak", 20, rotation=(1.52, 0, 0))
     elif "fox" in lower:
-        hero.cone(f"{asset_id}_finished_long_fox_snout", (0, -0.64, z - 0.06), 0.13, 0.025, 0.5, mats["fur_light"], collection, asset_id, "character", role, "finished-fox-snout", 28, rotation=(1.54, 0, 0))
+        hero.cone(f"{asset_id}_finished_long_fox_snout", (0, -0.68, z - 0.08), 0.105, 0.024, 0.28, mats["fur_light"], collection, asset_id, "character", role, "finished-fox-snout", 28, rotation=(1.54, 0, 0))
         for side in (-1, 1):
             hero.cone(f"{asset_id}_finished_tall_fox_ear_{side}", (side * 0.24, -0.08, z + 0.34), 0.105, 0.005, 0.48, skin_mat, collection, asset_id, "character", role, "finished-fox-ear", 18, rotation=(0.26, side * 0.62, 0))
         tail = lunar.curve(f"{asset_id}_finished_bushy_fox_tail", [(0.26, 0.18, 0.38), (0.82, 0.34, 0.9), (0.55, 0.05, 1.42)], 0.13, skin_mat, collection)
@@ -681,7 +740,7 @@ def render_review_previews(collections):
 def build_metadata(collections):
     assets = []
     for asset_id, kind, role, display_name, collection in collections:
-        triangle_count, mesh_count, sculpted_count, rig_count, finished_count, material_names = collection_triangle_count(collection)
+        triangle_count, mesh_count, sculpted_count, rig_count, finished_count, anatomical_heads, material_names = collection_triangle_count(collection)
         hero_asset = kind in {"terrain", "building", "leader", "dispatcher"}
         assets.append(
             {
@@ -694,6 +753,7 @@ def build_metadata(collections):
                 "sculptedSurfaceCount": sculpted_count,
                 "animationRigWireCount": rig_count,
                 "finishedSilhouetteComponentCount": finished_count,
+                "anatomicalHeadMeshCount": anatomical_heads,
                 "evaluatedTriangleCount": triangle_count,
                 "minimumTriangleCount": 120000 if hero_asset else 45000,
                 "textureResolutionTarget": "4k" if hero_asset else "2k",
@@ -728,6 +788,9 @@ def build_metadata(collections):
             ),
             "usesReferenceGradeLeaderFinishing": all(
                 asset["finishedSilhouetteComponentCount"] >= 12 for asset in assets if asset["kind"] == "leader"
+            ),
+            "usesAnatomicalLeaderHeadMeshes": all(
+                asset["anatomicalHeadMeshCount"] >= 1 for asset in assets if asset["kind"] == "leader"
             ),
             "usesReferenceGradeBuildingFinishing": all(
                 asset["finishedSilhouetteComponentCount"] >= 14 for asset in assets if asset["kind"] == "building"

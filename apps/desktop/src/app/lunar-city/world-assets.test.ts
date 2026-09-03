@@ -95,6 +95,7 @@ describe('Lunar City asset manifest', () => {
       assetCount: number
       assetQuality: Array<{
         animationRigWireCount: number
+        anatomicalHeadMeshCount: number
         collection: string
         heroComponentCount: number
         id: string
@@ -290,6 +291,7 @@ describe('Lunar City asset manifest', () => {
       assetCount: number
       assets: Array<{
         animationRigWireCount: number
+        anatomicalHeadMeshCount: number
         collection: string
         evaluatedTriangleCount: number
         finishedSilhouetteComponentCount: number
@@ -367,6 +369,7 @@ describe('Lunar City asset manifest', () => {
     expect(masterMetadata.validation.usesAnimationRigWiresForCharacters).toBe(true)
     expect(masterMetadata.validation.usesReferenceGradeBuildingFinishing).toBe(true)
     expect(masterMetadata.validation.usesReferenceGradeLeaderFinishing).toBe(true)
+    expect(masterMetadata.validation.usesAnatomicalLeaderHeadMeshes).toBe(true)
     expect(masterMetadata.validation.usesRoleSpecificWorkerFinishing).toBe(true)
     expect(masterMetadata.validation.completesCroppedAndOccludedSilhouettes).toBe(true)
     expect(masterMetadata.validation.usesRawSoulContent).toBe(false)
@@ -397,6 +400,7 @@ describe('Lunar City asset manifest', () => {
       }
       if (metadata?.kind === 'leader') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(12)
+        expect(metadata.anatomicalHeadMeshCount).toBeGreaterThanOrEqual(1)
       }
       if (metadata?.kind === 'worker' || metadata?.kind === 'child') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(3)

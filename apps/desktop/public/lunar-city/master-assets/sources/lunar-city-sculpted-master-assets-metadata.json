@@ -2,6 +2,7 @@
   "assetCount": 36,
   "assets": [
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-library",
       "displayName": "LIBRARY",
@@ -35,6 +36,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-research-lab",
       "displayName": "RESEARCH LAB",
@@ -67,6 +69,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-arts-studio",
       "displayName": "ARTS STUDIO",
@@ -100,6 +103,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-engineering-workshop",
       "displayName": "ENGINEERING",
@@ -134,6 +138,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-operations-depot",
       "displayName": "OPERATIONS",
@@ -166,6 +171,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-release-gatehouse",
       "displayName": "RELEASE",
@@ -200,6 +206,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-triage-clinic",
       "displayName": "TRIAGE",
@@ -235,6 +242,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-council-hall",
       "displayName": "COUNCIL",
@@ -267,6 +275,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-review-office",
       "displayName": "REVIEW",
@@ -301,6 +310,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-archive",
       "displayName": "ARCHIVE",
@@ -334,6 +344,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 22,
       "collection": "Master Asset - building-break-garden",
       "displayName": "BREAK GARDEN",
@@ -366,10 +377,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 31,
       "collection": "Master Asset - leader-owl-archivist",
       "displayName": "OWL ARCHIVIST",
-      "evaluatedTriangleCount": 720544,
+      "evaluatedTriangleCount": 783072,
       "finishedSilhouetteComponentCount": 20,
       "id": "leader-owl-archivist",
       "kind": "leader",
@@ -404,10 +416,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 15,
       "collection": "Master Asset - leader-fox-scientist",
       "displayName": "FOX SCIENTIST",
-      "evaluatedTriangleCount": 659840,
+      "evaluatedTriangleCount": 723584,
       "finishedSilhouetteComponentCount": 19,
       "id": "leader-fox-scientist",
       "kind": "leader",
@@ -441,10 +454,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 18,
       "collection": "Master Asset - leader-raccoon-artist",
       "displayName": "RACCOON ARTIST",
-      "evaluatedTriangleCount": 689056,
+      "evaluatedTriangleCount": 752320,
       "finishedSilhouetteComponentCount": 18,
       "id": "leader-raccoon-artist",
       "kind": "leader",
@@ -477,10 +491,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 17,
       "collection": "Master Asset - leader-eagle-councillor",
       "displayName": "EAGLE COUNCILLOR",
-      "evaluatedTriangleCount": 656480,
+      "evaluatedTriangleCount": 719616,
       "finishedSilhouetteComponentCount": 18,
       "id": "leader-eagle-councillor",
       "kind": "leader",
@@ -514,10 +529,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 16,
       "collection": "Master Asset - leader-badger-engineer",
       "displayName": "BADGER ENGINEER",
-      "evaluatedTriangleCount": 709312,
+      "evaluatedTriangleCount": 772576,
       "finishedSilhouetteComponentCount": 20,
       "id": "leader-badger-engineer",
       "kind": "leader",
@@ -551,10 +567,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 12,
       "collection": "Master Asset - leader-gold-medic",
       "displayName": "GOLD MEDIC",
-      "evaluatedTriangleCount": 699200,
+      "evaluatedTriangleCount": 762208,
       "finishedSilhouetteComponentCount": 19,
       "id": "leader-gold-medic",
       "kind": "leader",
@@ -588,10 +605,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 18,
       "collection": "Master Asset - leader-hawk-reviewer",
       "displayName": "HAWK REVIEWER",
-      "evaluatedTriangleCount": 655040,
+      "evaluatedTriangleCount": 718176,
       "finishedSilhouetteComponentCount": 18,
       "id": "leader-hawk-reviewer",
       "kind": "leader",
@@ -625,10 +643,11 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 1,
       "animationRigWireCount": 31,
       "collection": "Master Asset - leader-owl-historian",
       "displayName": "OWL HISTORIAN",
-      "evaluatedTriangleCount": 720544,
+      "evaluatedTriangleCount": 783072,
       "finishedSilhouetteComponentCount": 20,
       "id": "leader-owl-historian",
       "kind": "leader",
@@ -663,6 +682,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-audit",
       "displayName": "AUDIT WORKER - methodical",
@@ -694,6 +714,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-operations",
       "displayName": "OPERATIONS WORKER - protective",
@@ -724,6 +745,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-release",
       "displayName": "RELEASE WORKER - bold",
@@ -755,6 +777,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-research",
       "displayName": "RESEARCH WORKER - curious",
@@ -785,6 +808,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-review",
       "displayName": "REVIEW WORKER - exacting",
@@ -816,6 +840,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-support",
       "displayName": "SUPPORT WORKER - social",
@@ -846,6 +871,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-curious",
       "displayName": "CHILD - curious",
@@ -876,6 +902,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-social",
       "displayName": "CHILD - social",
@@ -906,6 +933,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-bold",
       "displayName": "CHILD - bold",
@@ -936,6 +964,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-cautious",
       "displayName": "CHILD - cautious",
@@ -966,6 +995,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - terrain-colony-basin",
       "displayName": "Concave lunar colony basin",
@@ -993,6 +1023,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - road-network-primary",
       "displayName": "Ground-conforming road network",
@@ -1020,6 +1051,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - skybox-lunar-orbit",
       "displayName": "Lunar orbit skybox",
@@ -1048,6 +1080,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 1,
       "collection": "Master Asset - dispatcher-cube",
       "displayName": "Dispatcher companion cube",
@@ -1077,6 +1110,7 @@
       "textureResolutionTarget": "4k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - vehicle-bus",
       "displayName": "Colony bus / tram",
@@ -1105,6 +1139,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - prop-status-signage",
       "displayName": "In-world status signage set",
@@ -1132,6 +1167,7 @@
       "textureResolutionTarget": "2k"
     },
     {
+      "anatomicalHeadMeshCount": 0,
       "animationRigWireCount": 0,
       "collection": "Master Asset - prop-repair-tools",
       "displayName": "Repair and recovery tools",
@@ -1174,6 +1210,7 @@
     "containsPrivateProfileIdentifiers": false,
     "freeLocalGenerationOnly": true,
     "notFlatReferencePlanes": true,
+    "usesAnatomicalLeaderHeadMeshes": true,
     "usesAnimationRigWiresForCharacters": true,
     "usesPerAssetCollections": true,
     "usesProceduralPbrMaterials": true,

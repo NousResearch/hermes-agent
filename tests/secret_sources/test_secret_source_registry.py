@@ -154,14 +154,52 @@ class TestApplyAll:
         assert not report.sources
         assert env == {}
 
-    def test_applies_secrets_and_records_provenance(self, tmp_path):
-        reg.register_source(_make_source(secrets={"API_KEY": "v1"}))
-        env: dict = {}
+    def test_value_equivalent_existing_env_counts_as_applied(self, tmp_path):
+        """#102041: a pre-existing env value identical to the source's value
+        is not a conflict — it counts as applied so the per-home snapshot is
+        rebuilt when the cron prelude resets the cache and re-pulls against
+        an env holding the previous apply's write-back."""
+        reg.register_source(
+            _make_source(name="bulkdump", shape="bulk",
+                         secrets={"TEST_VAR": "src-a", "TEST_OTHER": "src-b"})
+        )
+        env: dict = {"TEST_VAR": "src-a", "UNRELATED": "keep"}
+        report = reg.apply_all(
+            {"bulkdump": {"enabled": True}}, tmp_path, environ=env
+        )
+        sr = report.sources[0]
+        assert sr.applied == ["TEST_VAR", "TEST_OTHER"]
+        assert sr.skipped_existing == []
+        assert report.applied_any is True
+        assert report.provenance["TEST_VAR"].source == "bulkdump"
+        assert report.provenance["TEST_VAR"].overrode_env is False
+        # The equivalent value is left as-is; the untouched foreign var too.
+        assert env == {"TEST_VAR": "src-a", "TEST_OTHER": "src-b",
+                       "UNRELATED": "keep"}
+
+    def test_different_existing_env_value_still_wins_without_override(self, tmp_path):
+        """A pre-existing env value that DIFFERS from the source's value
+        keeps winning without ``override_existing`` — unchanged precedence."""
+        reg.register_source(_make_source(secrets={"TEST_VAR": "src-a"}))
+        env: dict = {"TEST_VAR": "env-a"}
         report = reg.apply_all({"dummy": {"enabled": True}}, tmp_path, environ=env)
-        assert env["API_KEY"] == "v1"
-        assert report.provenance["API_KEY"].source == "dummy"
-        assert report.provenance["API_KEY"].shape == "mapped"
-        assert report.provenance["API_KEY"].overrode_env is False
+        assert env["TEST_VAR"] == "env-a"
+        assert report.sources[0].skipped_existing == ["TEST_VAR"]
+        assert "TEST_VAR" not in report.provenance
+        assert report.applied_any is False
+
+    def test_preserve_existing_beats_value_equivalence(self, tmp_path):
+        """``preserve_existing`` stays the strongest escape hatch: even a
+        byte-identical value is skipped when the var is preserve-listed."""
+        reg.register_source(_make_source(secrets={"TEST_VAR": "src-a"}))
+        env: dict = {"TEST_VAR": "src-a"}
+        report = reg.apply_all(
+            {"dummy": {"enabled": True}, "preserve_existing": ["TEST_VAR"]},
+            tmp_path,
+            environ=env,
+        )
+        assert report.sources[0].skipped_existing == ["TEST_VAR"]
+        assert "TEST_VAR" not in report.provenance
 
 
 

@@ -22179,6 +22179,21 @@ def main(
         os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
+        if all(
+            os.environ.get(name)
+            for name in (
+                "HERMES_KANBAN_DB",
+                "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_RUN_ID",
+                "HERMES_KANBAN_CLAIM_LOCK",
+            )
+        ):
+            try:
+                from tools.kanban_tools import register_current_worker_from_env
+
+                register_current_worker_from_env(source="worker_start")
+            except Exception as exc:
+                logger.debug("kanban worker PID registration failed: %s", exc)
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;

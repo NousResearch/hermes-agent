@@ -8688,23 +8688,88 @@ def detect_stale_running(
     return reclaimed
 
 
+def reconcile_running_task_if_unchanged(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int | None,
+    expected_claim_lock: str | None,
+    expected_worker_pid: int | None,
+    reason: str,
+) -> bool:
+    """Safely reconcile a running task to ready via NULL-safe CAS.
+
+    Verifies task_id, status='running', current_run_id, claim_lock, and
+    worker_pid match expected snapshot values inside a single write_txn.
+    On match, resets status to 'ready', clears claim/pid/heartbeat, closes
+    the active run as 'reclaimed', inserts a dispatcher comment and a
+    'reconciled' event, and returns True. Returns False if snapshot changed.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "last_heartbeat_at = NULL "
+            "WHERE id = ? AND status = 'running' "
+            "  AND current_run_id IS ? "
+            "  AND claim_lock IS ? "
+            "  AND worker_pid IS ?",
+            (task_id, expected_run_id, expected_claim_lock, expected_worker_pid),
+        )
+        if cur.rowcount != 1:
+            return False
+
+        payload = {
+            "reason": reason,
+            "claim_lock": expected_claim_lock,
+            "worker_pid": int(expected_worker_pid) if expected_worker_pid else None,
+            "current_run_id": int(expected_run_id) if expected_run_id else None,
+            "now": now,
+        }
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="reclaimed",
+            status="reclaimed",
+            error=f"reconciliation: {reason}",
+            metadata=payload,
+        )
+        # Ensure tasks.current_run_id is cleared even if no active run row existed
+        conn.execute(
+            "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,)
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                task_id,
+                "dispatcher",
+                f"reconciliation: card was 'running' with no valid claim/worker ({reason}) - requeued to ready",
+                now,
+            ),
+        )
+        _append_event(conn, task_id, "reconciled", payload, run_id=run_id or expected_run_id)
+        return True
+
+
 def reconcile_orphaned_running(
     conn: sqlite3.Connection,
 ) -> list[str]:
-    """Reconcile ``running`` cards whose claim bookkeeping is broken.
+    """Reconcile running cards whose claim bookkeeping is broken.
 
     Tracked-state vs. reality divergence: a task can sit in
-    ``status='running'`` with ``claim_lock IS NULL`` or ``claim_expires IS
-    NULL`` (crash mid-claim, manual SQL, DB restore). None of the other
-    recovery paths ever touch such a card — ``release_stale_claims``
-    requires a non-NULL ``claim_expires``, ``detect_crashed_workers``
+    status='running' with claim_lock IS NULL or claim_expires IS
+    NULL (crash mid-claim, manual SQL, DB restore). None of the other
+    recovery paths ever touch such a card - release_stale_claims
+    requires a non-NULL claim_expires, detect_crashed_workers
     requires a host-local claim_lock + worker_pid, and
-    ``detect_stale_running`` is disabled by default — so the card shows
+    detect_stale_running is disabled by default - so the card shows
     Running forever (a zombie).
 
-    This pass finds those orphans, requeues them to ``ready`` with an
+    This pass finds those orphans, requeues them to ready with an
     explanatory comment, closes any leaked run, and appends a
-    ``reconciled`` event. If the orphan row still records a live PID on
+    reconciled event. If the orphan row still records a live PID on
     this host, requeueing is deferred to a later tick so we never spawn a
     duplicate beside a possibly-alive worker.
 
@@ -8712,10 +8777,9 @@ def reconcile_orphaned_running(
 
     Idea from openai/symphony's tracker reconciliation (Apache-2.0).
     """
-    now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid FROM tasks "
+        "SELECT id, claim_lock, claim_expires, worker_pid, current_run_id FROM tasks "
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
@@ -8730,53 +8794,21 @@ def reconcile_orphaned_running(
                 "pid %s is alive on this host — deferring", tid, pid,
             )
             continue
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ? AND claim_expires IS ?",
-                (tid, row["claim_lock"], row["claim_expires"]),
-            )
-            if cur.rowcount != 1:
-                continue
-            payload = {
-                "reason": "orphaned_running",
-                "claim_lock": row["claim_lock"],
-                "claim_expires": (
-                    int(row["claim_expires"])
-                    if row["claim_expires"] is not None else None
-                ),
-                "worker_pid": int(pid) if pid else None,
-                "now": now,
-            }
-            run_id = _end_run(
-                conn, tid,
-                outcome="reclaimed", status="reclaimed",
-                error="orphaned running card (broken claim bookkeeping)",
-                metadata=payload,
-            )
-            # Inline comment INSERT — add_comment opens its own write_txn
-            # and would raise on nesting (see write_txn pitfalls).
-            conn.execute(
-                "INSERT INTO task_comments (task_id, author, body, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    tid, "dispatcher",
-                    "reconciliation: card was 'running' with no valid claim "
-                    "(dead/gone worker) — requeued to ready",
-                    now,
-                ),
-            )
-            _append_event(conn, tid, "reconciled", payload, run_id=run_id)
-            reconciled.append(tid)
-        _log.info(
-            "kanban reconcile: requeued orphaned running task %s "
-            "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
+        ok = reconcile_running_task_if_unchanged(
+            conn,
+            tid,
+            expected_run_id=row["current_run_id"],
+            expected_claim_lock=row["claim_lock"],
+            expected_worker_pid=pid,
+            reason="orphaned_running",
         )
+        if ok:
+            reconciled.append(tid)
+            _log.info(
+                "kanban reconcile: requeued orphaned running task %s "
+                "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
+            )
     return reconciled
-
 
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message for grouping identical failures.
@@ -9354,25 +9386,116 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+def register_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_run_id: int,
+    expected_claim_lock: str,
+    source: str,
+) -> str:
+    """Bind ``pid`` to one exact running task/run identity.
 
-    The event's payload carries the pid so a human reading ``hermes kanban
-    tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    The task row and its current run form one identity boundary.  A caller
+    must pin both the run id and claim lock; stale or conflicting writers are
+    rejected without changing either row.  Repeating the same registration is
+    idempotent and does not duplicate the ``spawned`` audit event.
     """
+    try:
+        registered_pid = int(pid)
+        pinned_run_id = int(expected_run_id)
+    except (TypeError, ValueError):
+        return "rejected"
+    if registered_pid <= 0 or pinned_run_id <= 0 or not expected_claim_lock:
+        return "rejected"
+
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+        row = conn.execute(
+            "SELECT t.status, t.current_run_id, "
+            "t.claim_lock AS task_claim_lock, "
+            "t.worker_pid AS task_worker_pid, "
+            "r.status AS run_status, r.ended_at, "
+            "r.claim_lock AS run_claim_lock, "
+            "r.worker_pid AS run_worker_pid "
+            "FROM tasks t "
+            "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["current_run_id"] != pinned_run_id
+            or row["run_status"] != "running"
+            or row["ended_at"] is not None
+            or row["task_claim_lock"] != expected_claim_lock
+            or row["run_claim_lock"] != expected_claim_lock
+        ):
+            return "rejected"
+
+        task_pid = row["task_worker_pid"]
+        run_pid = row["run_worker_pid"]
+        if task_pid == registered_pid and run_pid == registered_pid:
+            return "already_registered"
+        if task_pid is not None or run_pid is not None:
+            return "rejected"
+
+        task_update = conn.execute(
+            "UPDATE tasks SET worker_pid = ? "
+            "WHERE id = ? AND status = 'running' "
+            "AND current_run_id = ? AND claim_lock = ? "
+            "AND worker_pid IS NULL",
+            (
+                registered_pid,
+                task_id,
+                pinned_run_id,
+                expected_claim_lock,
+            ),
         )
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
-            )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        run_update = conn.execute(
+            "UPDATE task_runs SET worker_pid = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "AND ended_at IS NULL AND claim_lock = ? "
+            "AND worker_pid IS NULL",
+            (
+                registered_pid,
+                pinned_run_id,
+                task_id,
+                expected_claim_lock,
+            ),
+        )
+        if task_update.rowcount != 1 or run_update.rowcount != 1:
+            raise RuntimeError("worker PID registration lost its identity pin")
+        _append_event(
+            conn,
+            task_id,
+            "spawned",
+            {"pid": registered_pid, "source": source},
+            run_id=pinned_run_id,
+        )
+    return "registered"
+
+
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task: Task | str,
+    pid: int,
+    *,
+    source: str = "dispatcher",
+) -> str:
+    """Compatibility wrapper for dispatcher PID registration."""
+    claimed = get_task(conn, task) if isinstance(task, str) else task
+    if claimed is None or claimed.current_run_id is None or not claimed.claim_lock:
+        return "rejected"
+    return register_worker_pid(
+        conn,
+        claimed.id,
+        pid,
+        expected_run_id=claimed.current_run_id,
+        expected_claim_lock=claimed.claim_lock,
+        source=source,
+    )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -10275,7 +10398,11 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                registration = _set_worker_pid(conn, claimed, int(pid))
+                if registration == "rejected":
+                    raise RuntimeError(
+                        "spawned worker PID could not be bound to the claimed run"
+                    )
             # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn
             # returned and the PID (when reported) is durably persisted,
             # per the RFC timing contract. Best-effort — can never break
@@ -10407,7 +10534,11 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                registration = _set_worker_pid(conn, claimed, int(pid))
+                if registration == "rejected":
+                    raise RuntimeError(
+                        "spawned worker PID could not be bound to the claimed run"
+                    )
             # Worker-lifecycle observer (RFC #58548): same contract as the
             # ready-lane fire above — after spawn + PID persistence.
             _fire_worker_spawned_hook(

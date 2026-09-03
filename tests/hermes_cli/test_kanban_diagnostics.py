@@ -41,6 +41,11 @@ def _task(**overrides):
         "status": "ready",
         "consecutive_failures": 0,
         "last_failure_error": None,
+        "current_run_id": None,
+        "claim_lock": None,
+        "worker_pid": None,
+        "last_heartbeat_at": None,
+        "started_at": None,
     }
     base.update(overrides)
     return base
@@ -54,31 +59,36 @@ def _event(kind, ts=None, **payload):
     }
 
 
-def _run(outcome="completed", run_id=1, error=None):
-    return {
+def _run(
+    outcome="completed",
+    run_id=1,
+    error=None,
+    status="completed",
+    claim_lock=None,
+    worker_pid=None,
+    last_heartbeat_at=None,
+    started_at=None,
+    ended_at=None,
+    **overrides,
+):
+    base = {
         "id": run_id,
         "outcome": outcome,
+        "status": status,
         "error": error,
+        "claim_lock": claim_lock,
+        "worker_pid": worker_pid,
+        "last_heartbeat_at": last_heartbeat_at,
+        "started_at": started_at,
+        "ended_at": ended_at,
     }
+    base.update(overrides)
+    return base
 
 
 # ---------------------------------------------------------------------------
 # Each rule — positive + negative + clearing
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_stuck_in_blocked_fires_past_threshold():
@@ -224,3 +234,292 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+# ---------------------------------------------------------------------------
+# running worker identity diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _running_identity(*, age, task_pid, run_pid, now=10_000, run_present=True):
+    task = _task(
+        status="running",
+        started_at=now - age,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=task_pid,
+        last_heartbeat_at=None,
+    )
+    runs = []
+    if run_present:
+        runs = [_run(
+            run_id=7,
+            status="running",
+            claim_lock="host:1",
+            worker_pid=run_pid,
+            started_at=now - age,
+            ended_at=None,
+            last_heartbeat_at=None,
+        )]
+    return now, task, runs
+
+
+def test_running_pid_missing_after_launch_grace_is_error():
+    now, task, runs = _running_identity(age=31, task_pid=None, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    diag = next(d for d in diags if d.kind == "running_worker_pid_missing")
+    assert diag.severity == "error"
+    assert all(a.kind != "reclaim" for a in diag.actions)
+    assert any(
+        a.kind == "cli_hint" and "reconcile" in (a.payload or {}).get("command", "")
+        for a in diag.actions
+    )
+    assert diag.data["missing_layers"] == ["task", "run"]
+    assert diag.data["task_worker_pid"] is None
+    assert diag.data["run_worker_pid"] is None
+    assert "task row" in diag.detail
+    assert "current run row" in diag.detail
+    assert not any(d.kind == "running_worker_run_mismatch" for d in diags)
+
+
+def test_running_pid_missing_within_grace_does_not_fire():
+    now, task, runs = _running_identity(age=25, task_pid=None, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not any(d.kind == "running_worker_pid_missing" for d in diags)
+    assert not any(d.kind == "running_worker_run_mismatch" for d in diags)
+
+
+def test_running_one_sided_task_pid_past_grace_is_mismatch_only():
+    now, task, runs = _running_identity(age=31, task_pid=1234, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+    diag = diags[0]
+    assert diag.severity == "critical"
+    assert diag.data["task_worker_pid"] == 1234
+    assert diag.data["run_worker_pid"] is None
+    assert "task or run" not in diag.detail
+
+
+def test_running_one_sided_run_pid_past_grace_is_mismatch_only():
+    now, task, runs = _running_identity(age=31, task_pid=None, run_pid=5678)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+    diag = diags[0]
+    assert diag.severity == "critical"
+    assert diag.data["task_worker_pid"] is None
+    assert diag.data["run_worker_pid"] == 5678
+    assert "task or run" not in diag.detail
+
+
+def test_running_run_mismatch_missing_current_run():
+    now, task, runs = _running_identity(
+        age=50, task_pid=1234, run_pid=None, run_present=False,
+    )
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+    diag = next(d for d in diags if d.kind == "running_worker_run_mismatch")
+    assert diag.severity == "critical"
+    assert any("reconcile" in (a.payload or {}).get("command", "") for a in diag.actions)
+
+
+def test_running_run_mismatch_task_pid_without_run_pid():
+    now, task, runs = _running_identity(age=10, task_pid=1234, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+    diag = diags[0]
+    assert diag.severity == "critical"
+    assert diag.data["task_worker_pid"] == 1234
+    assert diag.data["run_worker_pid"] is None
+
+
+def test_running_run_mismatch_run_pid_without_task_pid():
+    now, task, runs = _running_identity(age=10, task_pid=None, run_pid=5678)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+    diag = diags[0]
+    assert diag.severity == "critical"
+    assert diag.data["task_worker_pid"] is None
+    assert diag.data["run_worker_pid"] == 5678
+
+
+def test_running_run_mismatch_run_already_ended():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 50,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+    )
+    runs = [_run(
+        run_id=7,
+        status="completed",
+        ended_at=now - 10,
+        claim_lock="host:1",
+        worker_pid=1234,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    diag = next(d for d in diags if d.kind == "running_worker_run_mismatch")
+    assert diag.severity == "critical"
+    assert not any(
+        d.kind in ("running_worker_pid_missing", "running_worker_heartbeat_missing")
+        for d in diags
+    )
+
+
+def test_running_run_mismatch_claim_lock_differ():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 50,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+    )
+    runs = [_run(
+        run_id=7,
+        status="running",
+        ended_at=None,
+        claim_lock="host:2",
+        worker_pid=1234,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    diag = next(d for d in diags if d.kind == "running_worker_run_mismatch")
+    assert diag.severity == "critical"
+    assert not any(
+        d.kind in ("running_worker_pid_missing", "running_worker_heartbeat_missing")
+        for d in diags
+    )
+
+
+def test_running_run_mismatch_pids_differ():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 50,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+    )
+    runs = [_run(
+        run_id=7,
+        status="running",
+        ended_at=None,
+        claim_lock="host:1",
+        worker_pid=5678,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    diag = next(d for d in diags if d.kind == "running_worker_run_mismatch")
+    assert diag.severity == "critical"
+    assert not any(
+        d.kind in ("running_worker_pid_missing", "running_worker_heartbeat_missing")
+        for d in diags
+    )
+
+
+def test_running_heartbeat_missing_after_120s():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 121,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=None,
+    )
+    runs = [_run(
+        run_id=7,
+        status="running",
+        ended_at=None,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=None,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    diag = next(d for d in diags if d.kind == "running_worker_heartbeat_missing")
+    assert diag.severity == "warning"
+    assert any("reconcile" in (a.payload or {}).get("command", "") for a in diag.actions)
+    assert [d.kind for d in diags if d.kind.startswith("running_worker_")] == [
+        "running_worker_heartbeat_missing",
+    ]
+
+
+def test_running_heartbeat_suppressed_when_identity_is_split():
+    now, task, runs = _running_identity(age=121, task_pid=1234, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_run_mismatch"]
+
+
+def test_running_heartbeat_suppressed_when_both_pids_missing():
+    now, task, runs = _running_identity(age=121, task_pid=None, run_pid=None)
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    kinds = [d.kind for d in diags if d.kind.startswith("running_worker_")]
+    assert kinds == ["running_worker_pid_missing"]
+
+
+def test_running_heartbeat_missing_within_grace_does_not_fire():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 119,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=None,
+    )
+    runs = [_run(
+        run_id=7,
+        status="running",
+        ended_at=None,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=None,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not any(d.kind == "running_worker_heartbeat_missing" for d in diags)
+
+
+def test_running_healthy_worker_produces_no_identity_diagnostics():
+    now = 10_000
+    task = _task(
+        status="running",
+        started_at=now - 200,
+        current_run_id=7,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=now - 30,
+    )
+    runs = [_run(
+        run_id=7,
+        status="running",
+        ended_at=None,
+        claim_lock="host:1",
+        worker_pid=1234,
+        last_heartbeat_at=now - 30,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not any(d.kind.startswith("running_worker_") for d in diags)
+
+
+def test_terminal_task_produces_no_running_identity_diagnostics():
+    now = 10_000
+    task = _task(
+        status="done",
+        started_at=now - 500,
+        current_run_id=7,
+        claim_lock=None,
+        worker_pid=None,
+    )
+    runs = [_run(
+        run_id=7,
+        status="completed",
+        ended_at=now - 100,
+    )]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not any(d.kind.startswith("running_worker_") for d in diags)

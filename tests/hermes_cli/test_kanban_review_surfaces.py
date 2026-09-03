@@ -425,3 +425,114 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])
     assert dashboard[parent_id][0]["kind"] == "review_dependency_deadlock"
     assert dashboard[parent_id][0]["data"]["waiting_child_ids"] == [child_id]
+
+
+def test_cli_and_dashboard_receive_running_worker_pid_missing_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import time
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Worker identity", assignee="builder")
+        claimed = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert claimed is not None
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = NULL WHERE id = ?",
+            (now - 35, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = NULL WHERE id = ?",
+            (now - 35, claimed.current_run_id),
+        )
+        conn.commit()
+
+    cli_payload = json.loads(kc.run_slash(f"diagnostics --task {task_id} --json"))
+    cli_diags = [
+        d for d in cli_payload[0]["diagnostics"]
+        if d["kind"] == "running_worker_pid_missing"
+    ]
+    assert len(cli_diags) == 1
+    cli_diag = cli_diags[0]
+    assert cli_diag["severity"] == "error"
+
+    from plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
+
+    with kb.connect() as conn:
+        dashboard = _compute_task_diagnostics(conn, task_ids=[task_id])
+
+    dash_diags = [
+        d for d in dashboard.get(task_id, [])
+        if d["kind"] == "running_worker_pid_missing"
+    ]
+    assert len(dash_diags) == 1
+    dash_diag = dash_diags[0]
+    assert dash_diag["severity"] == "error"
+    assert dash_diag["data"] == cli_diag["data"]
+    assert cli_diag["data"]["missing_layers"] == ["task", "run"]
+    assert "task row" in cli_diag["detail"]
+    assert "current run row" in cli_diag["detail"]
+
+
+def test_cli_and_dashboard_receive_one_sided_run_pid_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import time
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Worker identity split", assignee="builder")
+        claimed = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert claimed is not None
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (now - 12, 4242, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = NULL WHERE id = ?",
+            (now - 12, claimed.current_run_id),
+        )
+        conn.commit()
+
+    cli_payload = json.loads(kc.run_slash(f"diagnostics --task {task_id} --json"))
+    cli_diags = [
+        d for d in cli_payload[0]["diagnostics"]
+        if d["kind"] == "running_worker_run_mismatch"
+    ]
+    assert len(cli_diags) == 1
+    cli_diag = cli_diags[0]
+    assert cli_diag["severity"] == "critical"
+    assert cli_diag["data"]["task_worker_pid"] == 4242
+    assert cli_diag["data"]["run_worker_pid"] is None
+    assert not any(
+        d["kind"] == "running_worker_pid_missing"
+        for d in cli_payload[0]["diagnostics"]
+    )
+
+    from plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
+
+    with kb.connect() as conn:
+        dashboard = _compute_task_diagnostics(conn, task_ids=[task_id])
+
+    dash_diags = [
+        d for d in dashboard.get(task_id, [])
+        if d["kind"] == "running_worker_run_mismatch"
+    ]
+    assert len(dash_diags) == 1
+    assert dash_diags[0]["data"] == cli_diag["data"]

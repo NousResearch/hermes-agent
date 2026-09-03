@@ -304,6 +304,60 @@ _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
 
 
+def register_current_worker_from_env(
+    *, source: str = "worker_start"
+) -> str | None:
+    """Bind the current process PID to the task/run pinned in the environment.
+
+    Returns one of the strings returned by
+    :func:`hermes_cli.kanban_db.register_worker_pid` (``registered``,
+    ``already_registered``, ``rejected``), or ``None`` when this process is
+    not a dispatcher-spawned kanban worker (missing env vars) or the bridge
+    cannot be established.
+
+    The identity must be complete:
+      * ``HERMES_KANBAN_DB`` - exact board database path
+      * ``HERMES_KANBAN_TASK`` - task id
+      * ``HERMES_KANBAN_RUN_ID`` - exact run id (parsed as a positive int)
+      * ``HERMES_KANBAN_CLAIM_LOCK`` - claim lock the dispatcher wrote
+
+    Partial identity is rejected with ``None``; the function never falls
+    back to board discovery or "just the task id". Registration is idempotent
+    and never overwrites a different existing PID.
+    """
+    db_path = os.environ.get("HERMES_KANBAN_DB")
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+    if not db_path or not tid or not run_id_raw or not claim_lock:
+        return None
+    try:
+        run_id = int(run_id_raw)
+    except (TypeError, ValueError):
+        return None
+    if run_id <= 0:
+        return None
+    try:
+        kb, conn = _connect()
+        try:
+            return kb.register_worker_pid(
+                conn,
+                tid,
+                os.getpid(),
+                expected_run_id=run_id,
+                expected_claim_lock=claim_lock,
+                source=source,
+            )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("kanban worker PID registration failed", exc_info=True)
+        return None
+
+
 def heartbeat_current_worker_from_env() -> bool:
     """Best-effort: extend the kanban claim + bump board heartbeat for the
     current dispatcher-spawned worker, using identity from env vars.
@@ -330,6 +384,7 @@ def heartbeat_current_worker_from_env() -> bool:
     if not tid:
         return False
     import time as _time
+
     now = _time.monotonic()
     if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
         return False
@@ -337,6 +392,13 @@ def heartbeat_current_worker_from_env() -> bool:
     try:
         kb, conn = _connect()
         try:
+            # Repair any transient startup registration failure before the
+            # heartbeat write; the startup path in cli.py does the first
+            # attempt, but a temporary DB lock there should not orphan the run.
+            try:
+                register_current_worker_from_env(source="heartbeat_repair")
+            except Exception:
+                logger.debug("auto-heartbeat: registration repair failed", exc_info=True)
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             try:
                 kb.heartbeat_claim(conn, tid, claimer=claim_lock)

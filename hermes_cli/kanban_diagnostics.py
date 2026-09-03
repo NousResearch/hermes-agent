@@ -1078,12 +1078,180 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+RUNNING_PID_GRACE_SECONDS = 30
+RUNNING_FIRST_HEARTBEAT_GRACE_SECONDS = 120
+
+
+def _rule_running_worker_identity(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Inspect the task-level and run-level identity of running tasks.
+
+    One root-cause diagnostic per state:
+
+    - Critical mismatch when the current run is missing/ended, claim locks
+      differ, or task/run PIDs differ (including one-sided emptiness).
+    - Error pid-missing only when both rows exist, both PID fields are
+      empty, and age is past RUNNING_PID_GRACE_SECONDS (30s).
+    - Warning heartbeat-missing only when task/run/claim/PID identity
+      already matches and age is past RUNNING_FIRST_HEARTBEAT_GRACE_SECONDS
+      (120s).
+    """
+    status = _task_field(task, "status")
+    if status != "running":
+        return []
+
+    task_id = _task_field(task, "id") or ""
+    started_at = int(_task_field(task, "started_at") or 0)
+    current_run_id = _task_field(task, "current_run_id")
+    task_claim_lock = _task_field(task, "claim_lock")
+    task_worker_pid = _task_field(task, "worker_pid")
+    task_heartbeat = _task_field(task, "last_heartbeat_at")
+    age_seconds = (now - started_at) if started_at else 0
+
+    matching_run = None
+    if current_run_id is not None:
+        for r in runs:
+            if _task_field(r, "id") == current_run_id:
+                matching_run = r
+                break
+
+    reconcile_cmd = f"hermes kanban reconcile {task_id}" if task_id else "hermes kanban reconcile"
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Inspect worker identity: {reconcile_cmd}",
+            payload={"command": reconcile_cmd},
+            suggested=True,
+        ),
+    ]
+
+    out: list[Diagnostic] = []
+
+    # 1. Run mismatch (critical)
+    run_status = _task_field(matching_run, "status") if matching_run else None
+    run_ended = _task_field(matching_run, "ended_at") if matching_run else None
+    run_claim = _task_field(matching_run, "claim_lock") if matching_run else None
+    run_pid = _task_field(matching_run, "worker_pid") if matching_run else None
+
+    # One-sided emptiness is a structural identity split, not a launch-grace
+    # delay: both-empty stays on the 30s PID-missing gate instead. A broken
+    # identity is one diagnostic; pid-missing and heartbeat stay silent here.
+    is_mismatch = (
+        current_run_id is None
+        or matching_run is None
+        or run_status != "running"
+        or run_ended is not None
+        or run_claim != task_claim_lock
+        or task_worker_pid != run_pid
+    )
+
+    if is_mismatch:
+        detail = (
+            f"Task {task_id} is running but its task-level execution state does not match "
+            f"its active run record (task_claim={task_claim_lock!r}, run_claim={run_claim!r}, "
+            f"task_pid={task_worker_pid}, run_pid={run_pid}, run_status={run_status!r}). "
+            f"Do not overwrite or reclaim blindly; inspect runtime identity first."
+        )
+        out.append(Diagnostic(
+            kind="running_worker_run_mismatch",
+            severity="critical",
+            title="Running worker run identity mismatch",
+            detail=detail,
+            actions=actions,
+            first_seen_at=started_at or now,
+            last_seen_at=started_at or now,
+            count=1,
+            run_id=current_run_id,
+            data={
+                "task_id": task_id,
+                "current_run_id": current_run_id,
+                "task_claim_lock": task_claim_lock,
+                "run_claim_lock": run_claim,
+                "task_worker_pid": task_worker_pid,
+                "run_worker_pid": run_pid,
+                "run_status": run_status,
+            },
+        ))
+        return out
+
+    # 2. Worker PID missing (error). Both rows exist and both PID fields are
+    # empty after the launch grace. Name only those unbound layers.
+    missing_layers: list[str] = []
+    if task_worker_pid is None:
+        missing_layers.append("task")
+    if run_pid is None:
+        missing_layers.append("run")
+    if (
+        age_seconds >= RUNNING_PID_GRACE_SECONDS
+        and missing_layers == ["task", "run"]
+    ):
+        out.append(Diagnostic(
+            kind="running_worker_pid_missing",
+            severity="error",
+            title=f"Running worker PID missing after {int(age_seconds)}s",
+            detail=(
+                f"Task {task_id} has been in running status for {int(age_seconds)}s but "
+                f"no worker process ID has been bound to the task row or the current "
+                f"run row. Check whether the worker started or if registration failed."
+            ),
+            actions=actions,
+            first_seen_at=started_at or now,
+            last_seen_at=started_at or now,
+            count=1,
+            run_id=current_run_id,
+            data={
+                "task_id": task_id,
+                "started_at": started_at,
+                "age_seconds": int(age_seconds),
+                "current_run_id": current_run_id,
+                "threshold_seconds": RUNNING_PID_GRACE_SECONDS,
+                "missing_layers": missing_layers,
+                "task_worker_pid": task_worker_pid,
+                "run_worker_pid": run_pid,
+            },
+        ))
+        return out
+
+    # 3. Initial heartbeat missing (warning). Only when task/run/claim/PID
+    # identity already matches, including a bound worker PID.
+    run_heartbeat = _task_field(matching_run, "last_heartbeat_at") if matching_run else None
+    heartbeat_missing = not task_heartbeat and not run_heartbeat
+    if (
+        age_seconds >= RUNNING_FIRST_HEARTBEAT_GRACE_SECONDS
+        and heartbeat_missing
+        and task_worker_pid is not None
+    ):
+        out.append(Diagnostic(
+            kind="running_worker_heartbeat_missing",
+            severity="warning",
+            title=f"No heartbeat recorded after {int(age_seconds)}s in running state",
+            detail=(
+                f"Task {task_id} has been running for {int(age_seconds)}s without recording an "
+                f"initial heartbeat. Check worker activity and process health."
+            ),
+            actions=actions,
+            first_seen_at=started_at or now,
+            last_seen_at=started_at or now,
+            count=1,
+            run_id=current_run_id,
+            data={
+                "task_id": task_id,
+                "started_at": started_at,
+                "age_seconds": int(age_seconds),
+                "current_run_id": current_run_id,
+                "threshold_seconds": RUNNING_FIRST_HEARTBEAT_GRACE_SECONDS,
+            },
+        ))
+
+    return out
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
+    _rule_running_worker_identity,
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
@@ -1099,6 +1267,9 @@ DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
     "triage_aux_unavailable",
     "prose_phantom_refs",
+    "running_worker_pid_missing",
+    "running_worker_run_mismatch",
+    "running_worker_heartbeat_missing",
     "repeated_failures",
     "repeated_crashes",
     "review_dependency_deadlock",

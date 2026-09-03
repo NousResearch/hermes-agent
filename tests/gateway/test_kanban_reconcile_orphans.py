@@ -149,6 +149,27 @@ class TestReconcileOrphanedRunning:
         conn.commit()
         assert kb.reconcile_orphaned_running(conn) == []
 
+    def test_orphan_reconcile_uses_cas_primitive(self, conn):
+        """Dispatcher orphan recovery must go through the shared CAS helper."""
+        tid = kb.create_task(conn, title="cas-orphan", assignee="w")
+        _orphan_running(conn, tid)
+        calls: list[tuple] = []
+        original = kb.reconcile_running_task_if_unchanged
+
+        def _wrap(conn, task_id, **kwargs):
+            calls.append((task_id, kwargs.get("reason")))
+            return original(conn, task_id, **kwargs)
+
+        kb.reconcile_running_task_if_unchanged = _wrap  # type: ignore[method-assign]
+        try:
+            assert kb.reconcile_orphaned_running(conn) == [tid]
+        finally:
+            kb.reconcile_running_task_if_unchanged = original  # type: ignore[method-assign]
+        assert calls == [(tid, "orphaned_running")]
+        assert conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (tid,)
+        ).fetchone()["status"] == "ready"
+
 
 class TestDispatchOnceReconciles:
     def test_dispatch_once_reconciles_orphans(self, conn):

@@ -201,3 +201,90 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_quiet_kanban_worker_registers_pid_before_credentials(monkeypatch):
+    calls = []
+
+    import cli as cli_mod
+    from tools import kanban_tools as kt_mod
+
+    def run_conversation(*, user_message, conversation_history):
+        calls.append(("run", user_message, conversation_history))
+        return {
+            "final_response": "",
+            "error": "",
+            "failed": False,
+        }
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-kanban-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-kanban-session",
+                platform="cli",
+                quiet_mode=False,
+                suppress_status_output=False,
+                stream_delta_callback=object(),
+                tool_gen_callback=object(),
+                run_conversation=run_conversation,
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _ensure_runtime_credentials(self):
+            calls.append("credentials")
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            calls.append(("resolve", effective_query))
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **kwargs):
+            calls.append(("init", kwargs))
+            return True
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", "/tmp/kanban.db")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_demo")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:demo")
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    def fake_register(*, source: str = "worker_start") -> str | None:
+        calls.append(("kanban_register", source))
+        return "registered"
+
+    monkeypatch.setattr(kt_mod, "register_current_worker_from_env", fake_register)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 0
+    register_index = next(
+        i for i, c in enumerate(calls) if c == ("kanban_register", "worker_start")
+    )
+    credentials_index = next(
+        i for i, c in enumerate(calls) if c == "credentials"
+    )
+    init_index = next(
+        i for i, c in enumerate(calls) if isinstance(c, tuple) and c[0] == "init"
+    )
+    assert register_index < credentials_index < init_index
+    assert calls[-1] == ("finalize", "quiet-kanban-session")

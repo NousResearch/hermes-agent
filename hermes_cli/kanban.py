@@ -1052,6 +1052,40 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- reconcile ---
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Inspect running task runtime process state and repair inconsistencies",
+        description=(
+            "Reconcile running Kanban worker state against live host processes. "
+            "Default is read-only. Use --fix to repair safe inconsistencies "
+            "(dead workers, broken claims, missing PIDs with no process). "
+            "Unregistered or ambiguous live workers are refused (fail-closed)."
+        ),
+    )
+    p_reconcile.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Optional task ID to reconcile (default: all running tasks on target board)",
+    )
+    p_reconcile.add_argument(
+        "--fix",
+        action="store_true",
+        help="Repair safe orphaned/dead worker states (requeues task to ready)",
+    )
+    p_reconcile.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit reconciliation findings as a JSON array",
+    )
+    p_reconcile.add_argument(
+        "--all-boards",
+        dest="all_boards",
+        action="store_true",
+        help="Reconcile running tasks across all discovered boards",
+    )
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -1102,6 +1136,10 @@ def kanban_command(args: argparse.Namespace) -> int:
     # keeps the patch small and inherits the exact same resolution the
     # dispatcher uses for workers — consistency is a feature here.
     board_override = getattr(args, "board", None)
+    if action == "reconcile" and getattr(args, "all_boards", False):
+        if board_override is not None:
+            print("kanban: --all-boards cannot be combined with --board", file=sys.stderr)
+            return 2
     board_scope = contextlib.nullcontext()
     if board_override:
         try:
@@ -1189,6 +1227,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "reconcile": _cmd_reconcile,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1247,6 +1286,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "specify",
     "decompose",
     "gc",
+    "reconcile",
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -3458,6 +3498,75 @@ def _cmd_repair(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Inspect and safely reconcile running task worker identities."""
+    from hermes_cli import kanban_reconcile as kr
+
+    task_id = getattr(args, "task_id", None)
+    fix = bool(getattr(args, "fix", False))
+    as_json = bool(getattr(args, "json", False))
+    all_boards = bool(getattr(args, "all_boards", False))
+
+    if all_boards:
+        boards = kb.list_boards()
+    else:
+        boards = [kb.get_current_board()]
+
+    all_findings: list[kr.ReconcileFinding] = []
+
+    if task_id:
+        found_any = False
+        for b in boards:
+            with kb.connect_closing(board=b) as conn:
+                t = kb.get_task(conn, task_id)
+                if t is not None:
+                    found_any = True
+                    try:
+                        findings = kr.reconcile_board(board=b, task_id=task_id, fix=fix)
+                        all_findings.extend(findings)
+                    except ValueError as exc:
+                        print(f"kanban: {exc}", file=sys.stderr)
+                        return 1
+        if not found_any:
+            print(f"kanban: task {task_id!r} not found", file=sys.stderr)
+            return 1
+    else:
+        for b in boards:
+            findings = kr.reconcile_board(board=b, task_id=None, fix=fix)
+            all_findings.extend(findings)
+
+    if as_json:
+        print(json.dumps([f.to_dict() for f in all_findings], indent=2))
+    else:
+        if not all_findings:
+            print("kanban reconcile: no running tasks to reconcile")
+        for f in all_findings:
+            fix_str = ""
+            if fix:
+                fix_str = f" [fixed={f.fixed}]"
+            print(
+                f"[{f.board}] task={f.task_id} status={f.task_status} "
+                f"classification={f.classification} matching_pids={list(f.matching_pids)}{fix_str}"
+            )
+            if f.detail:
+                print(f"  detail: {f.detail}")
+
+    if fix:
+        unfixed_unhealthy = [
+            f for f in all_findings
+            if f.classification != "healthy" and not f.fixed
+        ]
+        if unfixed_unhealthy:
+            msg = (
+                f"kanban reconcile: refused fix for {len(unfixed_unhealthy)} task(s); "
+                "status unchanged (fail-closed)"
+            )
+            print(msg, file=sys.stderr)
+            return 1
+
+    return 0
 
 
 # ---------------------------------------------------------------------------

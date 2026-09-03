@@ -1099,6 +1099,46 @@ def test_managed_gateway_refused_isolation_launch_never_retries(
     assert "user bus connection refused" in kb._default_spawn._last_spawn_error
 
 
+def test_spawn_reads_gateway_topology_once_and_keeps_it(
+    monkeypatch, tmp_path,
+):
+    """The managed/unmanaged answer is snapshotted at the top of the spawn
+    and reused, so a transient probe failure cannot flip the path mid-spawn.
+
+    ``_is_supervised_gateway_process`` swallows every exception into False,
+    so re-asking after the launch could downgrade a managed gateway to
+    "unmanaged" and take the plain fallback — which on a managed host is
+    itself a systemd-run wrap under a different unit name, i.e. a second
+    worker recorded as unscoped. The probe here flips exactly at that
+    moment: True while the spawn decides, False from the launch onwards."""
+    workspace = _refused_launch_setup(monkeypatch, tmp_path, managed=True)
+    supervised = {"value": True}
+    monkeypatch.setattr(
+        "tools.process_registry._is_supervised_gateway_process",
+        lambda: supervised["value"],
+    )
+    calls: list[list[str]] = []
+    _fake_refused_launch_popen(
+        monkeypatch, calls, b"systemd-run-test: user bus connection refused\n",
+    )
+    refusing_popen = subprocess.Popen  # the refusing fake installed above
+
+    def flipping_popen(cmd, *args, **kwargs):
+        supervised["value"] = False  # the transient failure lands here
+        return refusing_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", flipping_popen)
+
+    with pytest.raises(RuntimeError, match="user bus connection refused"):
+        kb._default_spawn(_make_task(), str(workspace))
+
+    # Still exactly one launch: the post-launch decision used the snapshot
+    # taken before the flip, so the managed-gateway "no unisolated
+    # fallback" rule held instead of plain-spawning a duplicate.
+    assert len(calls) == 1
+    assert calls[0][0] == "/usr/bin/systemd-run"
+
+
 def test_unmanaged_host_refused_isolation_launch_retries_plain_argv(
     monkeypatch, tmp_path,
 ):
@@ -4290,6 +4330,114 @@ def test_reap_orphaned_scope_sweep(shims, conn):
         "SELECT status FROM tasks WHERE id = ?", (tid,)
     ).fetchone()
     assert row["status"] == "running"
+
+
+
+def _untracked_running_row(conn, *, pid: int | None = None, age: int = 0):
+    """A running task whose worker scope was never recorded.
+
+    The shape a run has after a pre-fix build spawned it on a managed
+    gateway with ``worker_isolation: none``: live worker, live run, a
+    recorded launcher pid, no registration yet, and a NULL
+    ``worker_scope``. ``age`` puts the launch that far in the past (past
+    the registration grace, where the sweep's interaction matters).
+    Returns ``(task_id, run_id)``.
+    """
+    tid = kb.create_task(conn, title="untracked row", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    started = int(time.time()) - age
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_scope=NULL, "
+        "worker_pid=?, worker_registered_at=NULL, "
+        "last_heartbeat_at=?, started_at=? WHERE id=?",
+        (pid, started, started, tid),
+    )
+    conn.execute(
+        "UPDATE task_runs SET started_at=? "
+        "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+        (started, tid),
+    )
+    conn.commit()
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()[0]
+    return tid, int(run_id)
+
+
+def test_reap_sweep_adopts_a_live_untracked_restart_safe_unit(
+    monkeypatch, shims, conn,
+):
+    """The deploy moment for this branch: on a managed gateway with
+    isolation 'none', a worker spawned by the PRE-FIX build runs in
+    ``hermes-worker-kanban-<task>-run-<n>.scope`` while its row records no
+    scope at all. The widened sweep now lists that unit, so without
+    adoption the first tick after the upgrade would reap a LIVE worker.
+
+    The unit is instead recognised through its own name, left running, and
+    written back to the run — after which it is ordinary tracked state."""
+    monkeypatch.setattr(kb, "_resolve_worker_isolation", lambda *a, **k: "none")
+    _patch_managed_gateway(monkeypatch, managed=True)
+    live_pid = shims.sleeper()
+    tid, run_id = _untracked_running_row(conn, pid=live_pid, age=600)
+    live_unit = f"hermes-worker-kanban-{tid}-run-{run_id}.scope"
+    shims.write_unit(live_unit, [live_pid])
+    # A unit of the same shape whose task does not exist at all: the
+    # adoption must not turn the whole prefix into a no-reap zone.
+    orphan_pid = shims.sleeper()
+    orphan_unit = "hermes-worker-kanban-t_ghost-run-1.scope"
+    shims.write_unit(orphan_unit, [orphan_pid])
+
+    assert kb.reap_orphaned_worker_scopes(conn) == [orphan_unit]
+    assert kb._pid_alive(live_pid)  # the live worker survived the sweep
+    assert shims.wait_for(lambda: not kb._pid_alive(orphan_pid))
+    # Backfilled on both rows, so the normal teardown covers the worker.
+    assert conn.execute(
+        "SELECT worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()[0] == live_unit
+    assert conn.execute(
+        "SELECT worker_scope FROM task_runs WHERE id = ?", (run_id,)
+    ).fetchone()[0] == live_unit
+    # Recording a scope must not hand the adopted row to the
+    # never-registered launch grace: the row predates scope tracking, so
+    # the same write normalises it the way an unscoped row is normalised.
+    assert conn.execute(
+        "SELECT worker_registered_at FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()[0] is not None
+    assert kb.fail_unregistered_workers(conn) == []
+    assert kb._pid_alive(live_pid)
+
+    # Adoption is not immortality: once the task is no longer running, the
+    # very same unit is an orphan again and the next sweep reaps it.
+    conn.execute(
+        "UPDATE tasks SET status='done', worker_scope=NULL WHERE id=?", (tid,)
+    )
+    conn.execute(
+        "UPDATE task_runs SET status='done' WHERE id=?", (run_id,)
+    )
+    conn.commit()
+    assert kb.reap_orphaned_worker_scopes(conn) == [live_unit]
+    assert shims.wait_for(lambda: not kb._pid_alive(live_pid))
+
+
+def test_reap_sweep_does_not_adopt_a_stale_earlier_attempt_unit(
+    monkeypatch, shims, conn,
+):
+    """Adoption is keyed to the run's OWN attempt name. A unit left over
+    from an EARLIER attempt of the same task names the same task id, so a
+    task-id-only match would keep leaked scopes alive forever; only the
+    current attempt's unit is adopted."""
+    monkeypatch.setattr(kb, "_resolve_worker_isolation", lambda *a, **k: "none")
+    _patch_managed_gateway(monkeypatch, managed=True)
+    tid, run_id = _untracked_running_row(conn, pid=shims.sleeper())
+    stale_unit = f"hermes-worker-kanban-{tid}-run-{run_id - 1}.scope"
+    stale_pid = shims.sleeper()
+    shims.write_unit(stale_unit, [stale_pid])
+
+    assert kb.reap_orphaned_worker_scopes(conn) == [stale_unit]
+    assert shims.wait_for(lambda: not kb._pid_alive(stale_pid))
+    assert conn.execute(
+        "SELECT worker_scope FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()[0] is None
 
 
 

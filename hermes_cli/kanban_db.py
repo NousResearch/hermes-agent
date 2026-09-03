@@ -9431,6 +9431,15 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
       recorded in ``tasks.worker_scope`` and swept by the scope audit —
       ``none`` turns off kanban's own isolation, not the restart-safe
       guarantee (see :func:`_managed_gateway_dispatch`).
+      Because such a run now starts with a recorded scope, it also starts
+      UNREGISTERED, and the launch-grace rule that already covers scoped
+      runs covers it too: a worker with no tool activity within
+      ``WORKER_REGISTRATION_GRACE_SECONDS`` (120 s) is stopped and its run
+      recorded ``spawn_failed``. That is deliberate — one rule for every
+      run that owns a scope, whatever mode created it — and a slow boot is
+      not lost to it, because the queued stop re-checks registration
+      immediately before it signals and stands down if the worker has
+      since registered.
     * ``systemd-scope`` — scope only when the real
       ``systemd-run --user --scope`` probe passes; on failure warn once
       and REFUSE the spawn (finding H): the spawn path raises so the
@@ -11991,6 +12000,163 @@ def _claimed_worker_scopes_globally() -> Optional[set[str]]:
     return claimed
 
 
+def _live_untracked_worker_runs() -> Optional[dict[str, tuple[str, str, int]]]:
+    """Live runs whose worker scope is NOT recorded, keyed by task id.
+
+    ``{sanitised_task_id: (board_slug, task_id, run_id)}`` for every
+    ``running`` row across all boards whose ``worker_scope`` is NULL and
+    whose attempt is still open. These are the runs the audit sweep
+    cannot recognise through :func:`_claimed_worker_scopes_globally`
+    (which matches by recorded unit name), and on this branch's own
+    deploy they are REAL: a worker spawned by the pre-fix build on a
+    managed gateway with ``worker_isolation: none`` runs inside
+    ``hermes-worker-kanban-<task>-run-<n>.scope`` while its row records
+    no scope at all. Without this map the first tick after the upgrade
+    would list that unit, find no claim, and reap a LIVE worker.
+
+    The key is the SANITISED id (what a unit name can encode), so a
+    sweep can look a parsed unit name up here; an id whose sanitised
+    form collides with another task's is dropped rather than guessed,
+    because an ambiguous owner must never adopt a unit.
+
+    Returns ``None`` when any board is unreadable — same fail-closed
+    rule as :func:`_claimed_worker_scopes_globally`: "cannot read a
+    board" must never look like "that board has no live workers".
+    """
+    live: dict[str, tuple[str, str, int]] = {}
+    ambiguous: set[str] = set()
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception as exc:
+        _log.debug("kanban: scope sweep cannot list boards: %s", exc)
+        return None
+    slugs = [b.get("slug") for b in boards if b.get("slug")] or [DEFAULT_BOARD]
+    for slug in slugs:
+        try:
+            path = kanban_db_path(board=slug)
+            if not path.exists():
+                continue
+            ro = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True, timeout=5.0,
+            )
+            try:
+                rows = ro.execute(
+                    "SELECT t.id, r.id FROM tasks t "
+                    "JOIN task_runs r ON r.id = t.current_run_id "
+                    "WHERE t.status = 'running' "
+                    "  AND t.worker_scope IS NULL "
+                    "  AND r.status = 'running'"
+                ).fetchall()
+            finally:
+                ro.close()
+        except Exception as exc:
+            _log.debug(
+                "kanban: scope sweep cannot read board %s: %s", slug, exc,
+            )
+            return None
+        for task_id, run_id in rows:
+            key = _SCOPE_UNIT_UNSAFE.sub("-", str(task_id)).strip("-.")
+            if not key:
+                # An id that sanitises away entirely is minted as the
+                # shared literal "task" by _kanban_worker_scope_unit, so
+                # its unit name identifies nothing — never adoptable.
+                continue
+            if key in live and live[key][1] != task_id:
+                ambiguous.add(key)
+            live[key] = (slug, str(task_id), int(run_id))
+    for key in ambiguous:
+        live.pop(key, None)
+    return live
+
+
+def _untracked_owner_of_scope_unit(
+    unit: str, live_runs: dict[str, tuple[str, str, int]]
+) -> Optional[tuple[str, str, int]]:
+    """The live run *unit* belongs to, or ``None`` when nothing owns it.
+
+    Ownership is proven, not guessed: the task id is parsed back out of
+    the unit name (:func:`_task_id_from_kanban_scope_unit`), looked up
+    among the runs that record no scope
+    (:func:`_live_untracked_worker_runs`), and then the unit must be
+    EXACTLY one of the two names that run's own attempt would produce —
+    kanban's isolation unit or the restart-safe wrap's. Requiring the
+    attempt's own name is what keeps a lingering unit from an EARLIER
+    attempt of the same task reapable: only the current run's unit is
+    adopted.
+    """
+    task_id = _task_id_from_kanban_scope_unit(unit)
+    if task_id is None:
+        return None
+    owner = live_runs.get(task_id)
+    if owner is None:
+        return None
+    _slug, real_task_id, run_id = owner
+    candidates = {
+        _kanban_worker_scope_unit(real_task_id, run_id),
+        f"hermes-worker-kanban-{real_task_id}-run-{run_id}.scope",
+    }
+    return owner if unit in candidates else None
+
+
+def _record_adopted_worker_scope(
+    board: str, task_id: str, run_id: int, unit: str
+) -> None:
+    """Backfill ``worker_scope`` on an adopted run (task row + run row).
+
+    Best-effort and idempotent: written only while the row still holds
+    the NULL the adoption was decided on, so a worker that registered
+    its own scope in the meantime wins. Once recorded, the unit is
+    ordinary tracked state — the normal teardown stops it and the next
+    sweep recognises it through the claimed-scope path instead of
+    re-deriving the adoption.
+
+    Recording a scope also moves the row under the never-registered
+    launch grace, so the same write carries the normalization
+    :func:`fail_unregistered_workers` already applies to every UNSCOPED
+    running row with a pid: mark it registered. The row was written by a
+    build that recorded no scope, and under that build its pid was
+    treated as the worker's — adoption must not turn a healthy long-lived
+    worker into a past-grace ``spawn_failed`` just because the sweep
+    learned which unit it lives in. Doing it inside the adoption write
+    (rather than leaning on the tick's call order) makes the two writes
+    inseparable.
+    """
+    conn = None
+    try:
+        path = kanban_db_path(board=board)
+        if not path.exists():
+            return
+        conn = connect(db_path=path)
+        with write_txn(conn):
+            adopted = conn.execute(
+                "UPDATE tasks SET worker_scope = ? "
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_scope IS NULL",
+                (unit, task_id),
+            ).rowcount
+            if not adopted:
+                return  # the row moved on — leave every field alone
+            conn.execute(
+                "UPDATE tasks SET worker_registered_at = ? "
+                "WHERE id = ? AND worker_pid IS NOT NULL "
+                "  AND worker_registered_at IS NULL",
+                (int(time.time()), task_id),
+            )
+            conn.execute(
+                "UPDATE task_runs SET worker_scope = ? "
+                "WHERE id = ? AND task_id = ? AND worker_scope IS NULL",
+                (unit, run_id, task_id),
+            )
+    except Exception as exc:
+        _log.debug(
+            "kanban: cannot backfill worker_scope %s on task %s: %s",
+            unit, task_id, exc,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _task_has_registered_worker(task_id: str) -> bool:
     """True when a board's ``running`` row for *task_id* has a registered
     worker — fresh evidence that an "unregistered launch" diagnosis is
@@ -12146,6 +12312,17 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     completed without a stop, or a stale unit name left over from a
     retry that already moved on to a new unique unit.
 
+    "No running task claims it" is decided on the recorded unit name
+    FIRST and, for what is left, on the unit's own name second: a live
+    unit that names a running task's CURRENT attempt while that run
+    records no scope is ADOPTED (logged, and the unit written back to
+    the row) rather than reaped. That case is not hypothetical — a
+    worker spawned by a build that predates this branch, on a managed
+    gateway with ``worker_isolation: none``, is running inside
+    ``hermes-worker-kanban-<task>-run-<n>.scope`` with a NULL
+    ``worker_scope``, and the first sweep after the upgrade would
+    otherwise kill it.
+
     The sweep runs inside the dispatch tick, under the dispatcher lock,
     and every unit it touches costs a synchronous bus interaction (a
     liveness probe for orphans, a collect for terminal-but-loaded
@@ -12167,6 +12344,9 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     claimed = _claimed_worker_scopes_globally()
     if claimed is None:
         return []  # a board was unreadable — reap nothing this tick
+    live_untracked = _live_untracked_worker_runs()
+    if live_untracked is None:
+        return []  # a board was unreadable — reap nothing this tick
     reaped: list[str] = []
     active = _kanban_list_scope_units("hermes-kanban-*")
     # The restart-safe wrap names its unit ``hermes-worker-kanban-<task>-
@@ -12183,6 +12363,23 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
         if _kanban_scope_is_live(state) or state == "deactivating":
             if unit in claimed:
                 continue  # a running task owns it
+            owner = _untracked_owner_of_scope_unit(unit, live_untracked)
+            if owner is not None:
+                # A live worker whose row records no scope — the shape a
+                # worker spawned by the pre-fix build on a managed
+                # gateway has after this branch is deployed under it.
+                # Reaping it here would kill a running worker on the
+                # first tick after the upgrade, so adopt it instead and
+                # record the unit the run is actually in.
+                board, task_id, run_id = owner
+                _log.info(
+                    "kanban: adopted unregistered restart-safe unit %s "
+                    "for live task %s (run %s) — recording it as the "
+                    "run's worker scope instead of reaping it",
+                    unit, task_id, run_id,
+                )
+                _record_adopted_worker_scope(board, task_id, run_id, unit)
+                continue
         work.append((unit, state))
     # Age bookkeeping: forget vanished units, stamp first-seen on new
     # ones, then order oldest first (unit name as the deterministic
@@ -14951,13 +15148,23 @@ def _default_spawn(
             return argv, ""  # genuinely plain: no wrap was applied
         return argv, _scope_unit_from_argv(argv)
 
+    # Topology is read ONCE per spawn and carried to every decision in
+    # it. ``_managed_gateway_dispatch`` re-derives the answer on each
+    # call and its probe swallows failures into False, so re-asking
+    # after the launch could flip a managed gateway to "unmanaged"
+    # mid-spawn on a transient error — and the fallback branch below
+    # would then plain-spawn a duplicate worker under a scope wrap it
+    # believed was absent. One snapshot makes every branch of this
+    # spawn agree by construction.
+    managed_gateway = _managed_gateway_dispatch()
+
     # Both launch paths name their unit after the ATTEMPT, so a managed
     # dispatch of a claimed task with no current run id is refused HERE,
     # once, above the isolation branch. ``_restart_safe_worker_argv`` makes
     # the same refusal, but the isolation path never reaches it and would
     # otherwise mint the attempt-free ``hermes-kanban-<task>.scope`` — an
     # untraceable name a retry can collide with.
-    if task.current_run_id is None and _managed_gateway_dispatch():
+    if task.current_run_id is None and managed_gateway:
         _default_spawn._last_spawn_error = (
             "cannot create restart-safe systemd scope for Kanban worker: "
             "the claimed task has no current run id"
@@ -15156,7 +15363,7 @@ def _default_spawn(
                     raise RuntimeError(_default_spawn._last_spawn_error)
                 if (
                     _resolve_worker_isolation() != "systemd-scope"
-                    and not _managed_gateway_dispatch()
+                    and not managed_gateway
                 ):
                     # auto on a host that can genuinely run the worker
                     # unwrapped: fall back to a plain spawn for THIS run
@@ -15179,7 +15386,7 @@ def _default_spawn(
                     proc = _spawn(subprocess.STDOUT)
                     # NOTE: log_f stays open for the child (see below).
                     return _SpawnedWorkerPid(proc.pid, scope_unit)
-                if _managed_gateway_dispatch():
+                if managed_gateway:
                     # A systemd-MANAGED gateway has no unisolated fallback
                     # to degrade to: the "plain" argv is itself a
                     # systemd-run scope wrap (the restart-safe one), so

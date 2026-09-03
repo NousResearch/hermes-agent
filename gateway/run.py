@@ -13969,10 +13969,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
+            _configured_platforms = {
+                p.value for p, cfg in self.config.platforms.items()
+                if getattr(cfg, "enabled", False)
+            }
             write_runtime_status(
                 gateway_state="starting",
                 exit_reason=None,
                 clear_profile_platforms=True,
+                prune_platforms=_configured_platforms,
             )
         except Exception:
             pass
@@ -19640,7 +19645,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+                if not isinstance(qcmd, dict):
+                    logger.warning(
+                        "quick_commands entry for /%s is not a dict (got %s); skipping early alias resolution",
+                        command,
+                        type(qcmd).__name__,
+                    )
+                elif isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -20097,7 +20108,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    logger.warning(
+                        "quick_commands entry for /%s is not a dict (got %s); skipping and falling through to plugin/skill commands",
+                        command,
+                        type(qcmd).__name__,
+                    )
+                    qcmd = None
+                if isinstance(qcmd, dict) and qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
@@ -20125,7 +20143,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
+                elif isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -20136,7 +20154,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # Fall through to normal command dispatch below
                     else:
                         return f"Quick command '/{command}' has no target defined."
-                else:
+                elif isinstance(qcmd, dict):
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
         # Plugin-registered slash commands

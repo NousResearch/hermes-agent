@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
 from typing import Any, Callable, NamedTuple, Optional
@@ -1217,6 +1217,7 @@ def write_runtime_status(
     served_profiles: Any = _UNSET,
     session_store: Any = _UNSET,
     clear_profile_platforms: bool = False,
+    prune_platforms: set = field(default_factory=set),
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -1238,6 +1239,20 @@ def write_runtime_status(
             for key, value in platforms.items()
             if not isinstance(key, str) or ":" not in key
         }
+    if prune_platforms:
+        # Prune platform entries for platforms the current process does not
+        # run.  A platform no longer in config leaves a stale entry written
+        # by a prior process that is never cleaned up -- causing the dashboard
+        # Channels UI to show phantom "configured-but-broken" platforms and
+        # blocking re-configuration of that channel (#99760).
+        platforms = payload["platforms"]
+        if isinstance(platforms, dict):
+            payload["platforms"] = {
+                key: value
+                for key, value in platforms.items()
+                if isinstance(key, str) and ":" in key  # keep <profile>:<platform> keys always
+                or key in prune_platforms               # keep configured platforms
+            }
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]

@@ -163,9 +163,12 @@ def _current_cron_store() -> _CronStorePaths:
     live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
     if live_constants != _IMPORT_STORE:
         return live_constants
+    # Always resolve HERMES_HOME fresh — do not trust the import-time
+    # HERMES_DIR snapshot when a different profile is now active.  Step 2
+    # above handles explicit repointing of the module globals; step 3
+    # handles the common case where HERMES_HOME env var changed after
+    # import (e.g. profile-scoped gateways that share one process).
     home = get_hermes_home().resolve()
-    if home == HERMES_DIR:
-        return live_constants
     cron_dir = home / "cron"
     return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 

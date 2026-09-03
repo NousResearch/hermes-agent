@@ -5529,7 +5529,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # live registry aliases (registered during discover_mcp_tools),
             # but discovery hasn't run yet at this point, so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            # Plugin toolsets register during plugin discovery, which the
+            # startup path runs in a background thread that hasn't landed
+            # in the live registry yet at this point. Names declared by
+            # plugins (or persisted by the previous launch's discovery
+            # sweep, via get_plugin_toolset_keys_nowait) are not typos —
+            # exclude them from the "Unknown toolsets" warning instead of
+            # false-flagging every configured plugin toolset on startup.
+            try:
+                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+
+                plugin_ts_names = get_plugin_toolset_keys_nowait()
+            except Exception:
+                plugin_ts_names = set()
+            invalid = [
+                t
+                for t in toolsets
+                if not validate_toolset(t)
+                and t not in mcp_names
+                and t not in plugin_ts_names
+            ]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         

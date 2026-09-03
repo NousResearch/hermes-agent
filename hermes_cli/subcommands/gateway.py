@@ -201,6 +201,13 @@ def build_gateway_parser(
         help="Do not enable the service to start on login/boot",
     )
     gateway_install.add_argument(
+        "--at-boot",
+        dest="at_boot",
+        action="store_true",
+        default=False,
+        help="Windows: install as a system-startup Scheduled Task that runs before any user logs on (headless/RDP). Requires the account password, stored encrypted by Task Scheduler.",
+    )
+    gateway_install.add_argument(
         "--elevated-handoff",
         dest="elevated_handoff",
         action="store_true",

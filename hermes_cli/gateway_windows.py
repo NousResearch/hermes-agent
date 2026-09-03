@@ -252,21 +252,49 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     return True
 
 
+def _prompt_task_password(user: str) -> str | None:
+    """Prompt (hidden input) for the Windows account password of a boot task.
+
+    Boot tasks run before any user logs on, so Task Scheduler needs the
+    account password stored (``/RP``). Returns ``None`` when the user
+    cancels or no password is entered.
+    """
+    import getpass
+
+    try:
+        password = getpass.getpass(
+            f"Password for Windows account '{user}' (stored encrypted in Task Scheduler for boot start): "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return password or None
+
+
 def _launch_elevated_install(
     force: bool = False,
     *,
     start_now: bool | None = None,
     start_on_login: bool | None = None,
+    at_boot: bool = False,
+    password: str | None = None,
 ) -> bool:
-    """Launch an elevated gateway install via UAC and return True on handoff."""
+    """Launch an elevated gateway install via UAC and return True on handoff.
+
+    ``password`` (boot-task account password, already prompted for in the
+    parent) is passed to the elevated child via an environment variable, not
+    the command line, so it does not show up in process listings / ETW.
+    """
     old_start_now = os.environ.get("HERMES_GATEWAY_INSTALL_START_NOW")
     old_start_on_login = os.environ.get("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+    old_password = os.environ.get("HERMES_GATEWAY_INSTALL_PASSWORD")
     old_handoff = os.environ.get("HERMES_GATEWAY_ELEVATED_HANDOFF")
     try:
         if start_now is not None:
             os.environ["HERMES_GATEWAY_INSTALL_START_NOW"] = "1" if start_now else "0"
         if start_on_login is not None:
             os.environ["HERMES_GATEWAY_INSTALL_START_ON_LOGIN"] = "1" if start_on_login else "0"
+        if password is not None:
+            os.environ["HERMES_GATEWAY_INSTALL_PASSWORD"] = password
         os.environ["HERMES_GATEWAY_ELEVATED_HANDOFF"] = "1"
         extra_args = ["--elevated-handoff"]
         if force:
@@ -275,11 +303,14 @@ def _launch_elevated_install(
             extra_args.append("--start-now" if start_now else "--no-start-now")
         if start_on_login is not None:
             extra_args.append("--start-on-login" if start_on_login else "--no-start-on-login")
+        if at_boot:
+            extra_args.append("--at-boot")
         return _launch_elevated_gateway_command("install", extra_args)
     finally:
         for key, old in (
             ("HERMES_GATEWAY_INSTALL_START_NOW", old_start_now),
             ("HERMES_GATEWAY_INSTALL_START_ON_LOGIN", old_start_on_login),
+            ("HERMES_GATEWAY_INSTALL_PASSWORD", old_password),
             ("HERMES_GATEWAY_ELEVATED_HANDOFF", old_handoff),
         ):
             if old is None:
@@ -598,28 +629,50 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
-def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
+def _build_scheduled_task_xml(
+    task_name: str, launcher_path: Path, user: str | None, at_boot: bool = False
+) -> str:
     """Render a Task Scheduler XML definition with safe long-running defaults.
 
     ``launcher_path`` is the console-less ``.vbs`` the task runs via
     ``wscript.exe`` — not the ``.cmd`` (see ``_build_gateway_vbs_script`` /
     issue #45599 root cause #1).
+
+    ``at_boot`` switches the trigger from logon to system startup so the
+    gateway starts before any user logs on (headless/RDP boxes). A boot task
+    must run with stored credentials (``LogonType=Password``), which
+    ``_install_scheduled_task`` supplies via ``/RU`` + ``/RP``.
     """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    if at_boot:
+        trigger = (
+            "  <Triggers>\n"
+            "    <BootTrigger>\n"
+            "      <Enabled>true</Enabled>\n"
+            f"      <Delay>{_TASK_LOGON_DELAY}</Delay>\n"
+            "    </BootTrigger>\n"
+            "  </Triggers>"
+        )
+        logon_type = "Password"
+    else:
+        trigger = (
+            "  <Triggers>\n"
+            "    <LogonTrigger>\n"
+            "      <Enabled>true</Enabled>\n"
+            f"      <Delay>{_TASK_LOGON_DELAY}</Delay>\n"
+            "    </LogonTrigger>\n"
+            "  </Triggers>"
+        )
+        logon_type = "InteractiveToken"
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>{escape(_TASK_DESCRIPTION)}</Description>
   </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <Delay>{_TASK_LOGON_DELAY}</Delay>
-    </LogonTrigger>
-  </Triggers>
+{trigger}
   <Principals>
     <Principal id="Author">{user_principal}
-      <LogonType>InteractiveToken</LogonType>
+      <LogonType>{logon_type}</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
@@ -656,23 +709,32 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 """
 
 
-def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> Path:
+def _write_scheduled_task_xml(
+    task_name: str, launcher_path: Path, user: str | None, at_boot: bool = False
+) -> Path:
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(
-        _build_scheduled_task_xml(task_name, launcher_path, user),
+        _build_scheduled_task_xml(task_name, launcher_path, user, at_boot=at_boot),
         encoding="utf-16",
         newline="",
     )
     return xml_path
 
 
-def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
+def _install_scheduled_task(
+    task_name: str, script_path: Path, at_boot: bool = False
+) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
     Always recreate instead of ``/Change``. Older Hermes builds and failed
     experiments may have left repeat/restart settings on the task; ``/Change``
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
+
+    ``at_boot`` renders a ``BootTrigger`` task. Boot tasks run before any
+    user logs on, so they need stored credentials: we pass ``/RU <user>``
+    plus ``/RP <password>`` (prompted for in ``install()``). The XML uses
+    ``LogonType=Password`` to match.
     """
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
@@ -685,10 +747,28 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     # The Scheduled Task launches the console-less .vbs (issue #45599 fix A), not
     # the .cmd. Immediate manual starts use _spawn_detached().
     launcher_path = script_path.with_suffix(".vbs")
-    xml_path = _write_scheduled_task_xml(task_name, launcher_path, user)
+    xml_path = _write_scheduled_task_xml(task_name, launcher_path, user, at_boot=at_boot)
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
-    variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
-    variants.append(base)
+    if at_boot:
+        # Boot tasks run before any logon, so they need stored credentials.
+        # /NP (no password) is incompatible with that; the caller supplies
+        # the password via /RP. /IT is meaningless for a boot task.
+        variants = []
+        if user:
+            # Elevated handoff passes the password via env (never the
+            # command line, which is visible to process inspection/ETW);
+            # a direct (non-elevated) run prompts here.
+            password = os.environ.get("HERMES_GATEWAY_INSTALL_PASSWORD")
+            if password is None:
+                password = _prompt_task_password(user)
+            if password is None:
+                return (False, "Scheduled Task creation cancelled: no password provided for boot task.")
+            variants.append([*base, "/RU", user, "/RP", password])
+        else:
+            return (False, "Scheduled Task creation cancelled: could not resolve the Windows user for boot task.")
+    else:
+        variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
+        variants.append(base)
 
     last_code = 1
     last_err = ""
@@ -1065,6 +1145,7 @@ def install(
     *,
     start_now: bool | None = None,
     start_on_login: bool | None = None,
+    at_boot: bool = False,
     elevated_handoff: bool = False,
 ) -> None:
     """Install the gateway as a Windows Scheduled Task (with Startup fallback).
@@ -1072,9 +1153,16 @@ def install(
     Idempotent: re-running updates the task to point at the current python/
     project paths. ``force`` is accepted for API parity with ``launchd_install``
     / ``systemd_install`` but isn't needed — we always reconcile.
+
+    ``at_boot`` installs a system-startup (``BootTrigger``) task instead of a
+    logon task, so the gateway starts before any user logs on — useful on
+    headless/RDP boxes. Boot tasks require the account password (stored
+    encrypted by Task Scheduler); the user is prompted for it.
     """
     _assert_windows()
     start_now, start_on_login = _prompt_install_choices(start_now, start_on_login)
+    if at_boot:
+        start_on_login = True  # a boot task is a superset of login auto-start
 
     if not start_on_login:
         print("ℹ Skipped Windows login auto-start install.")
@@ -1093,6 +1181,20 @@ def install(
     task_name = get_task_name()
     script_path = _write_task_script()
 
+    # Boot tasks need the account password stored in Task Scheduler. Prompt
+    # for it in the parent (visible console) BEFORE any UAC handoff so the
+    # elevated child never has to prompt, and pass it via env (not argv).
+    boot_password: str | None = None
+    if at_boot:
+        user = _resolve_task_user()
+        if not user:
+            print("✗ Could not resolve the Windows user for the boot task.")
+            return
+        boot_password = _prompt_task_password(user)
+        if boot_password is None:
+            print("✗ Boot-task install cancelled: no password provided.")
+            return
+
     # On machines where the current user's scheduled-task ACL is locked down,
     # schtasks /Create or /Change can sit for the timeout before returning
     # Access Denied. We already collected all intent questions above, so avoid
@@ -1103,7 +1205,13 @@ def install(
         print("↻ Scheduled Task install may need administrator approval on this Windows account.")
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
         if prompt_yes_no("  Open the UAC prompt now?", False):
-            if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
+            if _launch_elevated_install(
+                force=force,
+                start_now=start_now,
+                start_on_login=start_on_login,
+                at_boot=at_boot,
+                password=boot_password,
+            ):
                 print("✓ Launched elevated Hermes gateway install prompt.")
                 if start_now:
                     print("  Approve the Windows UAC prompt; the elevated install will start the gateway afterwards.")
@@ -1116,11 +1224,14 @@ def install(
         _install_startup_fallback(script_path, start_now, "administrator approval was not used")
         return
 
-    ok, detail = _install_scheduled_task(task_name, script_path)
+    ok, detail = _install_scheduled_task(task_name, script_path, at_boot=at_boot)
     if ok:
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
-        print("ℹ Gateway auto-start installed for Windows login.")
+        if at_boot:
+            print("ℹ Gateway auto-start installed for system startup (runs before login).")
+        else:
+            print("ℹ Gateway auto-start installed for Windows login.")
         if start_now:
             running_pids = _gateway_pids()
             if running_pids:
@@ -1144,7 +1255,13 @@ def install(
         print(f"↻ Scheduled Task install needs administrator approval ({detail.splitlines()[0]})")
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
         if prompt_yes_no("  Open the UAC prompt now?", False):
-            if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
+            if _launch_elevated_install(
+                force=force,
+                start_now=start_now,
+                start_on_login=start_on_login,
+                at_boot=at_boot,
+                password=boot_password,
+            ):
                 print("✓ Launched elevated Hermes gateway install prompt.")
                 if start_now:
                     print("  Approve the Windows UAC prompt; the elevated install will start the gateway afterwards.")
@@ -1537,6 +1654,19 @@ def query_task_status() -> dict[str, str]:
     return info
 
 
+def _task_has_boot_trigger(task_name: str) -> bool:
+    """True when the registered task uses a BootTrigger (installed --at-boot).
+
+    Queries ``schtasks /Query /TN <name> /XML`` and matches on the trigger
+    XML, which is stable across locales (unlike the localized schedule-type
+    text in ``/V /FO LIST`` output).
+    """
+    code, out, _err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0:
+        return False
+    return "<BootTrigger>" in out
+
+
 def _gateway_pids() -> list[int]:
     """Reuse the cross-platform PID scanner in gateway.py."""
     from hermes_cli.gateway import find_gateway_pids
@@ -1695,6 +1825,12 @@ def status(deep: bool = False) -> None:
             for key in ("status", "last run time", "last run result"):
                 if key in info:
                     print(f"  {key.title()}: {info[key]}")
+        # A task registered with a BootTrigger (installed via --at-boot) is
+        # a valid auto-start mechanism even though it is not the logon task
+        # this status command historically reports. Surface it so headless
+        # installs don't look "not installed" (issues #55710 / #25502).
+        if _task_has_boot_trigger(task_name):
+            print("  Trigger: system startup (runs before login)")
     elif startup_installed:
         entry = get_startup_entry_path()
         if not entry.exists():

@@ -8627,6 +8627,7 @@ def _gateway_command_inner(args):
                 force=force,
                 start_now=getattr(args, 'start_now', None),
                 start_on_login=getattr(args, 'start_on_login', None),
+                at_boot=getattr(args, 'at_boot', False),
                 elevated_handoff=getattr(args, 'elevated_handoff', False),
             )
         elif is_wsl():

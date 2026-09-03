@@ -91,6 +91,7 @@ import {
   DISABLE_MODIFY_OTHER_KEYS,
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
+  ENABLE_MODIFY_OTHER_KEYS_L1,
   ERASE_SCREEN,
   ERASE_SCROLLBACK
 } from './termio/csi.js'
@@ -737,7 +738,7 @@ export default class Ink {
         (supportsExtendedKeys()
           ? DISABLE_KITTY_KEYBOARD +
             (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) +
-            ENABLE_MODIFY_OTHER_KEYS
+            (skipKittyKeyboardProtocol() ? '' : ENABLE_MODIFY_OTHER_KEYS)
           : '')
     )
   }
@@ -1478,7 +1479,7 @@ export default class Ink {
     // on each call.
     if (supportsExtendedKeys()) {
       this.options.stdout.write(
-        DISABLE_KITTY_KEYBOARD + (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) + ENABLE_MODIFY_OTHER_KEYS
+        DISABLE_KITTY_KEYBOARD + (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) + (skipKittyKeyboardProtocol() ? '' : ENABLE_MODIFY_OTHER_KEYS)
       )
     }
 

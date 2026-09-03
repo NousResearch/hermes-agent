@@ -36,6 +36,7 @@ import {
   DISABLE_MODIFY_OTHER_KEYS,
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
+  ENABLE_MODIFY_OTHER_KEYS_L1,
   FOCUS_IN,
   FOCUS_OUT
 } from '../termio/csi.js'
@@ -342,7 +343,9 @@ export default class App extends PureComponent<Props, State> {
             this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
           }
 
-          this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
+          this.props.stdout.write(
+            skipKittyKeyboardProtocol() ? '' : ENABLE_MODIFY_OTHER_KEYS
+          )
         }
 
         // Probe terminal identity. XTVERSION survives SSH (query/reply goes

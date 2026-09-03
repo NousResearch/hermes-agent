@@ -345,6 +345,14 @@ export function parseMultipleKeypresses(
         // termio/tokenize.ts), so the old fragment/burst recovery is gone.
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
+      } else if (/^\[27;\d+;\d+~/.test(token.value)) {
+        // Orphaned modifyOtherKeys tail (Ghostty+macOS IME split-delivery).
+        // The ESC byte arrived in a separate read and was flushed as a lone
+        // Escape key; the body `[27;modifier;keycode~` arrives as the next
+        // text token. Re-synthesize with ESC so the key parser decodes it
+        // correctly (e.g. `[27;2;65~` → Shift+A → 'A').
+        const resynthesized = '\x1b' + token.value
+        keys.push(parseKeypress(resynthesized))
       } else {
         keys.push(...parseTextKeypresses(token.value))
       }
@@ -533,7 +541,7 @@ function decodeModifier(modifier: number): {
  * Numpad codepoints are from Unicode Private Use Area, defined at:
  * https://sw.kovidgoyal.net/kitty/keyboard-protocol/#functional-key-definitions
  */
-function keycodeToName(keycode: number): string | undefined {
+function keycodeToName(keycode: number, shift?: boolean): string | undefined {
   switch (keycode) {
     case 9:
       return 'tab'
@@ -605,7 +613,13 @@ function keycodeToName(keycode: number): string | undefined {
     default:
       // Printable ASCII characters
       if (keycode >= 32 && keycode <= 126) {
-        return String.fromCharCode(keycode).toLowerCase()
+        const ch = String.fromCharCode(keycode).toLowerCase()
+        // Shift+letter → uppercase (modifyOtherKeys/CSI-u deliver shift as
+        // a modifier bit, not as the uppercase byte itself).
+        if (shift && keycode >= 65 && keycode <= 122) {
+          return ch.toUpperCase()
+        }
+        return ch
       }
 
       return undefined
@@ -716,7 +730,7 @@ function parseKeypress(s: string = ''): ParsedKey {
     // Modifier defaults to 1 (no modifiers) when not present
     const modifier = match[2] ? parseInt(match[2], 10) : 1
     const mods = decodeModifier(modifier)
-    const name = keycodeToName(codepoint)
+    const name = keycodeToName(codepoint, mods.shift && !mods.ctrl)
 
     return {
       kind: 'key',
@@ -738,7 +752,7 @@ function parseKeypress(s: string = ''): ParsedKey {
   // would leave the tail as garbage if it partially matched.
   if ((match = MODIFY_OTHER_KEYS_RE.exec(s))) {
     const mods = decodeModifier(parseInt(match[1]!, 10))
-    const name = keycodeToName(parseInt(match[2]!, 10))
+    const name = keycodeToName(parseInt(match[2]!, 10), mods.shift && !mods.ctrl)
 
     return {
       kind: 'key',

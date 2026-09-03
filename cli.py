@@ -4374,6 +4374,7 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 _KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
 _MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
+_MODIFY_OTHER_KEYS_L1_SEQ = "\x1b[>4;1m"
 _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
@@ -4460,8 +4461,14 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     """
     if not _terminal_supports_extended_enter_keys(env):
         return False
-    # Ghostty exception: only modifyOtherKeys — see _is_ghostty_terminal.
-    seq = _MODIFY_OTHER_KEYS_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
+    # Ghostty exception: skip extended keys entirely — Ghostty has
+    # modifyOtherKeys mode 1 always active (cannot be disabled), but its
+    # split-delivery of ESC on macOS+IME causes Shift+letter sequences
+    # to arrive as literal text. Without pushing level 2, Ghostty delivers
+    # Shift+letters as plain uppercase bytes (immune to split-ESC).
+    if _is_ghostty_terminal(env):
+        return False
+    seq = _EXTENDED_ENTER_KEYS_SEQ
     try:
         target = output
         if target is not None and hasattr(target, "write_raw"):

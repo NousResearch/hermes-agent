@@ -329,6 +329,14 @@ export const DISABLE_KITTY_KEYBOARD = csi('<u')
 export const ENABLE_MODIFY_OTHER_KEYS = csi('>4;2m')
 
 /**
+ * Enable xterm modifyOtherKeys level 1.
+ * Level 1 only re-encodes keys whose unmodified form is a control character
+ * (Enter, Backspace, Tab), so Shift+letters arrive as plain uppercase —
+ * immune to the split-ESC/IME delivery bug on Ghostty+macOS.
+ */
+export const ENABLE_MODIFY_OTHER_KEYS_L1 = csi('>4;1m')
+
+/**
  * Disable xterm modifyOtherKeys (reset to default).
  */
 export const DISABLE_MODIFY_OTHER_KEYS = csi('>4m')

@@ -180,3 +180,71 @@ class TestPlainFallbackUnchanged:
         agent = _make_agent(fallback_model=fbs)
         _activate(agent, "https://api.anthropic.com/v1", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
+
+
+class TestOpenCodeFallbackApiModeResolution:
+    def test_opencode_go_muse_spark_resolves_codex_responses(self):
+        """Responses-only models (muse-spark) on opencode-go must route via
+        codex_responses (/v1/responses) rather than 500ing on chat_completions (#102148)."""
+        fbs = [{
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "muse-spark-1.3-contributor")
+        assert agent.api_mode == "codex_responses"
+
+    def test_opencode_go_gpt_resolves_codex_responses(self):
+        fbs = [{
+            "provider": "opencode-go",
+            "model": "gpt-5.6-luna",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "gpt-5.6-luna")
+        assert agent.api_mode == "codex_responses"
+
+    def test_opencode_go_minimax_resolves_anthropic_messages(self):
+        fbs = [{
+            "provider": "opencode-go",
+            "model": "minimax-m3",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "minimax-m3")
+        assert agent.api_mode == "anthropic_messages"
+
+    def test_opencode_go_deepseek_stays_chat_completions(self):
+        fbs = [{
+            "provider": "opencode-go",
+            "model": "deepseek-v4-flash",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "deepseek-v4-flash")
+        assert agent.api_mode == "chat_completions"
+
+    def test_opencode_hostname_custom_provider_resolves_api_mode(self):
+        fbs = [{
+            "provider": "custom-go",
+            "model": "muse-spark-1.3-contributor",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "muse-spark-1.3-contributor")
+        assert agent.api_mode == "codex_responses"
+
+    def test_opencode_explicit_api_mode_not_overridden(self):
+        """Explicit api_mode on opencode fallback entry must be preserved."""
+        fbs = [{
+            "provider": "opencode-go",
+            "model": "muse-spark-1.3-contributor",
+            "api_mode": "chat_completions",
+            "api_key": "k",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        _activate(agent, "https://opencode.ai/zen/go/v1", "muse-spark-1.3-contributor")
+        assert agent.api_mode == "chat_completions"
+

@@ -143,6 +143,30 @@ class TestWeComConnect:
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
 
+class TestWeComHeartbeat:
+    @pytest.mark.asyncio
+    async def test_ping_omits_body_field(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import APP_CMD_PING, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+
+        async def capture_once(_payload):
+            adapter._running = False
+
+        adapter._send_json = AsyncMock(side_effect=capture_once)
+        monkeypatch.setattr(wecom_module.asyncio, "sleep", AsyncMock())
+
+        await adapter._heartbeat_loop()
+
+        payload = adapter._send_json.await_args.args[0]
+        assert payload["cmd"] == APP_CMD_PING
+        assert payload["headers"]["req_id"].startswith("ping-")
+        assert "body" not in payload
+
+
 class TestWeComQrScan:
     @patch("plugins.platforms.wecom.adapter.time")
     @patch("plugins.platforms.wecom.adapter.json.loads")

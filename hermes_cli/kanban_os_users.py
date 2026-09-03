@@ -20,6 +20,7 @@ the Hermes root.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -60,6 +61,10 @@ DEFAULT_GROUP = "hermes-kanban"
 DEFAULT_SUDOERS_PATH = "/etc/sudoers.d/hermes-kanban-os-users"
 DEFAULT_SUDO_BIN = "/usr/bin/sudo"
 DEFAULT_ID_BIN = "/usr/bin/id"
+DEFAULT_TEST_BIN = "/usr/bin/test"
+DEFAULT_STATE_PATH = "/var/lib/hermes/kanban-os-users-state.json"
+REQUIRED_MAPPED_HOME_FILES = ("config.yaml", ".env", "SOUL.md")
+REQUIRED_MAPPED_HOME_DIRS = ("skills",)
 
 # Env vars the mapped worker must inherit through sudo env_reset.
 SUDO_ENV_KEEP = (
@@ -96,6 +101,10 @@ class MappedLaunchError(RuntimeError):
     """
 
 
+class IncompatiblePrincipalError(RuntimeError):
+    """A pre-existing user/group does not match the planned account design."""
+
+
 @dataclass
 class PasswdEntry:
     pw_name: str
@@ -105,14 +114,23 @@ class PasswdEntry:
 
 
 @dataclass
+class GroupEntry:
+    gr_name: str
+    gr_gid: int
+    gr_mem: tuple[str, ...] = ()
+
+
+@dataclass
 class LaunchHooks:
     """Injectable boundary for tests. Production uses pwd / subprocess."""
 
     getpwnam: Optional[Callable[[str], PasswdEntry]] = None
+    getgrnam: Optional[Callable[[str], GroupEntry]] = None
     geteuid: Optional[Callable[[], int]] = None
     run: Optional[Callable[..., Any]] = None
     sudo_bin: str = DEFAULT_SUDO_BIN
     id_bin: str = DEFAULT_ID_BIN
+    test_bin: str = DEFAULT_TEST_BIN
     is_windows: Optional[bool] = None
 
 
@@ -380,16 +398,30 @@ def _default_run(argv: Sequence[str], **kwargs: Any) -> Any:
     )
 
 
+def _default_getgrnam(name: str) -> GroupEntry:
+    import grp
+
+    try:
+        gr = grp.getgrnam(name)
+    except KeyError as exc:
+        raise KeyError(name) from exc
+    return GroupEntry(gr.gr_name, int(gr.gr_gid), tuple(gr.gr_mem))
+
+
 def _hooks_or_defaults(hooks: Optional[LaunchHooks]) -> LaunchHooks:
     h = hooks or LaunchHooks()
     if h.getpwnam is None:
         h.getpwnam = _default_getpwnam
+    if h.getgrnam is None:
+        h.getgrnam = _default_getgrnam
     if h.geteuid is None:
         h.geteuid = os.geteuid
     if h.run is None:
         h.run = _default_run
     if h.is_windows is None:
         h.is_windows = sys.platform.startswith("win")
+    if not h.test_bin:
+        h.test_bin = DEFAULT_TEST_BIN
     return h
 
 
@@ -465,8 +497,85 @@ def preflight_mapped_user(
             hermes_home=hermes_home,
             workspace=workspace,
             board_db=board_db,
+            hooks=h,
         )
     return pw
+
+
+def probe_user_access(
+    username: str,
+    path: str,
+    *,
+    mode: str,
+    hooks: LaunchHooks,
+    expect_ok: bool = True,
+) -> tuple[bool, str]:
+    """Fail-closed sudo -n probe via /usr/bin/test as *username*.
+
+    *mode* is one of ``r``, ``w``, ``x``. When *expect_ok* is False the probe
+    passes only if the target UID is denied (cross-home isolation).
+    """
+    if mode not in {"r", "w", "x"}:
+        raise ValueError(f"unsupported probe mode {mode!r}")
+    h = _hooks_or_defaults(hooks)
+    test_bin = h.test_bin or DEFAULT_TEST_BIN
+    argv = build_sudo_argv(username, [test_bin, f"-{mode}", path], sudo_bin=h.sudo_bin)
+    assert h.run is not None
+    try:
+        proc = h.run(argv, timeout=15)
+    except Exception as exc:
+        return False, f"probe {username} {mode} {path} failed: {exc}"
+    rc = int(getattr(proc, "returncode", 1))
+    allowed = rc == 0
+    if expect_ok:
+        if allowed:
+            return True, f"{username} can {mode} {path}"
+        return False, f"{username} cannot {mode} {path} (exit {rc})"
+    if not allowed:
+        return True, f"{username} denied {mode} {path}"
+    return False, f"{username} unexpectedly can {mode} {path}"
+
+
+def prove_sqlite_wal_lifecycle(db_path: str) -> None:
+    """Open *db_path* in WAL mode and prove sidecar create/write/unlink."""
+    import sqlite3
+
+    path = Path(db_path)
+    if not path.parent.is_dir():
+        raise MappedLaunchError(f"Shared Kanban DB parent {path.parent} is missing")
+    con = sqlite3.connect(str(path), timeout=5)
+    try:
+        mode = con.execute("PRAGMA journal_mode=WAL").fetchone()
+        if not mode or str(mode[0]).lower() != "wal":
+            raise MappedLaunchError(f"Could not enable WAL on {path}: {mode!r}")
+        con.execute("CREATE TABLE IF NOT EXISTS _os_users_probe (id INTEGER)")
+        con.execute("INSERT INTO _os_users_probe (id) VALUES (1)")
+        con.execute("DELETE FROM _os_users_probe")
+        con.commit()
+    finally:
+        con.close()
+    wal = path.parent / f"{path.name}-wal"
+    shm = path.parent / f"{path.name}-shm"
+    if not wal.exists() and not shm.exists():
+        # Some sqlite builds unlink sidecars on close; directory write is enough.
+        probe = path.parent / f".{path.name}.os-users-wal-probe"
+        probe.write_bytes(b"probe")
+        probe.unlink()
+
+
+def mapped_home_ready(hermes_home: str | Path) -> tuple[bool, str]:
+    """Required files/dirs must exist in mapped HERMES_HOME. Never reads secrets."""
+    root = Path(hermes_home)
+    missing: list[str] = []
+    for name in REQUIRED_MAPPED_HOME_FILES:
+        if not (root / name).is_file():
+            missing.append(name)
+    for name in REQUIRED_MAPPED_HOME_DIRS:
+        if not (root / name).is_dir():
+            missing.append(f"{name}/")
+    if missing:
+        return False, f"mapped HERMES_HOME missing required {missing}"
+    return True, "config.yaml, .env, SOUL.md, skills/ present"
 
 
 def _preflight_paths(
@@ -475,7 +584,9 @@ def _preflight_paths(
     hermes_home: Optional[str],
     workspace: Optional[str],
     board_db: Optional[str],
+    hooks: Optional[LaunchHooks] = None,
 ) -> None:
+    h = _hooks_or_defaults(hooks) if hooks is not None else None
     if hermes_home:
         home_path = Path(hermes_home)
         if not home_path.is_dir():
@@ -499,17 +610,40 @@ def _preflight_paths(
                 f"Mapped HERMES_HOME {hermes_home} is owned by uid {st.st_uid}, "
                 f"expected {pw.pw_uid} ({pw.pw_name})"
             )
+        if h is not None:
+            ok, detail = probe_user_access(
+                pw.pw_name, hermes_home, mode="x", hooks=h, expect_ok=True
+            )
+            if not ok:
+                raise MappedLaunchError(detail)
     if workspace:
         ws = Path(workspace)
         if not ws.is_dir():
             raise MappedLaunchError(
                 f"Task workspace {workspace} is not an accessible directory"
             )
+        if h is not None:
+            ok, detail = probe_user_access(
+                pw.pw_name, workspace, mode="x", hooks=h, expect_ok=True
+            )
+            if not ok:
+                raise MappedLaunchError(detail)
     if board_db:
         db_path = Path(board_db)
         parent = db_path.parent
         if not parent.is_dir():
             raise MappedLaunchError(f"Shared Kanban DB parent {parent} is missing")
+        if h is not None:
+            ok_x, detail_x = probe_user_access(
+                pw.pw_name, str(parent), mode="x", hooks=h, expect_ok=True
+            )
+            if not ok_x:
+                raise MappedLaunchError(detail_x)
+            ok_w, detail_w = probe_user_access(
+                pw.pw_name, str(parent), mode="w", hooks=h, expect_ok=True
+            )
+            if not ok_w:
+                raise MappedLaunchError(detail_w)
 
 
 def apply_mapped_worker_launch(
@@ -559,6 +693,7 @@ def apply_mapped_worker_launch(
             hermes_home=hermes_home,
             workspace=workspace,
             board_db=board_db,
+            hooks=h,
         )
     wrapped = build_sudo_argv(username, inner, sudo_bin=h.sudo_bin)
     mapped_env = build_mapped_env(
@@ -586,6 +721,8 @@ class SetupStep:
     title: str
     argv: list[str]
     privileged: bool = True
+    creates: str = ""  # user:name | group:name | acl:path
+    optional: bool = False  # skip when the install source path is missing
 
 
 def _quote_cmd(argv: Sequence[str]) -> str:
@@ -652,6 +789,7 @@ def render_sudoers(
             hermes_argv = ["/usr/bin/hermes"]
     cmd = _quote_cmd(hermes_argv)
     id_cmd = DEFAULT_ID_BIN
+    test_cmd = DEFAULT_TEST_BIN
     lines = [
         f"# Hermes Kanban profile_os_users — generated, review before installing",
         f"# Install: sudo install -m 0440 this-file {DEFAULT_SUDOERS_PATH}",
@@ -659,10 +797,68 @@ def render_sudoers(
         f"Defaults:{gw} !requiretty",
         f'Defaults:{gw} env_keep += "{keep}"',
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {id_cmd}",
+        f"{gw} ALL=({runas}) NOPASSWD:SETENV: {test_cmd}",
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {cmd}",
         "",
     ]
     return "\n".join(lines)
+
+
+def _acl_traverse_ancestors(path: Path) -> list[Path]:
+    """Ancestors of *path* from nearest parent up to (not including) / or /home."""
+    out: list[Path] = []
+    cur = Path(path)
+    if not cur.is_absolute():
+        cur = Path("/") / cur
+    parent = cur.parent
+    while str(parent) not in {"/", "/home", ""} and parent != cur:
+        out.append(parent)
+        nxt = parent.parent
+        if nxt == parent:
+            break
+        cur, parent = parent, nxt
+    out.reverse()
+    return out
+
+
+def empty_os_users_state() -> dict[str, Any]:
+    return {
+        "created_users": [],
+        "created_groups": [],
+        "preexisting_users": [],
+        "preexisting_groups": [],
+        "acl_paths": [],
+    }
+
+
+def load_os_users_state(path: str | Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+    p = Path(path)
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty_os_users_state()
+    if not isinstance(raw, dict):
+        return empty_os_users_state()
+    out = empty_os_users_state()
+    for key in out:
+        val = raw.get(key, [])
+        if isinstance(val, list):
+            out[key] = [str(x) for x in val]
+    return out
+
+
+def save_os_users_state(
+    state: Mapping[str, Any], path: str | Path = DEFAULT_STATE_PATH
+) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    merged = empty_os_users_state()
+    for key in merged:
+        val = state.get(key, [])
+        if isinstance(val, list):
+            merged[key] = sorted({str(x) for x in val})
+    p.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    os.chmod(p, 0o600)
 
 
 def plan_setup_steps(
@@ -672,11 +868,16 @@ def plan_setup_steps(
     group: str = DEFAULT_GROUP,
     dev_workspace: Optional[str] = None,
     hermes_argv: Optional[Sequence[str]] = None,
+    board_paths: Optional[Mapping[str, Path]] = None,
 ) -> list[SetupStep]:
     targets = resolve_setup_targets(mapping)
     gw = gateway_user or _gateway_user()
     steps: list[SetupStep] = [
-        SetupStep("create group", ["groupadd", "--system", group]),
+        SetupStep(
+            "create shared group",
+            ["groupadd", "--system", group],
+            creates=f"group:{group}",
+        ),
     ]
     seen_users: set[str] = set()
     for profile, user in targets.items():
@@ -685,6 +886,11 @@ def plan_setup_steps(
         seen_users.add(user)
         home = f"/home/{user}"
         steps.extend([
+            SetupStep(
+                f"create private primary group {user}",
+                ["groupadd", "--system", user],
+                creates=f"group:{user}",
+            ),
             SetupStep(
                 f"create {user}",
                 [
@@ -695,10 +901,13 @@ def plan_setup_steps(
                     home,
                     "--shell",
                     "/usr/sbin/nologin",
-                    "--gid",
+                    "-g",
+                    user,
+                    "-G",
                     group,
                     user,
                 ],
+                creates=f"user:{user}",
             ),
             SetupStep(
                 f"private Hermes root for {user}",
@@ -729,26 +938,49 @@ def plan_setup_steps(
                 ],
             ),
         ])
-    paths = None
-    try:
-        paths = shared_board_paths()
-    except Exception:
-        paths = None
+    paths = board_paths
+    if paths is None:
+        try:
+            paths = shared_board_paths()
+        except Exception:
+            paths = None
     if paths:
-        db = str(paths["kanban_db"])
+        db_path = Path(paths["kanban_db"])
+        db = str(db_path)
+        db_parent = db_path.parent
         kdir = str(paths["kanban_dir"])
-        steps.extend([
+        steps.append(
             SetupStep(
                 "kanban metadata dir",
                 ["install", "-d", "-m", "2770", "-o", gw, "-g", group, kdir],
+            )
+        )
+        # Least privilege on the *actual* DB parent (kanban.db, not kanban/).
+        # Traverse-only on ancestors; wx (no listdir) on the parent so WAL/SHM
+        # sidecars can be created without making the whole Hermes tree readable.
+        for ancestor in _acl_traverse_ancestors(db_parent):
+            steps.append(
+                SetupStep(
+                    f"traverse ACL on {ancestor} for {group} (execute only; no listdir)",
+                    ["setfacl", "-m", f"g:{group}:--x", str(ancestor)],
+                    creates=f"acl:{ancestor}",
+                )
+            )
+        steps.extend([
+            SetupStep(
+                f"ACL on DB parent {db_parent} (group wx for WAL/shm; no listdir)",
+                ["setfacl", "-m", f"g:{group}:wx", str(db_parent)],
+                creates=f"acl:{db_parent}",
             ),
             SetupStep(
-                "ACL on shared board dir (group + defaults for WAL/shm)",
-                ["setfacl", "-m", f"g:{group}:rwx,d:g:{group}:rwx", kdir],
+                f"default ACL on DB parent {db_parent} for new WAL/shm files",
+                ["setfacl", "-d", "-m", f"g:{group}:rw", str(db_parent)],
+                creates=f"acl:{db_parent}",
             ),
             SetupStep(
                 "ACL on kanban.db (SQLite needs sibling -wal/-shm)",
                 ["setfacl", "-m", f"g:{group}:rw", db],
+                creates=f"acl:{db}",
             ),
         ])
         ws = str(paths["workspaces"])
@@ -760,12 +992,27 @@ def plan_setup_steps(
         )
     if dev_workspace:
         dev_user = targets.get("dev", "hermes-dev")
-        steps.append(
-            SetupStep(
-                f"dev-only ACL on {dev_workspace} (sysadmin is NOT granted this)",
-                ["setfacl", "-m", f"u:{dev_user}:rwx", dev_workspace],
+        ws_path = Path(dev_workspace)
+        for ancestor in _acl_traverse_ancestors(ws_path):
+            steps.append(
+                SetupStep(
+                    f"dev-only traverse ACL on {ancestor} (sysadmin is NOT granted this)",
+                    ["setfacl", "-m", f"u:{dev_user}:--x", str(ancestor)],
+                    creates=f"acl:{ancestor}",
+                )
             )
-        )
+        steps.extend([
+            SetupStep(
+                f"dev-only recursive ACL on {dev_workspace} (sysadmin is NOT granted this)",
+                ["setfacl", "-R", "-m", f"u:{dev_user}:rwx", str(ws_path)],
+                creates=f"acl:{ws_path}",
+            ),
+            SetupStep(
+                f"dev-only default ACL on {dev_workspace} for newly created files",
+                ["setfacl", "-d", "-m", f"u:{dev_user}:rwx", str(ws_path)],
+                creates=f"acl:{ws_path}",
+            ),
+        ])
     steps.append(
         SetupStep(
             f"add {gw} to {group} for admin visibility",
@@ -802,14 +1049,56 @@ def plan_rollback_steps(
     *,
     mapping: Optional[Mapping[str, str]] = None,
     group: str = DEFAULT_GROUP,
+    state: Optional[Mapping[str, Any]] = None,
+    state_path: str | Path = DEFAULT_STATE_PATH,
+    dev_users: Optional[Sequence[str]] = None,
 ) -> list[SetupStep]:
     targets = resolve_setup_targets(mapping)
-    steps = [
+    st = dict(state) if state is not None else load_os_users_state(state_path)
+    created_users = list(st.get("created_users") or [])
+    created_groups = list(st.get("created_groups") or [])
+    preexisting_users = list(st.get("preexisting_users") or [])
+    acl_paths = list(st.get("acl_paths") or [])
+    steps: list[SetupStep] = [
         SetupStep("remove sudoers drop-in", ["rm", "-f", DEFAULT_SUDOERS_PATH]),
     ]
-    for user in sorted(set(targets.values())):
-        steps.append(SetupStep(f"remove user {user}", ["userdel", "-r", user]))
-    steps.append(SetupStep(f"remove group {group}", ["groupdel", group]))
+    acl_users = (
+        list(dev_users) if dev_users is not None else [targets.get("dev", "hermes-dev")]
+    )
+    for path in acl_paths:
+        steps.append(
+            SetupStep(
+                f"remove group ACL on {path}",
+                ["setfacl", "-x", f"g:{group}", path],
+            )
+        )
+        for user in acl_users:
+            steps.append(
+                SetupStep(
+                    f"remove user ACL for {user} on {path}",
+                    ["setfacl", "-x", f"u:{user}", path],
+                )
+            )
+        steps.append(
+            SetupStep(f"remove default ACL on {path}", ["setfacl", "-k", path])
+        )
+    has_state = bool(created_users or created_groups or preexisting_users or acl_paths)
+    if not has_state:
+        # No proof we created accounts — never userdel/groupdel pre-existing principals.
+        return steps
+    for user in created_users:
+        steps.append(
+            SetupStep(f"remove user {user} (created by setup)", ["userdel", "-r", user])
+        )
+    private = [g for g in created_groups if g != group]
+    for gname in sorted(private):
+        steps.append(
+            SetupStep(f"remove group {gname} (created by setup)", ["groupdel", gname])
+        )
+    if group in created_groups:
+        steps.append(
+            SetupStep(f"remove group {group} (created by setup)", ["groupdel", group])
+        )
     return steps
 
 
@@ -824,12 +1113,98 @@ def format_plan(steps: Sequence[SetupStep], *, heading: str) -> str:
         lines.append(f"{i}. {step.title}")
         lines.append(f"   {_quote_cmd(step.argv)}")
     lines.append("")
-    lines.append("Do not cat/print .env, auth.json, or SSH keys. Copy with install(1):")
+    lines.append("Do not cat/print .env, auth.json, or SSH keys. Copy with install(1).")
     lines.append(
-        "   sudo install -m 0600 -o <user> -g <user> <src-env> /home/<user>/.hermes/profiles/<profile>/.env"
+        "MANUAL GATE: setup --apply does not copy profile files unless --migrate-profile-files."
     )
-    lines.append("Config (not secrets) may be copied the same way for config.yaml.")
+    lines.append(
+        "Required in mapped HERMES_HOME before check can report ready: "
+        "config.yaml, .env, SOUL.md, skills/."
+    )
     return "\n".join(lines)
+
+
+def _source_hermes_root(source_root: Optional[Path] = None) -> Path:
+    if source_root is not None:
+        return Path(source_root)
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        return get_default_hermes_root()
+    except Exception:
+        return Path.home() / ".hermes"
+
+
+def plan_migrate_steps(
+    mapping: Mapping[str, str],
+    *,
+    source_root: Optional[Path] = None,
+) -> list[SetupStep]:
+    root = _source_hermes_root(source_root)
+    steps: list[SetupStep] = []
+    for profile, user in mapping.items():
+        src = root / "profiles" / profile
+        dst = Path(f"/home/{user}") / ".hermes" / "profiles" / profile
+        for name in REQUIRED_MAPPED_HOME_FILES:
+            steps.append(
+                SetupStep(
+                    f"migrate {name} for {profile} (never prints contents)",
+                    [
+                        "install",
+                        "-m",
+                        "0600",
+                        "-o",
+                        user,
+                        "-g",
+                        user,
+                        str(src / name),
+                        str(dst / name),
+                    ],
+                    optional=True,
+                )
+            )
+        steps.append(
+            SetupStep(
+                f"migrate skills dir for {profile}",
+                [
+                    "install",
+                    "-d",
+                    "-m",
+                    "0700",
+                    "-o",
+                    user,
+                    "-g",
+                    user,
+                    str(dst / "skills"),
+                ],
+            )
+        )
+        skills_src = src / "skills"
+        if skills_src.is_dir():
+            for child in sorted(skills_src.rglob("*")):
+                if not child.is_file():
+                    continue
+                rel = child.relative_to(skills_src)
+                dest_file = dst / "skills" / rel
+                steps.append(
+                    SetupStep(
+                        f"migrate skills/{rel} for {profile}",
+                        [
+                            "install",
+                            "-D",
+                            "-m",
+                            "0600",
+                            "-o",
+                            user,
+                            "-g",
+                            user,
+                            str(child),
+                            str(dest_file),
+                        ],
+                        optional=True,
+                    )
+                )
+    return steps
 
 
 def migrate_profile_files_commands(
@@ -838,35 +1213,16 @@ def migrate_profile_files_commands(
     source_root: Optional[Path] = None,
 ) -> list[str]:
     """Print install(1) copy commands; never dump file contents."""
-    if source_root is None:
-        try:
-            from hermes_constants import get_default_hermes_root
-
-            source_root = get_default_hermes_root()
-        except Exception:
-            source_root = Path.home() / ".hermes"
+    steps = plan_migrate_steps(mapping, source_root=source_root)
     lines = [
         "# Credential/config migration (contents are never printed)",
+        "# MANUAL GATE: setup --apply does not copy these unless --migrate-profile-files.",
         "# Review each source path. Skip files that should stay gateway-only.",
+        "# Required in mapped HERMES_HOME before check can report ready:",
+        "#   config.yaml, .env, SOUL.md, skills/",
     ]
-    for profile, user in mapping.items():
-        src = Path(source_root) / "profiles" / profile
-        dst = Path(f"/home/{user}") / ".hermes" / "profiles" / profile
-        for name in ("config.yaml", ".env"):
-            mode = "0600" if name == ".env" else "0600"
-            lines.append(
-                _quote_cmd([
-                    "install",
-                    "-m",
-                    mode,
-                    "-o",
-                    user,
-                    "-g",
-                    user,
-                    str(src / name),
-                    str(dst / name),
-                ])
-            )
+    for step in steps:
+        lines.append(_quote_cmd(step.argv))
     return lines
 
 
@@ -889,11 +1245,52 @@ def _mode_ok(path: Path, *, max_other: int = 0) -> tuple[bool, str]:
     return True, f"{path} mode {mode:04o} uid={st.st_uid}"
 
 
+def prove_sqlite_wal_as_user(
+    username: str,
+    db_path: str,
+    *,
+    hooks: Optional[LaunchHooks] = None,
+    hermes_argv: Optional[Sequence[str]] = None,
+) -> None:
+    """Fail-closed: run the WAL lifecycle probe as *username* via sudo -n."""
+    h = _hooks_or_defaults(hooks)
+    if hermes_argv is None:
+        try:
+            from hermes_cli.kanban_db import _resolve_hermes_argv
+
+            hermes_argv = _resolve_hermes_argv()
+        except Exception:
+            hermes_argv = None
+    inner = [str(p) for p in (hermes_argv or ["hermes"])] + [
+        "kanban",
+        "os-users",
+        "probe",
+        "--kind",
+        "wal",
+        "--path",
+        db_path,
+    ]
+    argv = build_sudo_argv(username, inner, sudo_bin=h.sudo_bin)
+    assert h.run is not None
+    try:
+        proc = h.run(argv, timeout=30)
+    except Exception as exc:
+        raise MappedLaunchError(f"WAL probe as {username} failed: {exc}") from exc
+    rc = int(getattr(proc, "returncode", 1))
+    stderr = str(getattr(proc, "stderr", None) or "").strip()
+    stdout = str(getattr(proc, "stdout", None) or "").strip()
+    if rc != 0:
+        detail = stderr or stdout or f"exit {rc}"
+        raise MappedLaunchError(f"WAL probe as {username} failed: {detail}")
+
+
 def audit_mapping(
     *,
     mapping: Optional[Mapping[str, str]] = None,
     homes: Optional[Mapping[str, str]] = None,
     hooks: Optional[LaunchHooks] = None,
+    board_paths: Optional[Mapping[str, Path]] = None,
+    wal_prover: Optional[Callable[[str, str], None]] = None,
 ) -> list[AuditItem]:
     items: list[AuditItem] = []
     if mapping is None:
@@ -915,6 +1312,7 @@ def audit_mapping(
         return items
     h = _hooks_or_defaults(hooks)
     pw_by_user: dict[str, PasswdEntry] = {}
+    homes_by_profile: dict[str, str] = {}
     for profile, user in targets.items():
         try:
             pw = preflight_mapped_user(
@@ -935,24 +1333,26 @@ def audit_mapping(
             items.append(AuditItem(f"user:{user}", False, str(exc)))
             continue
         hermes_home = resolve_mapped_hermes_home(profile, pw.pw_dir, homes=homes or {})
+        homes_by_profile[profile] = hermes_home
         ok, detail = _mode_ok(Path(hermes_home), max_other=0)
         items.append(AuditItem(f"home:{profile}", ok, detail, isolation=ok))
+        ok_x, detail_x = probe_user_access(
+            user, hermes_home, mode="x", hooks=h, expect_ok=True
+        )
+        items.append(
+            AuditItem(f"home-access:{profile}", ok_x, detail_x, isolation=ok_x)
+        )
+        ready, ready_detail = mapped_home_ready(hermes_home)
+        items.append(
+            AuditItem(f"home-ready:{profile}", ready, ready_detail, isolation=ready)
+        )
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
             ok_e, detail_e = _mode_ok(env_path, max_other=0)
             items.append(
                 AuditItem(f"secrets:{profile}", ok_e, detail_e, isolation=ok_e)
             )
-    # Cross-profile path inequality
-    homes_resolved = []
-    for profile, user in targets.items():
-        pw = pw_by_user.get(user)
-        if pw is None:
-            continue
-        homes_resolved.append((
-            profile,
-            resolve_mapped_hermes_home(profile, pw.pw_dir, homes=homes or {}),
-        ))
+    homes_resolved = [(profile, path) for profile, path in homes_by_profile.items()]
     for i, (p_a, h_a) in enumerate(homes_resolved):
         for p_b, h_b in homes_resolved[i + 1 :]:
             same = os.path.realpath(h_a) == os.path.realpath(h_b)
@@ -964,21 +1364,71 @@ def audit_mapping(
                     isolation=not same,
                 )
             )
-    try:
-        paths = shared_board_paths()
-        db = paths["kanban_db"]
-        ok, detail = _mode_ok(db.parent, max_other=0)
-        items.append(
-            AuditItem(
-                "board-parent", ok or db.parent.is_dir(), f"board parent {db.parent}"
-            )
-        )
-        if db.exists():
-            items.append(
-                AuditItem(
-                    "board-db", True, f"{db} present (WAL sidecars use default ACL)"
+            if same:
+                continue
+            user_a = targets.get(p_a)
+            user_b = targets.get(p_b)
+            if user_a and user_b:
+                ok_ab, d_ab = probe_user_access(
+                    user_a, h_b, mode="r", hooks=h, expect_ok=False
                 )
+                items.append(
+                    AuditItem(
+                        f"cross-deny:{user_a}->{p_b}",
+                        ok_ab,
+                        d_ab,
+                        isolation=ok_ab,
+                    )
+                )
+                ok_ba, d_ba = probe_user_access(
+                    user_b, h_a, mode="r", hooks=h, expect_ok=False
+                )
+                items.append(
+                    AuditItem(
+                        f"cross-deny:{user_b}->{p_a}",
+                        ok_ba,
+                        d_ba,
+                        isolation=ok_ba,
+                    )
+                )
+    try:
+        paths = board_paths if board_paths is not None else shared_board_paths()
+        db = Path(paths["kanban_db"])
+        parent = db.parent
+        parent_ok = parent.is_dir()
+        parent_bits = [f"board parent {parent}"]
+        if not parent_ok:
+            parent_bits.append("missing directory")
+        for user in pw_by_user:
+            ok_x, d_x = probe_user_access(
+                user, str(parent), mode="x", hooks=h, expect_ok=True
             )
+            ok_w, d_w = probe_user_access(
+                user, str(parent), mode="w", hooks=h, expect_ok=True
+            )
+            parent_bits.append(d_x)
+            parent_bits.append(d_w)
+            if not ok_x or not ok_w:
+                parent_ok = False
+        items.append(AuditItem("board-parent", parent_ok, "; ".join(parent_bits)))
+        if db.exists():
+            items.append(AuditItem("board-db", True, f"{db} present"))
+            prover = wal_prover or (
+                lambda u, p: prove_sqlite_wal_as_user(u, p, hooks=h)
+            )
+            for user in pw_by_user:
+                try:
+                    prover(user, str(db))
+                    items.append(
+                        AuditItem(
+                            f"board-wal:{user}",
+                            True,
+                            f"WAL lifecycle as {user} ok",
+                            isolation=True,
+                        )
+                    )
+                except Exception as exc:
+                    items.append(AuditItem(f"board-wal:{user}", False, str(exc)))
         else:
             items.append(
                 AuditItem("board-db", False, f"{db} missing — run hermes kanban init")
@@ -1012,7 +1462,145 @@ def format_audit(items: Sequence[AuditItem]) -> str:
     return "\n".join(lines)
 
 
-def run_os_users_cli(args: Any) -> int:
+def existing_user_compatible(
+    user: str,
+    *,
+    group: str = DEFAULT_GROUP,
+    hooks: Optional[LaunchHooks] = None,
+) -> None:
+    """Fail closed if a pre-existing account does not match the planned design."""
+    h = _hooks_or_defaults(hooks)
+    assert h.getpwnam is not None
+    try:
+        pw = h.getpwnam(user)
+    except (KeyError, MappedLaunchError) as exc:
+        raise IncompatiblePrincipalError(
+            f"user {user!r} missing after useradd already-exists rc"
+        ) from exc
+    expected_home = f"/home/{user}"
+    if str(pw.pw_dir).rstrip("/") != expected_home:
+        raise IncompatiblePrincipalError(
+            f"{user} home is {pw.pw_dir!r}, expected {expected_home!r}"
+        )
+    assert h.getgrnam is not None
+    try:
+        private = h.getgrnam(user)
+    except (KeyError, MappedLaunchError) as exc:
+        raise IncompatiblePrincipalError(
+            f"{user} has no private primary group {user!r}"
+        ) from exc
+    if int(pw.pw_gid) != int(private.gr_gid):
+        raise IncompatiblePrincipalError(
+            f"{user} primary gid {pw.pw_gid} is not private group {user} "
+            f"(gid {private.gr_gid}); refusing accounts whose primary group "
+            f"is {group} or any other shared group"
+        )
+    try:
+        shared = h.getgrnam(group)
+    except (KeyError, MappedLaunchError) as exc:
+        raise IncompatiblePrincipalError(f"shared group {group!r} missing") from exc
+    if user not in set(shared.gr_mem):
+        raise IncompatiblePrincipalError(
+            f"{user} is not a supplemental member of {group}"
+        )
+
+
+def execute_setup_plan(
+    steps: Sequence[SetupStep],
+    *,
+    run: Optional[Callable[..., Any]] = None,
+    hooks: Optional[LaunchHooks] = None,
+    state_path: str | Path = DEFAULT_STATE_PATH,
+    group: str = DEFAULT_GROUP,
+    sudoers_text: str = "",
+    sudoers_tmp: str = "/tmp/hermes-kanban-os-users.sudoers",
+) -> int:
+    """Run planned argv lists. Records created vs pre-existing principals."""
+    h = _hooks_or_defaults(hooks)
+    runner = run or h.run
+    assert runner is not None
+    state = load_os_users_state(state_path)
+    created_users = set(state.get("created_users") or [])
+    created_groups = set(state.get("created_groups") or [])
+    preexisting_users = set(state.get("preexisting_users") or [])
+    preexisting_groups = set(state.get("preexisting_groups") or [])
+    acl_paths = set(state.get("acl_paths") or [])
+
+    for step in steps:
+        argv = list(step.argv)
+        if step.optional and argv and os.path.basename(str(argv[0])) == "install":
+            src = str(argv[-2]) if len(argv) >= 2 else ""
+            if src.startswith("/") and not Path(src).exists():
+                print(f"# skip optional missing source {src}")
+                continue
+        if "<generated-sudoers>" in argv:
+            tmp = Path(sudoers_tmp)
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(sudoers_text, encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            check = runner(["visudo", "-c", "-f", str(tmp)])
+            if int(getattr(check, "returncode", 1)) != 0:
+                err = str(getattr(check, "stderr", None) or "")
+                print(f"visudo -c failed: {err}", file=sys.stderr)
+                return 1
+            argv = [
+                "install",
+                "-m",
+                "0440",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                str(tmp),
+                DEFAULT_SUDOERS_PATH,
+            ]
+        print(f"# {step.title}")
+        proc = runner(argv)
+        rc = int(getattr(proc, "returncode", 1))
+        if rc != 0:
+            try:
+                ok = _idempotent_ok(argv, rc, hooks=h, group=group)
+            except IncompatiblePrincipalError as exc:
+                print(f"incompatible principal: {exc}", file=sys.stderr)
+                return 1
+            if not ok:
+                print(
+                    f"command failed ({rc}): {_quote_cmd(argv)}",
+                    file=sys.stderr,
+                )
+                return 1
+            if step.creates.startswith("user:"):
+                preexisting_users.add(step.creates.split(":", 1)[1])
+            elif step.creates.startswith("group:"):
+                preexisting_groups.add(step.creates.split(":", 1)[1])
+        else:
+            if step.creates.startswith("user:"):
+                created_users.add(step.creates.split(":", 1)[1])
+            elif step.creates.startswith("group:"):
+                created_groups.add(step.creates.split(":", 1)[1])
+        if step.creates.startswith("acl:"):
+            acl_paths.add(step.creates.split(":", 1)[1])
+
+    save_os_users_state(
+        {
+            "created_users": sorted(created_users),
+            "created_groups": sorted(created_groups),
+            "preexisting_users": sorted(preexisting_users),
+            "preexisting_groups": sorted(preexisting_groups),
+            "acl_paths": sorted(acl_paths),
+        },
+        state_path,
+    )
+    return 0
+
+
+def run_os_users_cli(
+    args: Any,
+    *,
+    hooks: Optional[LaunchHooks] = None,
+    state_path: Optional[str | Path] = None,
+    board_paths: Optional[Mapping[str, Path]] = None,
+) -> int:
     action = getattr(args, "os_users_action", None) or "check"
     mapping = None
     homes = None
@@ -1021,11 +1609,35 @@ def run_os_users_cli(args: Any) -> int:
     except ValueError as exc:
         print(f"kanban os-users: invalid config: {exc}", file=sys.stderr)
         return 2
-    if action == "check":
-        items = audit_mapping(mapping=mapping or None, homes=homes)
-        if getattr(args, "json", False):
-            import json
+    resolved_state = (
+        Path(state_path) if state_path is not None else Path(DEFAULT_STATE_PATH)
+    )
 
+    if action == "probe":
+        kind = getattr(args, "probe_kind", None) or "wal"
+        path = getattr(args, "probe_path", None)
+        if not path:
+            print("kanban os-users probe: --path is required", file=sys.stderr)
+            return 2
+        if kind != "wal":
+            print(f"kanban os-users probe: unknown kind {kind!r}", file=sys.stderr)
+            return 2
+        try:
+            prove_sqlite_wal_lifecycle(str(path))
+        except Exception as exc:
+            print(f"kanban os-users probe failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"WAL lifecycle ok for {path}")
+        return 0
+
+    if action == "check":
+        items = audit_mapping(
+            mapping=mapping or None,
+            homes=homes,
+            hooks=hooks,
+            board_paths=board_paths,
+        )
+        if getattr(args, "json", False):
             print(
                 json.dumps(
                     {
@@ -1046,33 +1658,60 @@ def run_os_users_cli(args: Any) -> int:
         else:
             print(format_audit(items))
         return 0 if all(i.ok for i in items) else 1
+
     if action == "sudoers":
         print(render_sudoers(mapping=mapping or None))
         return 0
+
     if action == "rollback":
-        steps = plan_rollback_steps(mapping=mapping or None)
+        steps = plan_rollback_steps(
+            mapping=mapping or None,
+            state_path=resolved_state,
+        )
         print(
             format_plan(steps, heading="Kanban profile_os_users rollback (destructive)")
         )
+        st = load_os_users_state(resolved_state)
+        if not (
+            st.get("created_users") or st.get("created_groups") or st.get("acl_paths")
+        ):
+            print(
+                "No setup state file — rollback will not userdel/groupdel "
+                "pre-existing principals. Remove ACLs on recorded paths only."
+            )
         return 0
+
     if action == "setup":
         gw = getattr(args, "gateway_user", None)
         dev_ws = getattr(args, "dev_workspace", None)
+        migrate = bool(getattr(args, "migrate_profile_files", False))
+        targets = mapping or default_mapping_example()
         steps = plan_setup_steps(
             mapping=mapping or None,
             gateway_user=gw,
             dev_workspace=dev_ws,
+            board_paths=board_paths,
         )
         print(format_plan(steps, heading="Kanban profile_os_users setup (dry-run)"))
         print("")
-        print(
-            "\n".join(
-                migrate_profile_files_commands(mapping or default_mapping_example())
-            )
-        )
+        print("\n".join(migrate_profile_files_commands(targets)))
         print("")
         print("Sudoers snippet:")
         print(render_sudoers(mapping=mapping or None, gateway_user=gw))
+        if migrate:
+            steps = list(steps) + plan_migrate_steps(targets)
+            print(
+                "Will copy profile files (--migrate-profile-files). "
+                "Contents are never printed."
+            )
+        else:
+            print(
+                "MANUAL GATE: profile files were NOT copied. Re-run with "
+                "--migrate-profile-files after review, or copy with install(1)."
+            )
+            print(
+                "Check cannot report ready without config.yaml, .env, SOUL.md, skills/."
+            )
         apply = bool(getattr(args, "apply", False))
         if not apply:
             print("Dry-run only. Re-run as root with --apply after review.")
@@ -1085,60 +1724,49 @@ def run_os_users_cli(args: Any) -> int:
             )
             print("  sudo hermes kanban os-users setup --apply", file=sys.stderr)
             return 1
-        # Privileged apply: run argv lists only. Skip the placeholder sudoers source.
-        import subprocess
+        rc = execute_setup_plan(
+            steps,
+            hooks=hooks,
+            state_path=resolved_state,
+            sudoers_text=render_sudoers(mapping=mapping or None, gateway_user=gw),
+        )
+        if rc == 0:
+            print("Apply complete. Run: hermes kanban os-users check")
+            print("Do not enable profile_os_users until check passes.")
+            print(
+                "Check will FAIL until mapped HERMES_HOME has "
+                "config.yaml, .env, SOUL.md, skills/."
+            )
+        return rc
 
-        for step in steps:
-            if "<generated-sudoers>" in step.argv:
-                tmp = Path("/tmp/hermes-kanban-os-users.sudoers")
-                tmp.write_text(
-                    render_sudoers(mapping=mapping or None, gateway_user=gw),
-                    encoding="utf-8",
-                )
-                os.chmod(tmp, 0o600)
-                check = subprocess.run(  # noqa: S603
-                    ["visudo", "-c", "-f", str(tmp)],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                if check.returncode != 0:
-                    print(f"visudo -c failed: {check.stderr}", file=sys.stderr)
-                    return 1
-                argv = [
-                    "install",
-                    "-m",
-                    "0440",
-                    "-o",
-                    "root",
-                    "-g",
-                    "root",
-                    str(tmp),
-                    DEFAULT_SUDOERS_PATH,
-                ]
-            else:
-                argv = step.argv
-            print(f"# {step.title}")
-            proc = subprocess.run(argv, check=False)  # noqa: S603
-            # useradd/groupadd EEXIST is idempotent success
-            if proc.returncode != 0 and not _idempotent_ok(argv, proc.returncode):
-                print(
-                    f"command failed ({proc.returncode}): {_quote_cmd(argv)}",
-                    file=sys.stderr,
-                )
-                return 1
-        print("Apply complete. Run: hermes kanban os-users check")
-        print("Do not enable profile_os_users until check passes.")
-        return 0
     print(f"kanban os-users: unknown action {action!r}", file=sys.stderr)
     return 2
 
 
-def _idempotent_ok(argv: Sequence[str], rc: int) -> bool:
+def _idempotent_ok(
+    argv: Sequence[str],
+    rc: int,
+    *,
+    hooks: Optional[LaunchHooks] = None,
+    group: str = DEFAULT_GROUP,
+) -> bool:
+    """Treat useradd/groupadd already-exists as success only if compatible."""
     if rc == 0:
         return True
     cmd = os.path.basename(str(argv[0])) if argv else ""
-    # useradd 9 = already exists; groupadd 9 = already exists (Debian)
-    if cmd in {"useradd", "groupadd"} and rc in {9, 4}:
+    if cmd == "useradd" and rc in {9, 4}:
+        user = str(argv[-1])
+        existing_user_compatible(user, group=group, hooks=hooks)
+        return True
+    if cmd == "groupadd" and rc in {9, 4}:
+        name = str(argv[-1])
+        h = _hooks_or_defaults(hooks)
+        assert h.getgrnam is not None
+        try:
+            h.getgrnam(name)
+        except (KeyError, MappedLaunchError) as exc:
+            raise IncompatiblePrincipalError(
+                f"group {name!r} missing after already-exists rc"
+            ) from exc
         return True
     return False

@@ -1082,6 +1082,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--dev-workspace", default=None,
         help="Optional extra workspace to ACL for hermes-dev only",
     )
+    p_os_setup.add_argument(
+        "--migrate-profile-files",
+        action="store_true",
+        help=(
+            "With --apply, copy config.yaml/.env/SOUL.md/skills into mapped "
+            "HERMES_HOME via install(1). Never prints file contents. Default is "
+            "a manual gate: --apply does not copy profile files."
+        ),
+    )
+    p_os_probe = os_sub.add_parser(
+        "probe",
+        help="Fail-closed target-UID probe (WAL lifecycle as the mapped user)",
+    )
+    p_os_probe.add_argument(
+        "--kind", dest="probe_kind", default="wal",
+        help="Probe kind (only 'wal' is supported)",
+    )
+    p_os_probe.add_argument(
+        "--path", dest="probe_path", required=True,
+        help="Absolute path to the shared kanban.db",
+    )
     os_sub.add_parser("sudoers", help="Print the sudoers drop-in")
     os_sub.add_parser("rollback", help="Print rollback steps")
 

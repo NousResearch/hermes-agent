@@ -326,16 +326,21 @@ def test_cli_setup_dry_run_does_not_require_root(capsys):
         os_users_action="setup",
         apply=False,
         gateway_user="matt",
-        dev_workspace="/home/matt/WorkoutTracker",
+        dev_workspace="/home/matt/Documents/WorkoutTracker",
         json=False,
+        migrate_profile_files=False,
     )
     rc = run_os_users_cli(args)
     out = capsys.readouterr().out
     assert rc == 0
     assert "Dry-run only" in out
-    assert "WorkoutTracker" in out
+    assert "/home/matt/Documents/WorkoutTracker" in out
     assert "sysadmin is NOT granted" in out
     assert "sudo hermes kanban os-users setup --apply" in out
+    assert "MANUAL GATE" in out
+    assert "--gid hermes-kanban" not in out
+    assert "-g hermes-dev" in out
+    assert "-G hermes-kanban" in out
 
 
 def test_cli_setup_apply_without_root_fails_closed(capsys, monkeypatch):
@@ -346,6 +351,7 @@ def test_cli_setup_apply_without_root_fails_closed(capsys, monkeypatch):
         gateway_user="matt",
         dev_workspace=None,
         json=False,
+        migrate_profile_files=False,
     )
     rc = run_os_users_cli(args)
     err = capsys.readouterr().err

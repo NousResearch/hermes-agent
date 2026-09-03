@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -114,6 +115,16 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_portable_timeout_escalates_when_child_ignores_sigterm(self):
+        command = sf._portable_timeout_command(
+            "trap '' TERM; while :; do :; done", timeout_seconds=0.05
+        )
+        started = time.monotonic()
+        proc = subprocess.Popen(command)
+        assert proc.wait(timeout=3.0) == 0
+        assert time.monotonic() - started < 2.5
 
 
 # ---------------------------------------------------------------------------

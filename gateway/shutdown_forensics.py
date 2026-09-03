@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -199,6 +200,43 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+_PORTABLE_TIMEOUT_GRACE_SECONDS = 1.0
+
+
+def _portable_timeout_command(script: str, timeout_seconds: float) -> List[str]:
+    """Build a bounded timeout command for systems without GNU ``timeout``."""
+    wrapper = (
+        "import os, signal, subprocess, sys\n"
+        "timeout = float(sys.argv[1])\n"
+        "grace = float(sys.argv[2])\n"
+        "p = subprocess.Popen(['bash', '-c', sys.argv[3]], "
+        "start_new_session=True)\n"
+        "try:\n"
+        "    p.wait(timeout=timeout)\n"
+        "except subprocess.TimeoutExpired:\n"
+        "    try:\n"
+        "        os.killpg(p.pid, signal.SIGTERM)\n"
+        "    except ProcessLookupError:\n"
+        "        sys.exit(0)\n"
+        "    try:\n"
+        "        p.wait(timeout=grace)\n"
+        "    except subprocess.TimeoutExpired:\n"
+        "        try:\n"
+        "            os.killpg(p.pid, signal.SIGKILL)\n"
+        "        except ProcessLookupError:\n"
+        "            pass\n"
+        "        p.wait()\n"
+    )
+    return [
+        sys.executable,
+        "-c",
+        wrapper,
+        f"{timeout_seconds:.3f}",
+        f"{_PORTABLE_TIMEOUT_GRACE_SECONDS:.3f}",
+        script,
+    ]
+
+
 def spawn_async_diagnostic(
     log_path: Path,
     signal_name: str,
@@ -253,6 +291,15 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
+    # GNU ``timeout`` is not available on a stock macOS install.  Prefer it
+    # where present, but use the current Python interpreter as a portable
+    # process-group timeout wrapper otherwise.
+    timeout_bin = shutil.which("timeout")
+    if timeout_bin:
+        command = [timeout_bin, f"{timeout_seconds:.0f}", "bash", "-c", script]
+    else:
+        command = _portable_timeout_command(script, timeout_seconds)
+
     try:
         # Detach from our process group so the subprocess survives even
         # if systemd kills our cgroup with KillMode=control-group (which
@@ -260,7 +307,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

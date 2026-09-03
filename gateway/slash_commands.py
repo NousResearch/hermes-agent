@@ -141,7 +141,12 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_reset_command(
+        self,
+        event: MessageEvent,
+        *,
+        ingress_already_invalidated: bool = False,
+    ) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
         
@@ -206,7 +211,11 @@ class GatewaySlashCommandsMixin:
         # state (model/reasoning overrides, one-turn restores, model notes,
         # last-resolved cache, /queue overflow) + security state in one
         # funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
-        self._clear_conversation_scope(session_key, reason="session_reset")
+        self._clear_conversation_scope(
+            session_key,
+            reason="session_reset",
+            invalidate_ingress=not ingress_already_invalidated,
+        )
 
         # The old conversation's in-flight async delegations end WITH it
         # (#55578): after the reset rotates the session id, their completions
@@ -1440,6 +1449,10 @@ class GatewaySlashCommandsMixin:
         session_key = session_entry.session_key
 
         agent = self._running_agents.get(session_key)
+        if not agent:
+            # A Telegram download can predate the gateway run/guard. `/stop`
+            # still defines an ingress boundary in that registration gap.
+            self._invalidate_adapter_ingress(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
             # Force-clean the sentinel so the session is unlocked.
             await self._interrupt_and_clear_session(

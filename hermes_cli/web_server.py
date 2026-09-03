@@ -19676,6 +19676,32 @@ def _port_bind_conflict(host: str, port: int) -> bool:
     return False
 
 
+def _find_fallback_port(host: str) -> int:
+    """Return a currently-free ephemeral port for *host* (#98126), else 0.
+
+    Binds port 0, reads back the kernel-assigned port, closes. The caller
+    binds it for real right after, so the residual TOCTOU is no worse than
+    the pre-existing probe-then-bind race (still translated to exit 75 below).
+    """
+    import socket as _socket
+
+    family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
+    try:
+        sock = _socket.socket(family, _socket.SOCK_STREAM)
+    except OSError:
+        return 0
+    try:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+    except OSError:
+        return 0
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 def _write_machine_sentinel_line(line: str) -> None:
     """Write a machine-parsed sentinel line to the REAL stdout (fd 1).
 
@@ -20029,6 +20055,19 @@ def start_server(
             return float(_dash_cfg.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    # ── #98126: default-port fallback ─────────────────────────────────
+    # `dashboard`/`serve` share the hardcoded default 9119. When an operator
+    # already runs a remote dashboard there (e.g. 0.0.0.0:9119 over Tailscale),
+    # a second default-port start used to SystemExit(75) in a restart crash
+    # loop. Fall back to an OS-assigned ephemeral port instead — the READY
+    # sentinel below announces the actual port, so desktop/spawn consumers
+    # follow automatically. Explicit non-default ports still fail fast (#93608)
+    # so an occupied operator-chosen port stays loud, not silent.
+    if port == 9119 and _port_bind_conflict(host, port):
+        port = _find_fallback_port(host) or 0  # 0 = ephemeral, never conflicts
+        _log.warning("Port 9119 on %s is already in use — falling back to ephemeral port", host)
+        print(f"  Port 9119 on {host} is already in use — using an ephemeral port instead.", flush=True)
 
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",

@@ -1779,6 +1779,394 @@ def _print_called_process_error_tail(
         print(f"    {line}")
 
 
+class UpdateDependencyInstallError(RuntimeError):
+    """A candidate checkout could not install all required dependencies."""
+
+
+def _fast_update_dependency_env(
+    base: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Package-manager environment for fast, multi-candidate update probes.
+
+    ``hermes update`` can try up to eight daily source snapshots.  Leaving uv,
+    pip, and npm's normal retry/backoff policies enabled turns one blocked
+    package into many minutes per candidate before Hermes can try an older
+    known-good snapshot.  Keep a short per-request timeout and no in-command
+    retries; the day-by-day source fallback is the retry policy at this layer.
+    """
+    env = dict(os.environ if base is None else base)
+    env.update(
+        {
+            "UV_HTTP_RETRIES": "0",
+            "UV_HTTP_TIMEOUT": "15",
+            "PIP_RETRIES": "0",
+            "PIP_DEFAULT_TIMEOUT": "15",
+            "npm_config_fetch_retries": "0",
+            "npm_config_fetch_timeout": "15000",
+            "npm_config_fetch_retry_mintimeout": "1000",
+            "npm_config_fetch_retry_maxtimeout": "15000",
+        }
+    )
+    return env
+
+
+def _daily_dependency_backoff_candidates(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    tip_sha: str,
+    lower_bound_sha: str,
+    max_days: int = 8,
+) -> list[str]:
+    """Return one first-parent upstream commit per prior 24-hour boundary.
+
+    Candidates must still contain the pre-update HEAD, so an update never
+    becomes a downgrade.  Empty days naturally repeat the previous commit and
+    are deduplicated.  Best effort: unavailable/shallow history yields fewer
+    candidates rather than making the primary update fail.
+    """
+    tip_time = subprocess.run(
+        git_cmd + ["show", "-s", "--format=%ct", tip_sha],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if tip_time.returncode != 0:
+        return []
+    try:
+        tip_epoch = int((tip_time.stdout or "").strip())
+    except ValueError:
+        return []
+
+    candidates: list[str] = []
+    seen = {tip_sha, lower_bound_sha}
+    for days in range(1, max_days + 1):
+        cutoff = tip_epoch - days * 86400
+        result = subprocess.run(
+            git_cmd
+            + [
+                "rev-list",
+                "-1",
+                "--first-parent",
+                f"--before=@{cutoff}",
+                tip_sha,
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        candidate = (result.stdout or "").strip() if result.returncode == 0 else ""
+        if not candidate or candidate in seen:
+            continue
+        contains_current = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", lower_bound_sha, candidate],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if contains_current.returncode != 0:
+            break
+        seen.add(candidate)
+        candidates.append(candidate)
+    return candidates
+
+
+def _working_tree_clean_for_dependency_backoff(
+    git_cmd: list[str], cwd: Path
+) -> bool:
+    """Fail-closed cleanliness probe immediately before a destructive reset."""
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return status.returncode == 0 and not (status.stdout or "").strip()
+
+
+def _run_dependency_attempts_with_daily_backoff(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    tip_sha: str,
+    lower_bound_sha: str,
+    install_attempt,
+    max_days: int = 8,
+    on_all_failed=None,
+    target_branch: str = "main",
+):
+    """Try dependency installation at tip, then one older commit per day.
+
+    ``install_attempt`` receives the candidate SHA and must either return its
+    result or raise ``CalledProcessError``/``UpdateDependencyInstallError``.
+    Older candidates are selected with transactional ``checkout -B``. Git
+    therefore refuses rather than overwrites a concurrent local edit, and only
+    moves the target branch after the checkout itself succeeds. The next normal
+    update sees that branch behind its remote and retries newer commits. If
+    every candidate fails, source is restored to the pre-update SHA before the
+    original failure is re-raised.
+    """
+    tip_contains_current = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", lower_bound_sha, tip_sha],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if tip_contains_current.returncode != 0:
+        if _working_tree_clean_for_dependency_backoff(git_cmd, cwd):
+            restore = subprocess.run(
+                git_cmd + ["checkout", "-B", target_branch, lower_bound_sha],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if restore.returncode != 0:
+                if on_all_failed is not None:
+                    on_all_failed()
+                raise UpdateDependencyInstallError(
+                    "fetched tip does not contain the pre-update HEAD and "
+                    "failed to restore pre-update source"
+                )
+        if on_all_failed is not None:
+            on_all_failed()
+        raise UpdateDependencyInstallError(
+            "fetched tip does not contain the pre-update HEAD"
+        )
+
+    candidates = [tip_sha] + _daily_dependency_backoff_candidates(
+        git_cmd,
+        cwd,
+        tip_sha=tip_sha,
+        lower_bound_sha=lower_bound_sha,
+        max_days=max_days,
+    )
+    last_error: BaseException | None = None
+    for index, candidate in enumerate(candidates):
+        if index:
+            if not _working_tree_clean_for_dependency_backoff(git_cmd, cwd):
+                if on_all_failed is not None:
+                    on_all_failed()
+                raise UpdateDependencyInstallError(
+                    "working tree became dirty during dependency validation; "
+                    "refusing to reset it"
+                ) from last_error
+            print(
+                f"  → Dependency install failed; trying the update from "
+                f"{index} day(s) earlier ({candidate[:10]})..."
+            )
+            checkout = subprocess.run(
+                git_cmd + ["checkout", "-B", target_branch, candidate],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if checkout.returncode != 0:
+                if not _working_tree_clean_for_dependency_backoff(git_cmd, cwd):
+                    if on_all_failed is not None:
+                        on_all_failed()
+                    raise UpdateDependencyInstallError(
+                        "working tree changed while selecting a dependency "
+                        "candidate; checkout refused without overwriting it"
+                    ) from last_error
+                continue
+            if not _working_tree_clean_for_dependency_backoff(git_cmd, cwd):
+                if on_all_failed is not None:
+                    on_all_failed()
+                raise UpdateDependencyInstallError(
+                    "working tree changed while selecting a dependency "
+                    "candidate; changes were preserved"
+                ) from last_error
+            syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
+                cwd
+            )
+            if not syntax_ok:
+                print(
+                    f"  ⚠ Skipping {candidate[:10]}: critical source does not "
+                    f"parse ({failing_path}: {syntax_error})"
+                )
+                continue
+            _m()._clear_bytecode_cache(cwd)
+        try:
+            return candidate, install_attempt(candidate)
+        except (subprocess.CalledProcessError, UpdateDependencyInstallError) as exc:
+            last_error = exc
+            if isinstance(exc, subprocess.CalledProcessError):
+                _print_called_process_error_tail(exc)
+            else:
+                print(f"  ⚠ {exc}")
+
+    if _working_tree_clean_for_dependency_backoff(git_cmd, cwd):
+        restore = subprocess.run(
+            git_cmd + ["checkout", "-B", target_branch, lower_bound_sha],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if restore.returncode != 0:
+            if on_all_failed is not None:
+                on_all_failed()
+            detail = (restore.stderr or restore.stdout or "").strip()
+            suffix = f": {detail.splitlines()[0]}" if detail else ""
+            raise UpdateDependencyInstallError(
+                "all update targets failed and failed to restore pre-update "
+                f"source{suffix}"
+            ) from last_error
+    else:
+        if on_all_failed is not None:
+            on_all_failed()
+        raise UpdateDependencyInstallError(
+            "working tree became dirty during dependency validation; "
+            "source was left untouched"
+        ) from last_error
+    if on_all_failed is not None:
+        on_all_failed()
+    if last_error is not None:
+        raise UpdateDependencyInstallError(
+            f"all update targets failed ({last_error})"
+        ) from last_error
+    raise UpdateDependencyInstallError("no eligible update target could be tested")
+
+
+def _install_update_candidate_dependencies(
+    git_cmd: list[str], *, pre_pull_sha: str | None, force_reinstall: bool = False
+) -> dict:
+    """Install Python + Node dependencies for the checkout currently on disk.
+
+    This is deliberately one candidate-sized transaction so the caller can
+    reset to an older upstream commit and repeat the exact same validation.
+    Returns the Python install context needed by the later lazy-dependency
+    refresh after a candidate has been accepted.
+    """
+    deps_current = not force_reinstall and _editable_install_is_current(
+        git_cmd, _m().PROJECT_ROOT, pre_pull_sha
+    )
+    if deps_current:
+        print("→ Python dependencies unchanged — skipping reinstall")
+    else:
+        print("→ Updating Python dependencies...")
+
+    from hermes_cli.managed_uv import (
+        ensure_uv,
+        managed_python_env,
+        update_managed_uv,
+    )
+
+    update_managed_uv()
+    uv_bin = ensure_uv()
+    pip_cmd = [_m().sys.executable, "-m", "pip"]
+    if not uv_bin:
+        uv_bin = _ensure_uv_for_termux(pip_cmd)
+    if force_reinstall and not uv_bin:
+        raise UpdateDependencyInstallError(
+            "validating an older update candidate requires uv exact-sync; "
+            "pip cannot prove the environment is uncontaminated"
+        )
+    install_group = "all"
+    install_env: dict[str, str] | None = None
+
+    if uv_bin:
+        install_env = _fast_update_dependency_env(managed_python_env())
+        install_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
+        if _m()._is_termux_env(install_env):
+            install_env.pop("PYTHONPATH", None)
+            install_env.pop("PYTHONHOME", None)
+            install_group = "termux-all"
+            print(
+                "  → Termux detected: using uv + curated termux-all optional profile..."
+            )
+        install_prefix = [uv_bin, "pip"]
+        if not deps_current:
+            if _m()._is_termux_env(install_env) and _is_android_python():
+                print(
+                    "  → Termux/Android detected: prebuilding psutil with "
+                    "Linux source path compatibility..."
+                )
+                _install_psutil_android_compat(install_prefix, env=install_env)
+            _m()._install_python_dependencies_with_optional_fallback(
+                install_prefix,
+                env=install_env,
+                group=install_group,
+                require_all_extras=True,
+            )
+    else:
+        install_env = _fast_update_dependency_env()
+        try:
+            subprocess.run(
+                pip_cmd + ["--version"],
+                cwd=_m().PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+                env=install_env,
+            )
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [
+                    _m().sys.executable,
+                    "-m",
+                    "ensurepip",
+                    "--upgrade",
+                    "--default-pip",
+                ],
+                cwd=_m().PROJECT_ROOT,
+                check=True,
+                env=install_env,
+            )
+        if _m()._is_termux_env(install_env):
+            install_group = "termux-all"
+            print("  → Termux detected: using curated termux-all optional profile...")
+        install_prefix = pip_cmd
+        if not deps_current:
+            if _m()._is_termux_env(install_env) and _is_android_python():
+                print(
+                    "  → Termux/Android detected: prebuilding psutil with "
+                    "Linux source path compatibility..."
+                )
+                _install_psutil_android_compat(pip_cmd, env=install_env)
+            _m()._install_python_dependencies_with_optional_fallback(
+                pip_cmd,
+                env=install_env,
+                group=install_group,
+                require_all_extras=True,
+            )
+
+    if deps_current:
+        _m()._verify_core_dependencies_installed(
+            install_prefix, env=install_env, group=install_group
+        )
+        _m()._verify_console_scripts_installed(install_prefix, env=install_env)
+
+    _m()._clear_update_incomplete_marker()
+
+    node_failures = _update_node_dependencies(force=force_reinstall)
+    if node_failures:
+        raise UpdateDependencyInstallError(
+            "Node.js dependency install failed for: " + ", ".join(node_failures)
+        )
+
+    return {
+        "install_prefix": install_prefix,
+        "lazy_env": install_env,
+        "install_group": install_group,
+        "node_failures": node_failures,
+    }
+
+
 def _zip_overlay_block_reason(
     root: Path, *, ignore_staging_artifacts: bool = False
 ) -> Optional[str]:
@@ -4375,7 +4763,7 @@ def _repair_node_deps_on_current_checkout(
     return bool(print_completion(completion_message))
 
 
-def _update_node_dependencies() -> list[str]:
+def _update_node_dependencies(*, force: bool = False) -> list[str]:
     """Refresh Node deps for the ui-tui and web workspaces.
 
     Returns the list of labels whose npm install failed (empty on success),
@@ -4425,7 +4813,7 @@ def _update_node_dependencies() -> list[str]:
     except Exception:
         pass
 
-    if not _m()._npm_lockfile_changed(shared_hermes_root):
+    if not force and not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
 
@@ -4462,7 +4850,9 @@ def _update_node_dependencies() -> list[str]:
 
     from hermes_constants import with_hermes_node_path
 
-    nixos_env = with_hermes_node_path(_m()._nixos_build_env())
+    nixos_env = _fast_update_dependency_env(
+        with_hermes_node_path(_m()._nixos_build_env())
+    )
 
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts print download progress, and capturing it makes a
@@ -9411,91 +9801,52 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
-        deps_current = _editable_install_is_current(
-            git_cmd, _m().PROJECT_ROOT, pre_pull_sha
-        )
-        if deps_current:
-            print("→ Python dependencies unchanged — skipping reinstall")
-        else:
-            print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+        dependency_tip_sha = post_pull_sha
 
-        # Keep managed uv current — runs `uv self update` if we already have one.
-        update_managed_uv()
-
-        uv_bin = ensure_uv()
-
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if not uv_bin:
-            uv_bin = _ensure_uv_for_termux(pip_cmd)
-        install_group = "all"
-
-        if uv_bin:
-            # Use official managed_python_env() isolation so third-party
-            # UV_PYTHON_INSTALL_DIR (e.g. WorkBuddy) cannot hijack uv; then
-            # point VIRTUAL_ENV at this install's venv.
-            from hermes_cli.managed_uv import managed_python_env
-
-            uv_env = managed_python_env()
-            uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
-            if _m()._is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-                install_group = "termux-all"
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if not deps_current:
-                if _m()._is_termux_env(uv_env) and _is_android_python():
-                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-                _m()._install_python_dependencies_with_optional_fallback(
-                    [uv_bin, "pip"], env=uv_env, group=install_group
-                )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                )
-            if _m()._is_termux_env():
-                install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
-            if not deps_current:
-                if _m()._is_termux_env() and _is_android_python():
-                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                    _install_psutil_android_compat(pip_cmd)
-                _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
-
-        install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
-        lazy_env = uv_env if uv_bin else None
-
-        if deps_current:
-            # The verification normally runs inside the install we just
-            # skipped. Run it here so a wrong skip self-heals into a real
-            # install (both verifiers reinstall what they find missing)
-            # instead of leaving a venv nobody checked.
-            _m()._verify_core_dependencies_installed(
-                install_prefix, env=lazy_env, group=install_group
+        def _install_candidate(_candidate_sha: str):
+            # Each retry can mutate the venv, so renew the crash-recovery
+            # breadcrumb before every candidate attempt.
+            _write_update_incomplete_marker()
+            return _install_update_candidate_dependencies(
+                git_cmd,
+                pre_pull_sha=pre_pull_sha,
+                force_reinstall=_candidate_sha != dependency_tip_sha,
             )
-            _m()._verify_console_scripts_installed(install_prefix, env=lazy_env)
 
-        # Core ``.[all]`` install finished. Clear the generic core breadcrumb
-        # before the lazy-refresh phase — that phase uses its own marker so a
-        # later lazy failure cannot be "healed" by clearing the core marker
-        # based on a narrow 7-package import probe (#58004 review).
-        _m()._clear_update_incomplete_marker()
+        # Moving to a historical upstream commit is only attempted while the
+        # tree is clean. A normal interactive autostash may already
+        # have been restored above; in that case preserve the user's files and
+        # surface the install failure without attempting source backoff.
+        can_backoff = bool(pre_pull_sha and post_pull_sha) and (
+            auto_stash_ref is None or keep_stash or discard_local_changes
+        )
+        if can_backoff:
+            selected_sha, dependency_state = (
+                _run_dependency_attempts_with_daily_backoff(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    tip_sha=post_pull_sha,
+                    lower_bound_sha=pre_pull_sha,
+                    install_attempt=_install_candidate,
+                    max_days=8,
+                    on_all_failed=_write_update_incomplete_marker,
+                    target_branch=branch,
+                )
+            )
+            if selected_sha != post_pull_sha:
+                print(
+                    f"  ✓ Selected upstream commit {selected_sha[:10]} after "
+                    "dependency validation; newer commits remain available "
+                    "for the next update."
+                )
+                post_pull_sha = selected_sha
+        else:
+            dependency_state = _install_candidate(post_pull_sha or "HEAD")
+
+        install_prefix = dependency_state["install_prefix"]
+        lazy_env = dependency_state["lazy_env"]
+        install_group = dependency_state["install_group"]
+        node_failures = dependency_state["node_failures"]
 
         # The update process is still the old Python interpreter process. Run
         # one final cache/module refresh immediately before lazy backend
@@ -9561,7 +9912,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    Run `hermes update` again — if it persists, reinstall:")
             print("    https://hermes-agent.nousresearch.com")
 
-        node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
         desktop_build_ok = _rebuild_desktop_after_update(
@@ -11028,6 +11378,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Fail-closed shim contention (#87331): strict quarantine refused
         # BEFORE any installer ran — defer via marker, exit 2, no ZIP.
         _refuse_update_for_contended_shims(e)
+    except UpdateDependencyInstallError as e:
+        print(f"✗ Dependency validation failed for every eligible update target: {e}")
+        print(
+            "  The updater refused candidate checkouts if files appeared. When "
+            "the tree stayed clean it attempted to restore the pre-update "
+            "commit; inspect `git status` if a rollback failure is reported. "
+            "The recovery marker remains for the next launch."
+        )
+        try:
+            from hermes_cli.update_receipt import finalize_update_receipt
+
+            finalize_update_receipt("failed")
+        except Exception:
+            pass
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         stage = _format_update_failure_stage(e)
         if _should_zip_fallback_on_update_error(e):

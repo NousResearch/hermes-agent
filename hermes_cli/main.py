@@ -6437,6 +6437,29 @@ def _nixos_build_env() -> dict[str, str] | None:
         pass  # nix-shell not available — caller will get None
 
     return None
+
+
+def _npm_ci_failure_allows_install_fallback(output: str) -> bool:
+    """Whether a failed ``npm ci`` can plausibly be repaired by ``npm install``.
+
+    Registry/network/package-availability failures are identical for both
+    commands, so retrying them only doubles update latency.  The fallback is
+    useful for its original cases: a drifted lockfile or npm too old to know
+    the ``ci`` command.
+    """
+    lowered = (output or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "code eusage",
+            "package.json and package-lock.json are in sync",
+            "package-lock.json or npm-shrinkwrap.json with lockfileversion",
+            "unknown command: ci",
+            'unknown command "ci"',
+        )
+    )
+
+
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -6492,8 +6515,14 @@ def _run_npm_install_deterministic(
             ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
             if ci_result.returncode == 0:
                 return ci_result
-            # Fall through to `npm install` — lockfile may be out of sync on a
-            # WIP fork/branch, or `npm ci` may not be available on very old npm.
+            combined = f"{ci_result.stdout or ''}\n{ci_result.stderr or ''}"
+            if not _npm_ci_failure_allows_install_fallback(combined):
+                # A registry/network/package-availability failure will fail
+                # identically under `npm install`; return immediately so the
+                # updater can try an older source snapshot instead.
+                return ci_result
+            # Lockfile drift (or an npm too old for `ci`) is the narrow case
+            # where `npm install --no-save` can genuinely recover.
         return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
 
     result = _attempt(npm)
@@ -10355,6 +10384,7 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
     group: str = "all",
+    require_all_extras: bool = False,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
@@ -10417,11 +10447,22 @@ def _install_python_dependencies_with_optional_fallback(
             strict_quarantine=True,
         )
 
+    initial_args = ["install"]
+    if require_all_extras and _is_uv_command(install_cmd_prefix):
+        # A selected fallback must be reproducible, not a venv carrying
+        # packages left behind by a failed newer candidate.
+        initial_args.append("--exact")
+    initial_args.extend(["-e", f".[{group}]"])
     try:
-        _install(["install", "-e", f".[{group}]"])
+        _install(initial_args)
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
         return
     except subprocess.CalledProcessError:
+        if require_all_extras:
+            # Candidate validation is intentionally one-shot. Falling back to
+            # base + N individual extras multiplies a mirror outage into many
+            # slow failures and can leave a mixed environment.
+            raise
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )

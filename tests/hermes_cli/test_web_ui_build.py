@@ -24,6 +24,7 @@ from hermes_cli.main import (
     _compute_web_ui_content_hash,
     _missing_web_build_tool,
     _run_npm_install_deterministic,
+    _web_build_idle_timeout_seconds,
     _web_build_toolchain_ready,
     _web_toolchain_roots,
     _web_ui_stamp_path,
@@ -427,3 +428,28 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+
+class TestWebBuildIdleTimeout:
+    """HERMES_WEB_BUILD_IDLE_TIMEOUT env handling (issue: cold-tsc kills)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", raising=False)
+
+    def test_defaults_to_600_seconds(self):
+        assert _web_build_idle_timeout_seconds() == 600
+
+    def test_reads_explicit_override(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "900")
+        assert _web_build_idle_timeout_seconds() == 900
+
+    def test_junk_override_falls_back_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "banana")
+        with caplog.at_level("WARNING"):
+            assert _web_build_idle_timeout_seconds() == 600
+        assert "Invalid HERMES_WEB_BUILD_IDLE_TIMEOUT" in caplog.text
+
+    def test_non_positive_override_falls_back(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "0")
+        assert _web_build_idle_timeout_seconds() == 600

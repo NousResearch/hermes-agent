@@ -6284,6 +6284,42 @@ def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
         logger.debug("Failed to write web UI build stamp: %s", exc)
 
 
+def _web_build_idle_timeout_seconds() -> int:
+    """Idle-output timeout for the web build's streamed subprocesses.
+
+    ``npm run build -w web`` runs ``tsc -b && vite build``; the incremental
+    TypeScript compiler emits nothing on stdout/stderr until the whole project
+    finishes type-checking, which on slower or memory-constrained hosts (WSL2,
+    LXCs, small VMs) can take several minutes in silence.  The generic default
+    of 180s in ``_run_with_idle_timeout`` was tuned for interactively-watched
+    update runs (#33788) and kills such legitimate builds mid-``tsc``, leaving
+    the dashboard permanently stale after every ``hermes update``.
+
+    Default 600s gives a cold incremental build comfortable headroom; build
+    output beyond that silence window is very unlikely to be alive.  Override
+    with ``HERMES_WEB_BUILD_IDLE_TIMEOUT`` (seconds, positive); junk values
+    fall back to the default with a warning.
+    """
+    raw = os.getenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "").strip()
+    if not raw:
+        return _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS
+    try:
+        value = int(raw)
+        if value < 1:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_WEB_BUILD_IDLE_TIMEOUT=%r; using default %s",
+            raw,
+            _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        )
+        return _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS
+
+
+_WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS = 600
+
+
 def _run_with_idle_timeout(
     cmd: list[str],
     cwd: Path,
@@ -6668,6 +6704,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     build_env = _npm_lifecycle_env(with_hermes_node_path())
+    build_idle_timeout = _web_build_idle_timeout_seconds()
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -6737,7 +6774,10 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+    r2 = _run_with_idle_timeout(
+        [npm, "run", "build"], cwd=web_dir, env=build_env,
+        idle_timeout_seconds=build_idle_timeout,
+    )
     if r2.returncode != 0:
         # The install above can exit 0 while leaving the tree without a build
         # toolchain — a lockfile-hash skip over a half-installed tree, or an
@@ -6748,13 +6788,19 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if missing_tool:
             _say(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
             _install_web_deps(silent=False)
-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+            r2 = _run_with_idle_timeout(
+                [npm, "run", "build"], cwd=web_dir, env=build_env,
+                idle_timeout_seconds=build_idle_timeout,
+            )
         if r2.returncode != 0:
             # Retry once after a short delay — covers boot-time races on Windows
             # (antivirus scanning Node.js binaries, npm cache not ready, transient
             # I/O when launched via Scheduled Task at logon). See issue #23817.
             _time.sleep(3)
-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+            r2 = _run_with_idle_timeout(
+                [npm, "run", "build"], cwd=web_dir, env=build_env,
+                idle_timeout_seconds=build_idle_timeout,
+            )
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers

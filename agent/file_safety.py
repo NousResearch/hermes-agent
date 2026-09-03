@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +25,195 @@ def _hermes_root_path() -> Path:
         return get_default_hermes_root()
     except Exception:
         return Path(os.path.expanduser("~/.hermes"))
+
+
+# Messaging-platform write guard (#83787): blocks file-tool writes into
+# execution-trusting roots (cron/, scripts/) of the active home and every
+# sibling profile (incl. the default root) when the session is a messaging
+# platform. Messaging sessions may retain other execution surfaces
+# (config-dependent), so toolset filtering alone is not a boundary; this is
+# defense-in-depth, not a security boundary for sessions that keep
+# terminal/browser/code-execution tools.
+
+_WIN_EXTENDED_PREFIXES = ("\\\\?\\", "\\.\\", "\\??\\")
+
+
+def _messaging_platform_from_key() -> Optional[str]:
+    """Messaging-platform token of the current session, or None.
+
+    Read from the gateway session key (``agent[:<profile>]:<platform>:...``)
+    and validated against ``gateway.config.Platform``. None for malformed or
+    unregistered keys and LOCAL; api_server is a messaging platform.
+    """
+    try:
+        from tools.approval import get_current_session_key
+    except Exception:
+        return None
+    try:
+        key = get_current_session_key()
+    except Exception:
+        return None
+    if not key or not key.startswith("agent:"):
+        return None
+    parts = key.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        from gateway.config import Platform
+        member = Platform(parts[2])
+    except Exception:
+        return None
+    if member is Platform.LOCAL:
+        return None
+    return member.value
+
+
+def _volume_is_case_insensitive(directory: str) -> bool:
+    """True when the volume treats case variants as one file (inode check).
+
+    Read-only probe; any failure returns False (a case-sensitive volume must
+    never be over-blocked).
+    """
+    try:
+        p = Path(os.path.realpath(directory))
+        probe = p.parent / (p.name.swapcase() if p.name else "")
+        st = os.stat(p)
+        st_variant = os.stat(probe)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return st.st_ino == st_variant.st_ino and st.st_dev == st_variant.st_dev
+
+
+@functools.lru_cache(maxsize=1)
+def _darwin_case_insensitive() -> bool:
+    """Cached per-process darwin case-sensitivity of the active-home volume."""
+    try:
+        from hermes_constants import get_hermes_home
+        home_parent = str(Path(get_hermes_home()).parent)
+    except Exception:
+        home_parent = str(Path(os.path.expanduser("~/.hermes")).parent)
+    return _volume_is_case_insensitive(home_parent)
+
+
+def _normalize_guard_path(path: str) -> str:
+    """Normalize a path for guard-prefix comparison (symmetric with prefixes).
+
+    Windows: strip extended-length prefixes + normcase. macOS: casefold only
+    on case-insensitive volumes. POSIX: unchanged.
+    """
+    if os.name == "nt":
+        for prefix in _WIN_EXTENDED_PREFIXES:
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+                break
+        return os.path.normcase(path).replace("\\", "/")
+    if sys.platform == "darwin" and _darwin_case_insensitive():
+        return path.casefold()
+    return path
+
+
+def _execution_trusting_prefixes() -> tuple[str, ...]:
+    """Execution-trusting write roots of all live Hermes homes (per call).
+
+    Follows get_hermes_home() (context override -> env -> default) plus the
+    process env home, the shared default root, and every <root>/profiles/*
+    sibling — a session in any profile must not plant payloads in another
+    profile's roots. Never frozen at import (custom HERMES_HOME, per-profile,
+    Windows default all covered).
+    """
+    try:
+        from hermes_constants import (
+            get_default_hermes_root,
+            get_hermes_home,
+            get_process_hermes_home,
+        )
+    except Exception:  # pragma: no cover - resolution chain unavailable
+        raw_homes = {os.path.expanduser("~/.hermes")}
+    else:
+        raw_homes = {str(get_hermes_home()), str(get_process_hermes_home())}
+        # Cover every sibling profile + the default root: each profile
+        # gateway executes its own cron/ and scripts/ as the same OS user,
+        # and the cross-profile soft guard (skills/plugins/cron/memories
+        # only, bypassable via cross_profile=True) does not cover scripts/.
+        try:
+            root = str(get_default_hermes_root())
+            raw_homes.add(root)
+            profiles_dir = os.path.join(root, "profiles")
+            if os.path.isdir(profiles_dir):
+                for name in sorted(os.listdir(profiles_dir)):
+                    if name.startswith("."):
+                        continue
+                    candidate = os.path.join(profiles_dir, name)
+                    if os.path.isdir(candidate):
+                        raw_homes.add(candidate)
+        except OSError:  # pragma: no cover - enumeration is best-effort
+            pass
+    # Keep raw + resolved spellings of each home: writes through either land
+    # in the same physical directory (e.g. macOS /var -> /private/var).
+    homes: set[str] = set()
+    for home in raw_homes:
+        homes.add(home)
+        try:
+            homes.add(str(Path(home).resolve()))
+        except (OSError, ValueError, RuntimeError):  # pragma: no cover
+            pass
+    prefixes = [
+        os.path.join(home, root)
+        for home in homes
+        for root in ("cron", "scripts")
+    ]
+    return tuple(prefixes)
+
+
+def get_messaging_write_block_error(path: str, task_id: str = "default") -> str | None:
+    """Block file-tool writes from messaging sessions into execution-trusting roots.
+
+    Returns an error when *path* targets the active home's or any sibling
+    profile's cron/ or scripts/ and the session is a messaging platform;
+    None otherwise. Canonicalizes
+    through the existing parent (symlink/junction-safe); the caller resolves
+    the raw argument (task-cwd aware). task_id is reserved.
+    """
+    platform = _messaging_platform_from_key()
+    if platform is None:
+        return None
+    prefixes = tuple(
+        _normalize_guard_path(p) for p in _execution_trusting_prefixes()
+    )
+    if not prefixes:
+        return None
+    # Normalize all candidates with the same function as the prefixes, so a
+    # prefix/candidate mismatch cannot fail open.
+    candidates = [os.path.normpath(os.path.expanduser(path))]
+    try:
+        resolved = str(Path(path).expanduser().resolve(strict=False))
+        if resolved not in candidates:
+            candidates.append(resolved)
+    except (OSError, ValueError, RuntimeError):
+        pass
+    try:
+        p = Path(path).expanduser()
+        parent = p.parent
+        if parent.exists():
+            canonical = str(parent.resolve(strict=True) / p.name)
+            if canonical not in candidates:
+                candidates.append(canonical)
+    except (OSError, ValueError, RuntimeError):
+        pass
+    candidates = [_normalize_guard_path(c) for c in candidates]
+
+    for prefix in prefixes:
+        for candidate in candidates:
+            if candidate == prefix or candidate.startswith(prefix + "/"):
+                return (
+                    f"Access denied: write to {path} targets an "
+                    "execution-trusting path (cron/, scripts/) of a Hermes "
+                    f"home and is not allowed from a {platform} platform "
+                    "session. Complete the change from a local (CLI/desktop) "
+                    "session instead. (Defense-in-depth — not a security "
+                    "boundary; the terminal tool can still bypass.)"
+                )
+    return None
 
 
 def build_write_denied_paths(home: str) -> set[str]:

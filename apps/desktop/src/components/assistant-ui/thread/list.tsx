@@ -154,6 +154,13 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
+// Hidden → visible reopen edge: a keep-alive tab coming back into focus must
+// land on the latest message, but only once its load has settled — a cold
+// load in progress is owned by the settle loop, which re-pins on its own.
+export function shouldReAnchorOnPaneReveal(opts: { becameVisible: boolean; settled: boolean }): boolean {
+  return opts.becameVisible && opts.settled
+}
+
 export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
   let frameId: number | null = null
   let framePending = false
@@ -601,6 +608,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useEffect(() => publishThreadAtBottom(isAtBottom, { paneVisible }), [isAtBottom, paneVisible])
   useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])
+
+  // Reopen edge (same class as the group-room fix for #89835): keep-alive tabs
+  // stay MOUNTED while hidden, so returning to one never remounts it and the
+  // mount/session-switch pin-to-bottom never reruns — the pane lands where it
+  // was parked, with fresh turns below the fold. Re-anchor to the latest
+  // message on the hidden → visible edge: opening a chat is an explicit
+  // "show me what's new now" gesture. A load still settling is owned by the
+  // settle loop, which pins on its own — never race it here.
+  const wasPaneVisibleRef = useRef(paneVisible)
+
+  useEffect(() => {
+    if (shouldReAnchorOnPaneReveal({ becameVisible: paneVisible && !wasPaneVisibleRef.current, settled: loadSettledRef.current })) {
+      void scrollToBottom('instant')
+    }
+
+    wasPaneVisibleRef.current = paneVisible
+  }, [paneVisible, scrollToBottom])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])

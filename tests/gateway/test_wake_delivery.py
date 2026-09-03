@@ -182,3 +182,40 @@ def test_persist_delegation_delivery_raises_without_db():
         ))
 
 
+def test_persist_message_agent_delivery_targets_sender_profile_db(tmp_path):
+    from gateway.wake import persist_message_agent_delivery
+    from hermes_state import SessionDB
+
+    home = tmp_path / "profiles" / "sender"
+    home.mkdir(parents=True)
+    db = SessionDB(db_path=home / "state.db")
+    sid = "sender-bot-chat"
+    db.create_session(sid, source="api_server")
+
+    class DbAdapter(ApiServerLikeAdapter):
+        def _open_and_cache_session_db(self, requested_home):
+            assert requested_home == home
+            return db
+
+    evt = {"session_id": "proc_reply", "exit_code": 0}
+    asyncio.run(
+        persist_message_agent_delivery(
+            DbAdapter(),
+            text="[Background process completed]\nreply from teammate",
+            session_id=sid,
+            profile_home=str(home),
+            evt=evt,
+        )
+    )
+
+    delivery = db.get_messages(sid)[-1]
+    assert delivery["role"] == "user"
+    assert delivery["content"].endswith("reply from teammate")
+    assert delivery["display_kind"] == "internal_notification"
+    assert delivery["display_metadata"] == {
+        "delivery_kind": "message_agent",
+        "process_id": "proc_reply",
+        "exit_code": 0,
+    }
+
+

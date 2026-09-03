@@ -642,6 +642,30 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
     assert dm_file.exists(), "the parent must not delete before the background runner reads"
 
 
+def test_spawn_marks_message_agent_completion_for_durable_delivery(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home)
+    captured = {}
+
+    import tools.terminal_tool as terminal_tool_module
+
+    def launched(command, **kwargs):
+        captured.update(kwargs)
+        return json.dumps({"session_id": "proc_durable"})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", launched)
+
+    result = json.loads(
+        bot_mode_dm._spawn_delivery(
+            "unused", "@researcher", task_id=None, agent=agent
+        )
+    )
+
+    assert result["status"] == "sent"
+    assert captured["_completion_delivery"] == "message_agent"
+    assert captured["_completion_delivery_home"] == str(home)
+
+
 def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeypatch):
     dm_file = tmp_path / "partial.txt"
     real_mkstemp = bot_mode_dm.tempfile.mkstemp

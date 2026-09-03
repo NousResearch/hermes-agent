@@ -33,9 +33,10 @@ The transports themselves are unchanged and proven:
   --create-if-missing -Q --query-file <tmp>`` (one turn, reply on stdout)
 - peer teammate   → ``hermes peer dm <peer>[/<name>] < <tmp>``
 
-Both run through ``terminal_tool(background=True, notify_on_complete=True)``
-so the reply lands as a completion notification on the sender's NEXT turn —
-the same wake shape every Bot Mode agent already knows.
+Both run through ``terminal_tool(background=True, notify_on_complete=True)``.
+Push-capable surfaces receive the established completion wake; stateless
+``api_server`` sessions retain the same watcher but persist its completion as
+a durable transcript row, ready for the next client-owned turn.
 """
 
 from __future__ import annotations
@@ -700,6 +701,8 @@ def _spawn_delivery(
             task_id=task_id,
             workdir=str(Path(__file__).resolve().parent.parent),
             _host_local=True,
+            _completion_delivery="message_agent",
+            _completion_delivery_home=_agent_home(agent),
         )
         try:
             parsed = json.loads(raw)

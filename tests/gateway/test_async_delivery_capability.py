@@ -186,11 +186,16 @@ class TestTerminalNotifyGate:
         yield
         process_registry.pending_watchers = []
 
-    def _run_bg(self, command):
+    def _run_bg(self, command, **kwargs):
         from tools.terminal_tool import terminal_tool
 
         return json.loads(
-            terminal_tool(command=command, background=True, notify_on_complete=True)
+            terminal_tool(
+                command=command,
+                background=True,
+                notify_on_complete=True,
+                **kwargs,
+            )
         )
 
     def test_api_server_skips_watcher_and_notes(self):
@@ -208,5 +213,34 @@ class TestTerminalNotifyGate:
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
         assert len(process_registry.pending_watchers) == 0
+
+    def test_api_server_retains_private_message_agent_persist_watcher(self, tmp_path):
+        from tools.process_registry import process_registry
+
+        tokens = set_session_vars(
+            platform="api_server",
+            chat_id="sender-sid",
+            session_key="sender-sid",
+            session_id="sender-sid",
+            async_delivery=False,
+        )
+        try:
+            d = self._run_bg(
+                "sleep 30",
+                _completion_delivery="message_agent",
+                _completion_delivery_home=str(tmp_path),
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        try:
+            assert d.get("notify_on_complete") is True
+            assert "notify_unsupported" not in d
+            watcher = process_registry.pending_watchers[-1]
+            assert watcher["parent_session_id"] == "sender-sid"
+            assert watcher["completion_delivery"] == "message_agent"
+            assert watcher["completion_delivery_home"] == str(tmp_path)
+        finally:
+            process_registry.kill_process(d["session_id"])
 
 

@@ -420,6 +420,23 @@ def test_completion_batches_do_not_cross_conversation_routes():
     assert adapter.handle_message.await_count == 2
 
 
+def test_message_agent_batches_do_not_cross_profile_homes():
+    first = _completion_event(started_at=1.0, session_id="proc_profile_a")
+    second = _completion_event(started_at=2.0, session_id="proc_profile_b")
+    first.update(
+        completion_delivery="message_agent",
+        completion_delivery_home="/hermes/profiles/a",
+    )
+    second.update(
+        completion_delivery="message_agent",
+        completion_delivery_home="/hermes/profiles/b",
+    )
+
+    assert GatewayRunner._completion_notification_batch_key(
+        first
+    ) != GatewayRunner._completion_notification_batch_key(second)
+
+
 def test_failed_coalesced_delivery_retries_all_entries():
     attempts = 0
 

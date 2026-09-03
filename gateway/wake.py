@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,49 @@ async def persist_delegation_delivery(
     logger.info(
         "async delegation completion persisted as delivery row for "
         "api_server session %s (no wake turn)",
+        session_id,
+    )
+
+
+async def persist_message_agent_delivery(
+    adapter: Any,
+    *,
+    text: str,
+    session_id: str,
+    profile_home: str,
+    evt: Optional[dict] = None,
+) -> None:
+    """Persist a message_agent subprocess reply into its sender Bot Chat."""
+    if not session_id or not profile_home:
+        raise ValueError(
+            "persist_message_agent_delivery: sender session and profile home required"
+        )
+    open_db = getattr(adapter, "_open_and_cache_session_db", None)
+    db: Any = (
+        await asyncio.to_thread(open_db, Path(profile_home))
+        if callable(open_db)
+        else None
+    )
+    if db is None:
+        raise RuntimeError(
+            "persist_message_agent_delivery: sender SessionDB unavailable — "
+            f"cannot persist completion for session {session_id}"
+        )
+    event = evt or {}
+    await asyncio.to_thread(
+        db.append_message,
+        session_id,
+        "user",
+        content=text,
+        display_kind="internal_notification",
+        display_metadata={
+            "delivery_kind": "message_agent",
+            "process_id": str(event.get("session_id") or ""),
+            "exit_code": event.get("exit_code"),
+        },
+    )
+    logger.info(
+        "message_agent completion persisted for api_server session %s",
         session_id,
     )
 

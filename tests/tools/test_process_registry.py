@@ -1220,6 +1220,25 @@ class TestCheckpoint:
             assert secret not in data[0]["command"]
             assert data[0]["command"] != command
 
+    def test_checkpoint_preserves_durable_completion_route(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            s = _make_session(sid="proc_message_agent", command="deliver")
+            s.pid = 12345
+            s.parent_session_id = "sender-sid"
+            s.completion_delivery = "message_agent"
+            s.completion_delivery_home = str(tmp_path / "profiles" / "sender")
+            registry._running[s.id] = s
+
+            registry._write_checkpoint()
+
+        entry = json.loads(checkpoint.read_text())[0]
+        assert entry["parent_session_id"] == "sender-sid"
+        assert entry["completion_delivery"] == "message_agent"
+        assert entry["completion_delivery_home"] == str(
+            tmp_path / "profiles" / "sender"
+        )
+
 # =========================================================================
 # Kill process
 # =========================================================================

@@ -2876,6 +2876,8 @@ def terminal_tool(
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
+    _completion_delivery: str = "",
+    _completion_delivery_home: str = "",
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -3522,7 +3524,15 @@ def terminal_tool(
                     # Kanban workers) cannot route a completion back to the
                     # agent after the turn/process ends. Refuse the promise:
                     # drop the flags and tell the agent to poll.
-                    if not _async_ok():
+                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
+                    _parent_session_id = _gse("HERMES_SESSION_ID", "")
+                    _durable_message_agent = (
+                        _completion_delivery == "message_agent"
+                        and bool(_completion_delivery_home)
+                        and _gw_platform == "api_server"
+                        and bool(_parent_session_id)
+                    )
+                    if not _async_ok() and not _durable_message_agent:
                         notify_on_complete = False
                         watch_patterns = None
                         result_data["notify_on_complete"] = False
@@ -3541,7 +3551,6 @@ def terminal_tool(
                             proc_session.id,
                         )
                     else:
-                        _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                         if _gw_platform:
                             _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
                             _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
@@ -3560,9 +3569,12 @@ def terminal_tool(
                             # notification when the user closes this session
                             # (/new) before the process finishes, instead of
                             # injecting it into the chat's NEW session.
-                            proc_session.parent_session_id = _gse(
-                                "HERMES_SESSION_ID", ""
-                            )
+                            proc_session.parent_session_id = _parent_session_id
+                            if _durable_message_agent:
+                                proc_session.completion_delivery = "message_agent"
+                                proc_session.completion_delivery_home = str(
+                                    _completion_delivery_home
+                                )
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -3602,6 +3614,8 @@ def terminal_tool(
                             "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                             "parent_session_id": proc_session.parent_session_id,
+                            "completion_delivery": proc_session.completion_delivery,
+                            "completion_delivery_home": proc_session.completion_delivery_home,
                         })
 
                 # Set watch patterns for output monitoring

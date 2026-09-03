@@ -446,6 +446,8 @@ class ProcessSession:
     # boundary (/new), instead of injecting them into the chat's NEW session.
     parent_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
+    completion_delivery: str = ""                # Private durable-delivery kind
+    completion_delivery_home: str = ""           # Exact sender profile home
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -2933,6 +2935,8 @@ class ProcessRegistry:
                             "watcher_interval": s.watcher_interval,
                             "parent_session_id": s.parent_session_id,
                             "notify_on_complete": s.notify_on_complete,
+                            "completion_delivery": s.completion_delivery,
+                            "completion_delivery_home": s.completion_delivery_home,
                             "watch_patterns": s.watch_patterns,
                         })
                 if extra_entries:
@@ -3031,6 +3035,8 @@ class ProcessRegistry:
                 watcher_interval=entry.get("watcher_interval", 0),
                 parent_session_id=entry.get("parent_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
+                completion_delivery=entry.get("completion_delivery", ""),
+                completion_delivery_home=entry.get("completion_delivery_home", ""),
                 watch_patterns=entry.get("watch_patterns", []),
             )
             with self._lock:
@@ -3052,6 +3058,8 @@ class ProcessRegistry:
                     "message_id": session.watcher_message_id,
                     "notify_on_complete": session.notify_on_complete,
                     "parent_session_id": session.parent_session_id,
+                    "completion_delivery": session.completion_delivery,
+                    "completion_delivery_home": session.completion_delivery_home,
                 })
 
         self._write_checkpoint(extra_entries=unresolved_scope_entries)

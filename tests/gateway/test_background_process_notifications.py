@@ -581,6 +581,51 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_message_agent_completion_apiserver_persists_without_self_post(
+    monkeypatch, tmp_path,
+):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(supports_async_delivery=False)
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    posts = []
+    persisted = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    async def fake_persist(adapter, *, text, session_id, profile_home, evt=None):
+        persisted.append((text, session_id, profile_home, evt))
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    monkeypatch.setattr(wake_mod, "persist_message_agent_delivery", fake_persist)
+
+    evt = {
+        "type": "completion",
+        "session_id": "proc_reply",
+        "session_key": "raw-sender-sid",
+        "platform": "api_server",
+        "chat_type": "dm",
+        "chat_id": "raw-sender-sid",
+        "parent_session_id": "raw-sender-sid",
+        "completion_delivery": "message_agent",
+        "completion_delivery_home": str(tmp_path / "profiles" / "sender"),
+    }
+    result = await runner._inject_watch_notification("reply", evt)
+
+    assert result is True
+    assert posts == []
+    assert persisted == [(
+        "reply",
+        "raw-sender-sid",
+        str(tmp_path / "profiles" / "sender"),
+        evt,
+    )]
+
+
+@pytest.mark.asyncio
 async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     monkeypatch, tmp_path,
 ):

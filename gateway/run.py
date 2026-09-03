@@ -28231,8 +28231,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter_supports_push,
                     deliver_wake,
                     persist_delegation_delivery,
+                    persist_message_agent_delivery,
                 )
                 if adapter is not None and not adapter_supports_push(adapter):
+                    if evt.get("completion_delivery") == "message_agent":
+                        try:
+                            await persist_message_agent_delivery(
+                                adapter,
+                                text=synth_text,
+                                session_id=raw_sid,
+                                profile_home=str(
+                                    evt.get("completion_delivery_home") or ""
+                                ),
+                                evt=evt,
+                            )
+                            return True
+                        except Exception as e:
+                            logger.warning(
+                                "message_agent delivery persist failed for "
+                                "session %s: %s",
+                                raw_sid,
+                                e,
+                            )
+                            return False
                     if evt.get("type") == "async_delegation":
                         # #85957: after the parent turn's event.complete the
                         # CLIENT owns the next turn on this stateless surface.
@@ -28322,8 +28343,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which binds chat_id = session_id). handle_message would run the
             # wake under a build_session_key()-derived key that never matches
             # the raw X-Hermes-Session-Id session — self-post instead.
-            from gateway.wake import deliver_wake, persist_delegation_delivery
+            from gateway.wake import (
+                deliver_wake,
+                persist_delegation_delivery,
+                persist_message_agent_delivery,
+            )
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
+            if evt.get("completion_delivery") == "message_agent":
+                try:
+                    await persist_message_agent_delivery(
+                        adapter,
+                        text=synth_text,
+                        session_id=raw_sid,
+                        profile_home=str(
+                            evt.get("completion_delivery_home") or ""
+                        ),
+                        evt=evt,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "message_agent delivery persist failed for session %s: %s",
+                        raw_sid,
+                        e,
+                    )
+                    return False
             if evt.get("type") == "async_delegation":
                 # #85957: same client-owns-the-turn rule as the raw-key branch
                 # above — persist the completion as a delivery row, never
@@ -28648,6 +28692,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "chat_id",
             "thread_id",
             "user_id",
+            "completion_delivery_home",
         ))
 
     @staticmethod
@@ -29154,6 +29199,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "parent_session_id": (
                             watcher.get("parent_session_id")
                             or getattr(session, "parent_session_id", "")
+                            or ""
+                        ),
+                        "completion_delivery": (
+                            watcher.get("completion_delivery")
+                            or getattr(session, "completion_delivery", "")
+                            or ""
+                        ),
+                        "completion_delivery_home": (
+                            watcher.get("completion_delivery_home")
+                            or getattr(session, "completion_delivery_home", "")
                             or ""
                         ),
                     }

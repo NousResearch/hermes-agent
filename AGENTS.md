@@ -1092,10 +1092,9 @@ violate them.
    `.env.example` versions are usually stale and edits outside the
    skill's own block must be dropped during salvage.
 
-The full salvage / modernization checklist for external skill PRs
-lives in the `hermes-agent-dev` skill at
-`references/new-skill-pr-salvage.md` — load it before polishing
-contributor skill PRs.
+9. **Apply the same 8 checks above when salvaging an external
+   contributor's skill PR.** There is no separate salvage checklist;
+   the numbered rules above already cover the reviewer's job.
 
 ---
 

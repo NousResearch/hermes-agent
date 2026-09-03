@@ -200,8 +200,7 @@ apps/desktop/demo/
 
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
-# PR body is the archive. See the hermes-agent-dev skill's
-# pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+# PR body is the archive. Do not commit PR infographic source or output.
 #
 # Spelling variants are listed because a single `infographic/` pattern was
 # sidestepped by an `infograficos/` directory (#70552). .gitignore is only

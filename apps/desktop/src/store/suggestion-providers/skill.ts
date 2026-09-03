@@ -128,7 +128,7 @@ function skillArgName(part: { args?: unknown; argsText?: unknown }): string {
 }
 
 /** True when the tool-call arg names this skill — exactly, or as the final
- *  segment of a qualified form (`github/hermes-agent-dev`, `plugin:skill`). */
+ *  segment of a qualified form (`github/mock-skill`, `plugin:skill`). */
 function argNamesSkill(arg: string, skillName: string): boolean {
   const value = arg.trim().toLowerCase()
 

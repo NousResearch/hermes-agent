@@ -32,7 +32,7 @@ hermes chat --provider openrouter  # 强制使用 OpenRouter
 hermes chat --toolsets "web,terminal,skills"
 
 # 启动时预加载一个或多个 skill
-hermes -s hermes-agent-dev,github-auth
+hermes -s hermes-agent,github-auth
 hermes chat -s github-pr-workflow -q "open a draft PR"
 
 # 恢复之前的会话
@@ -165,7 +165,7 @@ quick_commands:
 如果你已知道本次会话需要哪些 skill，可在启动时传入：
 
 ```bash
-hermes -s hermes-agent-dev,github-auth
+hermes -s hermes-agent,github-auth
 hermes chat -s github-pr-workflow -s github-auth
 ```
 

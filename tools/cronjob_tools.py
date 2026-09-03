@@ -78,10 +78,9 @@ def _notify_provider_jobs_changed_safe() -> None:
 #   2. Assembled prompt that includes loaded skill content (large markdown
 #      bodies, often security docs, postmortems, runbooks discussing attack
 #      patterns in PROSE). Reusing the strict patterns here false-positives
-#      every time a skill *describes* a command — see #3968 follow-up: the
-#      `hermes-agent-dev` skill contains a security postmortem mentioning
-#      `cat ~/.hermes/.env`, which tripped `read_secrets` and silently
-#      killed all PR-scout jobs.
+#      every time a skill *describes* a command, see #3968: a security
+#      postmortem mentioning `cat ~/.hermes/.env` in prose tripped
+#      `read_secrets` and silently killed all PR-scout jobs.
 #
 #      Skill bodies are user-curated and scanned at install time by
 #      `skills_guard.py`. The runtime cron scan only needs to catch the

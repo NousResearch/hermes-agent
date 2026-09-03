@@ -1,8 +1,7 @@
 """Owner-level tests for agent.backend_identity.
 
 This module is the single owner of the "same backend?" question — tests
-live HERE, against the predicate, not against each call site (see
-references/never-patch-predicates.md in hermes-agent-dev). Each test names
+live HERE, against the predicate, not against each call site. Each test names
 the incident whose semantics it pins.
 """
 

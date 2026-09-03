@@ -278,7 +278,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     parent = MagicMock()
     parent.ephemeral_system_prompt = (
         '[IMPORTANT: The user launched this CLI session with the '
-        '"hermes-agent-dev" skill preloaded. Treat its instructions as '
+        '"hermes-agent" skill preloaded. Treat its instructions as '
         'active guidance for the duration of this session unless the user '
         'overrides them.]'
     )
@@ -288,7 +288,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
                           "arguments": '{"name": "github-pr-workflow"}'}},
             # reference-file read of an already-counted skill: skipped
             {"function": {"name": "skill_view",
-                          "arguments": '{"name": "hermes-agent-dev", '
+                          "arguments": '{"name": "hermes-agent", '
                                        '"file_path": "references/x.md"}'}},
             {"function": {"name": "read_file",
                           "arguments": '{"path": "/tmp/x"}'}},
@@ -300,7 +300,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
         ]},
     ]
     names = collect_parent_loaded_skills(parent, msgs)
-    assert names == ["hermes-agent-dev", "github-pr-workflow"]
+    assert names == ["hermes-agent", "github-pr-workflow"]
 
 
 def test_collect_skills_empty_when_none_loaded():
@@ -330,8 +330,8 @@ def test_collect_skills_caps_at_limit():
 
 def test_briefing_includes_loaded_skills_instruction():
     snap = [{"role": "user", "text": "review my PR"}]
-    _, context = build_review_task(snap, "", ["hermes-agent-dev", "xitter"])
-    assert "hermes-agent-dev, xitter" in context
+    _, context = build_review_task(snap, "", ["hermes-agent", "xitter"])
+    assert "hermes-agent, xitter" in context
     assert "skill_view" in context
     assert "binding" in context
 
@@ -370,7 +370,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
 
     parent = _fake_parent()
     parent.ephemeral_system_prompt = (
-        'session with the "hermes-agent-dev" skill preloaded.'
+        'session with the "hermes-agent" skill preloaded.'
     )
     msgs = [
         {"role": "user", "content": "open a PR"},
@@ -378,7 +378,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     ]
     result = start_review(parent, msgs, "")
     assert result["status"] == "dispatched"
-    assert "hermes-agent-dev" in built["context"]
+    assert "hermes-agent" in built["context"]
     assert "skill_view" in built["context"]
 
 

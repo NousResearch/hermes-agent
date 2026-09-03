@@ -18,6 +18,8 @@ These tests pin the wire-shape contract:
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -102,11 +104,81 @@ class TestCustomReasoningWireShape:
         ],
     )
     def test_disabled_omits_think_on_non_ollama_relays(self, custom_profile, base_url):
-        eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"effort": "none"},
-            model="llama3",
-            base_url=base_url,
-        )
+        # Non-standard ports on loopback (llama.cpp/vLLM/LM Studio) fall
+        # through to the #98006 /api/tags probe; stub it so the assertion
+        # doesn't depend on a real server (or lack of one) at that port —
+        # a genuinely non-Ollama local server answers the probe with None,
+        # same as this stub.
+        with patch(
+            "agent.model_metadata.detect_local_server_type", return_value=None
+        ):
+            eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"effort": "none"},
+                model="llama3",
+                base_url=base_url,
+            )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_sends_think_false_on_probed_local_ollama(self, custom_profile):
+        """A local endpoint on a non-standard port, positively probed as
+        Ollama (#98006), gets the same dual emission as the static
+        11434/``ollama``-hostname signatures — e.g. ``OLLAMA_HOST=gpu-box:8080``
+        saved verbatim into ``model.base_url``."""
+        with patch(
+            "agent.model_metadata.detect_local_server_type", return_value="ollama"
+        ) as mock_detect:
+            eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="qwen3",
+                base_url="http://gpu-box:8080/v1",
+            )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+        mock_detect.assert_called_once_with("http://gpu-box:8080/v1")
+
+    def test_disabled_omits_think_on_probed_local_non_ollama(self, custom_profile):
+        """Same non-standard-port shape, but the probe says vLLM/llama.cpp —
+        must not send the Ollama-only flag."""
+        with patch(
+            "agent.model_metadata.detect_local_server_type", return_value="vllm"
+        ):
+            eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="qwen3",
+                base_url="http://192.168.1.50:8080/v1",
+            )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_never_probes_remote_endpoint(self, custom_profile):
+        """A remote (non-local) host must never reach the probe at all —
+        mirrors the ``is_local_endpoint`` gate in
+        ``agent.image_routing._should_probe_ollama_vision`` (#89863)."""
+        with patch(
+            "agent.model_metadata.detect_local_server_type"
+        ) as mock_detect:
+            eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="qwen3",
+                base_url="https://inference.example.com/v1",
+            )
+        mock_detect.assert_not_called()
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_probe_failure_is_swallowed(self, custom_profile):
+        """If the probe machinery itself raises, treat it as not-Ollama
+        rather than letting kwargs building blow up mid-turn."""
+        with patch(
+            "agent.model_metadata.detect_local_server_type",
+            side_effect=RuntimeError("boom"),
+        ):
+            eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="qwen3",
+                base_url="http://gpu-box:8080/v1",
+            )
         assert "think" not in eb
         assert tl == {"reasoning_effort": "none"}
 

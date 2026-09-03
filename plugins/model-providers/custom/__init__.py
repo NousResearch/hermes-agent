@@ -19,13 +19,43 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
+def _probe_ollama_endpoint(raw_base_url: str) -> bool:
+    """Positively identify Ollama via ``/api/tags`` for local endpoints the
+    static hostname/port signatures below missed (#98006) — e.g.
+    ``OLLAMA_HOST=gpu-box:8080`` saved into ``model.base_url``, or a bare
+    LAN IP like ``http://192.168.1.50:8080``.
+
+    Gated to local endpoints only and delegated to
+    ``agent.model_metadata.detect_local_server_type``, which caches its own
+    verdict per host (in-process for the run, plus briefly on disk), so this
+    never round-trips more than once per endpoint. Mirrors the same gating
+    ``agent.image_routing._should_probe_ollama_vision`` uses (#89863):
+    remote relays are never probed — that would spend the probe waterfall's
+    connect timeout on hosts that were never local, and an unauthenticated
+    probe of a keyed remote endpoint returns nothing useful anyway.
+    """
+    probe_url = raw_base_url if "://" in raw_base_url else f"http://{raw_base_url}"
+    try:
+        from agent.model_metadata import detect_local_server_type, is_local_endpoint
+
+        if not is_local_endpoint(probe_url):
+            return False
+        return detect_local_server_type(probe_url) == "ollama"
+    except Exception:
+        return False
+
+
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     """True when ``base_url`` is an Ollama host, not a generic OpenAI-compat relay.
 
     ``think`` is an Ollama-native extra_body field. Strict hosts (Mistral
-    ``extra=forbid``, Groq, …) reject it with HTTP 422. Match only explicit
-    Ollama signatures — default port 11434, or ``ollama`` as a hostname
-    label — not arbitrary localhost (llama.cpp / vLLM / LM Studio).
+    ``extra=forbid``, Groq, …) reject it with HTTP 422. Explicit Ollama
+    signatures — default port 11434, ``ollama`` as a hostname label, or
+    ollama.com — match for free, with no network call. A local endpoint
+    that matches none of those (non-standard port, unrelated hostname) is
+    positively identified via an ``/api/tags`` probe (#98006) rather than
+    assumed to be llama.cpp/vLLM/LM Studio; non-local hosts are never
+    probed.
     """
     raw = (base_url or "").strip()
     if not raw:
@@ -46,7 +76,9 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
         return False
     if host == "ollama.com" or host.endswith(".ollama.com"):
         return True
-    return "ollama" in host.split(".")
+    if "ollama" in host.split("."):
+        return True
+    return _probe_ollama_endpoint(raw)
 
 
 class CustomProfile(ProviderProfile):

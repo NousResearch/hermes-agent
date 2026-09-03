@@ -533,6 +533,41 @@ def _refuse_checkpoint_required_on_codex_app_server(
         )
 
 
+def _adopt_implicit_runtime(agent, routed_client, routed_model) -> None:
+    """Adopt the provider router's resolved runtime identity.
+
+    ``auto`` routing can resolve the configured main runtime even when a
+    direct AIAgent caller omitted both provider and model (notably
+    ``python run_agent.py``).  The router has always returned the concrete
+    model, but this path used to discard it and later send ``model: ""``
+    to an otherwise valid endpoint.  Adopt both pieces of resolved runtime
+    identity before any request kwargs or context limits are built.
+
+    Raises:
+        RuntimeError: routing succeeded but supplied no model name.
+    """
+    if not str(agent.model or "").strip():
+        agent.model = str(routed_model or "").strip()
+    if not str(agent.provider or "").strip():
+        _routed_provider = str(
+            getattr(
+                routed_client,
+                "_hermes_aux_effective_provider",
+                "",
+            )
+            or ""
+        ).strip().lower()
+        if _routed_provider:
+            agent.provider = _routed_provider
+            agent.requested_provider = _routed_provider
+    if not str(agent.model or "").strip():
+        raise RuntimeError(
+            "LLM provider resolved successfully but did not supply a "
+            "model name. Set model.default in config.yaml or pass "
+            "model= explicitly."
+        )
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1372,33 +1407,10 @@ def init_agent(
             _routed_client, _routed_model = resolve_provider_client(
                 agent.provider or "auto", model=agent.model, raw_codex=True)
             if _routed_client is not None:
-                # ``auto`` routing can resolve the configured main runtime even
-                # when a direct AIAgent caller omitted both provider and model
-                # (notably ``python run_agent.py``).  The router has always
-                # returned the concrete model, but this path discarded it and
-                # later sent ``model: \"\"`` to an otherwise valid endpoint.
                 # Adopt both pieces of resolved runtime identity before any
-                # request kwargs or context limits are built.
-                if not str(agent.model or "").strip():
-                    agent.model = str(_routed_model or "").strip()
-                if not str(agent.provider or "").strip():
-                    _routed_provider = str(
-                        getattr(
-                            _routed_client,
-                            "_hermes_aux_effective_provider",
-                            "",
-                        )
-                        or ""
-                    ).strip().lower()
-                    if _routed_provider:
-                        agent.provider = _routed_provider
-                        agent.requested_provider = _routed_provider
-                if not str(agent.model or "").strip():
-                    raise RuntimeError(
-                        "LLM provider resolved successfully but did not supply a "
-                        "model name. Set model.default in config.yaml or pass "
-                        "model= explicitly."
-                    )
+                # request kwargs or context limits are built (see
+                # _adopt_implicit_runtime).
+                _adopt_implicit_runtime(agent, _routed_client, _routed_model)
                 # The first lookup ran before auto-routing had a concrete
                 # provider/model. Re-resolve now so provider-specific timeout
                 # settings also apply to this implicit-runtime path.

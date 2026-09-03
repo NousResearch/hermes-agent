@@ -1647,3 +1647,155 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# UNIQUE idx_tasks_idempotency migration (#64 / t_a886791d)
+#
+# The index was historically PLAIN, which let concurrent same-key creates
+# (and archived-row re-admissions) insert duplicate rows that the
+# create-path guard could not see. The migration below replaces the PLAIN
+# index with a UNIQUE one so the database itself enforces one row per key.
+# ---------------------------------------------------------------------------
+
+
+def _index_sql(conn, name: str) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?", (name,)
+    ).fetchone()
+    return row["sql"] if row else None
+
+
+def test_fresh_db_gets_unique_idempotency_index(kanban_home):
+    """Fresh boards must come up with the UNIQUE index, not the PLAIN one."""
+    with kb.connect_closing() as conn:
+        sql = _index_sql(conn, "idx_tasks_idempotency")
+    assert sql is not None, "idx_tasks_idempotency missing on fresh DB"
+    assert "UNIQUE" in sql.upper(), f"index is not UNIQUE: {sql!r}"
+
+
+def test_legacy_db_migrates_plain_index_to_unique(kanban_home):
+    """Existing boards carrying the old PLAIN index must be converted.
+
+    Simulates a legacy board: schema + rows created with the historical
+    PLAIN index, no duplicate keys, then re-opened via connect() so the
+    additive migration pass runs and must swap PLAIN -> UNIQUE.
+    """
+    db_path = kanban_home / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    legacy = sqlite3.connect(str(db_path))
+    try:
+        legacy.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        legacy.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+        )
+        legacy.execute(
+            "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+            "VALUES ('k1', 'legacy keyed', 'archived', 1, 'legacy-key-1')"
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    with kb.connect(db_path=db_path) as conn:
+        sql = _index_sql(conn, "idx_tasks_idempotency")
+        # The row written pre-migration must survive the index swap.
+        count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'legacy-key-1'"
+        ).fetchone()[0]
+    assert sql is not None and "UNIQUE" in sql.upper(), f"not UNIQUE: {sql!r}"
+    assert count == 1
+
+
+def test_unique_index_migration_falls_back_on_duplicate_keys(kanban_home, caplog):
+    """Duplicates present => migration must not brick the board.
+
+    The UNIQUE swap depends on the F2 cleanup purging pre-existing duplicate
+    keys (see review t_0345734c). If duplicates remain, CREATE UNIQUE INDEX
+    raises IntegrityError; the migration catches it, falls back to the PLAIN
+    index so the board keeps opening, and logs a loud remediation warning.
+    The conversion is retried on the next init once duplicates are purged.
+    """
+    import logging
+
+    db_path = kanban_home / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    legacy = sqlite3.connect(str(db_path))
+    try:
+        legacy.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        legacy.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+        )
+        # Two live rows sharing one key — exactly the corruption the UNIQUE
+        # index exists to prevent; the purge (F2) has not run here.
+        legacy.execute(
+            "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+            "VALUES ('d1', 'dup one', 'ready', 1, 'dup-key')"
+        )
+        legacy.execute(
+            "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+            "VALUES ('d2', 'dup two', 'ready', 2, 'dup-key')"
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect(db_path=db_path) as conn:
+            sql = _index_sql(conn, "idx_tasks_idempotency")
+            dups = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'dup-key'"
+            ).fetchone()[0]
+    # Board still opens, both rows intact, index fell back to PLAIN.
+    assert dups == 2
+    assert sql is not None and "UNIQUE" not in sql.upper(), (
+        f"duplicates present but index is UNIQUE: {sql!r}"
+    )
+    assert any(
+        "idx_tasks_idempotency" in r.message and "unique" in r.message.lower()
+        for r in caplog.records
+    ), f"no fallback warning logged: {[r.message for r in caplog.records]}"
+
+
+def test_unique_index_retry_after_purge_succeeds(kanban_home):
+    """After the F2 purge removes duplicates, next init converts to UNIQUE.
+
+    Companion to the fallback test: proves the PLAIN fallback is not a
+    terminal state — retry semantics hold once the blocking duplicates are
+    purged.
+    """
+    db_path = kanban_home / "kanban.db"
+    # First open: simulate a legacy board that already carries duplicates
+    # under the old PLAIN index (fresh DBs get UNIQUE immediately, so the
+    # pre-state must be constructed explicitly).
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with sqlite3.connect(str(db_path)) as raw:
+        raw.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        raw.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+        )
+        raw.execute(
+            "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+            "VALUES ('d1', 'dup one', 'ready', 1, 'dup-key')"
+        )
+        raw.execute(
+            "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+            "VALUES ('d2', 'dup two', 'ready', 2, 'dup-key')"
+        )
+    with kb.connect(db_path=db_path) as conn:
+        sql1 = _index_sql(conn, "idx_tasks_idempotency")
+    assert "UNIQUE" not in (sql1 or "").upper()
+
+    # Purge (simulating the F2 cleanup card)...
+    with sqlite3.connect(str(db_path)) as raw:
+        raw.execute("DELETE FROM tasks WHERE id = 'd2'")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    # ...and the next init retries and lands the UNIQUE index.
+    with kb.connect(db_path=db_path) as conn:
+        sql2 = _index_sql(conn, "idx_tasks_idempotency")
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'dup-key'"
+        ).fetchone()[0]
+    assert sql2 is not None and "UNIQUE" in sql2.upper(), f"not UNIQUE: {sql2!r}"
+    assert remaining == 1

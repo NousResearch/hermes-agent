@@ -2698,9 +2698,51 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
+
+    # ``idx_tasks_idempotency`` migration: PLAIN -> UNIQUE (#64).
+    #
+    # The index was historically PLAIN, which let concurrent same-key
+    # creates (and archived-row re-admissions) insert duplicate rows the
+    # create-path guard could not see. UNIQUE makes the database itself
+    # enforce one row per idempotency key.
+    #
+    # DEPENDENCY: duplicate keys must be purged before this ships. On the
+    # deployment where the corruption was observed, 7 idempotency keys
+    # existed in duplicate (retry-storm re-admissions across archived
+    # rows); an operational cleanup (the "F2" purge script in the
+    # operator's hermes-scripts repo, review t_0345734c) removed them
+    # BEFORE this migration landed. Without that purge, CREATE UNIQUE
+    # INDEX fails with IntegrityError. Rather than bricking the board, the
+    # error is caught, the PLAIN index is kept, and a loud remediation
+    # warning is logged. The swap is retried on every init (the shape
+    # check below re-inspects the existing index), so once the duplicates
+    # are purged the next connect() converts to UNIQUE.
+    _existing_idem_idx = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'index' AND name = 'idx_tasks_idempotency'"
+    ).fetchone()
+    if (
+        _existing_idem_idx is None
+        or "UNIQUE" not in (_existing_idem_idx["sql"] or "").upper()
+    ):
+        conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
+                "ON tasks(idempotency_key)"
+            )
+        except sqlite3.IntegrityError as exc:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+                "ON tasks(idempotency_key)"
+            )
+            _log.warning(
+                "idx_tasks_idempotency: duplicate idempotency_key values "
+                "present (%s); kept the non-unique index so the board keeps "
+                "opening. Purge the duplicate rows (keep one row per key) "
+                "and re-run init to enforce uniqueness.",
+                exc,
+            )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -3237,6 +3279,12 @@ def create_task(
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    # '' (or whitespace) means "no key": normalize to None so the guard
+    # (truthiness check) and the INSERT (which would store '' as a value
+    # and collide under the UNIQUE index) agree. NULL never participates
+    # in the UNIQUE constraint; '' would — a second ''-key create would
+    # crash with IntegrityError instead of being an ordinary task.
+    idempotency_key = (idempotency_key or "").strip() or None
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3406,9 +3454,10 @@ def create_task(
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # and to avoid holding a write lock during the lookup. A same-key
+    # creator that slips past this lookup races into the UNIQUE
+    # idx_tasks_idempotency and CONVERGES on the winning row (see the
+    # IntegrityError handler below) — exactly one row per key, ever.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -3568,6 +3617,24 @@ def create_task(
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
+            # A same-key racing creator that slipped past the pre-check above
+            # now hits the UNIQUE idx_tasks_idempotency (issue #64). Converge
+            # on the winning row instead of raising: by the time this INSERT
+            # fails, the winner's transaction has already committed
+            # (write_txn serializes writers via BEGIN IMMEDIATE), so a
+            # re-select by key is guaranteed to find it. Status-blind, like
+            # the pre-check: archived rows match too (admitted-once means
+            # admitted-forever). A miss here means the constraint that fired
+            # was the task-id PK collision, so fall through to the fresh-id
+            # retry below.
+            if idempotency_key:
+                row = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if row:
+                    return row["id"]
             if attempt == 1:
                 raise
             # Retry with a fresh id.

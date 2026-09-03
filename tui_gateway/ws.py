@@ -80,6 +80,40 @@ def _sanitize_ws_text(text: str) -> str:
 _WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
+# A cold cache is exceptional because web_server primes it before accepting
+# sockets. Keep one process-wide fallback refresh for standalone/test entry
+# paths so a reconnect burst cannot enqueue one resolve_skin job per peer.
+_skin_refresh_task: asyncio.Task[dict] | None = None
+_skin_refresh_loop: asyncio.AbstractEventLoop | None = None
+
+
+async def _refresh_skin_cache() -> dict:
+    payload, revision = await asyncio.to_thread(server.resolve_skin_snapshot)
+    if payload and server._note_cached_skin_broadcast(revision):
+        # The transport is registered before this fallback is scheduled, so
+        # every cold-cache peer receives the resolved skin after readiness.
+        # The revision guard suppresses a result superseded by config.set or
+        # the watcher while this worker was queued.
+        server._broadcast_global_event("skin.changed", payload)
+    return payload
+
+
+def _ensure_skin_cache_refresh() -> asyncio.Task[dict]:
+    """Start (or reuse) one non-blocking skin-cache refresh on this loop."""
+    global _skin_refresh_loop, _skin_refresh_task
+    loop = asyncio.get_running_loop()
+    if (
+        _skin_refresh_task is None
+        or _skin_refresh_task.done()
+        or _skin_refresh_loop is not loop
+    ):
+        _skin_refresh_loop = loop
+        _skin_refresh_task = asyncio.create_task(
+            _refresh_skin_cache(),
+            name="gateway-skin-cache-refresh",
+        )
+    return _skin_refresh_task
+
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
 # a short timer instead of waking the event loop once per token. A model reply
 # emits hundreds of these in a burst, and each one is a loop wakeup competing
@@ -408,14 +442,15 @@ async def handle_ws(
             auth_identity=auth_identity,
         )
 
-        # resolve_skin() reads config + initializes the skin engine —
-        # synchronous I/O + CPU work that should not block the event loop
-        # during the cold-start window. Run it in the thread pool so the
-        # WS read loop stays free to drain the frontend's initial RPC
-        # burst (setup.status, session.list, ...) without a stall
-        # (#60800). The skin payload is small (a dict of strings/arrays),
-        # so the to_thread overhead is negligible.
-        skin_payload = await asyncio.to_thread(server.resolve_skin)
+        # gateway.ready is a liveness contract, so it must not wait for config
+        # I/O or the shared default executor. During a busy multi-agent turn a
+        # normally-cheap to_thread(resolve_skin) can queue for >30s, causing the
+        # Desktop to time out and reconnect; every reconnect then queued another
+        # lookup and prolonged the outage. web_server primes this snapshot at
+        # startup. Standalone entry paths may see a cold cache: send ready with
+        # an empty skin (clients safely keep their persisted theme) and collapse
+        # all fallback work into one background refresh.
+        skin_payload = server.get_cached_skin_payload()
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -443,6 +478,8 @@ async def handle_ws(
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+            if not skin_payload:
+                _ensure_skin_cache_refresh()
         # Cross-backend liveness (#94895): register a heartbeat row so
         # the startup orphan sweep can distinguish "row owned by a live
         # but idle backend" from "row truly orphaned". The stdio TUI's

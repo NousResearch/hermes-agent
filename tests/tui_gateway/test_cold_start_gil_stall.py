@@ -6,15 +6,14 @@ between ``HERMES_BACKEND_READY`` and the first prompt. Three fixes:
 
 1. ``copilot_auth.resolve_copilot_token`` skips the ``gh auth token``
    subprocess when a Copilot env var is explicitly set (even if invalid).
-2. ``tui_gateway.ws.handle_ws`` runs ``resolve_skin()`` via
-   ``asyncio.to_thread`` so the loop is not blocked by config/skin init.
+2. ``gateway.ready`` reads a startup-primed skin snapshot and a rare cold
+   cache refreshes once in the background, never in the liveness path.
 3. ``web_server._warm_gateway_module`` pre-imports the heavy module
    chains that the first WS connection + RPC burst would otherwise
    import on the loop thread.
 """
 
 import asyncio
-import inspect
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -74,49 +73,11 @@ class TestCopilotAuthSkipsGhCli:
         mock_cli.assert_called_once()
 
 
-# ─── Fix 2: resolve_skin runs via to_thread in handle_ws ───────────────
+# ─── Fix 2: gateway.ready never waits for skin resolution ─────────────
 
 
-def test_handle_ws_resolves_skin_off_the_loop_thread():
-    """resolve_skin must run on a worker thread, not the event loop (#60800).
-
-    Behavioral check (not source inspection): run the ready-payload path
-    with a resolve_skin stub that records its thread ident and assert it
-    differs from the loop thread's. Pattern from the #72720 salvage.
-    """
-    import asyncio as _asyncio
-    import threading
-
-    import tui_gateway.server as server_mod
-
-    idents = {}
-
-    def _fake_resolve_skin():
-        idents["skin_thread"] = threading.get_ident()
-        return {"palette": "test"}
-
-    async def _scenario():
-        idents["loop_thread"] = threading.get_ident()
-        with patch.object(server_mod, "resolve_skin", _fake_resolve_skin):
-            payload = await _asyncio.to_thread(server_mod.resolve_skin)
-        return payload
-
-    payload = _asyncio.run(_scenario())
-
-    assert payload == {"palette": "test"}
-    assert idents["skin_thread"] != idents["loop_thread"], (
-        "resolve_skin ran on the event loop thread — the #60800 cold-start "
-        "stall would be back."
-    )
-
-
-def test_handle_ws_ready_payload_wires_skin_through_to_thread():
-    """The gateway.ready payload construction must route resolve_skin
-    through asyncio.to_thread with change_events preserved.
-
-    Exercises handle_ws's actual payload site by faking the transport
-    and asserting on the written frame.
-    """
+def test_cold_skin_refresh_runs_off_the_loop_thread():
+    """The cache-miss fallback must resolve on a worker and remain awaitable."""
     import asyncio as _asyncio
     import threading
 
@@ -124,38 +85,67 @@ def test_handle_ws_ready_payload_wires_skin_through_to_thread():
     import tui_gateway.ws as ws_mod
 
     idents = {}
-    frames = []
 
-    def _fake_resolve_skin():
+    def _fake_resolve_skin_snapshot():
         idents["skin_thread"] = threading.get_ident()
-        return {"palette": "wired"}
+        return {"palette": "test"}, 1
 
     async def _scenario():
         idents["loop_thread"] = threading.get_ident()
-        with patch.object(server_mod, "resolve_skin", _fake_resolve_skin):
-            # Reproduce handle_ws's ready-frame construction verbatim.
-            skin_payload = await _asyncio.to_thread(server_mod.resolve_skin)
-            frames.append(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "event",
-                    "params": {
-                        "type": "gateway.ready",
-                        "payload": {"skin": skin_payload, "change_events": True},
-                    },
-                }
-            )
+        ws_mod._skin_refresh_task = None
+        ws_mod._skin_refresh_loop = None
+        try:
+            with (
+                patch.object(
+                    server_mod,
+                    "resolve_skin_snapshot",
+                    _fake_resolve_skin_snapshot,
+                ),
+                patch.object(server_mod, "_note_cached_skin_broadcast", return_value=True),
+                patch.object(server_mod, "_broadcast_global_event"),
+            ):
+                return await ws_mod._ensure_skin_cache_refresh()
+        finally:
+            ws_mod._skin_refresh_task = None
+            ws_mod._skin_refresh_loop = None
 
-    _asyncio.run(_scenario())
+    payload = _asyncio.run(_scenario())
 
-    assert frames[0]["params"]["payload"]["skin"] == {"palette": "wired"}
-    assert frames[0]["params"]["payload"]["change_events"] is True
+    assert payload == {"palette": "test"}
     assert idents["skin_thread"] != idents["loop_thread"]
-    # Belt and braces: the production site must still route through
-    # to_thread — assert against the live source so a revert to inline
-    # resolve_skin() cannot slip past the behavioral stub above.
-    source = inspect.getsource(ws_mod.handle_ws)
-    assert "to_thread(server.resolve_skin)" in source
+
+
+def test_handle_ws_ready_payload_uses_no_io_skin_snapshot(monkeypatch):
+    """A warm cache is serialized into ready without calling the resolver."""
+    import json
+
+    import tui_gateway.server as server_mod
+    import tui_gateway.ws as ws_mod
+
+    frames = []
+    resolver = MagicMock(side_effect=AssertionError("ready path resolved skin"))
+    monkeypatch.setattr(server_mod, "get_cached_skin_payload", lambda: {"name": "cached"})
+    monkeypatch.setattr(server_mod, "resolve_skin_snapshot", resolver)
+    monkeypatch.setattr(server_mod, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            frames.append(json.loads(line))
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    assert frames[0]["params"]["type"] == "gateway.ready"
+    assert frames[0]["params"]["payload"]["skin"] == {"name": "cached"}
+    resolver.assert_not_called()
 
 
 # ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────
@@ -188,6 +178,10 @@ def test_warm_gateway_module_imports_cold_start_chains():
     }
 
     web_server_mod._warm_gateway_module()
+
+    from tui_gateway import server as gateway_server
+
+    assert gateway_server.get_cached_skin_payload().get("name")
 
     missing = required - set(sys.modules)
     assert not missing, (

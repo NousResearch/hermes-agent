@@ -5096,27 +5096,85 @@ def _clear_pending(sid: str | None = None) -> None:
 # ── Agent factory ────────────────────────────────────────────────────
 
 
-def resolve_skin() -> dict:
-    try:
-        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
+_skin_payload_cache: dict = {}
+_skin_payload_cache_lock = threading.Lock()
+_skin_resolution_lock = threading.Lock()
+_skin_payload_sig: tuple[str, float | None] | None = None
+_skin_payload_revision = 0
 
-        init_skin_from_config(_load_cfg())
-        skin = get_active_skin()
-        return {
-            "name": skin.name,
-            "colors": skin.colors,
-            # Paired palettes: the TUI detects the terminal's polarity and
-            # prefers the matching hand-tuned block over adapting `colors`.
-            "light_colors": skin.light_colors,
-            "dark_colors": skin.dark_colors,
-            "branding": skin.branding,
-            "banner_logo": skin.banner_logo,
-            "banner_hero": skin.banner_hero,
-            "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", ""),
-        }
-    except Exception:
-        return {}
+
+def get_cached_skin_payload() -> dict:
+    """Return the last successfully resolved skin without I/O or config reads.
+
+    WebSocket liveness must never depend on the default executor: under a busy
+    multi-agent workload even a normally-cheap ``resolve_skin`` can spend tens
+    of seconds queued behind unrelated work. The dashboard primes this cache
+    before accepting sockets and every real skin resolution refreshes it.
+    """
+    # Nested palette/branding values are immutable snapshot data by contract.
+    # Callers serialize or inspect them; they must not mutate the returned tree.
+    # Keep this a shallow copy so the WebSocket liveness path stays allocation-
+    # light while still preventing top-level cache mutation.
+    with _skin_payload_cache_lock:
+        return dict(_skin_payload_cache)
+
+
+def _skin_sig_from_config(cfg: dict) -> tuple[str, float | None]:
+    """Return the skin signature represented by one config snapshot."""
+    name = str((cfg.get("display") or {}).get("skin") or "default")
+    override = get_hermes_home_override()
+    home = override if isinstance(override, str) and override else _hermes_home
+    try:
+        mtime: float | None = (Path(home) / "skins" / f"{name}.yaml").stat().st_mtime
+    except OSError:
+        mtime = None
+    return name, mtime
+
+
+def resolve_skin_snapshot() -> tuple[dict, int]:
+    """Resolve and cache one atomic skin-engine snapshot.
+
+    The skin engine stores process-global active state, so watcher, config RPC,
+    and cold-WebSocket refreshes must not interleave ``init`` and ``get``. The
+    revision lets an async refresher avoid broadcasting a result superseded by
+    a newer resolution before its worker completed.
+    """
+    global _skin_payload_revision, _skin_payload_sig
+    with _skin_resolution_lock:
+        try:
+            from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
+
+            cfg = _load_cfg()
+            sig = _skin_sig_from_config(cfg)
+            init_skin_from_config(cfg)
+            skin = get_active_skin()
+            payload = {
+                "name": skin.name,
+                "colors": skin.colors,
+                # Paired palettes: the TUI detects the terminal's polarity and
+                # prefers the matching hand-tuned block over adapting `colors`.
+                "light_colors": skin.light_colors,
+                "dark_colors": skin.dark_colors,
+                "branding": skin.branding,
+                "banner_logo": skin.banner_logo,
+                "banner_hero": skin.banner_hero,
+                "tool_prefix": skin.tool_prefix,
+                "help_header": (skin.branding or {}).get("help_header", ""),
+            }
+        except Exception:
+            return {}, -1
+
+        with _skin_payload_cache_lock:
+            _skin_payload_cache.clear()
+            _skin_payload_cache.update(payload)
+            _skin_payload_sig = sig
+            _skin_payload_revision += 1
+            revision = _skin_payload_revision
+        return dict(payload), revision
+
+
+def resolve_skin() -> dict:
+    return resolve_skin_snapshot()[0]
 
 
 # Signature of the last skin broadcast: (name, active user-file mtime). Lets the
@@ -5128,14 +5186,24 @@ _last_skin_sig: tuple[str, float | None] | None = None
 def _skin_sig() -> tuple[str, float | None]:
     """(active skin name, its user-file mtime). Built-ins have no file, so only
     their name moves; a user skin's mtime lets an in-place color edit repaint too."""
-    name = str((_load_cfg().get("display") or {}).get("skin") or "default")
-    override = get_hermes_home_override()
-    home = override if isinstance(override, str) and override else _hermes_home
-    try:
-        mtime: float | None = (Path(home) / "skins" / f"{name}.yaml").stat().st_mtime
-    except OSError:
-        mtime = None
-    return name, mtime
+    return _skin_sig_from_config(_load_cfg())
+
+
+def _note_cached_skin_broadcast(revision: int | None = None) -> bool:
+    """Set the watcher baseline to the cached snapshot if it is still current."""
+    global _last_skin_sig
+    with _skin_payload_cache_lock:
+        if (
+            not _skin_payload_cache
+            or _skin_payload_sig is None
+            or (revision is not None and revision != _skin_payload_revision)
+        ):
+            return False
+        # Keep the revision check and baseline assignment in one critical
+        # section. Otherwise a newer resolution can land between them and an
+        # older worker can overwrite the watcher's baseline with a stale sig.
+        _last_skin_sig = _skin_payload_sig
+    return True
 
 
 def _note_skin_broadcast() -> None:
@@ -5398,7 +5466,11 @@ def _ensure_skin_watcher() -> None:
     if _skin_watcher_started:
         return
     _skin_watcher_started = True
-    _note_skin_broadcast()  # seed the baseline so only a real change repaints
+    # Prefer the signature that produced the cached payload. If config changed
+    # after startup priming, seeding from the current file would hide that
+    # transition and leave the first client on a stale skin indefinitely.
+    if _last_skin_sig is None and not _note_cached_skin_broadcast():
+        _note_skin_broadcast()
 
     def _loop() -> None:
         while True:

@@ -346,8 +346,8 @@ def _warm_gateway_module() -> None:
     RPC burst (``setup.status``, ``setup.runtime_check``,
     ``gateway.ready``→``resolve_skin``) pull in several *other* heavy
     chains that were still imported on the loop thread, contributing to
-    the ~14s cold-start stall (#60800). Warm them all here so the cost
-    is paid in a worker thread while the server socket is already open.
+    the ~14s cold-start stall (#60800). Warm them all before the lifespan
+    yields so the first connection is never exposed to that import cost.
     """
     for mod in (
         "hermes_cli.gateway",
@@ -357,10 +357,9 @@ def _warm_gateway_module() -> None:
         "hermes_cli.auth",
         "hermes_cli.copilot_auth",
         "hermes_cli.runtime_provider",
-        # resolve_skin() reads config + initialises the skin engine.
-        # Even though handle_ws now calls it via asyncio.to_thread
-        # (see tui_gateway/ws.py), warming it here avoids the first-call
-        # import cost inside that thread.
+        # resolve_skin() reads config + initialises the skin engine. Standalone
+        # cold-cache paths still resolve it in a background thread; warming the
+        # module here avoids first-call import cost inside that fallback.
         "hermes_cli.skin_engine",
         # model.options / picker context — parses provider catalogs and
         # the models.dev cache on first use.
@@ -371,6 +370,16 @@ def _warm_gateway_module() -> None:
             __import__(mod)
         except Exception:
             pass
+
+    # Prime the no-I/O snapshot used by gateway.ready. This happens before the
+    # lifespan yields (and therefore before sockets are accepted), so a busy
+    # default executor can never hold the liveness frame hostage later.
+    try:
+        from tui_gateway import server as gateway_server
+
+        gateway_server.resolve_skin()
+    except Exception:
+        pass
 
 
 def _resolve_restart_drain_timeout() -> float:

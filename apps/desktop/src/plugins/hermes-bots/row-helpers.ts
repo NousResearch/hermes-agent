@@ -84,11 +84,21 @@ export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now
   return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
 }
 
+/** True while the gateway reports a turn in flight for this profile. The
+ *  busy-turn signal only covers turns THIS desktop dispatched, and the
+ *  activity window lags a tool-heavy turn and lingers after it ends — so a
+ *  turn another bot started (bot-to-bot delegation) or a platform message
+ *  started read idle for its whole run. The lease-backed field is exact on
+ *  both edges. Older gateways omit it — always false. */
+export function botTurnInFlight(bot: null | RosterRow | undefined): boolean {
+  return Boolean(bot?.turn_in_flight)
+}
+
 /** Bots that are working right now: the profile the gateway is running a
  *  turn for (busy), any bot whose last message landed inside the liveness
- *  window, plus any bot with a live kanban/tool worker. Pure — output
- *  follows the input roster's order, so presence never reorders or hides
- *  the normal list. */
+ *  window, any bot with a live kanban/tool worker, plus any bot whose
+ *  gateway reports a turn in flight. Pure — output follows the input
+ *  roster's order, so presence never reorders or hides the normal list. */
 export function activeBots(
   roster: null | RosterRow[] | undefined,
   activeProfile: string,
@@ -100,7 +110,7 @@ export function activeBots(
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 
-    return busyTurn || inWindow || workerActiveAt(bot, now)
+    return busyTurn || inWindow || workerActiveAt(bot, now) || botTurnInFlight(bot)
   })
 }
 

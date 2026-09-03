@@ -9414,6 +9414,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
+    def session_turn_lease_active(self, now: Optional[float] = None) -> bool:
+        """True while any conversation in this profile holds an unexpired turn lease.
+
+        Liveness helper for roster surfaces — not part of the locking protocol.
+        The turn prologue acquires a lease before load/run/flush and a background
+        thread refreshes it until the turn ends (see run_agent), so an unexpired
+        row is the profile-level "a turn is in flight right now" fact, whoever
+        started the turn.
+        """
+        ts = time.time() if now is None else now
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM session_turn_leases WHERE expires_at >= ? LIMIT 1",
+                (ts,),
+            ).fetchone()
+        return row is not None
+
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.
 

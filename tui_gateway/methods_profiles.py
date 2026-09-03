@@ -260,6 +260,23 @@ def _(rid, params: dict) -> dict:
         except Exception:
             return None, None
 
+    def _turn_lease_active(db):
+        """True while the profile holds an unexpired session turn lease.
+
+        The lease is acquired in the turn prologue and refreshed until the
+        turn ends, so this is "a turn is in flight right now" — regardless of
+        who started it: a desktop, a messaging platform, or another bot in a
+        bot-to-bot delegation. Best-effort like the session fields above: a
+        missing lease API (older schema) or a locked db reads False.
+        """
+        if db is None:
+            return False
+        try:
+            probe = getattr(db, "session_turn_lease_active", None)
+            return bool(probe()) if callable(probe) else False
+        except Exception:
+            return False
+
     try:
         from hermes_cli.profiles import list_profiles
 
@@ -289,6 +306,14 @@ def _(rid, params: dict) -> dict:
                     # identity is the NAME, resolved server-side on every listing
                     # so no client ever needs to carry a session pointer.
                     row["canonical_session"] = _canonical_session_row(db, p.path)
+                    # True while a turn lease is live — the exact per-profile
+                    # busy signal. The client-side activity window both lags a
+                    # tool-heavy turn and lingers ~90s after it ends, and the
+                    # desktop's busy state only covers turns it dispatched
+                    # itself, so a bot-to-bot callee read idle for its whole
+                    # turn. Same contract as worker_session (#90268): older
+                    # clients ignore the extra field.
+                    row["turn_in_flight"] = _turn_lease_active(db)
                 finally:
                     if db is not None:
                         try:

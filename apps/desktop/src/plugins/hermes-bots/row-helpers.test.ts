@@ -19,6 +19,7 @@ import {
   activeBots,
   botCanonicalSessionId,
   botRowOwnsWorkspace,
+  botTurnInFlight,
   previewKind,
   rosterActivityMatches,
   workerActiveAt
@@ -154,6 +155,39 @@ describe('which bots are working right now', () => {
     // heartbeat — but not an hour's worth.
     expect(workerActiveAt(finished, NOW)).toBe(false)
     expect(ACTIVE_WINDOW_S).toBeGreaterThan(0)
+  })
+
+  it('counts a gateway-reported turn in flight, however the turn started', () => {
+    // The reported shape: a bot-to-bot callee mid-turn — stale chat activity,
+    // no worker, not the desktop-selected profile.
+    const callee = row({
+      last_session: { id: 'chat', last_active: secondsAgo(3 * 3600) },
+      name: 'callee',
+      turn_in_flight: true
+    })
+
+    expect(activeBots([callee], 'other', 'open', NOW).map(bot => bot.name)).toContain('callee')
+    expect(botTurnInFlight(callee)).toBe(true)
+  })
+
+  it('counts a remote-gateway turn in flight too', () => {
+    const remote = row({ name: 'remote', remoteSource: true, turn_in_flight: true })
+
+    expect(activeBots([remote], 'other', 'open', NOW).map(bot => bot.name)).toContain('remote')
+  })
+
+  it('clears with the lease: no turn in flight, no working state', () => {
+    const done = row({
+      last_session: { id: 'chat', last_active: secondsAgo(3 * 3600) },
+      name: 'done',
+      turn_in_flight: false
+    })
+
+    expect(activeBots([done], 'other', 'open', NOW)).toEqual([])
+    expect(botTurnInFlight(done)).toBe(false)
+    // Gateways that predate the field read false, never active.
+    expect(botTurnInFlight(row({ name: 'older' }))).toBe(false)
+    expect(botTurnInFlight(null)).toBe(false)
   })
 })
 

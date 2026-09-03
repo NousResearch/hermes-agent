@@ -100,6 +100,9 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** True while the gateway holds an unexpired turn lease for this profile —
+   *  a turn is running right now, whoever started it. Older gateways omit it. */
+  turn_in_flight?: boolean | null
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>

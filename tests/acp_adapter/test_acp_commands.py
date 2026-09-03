@@ -137,8 +137,68 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
 
 
 
+@pytest.mark.asyncio
+async def test_acp_advertises_and_applies_reasoning_level():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    reasoning = next(
+        option
+        for option in acp_agent._session_config_options(state)
+        if option.category == "thought_level"
+    )
+    assert reasoning.current_value == "medium"
+    assert [option.value for option in reasoning.options] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+
+    update = await acp_agent.set_config_option(
+        config_id="reasoning_effort",
+        session_id=state.session_id,
+        value="high",
+    )
+
+    assert fake.reasoning_config == {"enabled": True, "effort": "high"}
+    assert update.config_options[0].current_value == "high"
+
+    await acp_agent.set_session_model(
+        session_id=state.session_id,
+        model_id="fake-provider:next-model",
+    )
+    assert state.agent.reasoning_config == {"enabled": True, "effort": "high"}
+
+    response = await acp_agent.new_session(cwd=".")
+    assert any(
+        option.category == "thought_level" for option in response.config_options
+    )
 
 
+@pytest.mark.asyncio
+async def test_acp_model_switch_keeps_agent_default_on_unparseable_effort():
+    """A corrupt persisted effort must not null the new agent's default."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    # Stand in for whatever reasoning config the rebuilt agent comes up with.
+    agent_default = {"enabled": True, "effort": "medium"}
+    fake.reasoning_config = agent_default
+
+    # Only reachable via a hand-edited DB: the set path validates first.
+    state.reasoning_effort = "not-a-real-effort"
+
+    await acp_agent.set_session_model(
+        session_id=state.session_id,
+        model_id="fake-provider:next-model",
+    )
+
+    # Default preserved (not overwritten with None) and the bad value dropped.
+    assert state.agent.reasoning_config == agent_default
+    assert state.reasoning_effort == ""
 
 
 @pytest.mark.asyncio

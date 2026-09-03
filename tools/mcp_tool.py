@@ -486,6 +486,35 @@ def sdk_httpx():
 _MISSING = object()
 
 
+def _ttl_hint_was_sent(result) -> bool:
+    """True when the server actually put a ``ttlMs`` on the wire.
+
+    ``ListToolsResult.ttl_ms`` defaults to ``0``, so by value alone a server
+    that sent no SEP-2549 hint is indistinguishable from one that sent
+    ``ttlMs: 0`` — and the two mean opposite things. No hint leaves the cached
+    manifest usable until something else invalidates it; an explicit ``0``
+    says do not serve this from cache (the SDK floors a negative ``ttlMs`` to
+    ``0`` before validation, so ``0`` is also where "already stale" lands).
+
+    Reading the default as a real TTL expired every hint-less entry the
+    instant it was written — ``(now - written_at) * 1000 >= 0`` always holds —
+    so a server marked ``lazy`` was re-spawned and re-probed on every startup
+    despite a fingerprint-matching manifest on disk. The ``written_at`` stamp
+    also defeated the byte-identical write-through skip in
+    :func:`mcp_schema_cache.write_cache_entry`, so every registration rewrote
+    the whole cache file.
+
+    Pydantic records which fields arrived, so ask it instead of guessing from
+    the value. A result that tracks no set fields at all — an older SDK model
+    that predates ``ttlMs`` — cannot have carried a defaulted one either, so
+    trusting the value there is both safe and what this code did before.
+    """
+    fields_set = getattr(result, "model_fields_set", None)
+    if fields_set is None:
+        return True
+    return "ttl_ms" in fields_set or "ttlMs" in fields_set
+
+
 def mcp_field(obj, snake: str, camel: str, default=None):
     """Read an MCP model field across the 1.x -> 2.x field rename.
 
@@ -980,7 +1009,7 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
         if cache_meta_out is not None and not items:
             _ttl = mcp_field(result, "ttl_ms", "ttlMs")
             _scope = mcp_field(result, "cache_scope", "cacheScope")
-            if _ttl is not None:
+            if _ttl is not None and _ttl_hint_was_sent(result):
                 cache_meta_out["ttl_ms"] = _ttl
             if _scope is not None:
                 cache_meta_out["cache_scope"] = _scope

@@ -64,6 +64,20 @@ def _save_all(data: Dict[str, Any]) -> None:
     atomic_json_write(_cache_path(), data, mode=0o600)
 
 
+def _is_real_number(value: Any) -> bool:
+    """True when *value* is a genuine numeric TTL or timestamp.
+
+    ``bool`` is a subclass of ``int``, so a bare
+    ``isinstance(value, (int, float))`` accepts ``True``/``False`` and reads
+    them as a 1 ms and a 0 ms TTL — the second of which permanently expires
+    the entry. Neither ``ttl_ms`` nor ``written_at`` originates in this
+    module: ``ttl_ms`` arrives from a server's ``tools/list`` result and both
+    are re-read from the on-disk cache, which a previous version or a hand
+    edit may have written. Reject the two ``int`` values that are not numbers.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     """Return cached entry when fingerprint matches (and TTL holds), else None.
 
@@ -83,7 +97,7 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    if isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float)):
+    if _is_real_number(ttl_ms) and _is_real_number(written_at):
         if (time.time() - written_at) * 1000.0 >= float(ttl_ms):
             return None
     return entry
@@ -113,7 +127,7 @@ def write_cache_entry(
         "tools": tools,
         "utility_tools": utility_tools or [],
     }
-    if isinstance(ttl_ms, (int, float)):
+    if _is_real_number(ttl_ms):
         entry["ttl_ms"] = ttl_ms
         entry["written_at"] = time.time()
     if cache_scope:

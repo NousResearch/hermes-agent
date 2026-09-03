@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import os
+
 
 import pytest
 
@@ -85,13 +87,23 @@ class TestQuietModeCacheIsolation:
         assert len(model_tools._tool_defs_cache) == 0
 
     def test_concurrent_capacity_misses_evict_atomically(self, monkeypatch):
-        """Two profile/toolset misses at capacity cannot race on eviction."""
+        """The cache lock keeps concurrent capacity misses bounded."""
         barrier = Barrier(2)
+
+        class UnlockedConfig:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
 
         def compute(*args, **kwargs):
             barrier.wait(timeout=2)
             return []
 
+        # Isolate the cache's concurrency contract from config's RLock, which
+        # intentionally serializes normal schema builds around config parsing.
+        monkeypatch.setattr("hermes_cli.config._CONFIG_LOCK", UnlockedConfig())
         monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute)
         for index in range(model_tools._TOOL_DEFS_CACHE_MAX):
             model_tools._tool_defs_cache[("old", index)] = []
@@ -108,3 +120,146 @@ class TestQuietModeCacheIsolation:
             assert [future.result(timeout=2) for future in futures] == [[], []]
 
         assert len(model_tools._tool_defs_cache) == model_tools._TOOL_DEFS_CACHE_MAX
+
+    def test_same_metadata_rewrite_invalidates_dynamic_schema(
+        self, tmp_path, monkeypatch
+    ):
+        config_path = tmp_path / "config.yaml"
+        before = "delegation:\n  routes:\n    alpha: {}\n"
+        after = "delegation:\n  routes:\n    bravo: {}\n"
+        assert len(before) == len(after)
+        config_path.write_text(before, encoding="utf-8")
+        original = config_path.stat()
+
+        monkeypatch.setattr(
+            "hermes_cli.config.get_config_path", lambda: config_path
+        )
+        monkeypatch.setattr(
+            model_tools, "check_fn_cache_scope", lambda: "cache-rewrite-test"
+        )
+
+        first = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation"], quiet_mode=True
+        )
+        first_delegate = next(
+            item["function"] for item in first if item["function"]["name"] == "delegate_task"
+        )
+        assert first_delegate["parameters"]["properties"]["route"]["enum"] == ["alpha"]
+
+        config_path.write_text(after, encoding="utf-8")
+        os.utime(config_path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        rewritten = config_path.stat()
+        assert rewritten.st_size == original.st_size
+        assert rewritten.st_mtime_ns == original.st_mtime_ns
+
+        second = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation"], quiet_mode=True
+        )
+        second_delegate = next(
+            item["function"] for item in second if item["function"]["name"] == "delegate_task"
+        )
+        assert second_delegate["parameters"]["properties"]["route"]["enum"] == ["bravo"]
+
+    def test_config_rewrite_during_schema_build_never_poisons_old_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Schema parsed after a rewrite must not be cached under the prior digest."""
+        config_path = tmp_path / "config.yaml"
+        alpha = "delegation:\n  routes:\n    alpha: {}\n"
+        bravo = "delegation:\n  routes:\n    bravo: {}\n"
+        assert len(alpha) == len(bravo)
+        config_path.write_text(alpha, encoding="utf-8")
+        original = config_path.stat()
+
+        monkeypatch.setattr(
+            "hermes_cli.config.get_config_path",
+            lambda: config_path,
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "check_fn_cache_scope",
+            lambda: "cache-interleaving-test",
+        )
+        real_compute = model_tools._compute_tool_definitions
+        compute_count = 0
+
+        def rewrite_during_first_compute(*args, **kwargs):
+            nonlocal compute_count
+            compute_count += 1
+            if compute_count == 1:
+                config_path.write_text(bravo, encoding="utf-8")
+                os.utime(
+                    config_path,
+                    ns=(original.st_atime_ns, original.st_mtime_ns),
+                )
+            return real_compute(*args, **kwargs)
+
+        monkeypatch.setattr(
+            model_tools,
+            "_compute_tool_definitions",
+            rewrite_during_first_compute,
+        )
+
+        first = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation"], quiet_mode=True
+        )
+        first_delegate = next(
+            item["function"]
+            for item in first
+            if item["function"]["name"] == "delegate_task"
+        )
+        assert first_delegate["parameters"]["properties"]["route"]["enum"] == [
+            "bravo"
+        ]
+        assert compute_count == 2
+
+        config_path.write_text(alpha, encoding="utf-8")
+        os.utime(
+            config_path,
+            ns=(original.st_atime_ns, original.st_mtime_ns),
+        )
+        restored = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation"], quiet_mode=True
+        )
+        restored_delegate = next(
+            item["function"]
+            for item in restored
+            if item["function"]["name"] == "delegate_task"
+        )
+        assert restored_delegate["parameters"]["properties"]["route"]["enum"] == [
+            "alpha"
+        ]
+        assert compute_count == 3
+
+    def test_repeated_cache_hit_fingerprint_changes_return_last_complete_snapshot(
+        self, monkeypatch
+    ):
+        snapshots = iter(("A", "B", "A", "B"))
+        cached = [{"function": {"name": "cached_tool"}}]
+
+        monkeypatch.setattr(
+            model_tools,
+            "_tool_defs_config_fingerprints",
+            lambda: next(snapshots),
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "check_fn_cache_scope",
+            lambda: "cache-oscillation-test",
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "_tool_defs_cache_key",
+            lambda *_args: "cache-key",
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "_compute_tool_definitions",
+            lambda *_args, **_kwargs: pytest.fail("cached snapshots must not recompute"),
+        )
+        model_tools._tool_defs_cache["cache-key"] = cached
+
+        result = model_tools.get_tool_definitions(quiet_mode=True)
+
+        assert result == cached
+        assert result is not cached

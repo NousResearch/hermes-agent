@@ -2165,6 +2165,21 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Operator-owned default toolset ceiling for every child agent.
+        # None (default) preserves parent inheritance so every child gets
+        # whatever tools the parent has enabled. A list narrows every child
+        # to that intersection with the parent's toolsets — the configured
+        # list cannot grant access the parent does not have. An empty list
+        # gives children no enabled toolsets. MCP toolsets are subject to
+        # the same ceiling; inherit_mcp_toolsets does NOT override this.
+        "default_toolsets": None,
+        # Named operator delegation routes: pre-approved (provider, model,
+        # base_url, api_key, api_mode) bundles the model can select by name.
+        # Route names must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Only the
+        # allowlisted fields above are honoured; everything else is ignored.
+        # Use ${ENV_VAR} for secrets. Only configured route names appear in
+        # the tool schema; unknown names fail before credential resolution.
+        "routes": {},
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

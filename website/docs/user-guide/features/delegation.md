@@ -190,7 +190,23 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+The raw provider/model/endpoint fields remain operator-owned: `delegate_task` does not accept them. For a small set of approved alternatives, configure named `delegation.routes` presets and let the model select only a route name, globally or per task. A per-task route overrides the top-level route fallback; tasks without either use the legacy top-level delegation settings.
+
+```yaml
+delegation:
+  routes:
+    local:
+      model: "qwen2.5-coder"
+      base_url: "http://localhost:1234/v1"
+      api_key: ${LOCAL_ROUTER_API_KEY}
+    hosted-fast:
+      model: "google/gemini-flash-2.0"
+      provider: "openrouter"
+```
+
+Only valid configured names appear in the tool schema. Unknown names fail before credential resolution, and route entries may override only `model`, `provider`, `base_url`, `api_key`, and `api_mode`. Keep route secrets in environment variables and reference them with `${VAR_NAME}`; do not commit literal API keys.
+
+**Credential authority:** a route that changes the endpoint (`base_url`) must supply its own `api_key`; the parent's key is forwarded only when the scheme, host, and port are identical. A route with a different authority and no explicit key is rejected before any child is spawned.
 
 ## The `/review` Command
 
@@ -227,7 +243,7 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 ## Inherited Tool Access
 
-`delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
+`delegate_task` does not accept a model-facing `toolsets` parameter. By default, each subagent inherits the parent's enabled toolsets. Operators can narrow all children with `delegation.default_toolsets`; the configured list is intersected with the parent's capabilities, so it cannot grant new access. The list is a hard ceiling over every child toolset, including inherited MCP toolsets. Omit the key to preserve inheritance, or use `[]` to give children no enabled toolsets.
 
 Certain tools are blocked for subagents even when the parent has them:
 - `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.

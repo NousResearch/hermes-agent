@@ -119,7 +119,21 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task"}
+    "todo_list",
+    "session_search",
+    "memory",
+    "clarify",
+    "read_terminal",
+    "desktop_preview",
+    "drive_preview",
+    "annotate_preview",
+    "read_window_below",
+    "setup_mcp",
+    "gui_tour",
+    "delegate_task",
+    "todo",
+    "read_preview",
+    "model_override"
 )
 
 
@@ -3795,6 +3809,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+    elif function_name == "model_override":
+        def _execute(next_args: dict) -> Any:
+            return _finish_agent_tool(agent._dispatch_model_override(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

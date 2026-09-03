@@ -179,3 +179,99 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# #68613: unblock positional preflight (no partial mutation)
+# ---------------------------------------------------------------------------
+
+
+def test_unblock_rejects_reason_looking_positional_before_mutation(kanban_home, capsys):
+    """Reason text before a real id must not partially unblock."""
+    import re
+
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
+
+    with kb.connect() as conn:
+        before = kb.get_task(conn, tid)
+        assert before is not None and before.status == "blocked"
+
+    ns = argparse.Namespace(
+        task_ids=["skill external_dirs fixed; retry review", tid],
+        reason=None,
+    )
+    code = kc._cmd_unblock(ns)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "not a task id" in captured.err
+    assert "--reason" in captured.err
+    assert "Did you mean" in captured.err
+    assert "No tasks were modified" in captured.err
+
+    with kb.connect() as conn:
+        after = kb.get_task(conn, tid)
+        assert after is not None and after.status == "blocked"
+
+
+def test_unblock_reason_flag_with_bad_positional_no_mutation(kanban_home, capsys):
+    """--reason plus a reason-looking positional must not traceback or mutate."""
+    import re
+
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need decision'")
+
+    ns = argparse.Namespace(
+        task_ids=["not a real id phrase", tid],
+        reason="already captured",
+    )
+    code = kc._cmd_unblock(ns)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Traceback" not in captured.err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_unblock_with_reason_flag_and_valid_id(kanban_home):
+    import re
+
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need decision'")
+    ns = argparse.Namespace(task_ids=[tid], reason="skill external_dirs fixed")
+    assert kc._cmd_unblock(ns) == 0
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status != "blocked"
+
+
+def test_looks_like_task_id_accepts_short_and_long_hex():
+    assert kc._looks_like_task_id("t_abcd")
+    assert kc._looks_like_task_id("t_cc0254fd")
+    assert kc._looks_like_task_id("t_deadbeefcafe")
+    assert not kc._looks_like_task_id("skill external_dirs fixed")
+    assert not kc._looks_like_task_id("t_short")  # non-hex
+    assert not kc._looks_like_task_id("")
+
+
+def test_unblock_bulk_valid_ids(kanban_home):
+    import re
+
+    ids = []
+    for title in ("a", "b"):
+        out = kc.run_slash(f"create '{title}' --assignee alice")
+        tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+        kc.run_slash(f"claim {tid}")
+        kc.run_slash(f"block {tid} 'need decision'")
+        ids.append(tid)
+    ns = argparse.Namespace(task_ids=ids, reason=None)
+    assert kc._cmd_unblock(ns) == 0
+    with kb.connect() as conn:
+        for tid in ids:
+            assert kb.get_task(conn, tid).status != "blocked"
+

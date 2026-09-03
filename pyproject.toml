@@ -574,6 +574,7 @@ py-modules = [
   "hermes_state",
   "hermes_state_common",
   "hermes_state_portability",
+  "hermes_state_registry",
   "hermes_state_schema",
   "hermes_state_search",
   "hermes_startup_watchdog",

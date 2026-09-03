@@ -10717,6 +10717,47 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+def _resume_session_id_for_task(
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Return the prior worker session id to resume for ``task_id``, if any.
+
+    Workers stamp ``task_runs.metadata.worker_session_id`` on complete/block
+    (see ``tools.kanban_tools._stamp_worker_session_metadata``). When the
+    dispatcher re-spawns the same task after a block→unblock (or any other
+    respawn), reusing that session preserves the prior run's conversation
+    instead of starting a blank worker (#75830).
+
+    Fail-open: any DB / parse error returns ``None`` so spawn still works
+    as a fresh session. First dispatch has no prior ended run, so it also
+    returns ``None``.
+    """
+    if not task_id:
+        return None
+    try:
+        with connect(board=board) as conn:
+            # Ended runs only — the active claim for *this* spawn has no
+            # worker_session_id yet (stamped on complete/block).
+            runs = list_runs(conn, task_id, include_active=False)
+            for run in reversed(runs):
+                meta = run.metadata if isinstance(run.metadata, dict) else None
+                if not meta:
+                    continue
+                sid = meta.get("worker_session_id")
+                if isinstance(sid, str) and sid.strip():
+                    return sid.strip()
+    except Exception as exc:
+        _log.debug(
+            "kanban worker: resume session lookup failed for %s (%s)",
+            task_id,
+            exc,
+        )
+        return None
+    return None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -10884,6 +10925,13 @@ def _default_spawn(
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    # Resume the prior worker session when this task was blocked (or
+    # otherwise re-spawned). Without --resume the child generates a new
+    # HERMES_SESSION_ID and loses the analysis that led to the block
+    # (#75830). Fail-open: missing stamp / DB error → fresh session.
+    resume_sid = _resume_session_id_for_task(task.id, board=board)
+    if resume_sid:
+        cmd.extend(["--resume", resume_sid])
     cmd.extend([
         "chat",
         "-q", prompt,

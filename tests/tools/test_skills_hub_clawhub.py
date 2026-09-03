@@ -427,6 +427,45 @@ class TestClawHubSource(unittest.TestCase):
         mock_get.assert_called_once()
 
 
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_accepts_non_string_next_cursor(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """Object nextCursor must not end the walk after one page (#66616)."""
+        page_calls = {"n": 0}
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = page_calls["n"]
+                page_calls["n"] += 1
+                if idx == 0:
+                    return _MockResponse(
+                        status_code=200,
+                        json_data={
+                            "items": [{"slug": "page-a", "displayName": "A"}],
+                            "nextCursor": {"v": 1, "index": idx},
+                        },
+                    )
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [{"slug": "page-b", "displayName": "B"}],
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+        results = self.src._load_catalog_index(max_items=0)
+        slugs = {r.identifier for r in results}
+        self.assertEqual(page_calls["n"], 2)
+        self.assertEqual(slugs, {"page-a", "page-b"})
+        kwargs = mock_get.call_args_list[1].kwargs
+        self.assertIn("cursor", kwargs.get("params") or {})
+
+
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
     """max_items bounds the walk so browse's cold-start fallback renders one
     page without walking the entire 50k+ catalog. The offline index builder

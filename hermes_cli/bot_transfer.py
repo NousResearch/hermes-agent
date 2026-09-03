@@ -111,6 +111,39 @@ def _reject_symlinks(root: Path) -> None:
             raise ValueError(f"Bot clone cannot include symbolic link: {path.relative_to(root)}")
 
 
+def _check_clone_source_budget(profile_dir: Path) -> None:
+    """Reject a clone definition that cannot satisfy the import contract."""
+    members = 1  # The archive's profile root directory.
+    total_bytes = 0
+    for entry in sorted(BOT_CLONE_ROOTS):
+        source = profile_dir / entry
+        if not source.exists():
+            continue
+        candidates = [source]
+        if source.is_dir():
+            candidates.extend(source.rglob("*"))
+        for path in candidates:
+            if path.is_symlink():
+                raise ValueError(
+                    f"Bot clone cannot include symbolic link: {path.relative_to(profile_dir)}"
+                )
+            if not (path.is_dir() or path.is_file()):
+                raise ValueError(
+                    f"Bot clone cannot include special file: {path.relative_to(profile_dir)}"
+                )
+            members += 1
+            if members > MAX_BOT_CLONE_MEMBERS:
+                raise ValueError(
+                    f"Bot clone exceeds the {MAX_BOT_CLONE_MEMBERS} member limit."
+                )
+            if path.is_file():
+                total_bytes += path.stat().st_size
+                if total_bytes > MAX_BOT_CLONE_BYTES:
+                    raise ValueError(
+                        "Bot clone exceeds the 10 MB expanded-size limit."
+                    )
+
+
 def _reset_owner_policies(staged: Path) -> None:
     """Do not transfer the source owner's inbound sharing decisions."""
     from hermes_cli.profiles import write_profile_meta
@@ -149,6 +182,7 @@ def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
     bot_id = ensure_profile_bot_id(profile_dir)
+    _check_clone_source_budget(profile_dir)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -172,11 +206,19 @@ def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
         _scrub_export_secrets(staged)
         result = Path(make_targz(base, tmpdir, canon))
 
-    if result.stat().st_size > MAX_BOT_CLONE_BYTES:
-        result.unlink(missing_ok=True)
-        raise ValueError(
-            f"Bot clone exceeds the {MAX_BOT_CLONE_BYTES // 1_000_000} MB transfer limit."
+    try:
+        archive_root_dirs(
+            result,
+            max_bytes=MAX_BOT_CLONE_BYTES,
+            max_members=MAX_BOT_CLONE_MEMBERS,
         )
+        if result.stat().st_size > MAX_BOT_CLONE_BYTES:
+            raise ValueError(
+                f"Bot clone exceeds the {MAX_BOT_CLONE_BYTES // 1_000_000} MB transfer limit."
+            )
+    except BaseException:
+        result.unlink(missing_ok=True)
+        raise
     return result, bot_id
 
 

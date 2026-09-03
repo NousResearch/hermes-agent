@@ -151,6 +151,31 @@ def test_bot_import_bounds_expanded_archive_and_leaves_no_profile(
     assert not (profile_root / "profiles" / "large").exists()
 
 
+def test_bot_export_rejects_source_outside_import_budget(
+    profile_root, tmp_path, monkeypatch
+):
+    source = _source_profile(profile_root)
+    (source / "SOUL.md").write_bytes(b"0" * 2048)
+    monkeypatch.setattr(bot_transfer, "MAX_BOT_CLONE_BYTES", 1024)
+
+    with pytest.raises(ValueError, match="expanded-size limit"):
+        export_bot_profile("helper", str(tmp_path / "large.tar.gz"))
+
+    assert not (tmp_path / "large.tar.gz").exists()
+
+
+def test_bot_export_rejects_too_many_archive_members(
+    profile_root, tmp_path, monkeypatch
+):
+    _source_profile(profile_root)
+    monkeypatch.setattr(bot_transfer, "MAX_BOT_CLONE_MEMBERS", 3)
+
+    with pytest.raises(ValueError, match="member limit"):
+        export_bot_profile("helper", str(tmp_path / "many.tar.gz"))
+
+    assert not (tmp_path / "many.tar.gz").exists()
+
+
 def test_clone_import_lock_cannot_be_stolen_and_recovers_after_owner_death(
     profile_root,
 ):

@@ -26,6 +26,9 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `rename` | Rename a profile. |
 | `export` | Export a profile to a tar.gz archive. |
 | `import` | Import a profile from a tar.gz archive. |
+| `share` | Allow or deny authenticated pulls of a profile from this gateway. |
+| `pull` | Clone a shared bot from a remote gateway. |
+| `push` | Clone a local bot to an opt-in remote gateway. |
 | `install` | Install a profile distribution from a git URL or local directory. See [Profile Distributions](../user-guide/profile-distributions.md). |
 | `update` | Re-pull a distribution-managed profile and re-apply its bundle. |
 | `info` | Show distribution metadata for a profile (origin URL, commit, last update). |

@@ -258,7 +258,10 @@ source .venv/bin/activate   # or: source venv/bin/activate
 
 `scripts/run_tests.sh` probes `.venv` first, then `venv`, then
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
-main checkout).
+main checkout). Native Windows PowerShell contributors use
+`scripts\run_tests.ps1`; it applies the same hermetic environment policy and
+delegates to the same `run_tests_parallel.py` entry point without requiring
+Git Bash or WSL.
 
 ## Project Structure
 
@@ -1589,6 +1592,7 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k; the runner is file-granular)
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+# Native Windows PowerShell: scripts\run_tests.ps1 tests\agent\test_foo.py -q
 ```
 
 **Flake policy:** the runner auto-retries a failing test FILE once in a fresh

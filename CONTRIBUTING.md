@@ -201,10 +201,20 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
+# Preferred — matches CI (hermetic environment, per-file subprocess isolation
 # via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
-scripts/run_tests.sh
+scripts/run_tests.sh       # Linux, macOS, WSL, or Git Bash
+```
 
+From native Windows PowerShell, use the companion launcher. It enforces the
+same clean environment and delegates to the same per-file Python runner, so it
+does not require Git Bash or WSL:
+
+```powershell
+scripts\run_tests.ps1
+```
+
+```bash
 # Alternative (activate the venv first). The wrapper is still recommended
 # for parity with GitHub Actions before you open a PR:
 pytest tests/ -v

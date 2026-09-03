@@ -885,6 +885,57 @@ def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)")
 
 
+def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+    # Version 40 -> 41: move custom-endpoint secrets out of config.yaml.
+    _c = _cfg()
+    config = _c.read_raw_config()
+    moved = 0
+
+    def migrate_entry(entry: Any, identity: str) -> None:
+        nonlocal moved
+        if not isinstance(entry, dict):
+            return
+        secret = str(entry.get("api_key") or "").strip()
+        if not secret or (secret.startswith("${") and secret.endswith("}")):
+            return
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        key_env = key_env or _c.custom_endpoint_key_env(identity)
+        _c.save_env_value(key_env, secret)
+        if (_c.get_env_value(key_env) or "").strip() != secret:
+            raise RuntimeError(f"failed to persist {key_env} to .env")
+        entry["key_env"] = key_env
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+        moved += 1
+
+    model = config.get("model")
+    if isinstance(model, dict):
+        base_url = str(model.get("base_url") or "").strip()
+        if base_url:
+            migrate_entry(model, base_url)
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for provider_id, entry in providers.items():
+            if isinstance(entry, dict) and (entry.get("base_url") or entry.get("api")):
+                migrate_entry(entry, str(provider_id))
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if isinstance(entry, dict) and entry.get("base_url"):
+                identity = str(entry.get("name") or entry.get("id") or entry["base_url"])
+                migrate_entry(entry, identity)
+
+    if moved:
+        _c._persist_migration(config)
+        results["config_added"].append(
+            f"moved {moved} custom-endpoint api_key value(s) to .env via key_env"
+        )
+        if not quiet:
+            print(f"  Moved {moved} custom endpoint API key(s) from config.yaml to .env")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -913,6 +964,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (38, _migrate_to_38),
     (39, _migrate_to_39),
     (40, _migrate_to_40),
+    (41, _migrate_to_41),
 )
 
 

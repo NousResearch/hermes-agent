@@ -1212,6 +1212,25 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _resolve_declared_key_env(
+    entry: Dict[str, Any], explicit_api_key: Optional[str]
+) -> tuple[str, bool]:
+    """Resolve an authoritative custom-endpoint key binding."""
+    env_var = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if not env_var:
+        return "", False
+    if has_usable_secret((explicit_api_key or "").strip()):
+        return "", True
+    value = _getenv(env_var, "").strip()
+    if not has_usable_secret(value):
+        raise AuthError(
+            f"Custom endpoint declares key_env {env_var!r}, but it has no usable value",
+            provider="custom",
+            code="declared_key_env_unresolved",
+        )
+    return value, True
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -1334,13 +1353,18 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(
-        base_url,
-        "custom",
-        custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    bound_key, has_declared_key = _resolve_declared_key_env(
+        custom_provider, explicit_api_key
     )
+    # Check if a credential pool exists for this custom endpoint
+    pool_result = None
+    if not has_declared_key:
+        pool_result = _try_resolve_from_custom_pool(
+            base_url,
+            "custom",
+            custom_provider.get("api_mode"),
+            provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -1368,8 +1392,12 @@ def _resolve_named_custom_runtime(
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        bound_key,
+        (
+            str(custom_provider.get("api_key", "") or "").strip()
+            if not has_declared_key
+            else ""
+        ),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (_getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
@@ -1522,6 +1550,16 @@ def _resolve_openrouter_runtime(
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
+    uses_model_endpoint = bool(
+        requested_norm == "custom"
+        and use_config_base_url
+        and base_url == (cfg_base_url or "").strip().rstrip("/")
+    )
+    cfg_key_env, has_declared_key = (
+        _resolve_declared_key_env(model_cfg, explicit_api_key)
+        if uses_model_endpoint
+        else ("", False)
+    )
 
     # Choose API key based on whether the resolved base_url targets OpenRouter.
     # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
@@ -1560,7 +1598,8 @@ def _resolve_openrouter_runtime(
         # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
             explicit_api_key,
-            (cfg_api_key if use_config_base_url else ""),
+            cfg_key_env,
+            (cfg_api_key if uses_model_endpoint and not has_declared_key else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (_getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
@@ -1584,7 +1623,7 @@ def _resolve_openrouter_runtime(
     effective_provider = "custom" if requested_norm == "custom" else "openrouter"
 
     # For custom endpoints, check if a credential pool exists
-    if effective_provider == "custom" and base_url:
+    if effective_provider == "custom" and base_url and not has_declared_key:
         # Pass requested_provider so pool lookup prefers name match over base_url,
         # fixing credential mix-ups when multiple custom providers share a base_url.
         pool_result = _try_resolve_from_custom_pool(

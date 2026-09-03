@@ -1695,13 +1695,15 @@ class TestWebServerEndpoints:
         assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
 
 
-    def test_set_model_main_custom_persists_api_key_and_registers_provider(self):
-        """A custom endpoint that requires auth must persist model.api_key (where
-        the runtime reads it) AND register a named custom_providers entry so the
-        endpoint reappears as a ready row in the picker — matching the
-        ``hermes model`` custom flow. Regression for the desktop loop where a
-        keyed custom endpoint could never be configured from the GUI."""
-        from hermes_cli.config import load_config
+    def test_set_model_main_custom_persists_key_env_and_registers_provider(self):
+        """The direct custom-model route must keep its key out of config.yaml."""
+        from hermes_cli.config import (
+            custom_endpoint_key_env,
+            get_env_value,
+            load_config,
+        )
+
+        key_env = custom_endpoint_key_env("https://text.example.com/v1")
 
         resp = self.client.post(
             "/api/model/set",
@@ -1721,7 +1723,9 @@ class TestWebServerEndpoints:
         assert isinstance(model_cfg, dict)
         assert model_cfg["provider"] == "custom"
         assert model_cfg["base_url"] == "https://text.example.com/v1"
-        assert model_cfg["api_key"] == "sk-secret"
+        assert model_cfg["key_env"] == key_env
+        assert "api_key" not in model_cfg
+        assert get_env_value(key_env) == "sk-secret"
 
         # Registered in custom_providers (dedup by base_url) so the picker shows
         # a proper ready row instead of the "needs setup" dead-end.
@@ -1729,10 +1733,43 @@ class TestWebServerEndpoints:
         assert any(
             isinstance(e, dict)
             and e.get("base_url") == "https://text.example.com/v1"
-            and e.get("api_key") == "sk-secret"
+            and e.get("key_env") == key_env
+            and not e.get("api_key")
             and e.get("model") == "gpt-oss-120b"
             for e in custom
         )
+
+    def test_set_model_main_custom_endpoint_change_drops_stale_key_env(self):
+        """Changing hosts without a new key must not reuse the old host's key."""
+        from hermes_cli.config import load_config
+
+        first = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "model-a",
+                "base_url": "https://a.example.com/v1",
+                "api_key": "sk-a-secret",
+            },
+        )
+        assert first.status_code == 200
+
+        second = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "model-b",
+                "base_url": "https://b.example.com/v1",
+            },
+        )
+        assert second.status_code == 200
+
+        model_cfg = load_config()["model"]
+        assert model_cfg["base_url"] == "https://b.example.com/v1"
+        assert "key_env" not in model_cfg
+        assert "api_key" not in model_cfg
 
 
 

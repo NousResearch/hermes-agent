@@ -60,6 +60,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli.model_assignment import (
+    apply_main_model_assignment as _apply_main_model_assignment,
+    persist_custom_endpoint_secret,
+)
 from hermes_cli.config import (
     build_cron_model_impact,
     cfg_get,
@@ -68,6 +72,7 @@ from hermes_cli.config import (
     clear_model_endpoint_credentials,
     get_config_path,
     get_env_path,
+    get_env_value,
     get_hermes_home,
     get_process_hermes_home,
     load_config,
@@ -2040,67 +2045,6 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
             _log.debug("model normalization failed for %s/%s", prov_in, model_in, exc_info=True)
 
     return prov_in, model_in
-
-
-def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
-) -> dict:
-    """Apply a main-slot model assignment to a ``model`` config dict in place.
-
-    Sets ``provider``/``default``, then reconciles ``base_url``:
-
-    - An explicitly supplied ``base_url`` is always persisted (covers
-      ``custom``/local endpoints and any provider whose key is bound to a
-      non-default host).
-    - Otherwise, a stale ``base_url`` is cleared ONLY when switching to a
-      *different* provider — that URL belonged to the old provider. When the
-      provider is unchanged and no new URL is supplied, the existing
-      ``base_url`` is preserved. This keeps a user's custom endpoint (e.g. a
-      Xiaomi MiMo Token Plan host, ``https://token-plan-*.xiaomimimo.com/v1``)
-      alive when they merely re-pick a model under the same provider — picking
-      a model previously wiped it, forcing the registry default and breaking
-      Token Plan keys.
-
-    The runtime resolver reads ``model.base_url`` from config (it ignores
-    ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
-    and the pool entry is on the registry default, so preserving it here is what
-    lets the override actually route. The hardcoded ``context_length`` override
-    is always dropped since the new model may have a different context window.
-
-    Returns the same dict (coerced to a fresh dict if the input wasn't one) so
-    callers can assign it straight back onto the model config.
-    """
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
-    new_provider = provider.strip().lower()
-    model_cfg["provider"] = provider
-    model_cfg["default"] = model
-    if base_url.strip():
-        model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url") and new_provider != prev_provider:
-        # Switching providers: the old URL belonged to the old provider, drop
-        # it so the new provider's default endpoint is used. Same-provider
-        # re-assignment keeps the user's configured base_url intact.
-        model_cfg["base_url"] = ""
-    # The endpoint key follows the same lifecycle as base_url: an explicit key
-    # is always persisted; an existing key is dropped only when switching to a
-    # different provider (it belonged to the old endpoint), and preserved on a
-    # same-provider re-pick so re-selecting a model doesn't wipe the key.
-    if api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
-        model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
-        # A stale endpoint secret can live under the legacy ``api`` alias with
-        # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
-        # the switch-clears-the-key path must trigger on either field — else the
-        # old endpoint's secret survives in config.yaml and contaminates a later
-        # custom resolution. clear_model_endpoint_credentials scrubs both.
-        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
-    if new_provider != prev_provider:
-        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
-    model_cfg.pop("context_length", None)
-    return model_cfg
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -7925,8 +7869,18 @@ def _apply_model_assignment_sync(
         provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
         if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
             base_url = str(provider_entry.get("base_url") or "").strip()
+        assignment_key_env = persist_custom_endpoint_secret(
+            provider, base_url, api_key
+        )
+        if assignment_key_env:
+            api_key = ""
         model_cfg = _apply_main_model_assignment(
-            cfg.get("model", {}), provider, model, base_url, api_key
+            cfg.get("model", {}),
+            provider,
+            model,
+            base_url,
+            api_key,
+            assignment_key_env,
         )
         _raw_assign_entry = None
         try:
@@ -7940,11 +7894,16 @@ def _apply_model_assignment_sync(
             if isinstance(_raw_assign_entry, dict)
             else ""
         )
-        if _assign_key_env:
+        if not assignment_key_env and not api_key and _assign_key_env:
             # #88990: carry the credential POINTER, never a resolved secret.
             model_cfg["key_env"] = _assign_key_env
             model_cfg.pop("api_key", None)
-        elif isinstance(provider_entry, dict) and provider_entry.get("api_key"):
+        elif (
+            not assignment_key_env
+            and not api_key
+            and isinstance(provider_entry, dict)
+            and provider_entry.get("api_key")
+        ):
             # #88990: provider_entry comes from load_config(), which expands
             # ${VAR} env refs to plaintext. Copying that resolved value into
             # model.api_key writes the SECRET into config.yaml (and recreates
@@ -8009,6 +7968,7 @@ def _apply_model_assignment_sync(
                     api_key,
                     model,
                     name=_auto_provider_name(base_url),
+                    key_env=assignment_key_env,
                 )
             except Exception:
                 # Never block the assignment on the bookkeeping write —

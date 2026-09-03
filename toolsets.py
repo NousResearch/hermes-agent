@@ -45,7 +45,8 @@ _HERMES_CORE_TOOLS = [
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
-    "skills_list", "skill_view", "skill_manage",
+    "skills_list", "skill_view", "skill_manage", "skill_eval_run",
+    "observation_save", "observation_search",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -174,8 +175,11 @@ TOOLSETS = {
     },
     
     "skills": {
-        "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "description": "Access, create, edit, evaluate, and manage skill documents with specialized instructions and knowledge",
+        "tools": [
+            "skills_list", "skill_view", "skill_manage", "skill_eval_run",
+            "observation_save", "observation_search",
+        ],
         "includes": []
     },
     

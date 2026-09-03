@@ -720,12 +720,12 @@ class TestConfigOverride(unittest.TestCase):
         _read_tracker.clear()
         # Reset the cached value so each test gets a fresh lookup
         import tools.file_tools as _ft
-        _ft._max_read_chars_cached = None
+        _ft._reset_max_read_chars_cache()
 
     def tearDown(self):
         _read_tracker.clear()
         import tools.file_tools as _ft
-        _ft._max_read_chars_cached = None
+        _ft._reset_max_read_chars_cache()
 
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})

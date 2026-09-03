@@ -6,6 +6,9 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rsi_interview import build_scaffold
+
 STORE = Path.home() / ".hermes" / "rsi"
 BASE = STORE / "interview-prompt.txt"
 CORRECTIONS = STORE / "corrections.yaml"
@@ -19,7 +22,7 @@ def load_yaml(path: Path) -> dict:
     try:
         import yaml  # type: ignore
 
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -30,7 +33,7 @@ def main() -> None:
         print("usage: rsi-build-interview.py PROFILE", file=sys.stderr)
         sys.exit(2)
     profile = sys.argv[1].strip()
-    base = BASE.read_text() if BASE.exists() else ""
+    base = BASE.read_text(encoding="utf-8") if BASE.exists() else ""
     items = (load_yaml(CORRECTIONS).get("corrections") or [])
     open_ones = [
         c for c in items
@@ -52,7 +55,7 @@ def main() -> None:
     audit = {}
     if AUDIT.exists():
         try:
-            audit = (json.loads(AUDIT.read_text()).get("profiles") or {}).get(profile) or {}
+            audit = (json.loads(AUDIT.read_text(encoding="utf-8")).get("profiles") or {}).get(profile) or {}
         except Exception:
             audit = {}
     sessions = audit.get("sessions") or []
@@ -78,6 +81,16 @@ def main() -> None:
         )
     if not (sess_fail or cron_f or kan_f):
         lines.append("- no failed runs in the audit window. Still report any you remember.")
+    lines.extend(
+        [
+            "",
+            "REPORT_JSON_SCHEMA:",
+            '{"profile":"<name>","autonomous_failures":[{"id":"<exact audited id>","summary":"...","evidence":"...","suggested_fix":"..."}],"incomplete_tasks":[{"id":"<exact audited id>","title":"...","summary":"...","why_incomplete":"..."}],"incidents":[],"correction_feedback":[],"accounted_session_ids":[]}',
+            "",
+            "MANDATORY_REPORT_SCAFFOLD (runner-owned; enrich but do not alter IDs/categories):",
+            json.dumps(build_scaffold(profile, {"profiles": {profile: audit}}), sort_keys=True),
+        ]
+    )
     print("\n".join(lines))
 
 

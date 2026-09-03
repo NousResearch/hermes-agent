@@ -66,6 +66,7 @@ NONTERMINAL_BOUNDARY_ENDS = {
 }
 FAIL_STATUSES = {
     "blocked_config",
+    "crashed",
     "error",
     "failed",
     "gave_up",
@@ -277,6 +278,50 @@ def _kanban_paths() -> list[Path]:
     return list(dict.fromkeys(path for path in paths if path.exists()))
 
 
+def _kanban_profile(
+    session_id: str,
+    task_ids: list[str],
+    started_at: float,
+) -> str | None:
+    """Resolve a legacy default-database session to its durable task owner."""
+    for path in _kanban_paths():
+        try:
+            con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            if task_ids:
+                placeholders = ",".join("?" for _ in task_ids)
+                tasks = con.execute(
+                    f"SELECT id, assignee FROM tasks WHERE id IN ({placeholders})",
+                    tuple(task_ids),
+                ).fetchall()
+            else:
+                tasks = con.execute(
+                    "SELECT id, assignee FROM tasks WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+            candidates = []
+            for task_id, assignee in tasks:
+                runs = con.execute(
+                    "SELECT profile, started_at FROM task_runs WHERE task_id = ?",
+                    (task_id,),
+                ).fetchall()
+                candidates.extend(
+                    (
+                        abs(float(run_started) - float(started_at or 0)),
+                        str(run_profile or assignee or "") or None,
+                    )
+                    for run_profile, run_started in runs
+                    if run_started is not None
+                )
+            con.close()
+        except (sqlite3.Error, OSError):
+            continue
+        if candidates:
+            return min(candidates, key=lambda item: item[0])[1]
+        if len(tasks) == 1:
+            return str(tasks[0][1] or "") or None
+    return None
+
+
 def _kanban_evidence(
     session_id: str,
     task_ids: list[str],
@@ -365,27 +410,33 @@ def _parse_iso_timestamp(value: Any) -> float | None:
         return None
 
 
-def _cron_evidence(session_id: str, started_at: float) -> tuple[list[str], bool]:
+def _cron_evidence(
+    session_id: str,
+    started_at: float,
+    execution_dbs: list[Path],
+) -> tuple[list[str], bool]:
     match = CRON_SESSION_RE.match(session_id)
-    if not match or not EXEC_DB.exists():
+    if not match:
         return [], False
     job_id = match.group(1)
-    try:
-        con = sqlite3.connect(f"file:{EXEC_DB}?mode=ro", uri=True)
-        rows = con.execute(
-            """SELECT status, error, started_at, finished_at
-               FROM executions WHERE job_id = ? ORDER BY started_at DESC LIMIT 20""",
-            (job_id,),
-        ).fetchall()
-        con.close()
-    except (sqlite3.Error, OSError):
-        return [], False
-
     candidates = []
-    for row in rows:
-        row_started = _parse_iso_timestamp(row[2])
-        if row_started is not None:
-            candidates.append((abs(row_started - float(started_at or 0)), row))
+    for execution_db in dict.fromkeys(execution_dbs):
+        if not execution_db.exists():
+            continue
+        try:
+            con = sqlite3.connect(f"file:{execution_db}?mode=ro", uri=True)
+            rows = con.execute(
+                """SELECT status, error, started_at, finished_at
+                   FROM executions WHERE job_id = ? ORDER BY started_at DESC LIMIT 20""",
+                (job_id,),
+            ).fetchall()
+            con.close()
+        except (sqlite3.Error, OSError):
+            continue
+        for row in rows:
+            row_started = _parse_iso_timestamp(row[2])
+            if row_started is not None:
+                candidates.append((abs(row_started - float(started_at or 0)), row))
     if not candidates:
         return [], False
     distance, row = min(candidates, key=lambda item: item[0])
@@ -432,7 +483,7 @@ def scan_sessions(profile: str, since: float) -> list[dict]:
             rows = con.execute(
                 """
                 SELECT id, source, title, end_reason, last_activity_description,
-                       last_activity_at, started_at, ended_at
+                       last_activity_at, started_at, ended_at, profile_name
                 FROM sessions
                 WHERE last_activity_at >= ?
                   AND (profile_name = ? OR (profile_name IS NULL AND source IN ('cron','kanban')))
@@ -444,7 +495,7 @@ def scan_sessions(profile: str, since: float) -> list[dict]:
             rows = con.execute(
                 """
                 SELECT id, source, title, end_reason, last_activity_description,
-                       last_activity_at, started_at, ended_at
+                       last_activity_at, started_at, ended_at, profile_name
                 FROM sessions
                 WHERE last_activity_at >= ?
                 ORDER BY last_activity_at DESC
@@ -452,25 +503,38 @@ def scan_sessions(profile: str, since: float) -> list[dict]:
                 (since,),
             ).fetchall()
 
-        for sid, source, title, end_reason, last_desc, last_at, started, ended_at in rows:
-            if origin == "default" and source == "cron":
-                title_l = (title or "").lower()
-                mapped = next(
-                    (
-                        owner
-                        for job, owner in CRON_TO_PROFILE.items()
-                        if job in title_l or job.replace("-", " ") in title_l
-                    ),
-                    None,
-                )
-                if mapped and mapped != profile:
-                    continue
-                if mapped is None and profile != "default":
-                    continue
-
+        for (
+            sid,
+            source,
+            title,
+            end_reason,
+            last_desc,
+            last_at,
+            started,
+            ended_at,
+            row_profile,
+        ) in rows:
             fail_hits, has_final_response, task_ids = _message_evidence(con, sid, since)
             title_task_ids = [match.group(0).lower() for match in TASK_ID_RE.finditer(title or "")]
             task_ids = list(dict.fromkeys([*task_ids, *title_task_ids]))
+
+            if path == default and row_profile is None:
+                owner = "default"
+                if source == "cron":
+                    title_l = (title or "").lower()
+                    owner = next(
+                        (
+                            mapped_profile
+                            for job, mapped_profile in CRON_TO_PROFILE.items()
+                            if job in title_l or job.replace("-", " ") in title_l
+                        ),
+                        "default",
+                    )
+                elif source == "kanban":
+                    owner = _kanban_profile(sid, task_ids, float(started or 0)) or "default"
+                if owner != profile:
+                    continue
+
             durable_success = False
             if source == "kanban":
                 durable_hits, durable_success = _kanban_evidence(
@@ -480,7 +544,17 @@ def scan_sessions(profile: str, since: float) -> list[dict]:
                 )
                 fail_hits.extend(durable_hits)
             elif source == "cron":
-                durable_hits, durable_success = _cron_evidence(sid, float(started or 0))
+                execution_dbs = [EXEC_DB]
+                if profile != "default" and path != default:
+                    execution_dbs.insert(
+                        0,
+                        PROFILES_DIR / profile / "cron" / "executions.db",
+                    )
+                durable_hits, durable_success = _cron_evidence(
+                    sid,
+                    float(started or 0),
+                    execution_dbs,
+                )
                 fail_hits.extend(durable_hits)
 
             end_reason_l = str(end_reason or "").lower()
@@ -514,49 +588,76 @@ def scan_sessions(profile: str, since: float) -> list[dict]:
     return found
 
 
-def cron_failures(since: float) -> list[dict]:
-    if not EXEC_DB.exists():
-        return []
-    con = sqlite3.connect(f"file:{EXEC_DB}?mode=ro", uri=True)
-    names = {}
-    if JOBS.exists():
-        try:
-            for job in json.loads(JOBS.read_text(encoding="utf-8")).get("jobs") or []:
-                names[job.get("id")] = job.get("name")
-        except Exception:
-            pass
-    since_iso = datetime.fromtimestamp(since, timezone.utc).isoformat()
-    rows = con.execute(
-        """
-        SELECT id, job_id, status, error, started_at, finished_at
-        FROM executions
-        WHERE (finished_at IS NOT NULL AND finished_at >= ?)
-           OR (started_at IS NOT NULL AND started_at >= ?)
-        ORDER BY finished_at DESC
-        """,
-        (since_iso, since_iso),
-    ).fetchall()
-    out = []
-    for execution_id, job_id, status, error, started, finished in rows:
-        status_l = (status or "").lower()
-        if status_l in NONTERMINAL_STATUSES and not error:
-            continue
-        if status_l in SUCCESS_STATUSES and not error:
-            continue
-        name = names.get(job_id) or job_id
-        out.append(
-            {
-                "execution_id": execution_id,
-                "job_id": job_id,
-                "name": name,
-                "profile": CRON_TO_PROFILE.get(str(name), "default"),
-                "status": status,
-                "error": (error or "")[:300],
-                "started_at": started,
-                "finished_at": finished,
-            }
+def _cron_stores() -> list[tuple[str, Path, Path]]:
+    """Return every installed profile's isolated jobs and execution stores."""
+    stores = [("default", JOBS, EXEC_DB)]
+    if PROFILES_DIR.is_dir():
+        stores.extend(
+            (
+                entry.name,
+                entry / "cron" / "jobs.json",
+                entry / "cron" / "executions.db",
+            )
+            for entry in sorted(PROFILES_DIR.iterdir(), key=lambda path: path.name)
+            if entry.is_dir() and not entry.name.startswith(".")
         )
-    con.close()
+    return [store for store in stores if store[2].exists()]
+
+
+def cron_failures(since: float) -> list[dict]:
+    since_iso = datetime.fromtimestamp(since, timezone.utc).isoformat()
+    out = []
+    for store_profile, jobs_path, execution_db in _cron_stores():
+        names = {}
+        if jobs_path.exists():
+            try:
+                for job in json.loads(jobs_path.read_text(encoding="utf-8")).get("jobs") or []:
+                    names[job.get("id")] = job.get("name")
+            except Exception:
+                pass
+        try:
+            con = sqlite3.connect(f"file:{execution_db}?mode=ro", uri=True)
+            rows = con.execute(
+                """
+                SELECT id, job_id, status, error, started_at, finished_at
+                FROM executions
+                WHERE (finished_at IS NOT NULL AND finished_at >= ?)
+                   OR (started_at IS NOT NULL AND started_at >= ?)
+                ORDER BY finished_at DESC
+                """,
+                (since_iso, since_iso),
+            ).fetchall()
+            con.close()
+        except (sqlite3.Error, OSError):
+            continue
+        for execution_id, job_id, status, error, started, finished in rows:
+            status_l = (status or "").lower()
+            if status_l in NONTERMINAL_STATUSES and not error:
+                continue
+            if status_l in SUCCESS_STATUSES and not error:
+                continue
+            name = names.get(job_id) or job_id
+            profile = (
+                store_profile
+                if store_profile != "default"
+                else CRON_TO_PROFILE.get(str(name), "default")
+            )
+            out.append(
+                {
+                    "execution_id": execution_id,
+                    "job_id": job_id,
+                    "name": name,
+                    "profile": profile,
+                    "status": status,
+                    "error": (error or "")[:300],
+                    "started_at": started,
+                    "finished_at": finished,
+                }
+            )
+    out.sort(
+        key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""),
+        reverse=True,
+    )
     return out
 
 

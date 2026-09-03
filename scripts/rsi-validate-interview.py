@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rsi_interview import DETAIL_FIELDS, required_ids
 
 STORE = Path.home() / ".hermes" / "rsi"
 AUDIT = STORE / "audit" / "latest.json"
@@ -26,98 +28,21 @@ REQUIRED_LIST_FIELDS = (
 )
 
 
-def _ordered_unique(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(value for value in values if value))
-
-
-def _profile_evidence(profile: str, audit: dict[str, Any]) -> dict[str, Any]:
-    profiles = audit.get("profiles")
-    if not isinstance(profiles, dict):
-        return {}
-    evidence = profiles.get(profile)
-    return evidence if isinstance(evidence, dict) else {}
-
-
-def required_ids(profile: str, audit: dict[str, Any]) -> dict[str, list[str]]:
-    """Return exact audited IDs grouped by the report field that must cite them.
-
-    Classification is based only on the audit's structured collections and
-    lifecycle markers. It deliberately does not inspect titles, summaries,
-    errors, or other free text.
-    """
-    evidence = _profile_evidence(profile, audit)
-    autonomous: list[str] = []
-    incomplete: list[str] = []
-
-    sessions = evidence.get("session_failures")
-    if isinstance(sessions, list):
-        for item in sessions:
-            if not isinstance(item, dict):
-                continue
-            session_id = str(item.get("id") or "").strip()
-            hits = item.get("fail_hits")
-            lifecycle_needs_input = (
-                isinstance(hits, list)
-                and "lifecycle:needs_input" in {str(hit) for hit in hits}
-            )
-            (incomplete if lifecycle_needs_input else autonomous).append(session_id)
-
-    cron_failures = evidence.get("cron_failures")
-    if isinstance(cron_failures, list):
-        for item in cron_failures:
-            if isinstance(item, dict):
-                autonomous.append(str(item.get("execution_id") or "").strip())
-
-    kanban_failures = evidence.get("kanban_failures")
-    if isinstance(kanban_failures, list):
-        for item in kanban_failures:
-            if isinstance(item, dict):
-                incomplete.append(str(item.get("task_id") or "").strip())
-
-    autonomous = _ordered_unique(autonomous)
-    incomplete = _ordered_unique(incomplete)
-    return {
-        "autonomous_failures": autonomous,
-        "incomplete_tasks": incomplete,
-        "all": _ordered_unique([*autonomous, *incomplete]),
-    }
-
-
-def _contains_standalone_id(value: Any, required_id: str) -> bool:
-    if isinstance(value, str):
-        pattern = rf"(?<![A-Za-z0-9_-]){re.escape(required_id)}(?![A-Za-z0-9_-])"
-        return re.search(pattern, value) is not None
-    if isinstance(value, list):
-        return any(_contains_standalone_id(item, required_id) for item in value)
-    if isinstance(value, dict):
-        return any(_contains_standalone_id(item, required_id) for item in value.values())
-    return False
-
-
 def _detail_record_matches(field: str, record: Any, required_id: str) -> bool:
-    if not isinstance(record, dict):
-        return False
-    if field == "incomplete_tasks":
-        return record.get("id") == required_id
-    # autonomous_failures records carry only summary/evidence/suggested_fix,
-    # so a standalone exact ID in any documented free-text field (including
-    # ``summary``) counts. The standalone boundary still rejects
-    # suffix/prefixed near-matches.
-    return (
-        record.get("id") == required_id
-        or record.get("execution_id") == required_id
-        or _contains_standalone_id(record.get("evidence"), required_id)
-        or _contains_standalone_id(record.get("summary"), required_id)
-    )
+    """The documented schema requires an exact ``id`` in both categories."""
+    return isinstance(record, dict) and record.get("id") == required_id
 
 
 def validate_interview(
     profile: str,
     report: Any,
     audit: dict[str, Any],
+    *,
+    merge_conflicts: list[str] | None = None,
 ) -> dict[str, Any]:
     required = required_ids(profile, audit)
     errors: list[str] = []
+    missing_qualitative: list[str] = []
     profiles = audit.get("profiles")
     if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
         errors.append("audit has no structured profile slice")
@@ -153,6 +78,32 @@ def validate_interview(
                         for record in records
                     )
                 ]
+                seen_ids: set[str] = set()
+                for index, record in enumerate(records):
+                    if not isinstance(record, dict):
+                        errors.append(f"{field}[{index}] must be an object")
+                        continue
+                    item_id = record.get("id")
+                    if not isinstance(item_id, str) or not item_id.strip():
+                        errors.append(f"{field}[{index}].id must be a non-empty exact ID")
+                        continue
+                    if item_id in seen_ids:
+                        errors.append(f"{field} contains duplicate exact ID: {item_id}")
+                    seen_ids.add(item_id)
+                    missing_fields = [
+                        key
+                        for key in DETAIL_FIELDS[field]
+                        if not isinstance(record.get(key), str) or not record[key].strip()
+                    ]
+                    if missing_fields:
+                        missing_qualitative.append(item_id)
+                        errors.append(
+                            f"{field} id={item_id} missing qualitative fields: "
+                            + ", ".join(missing_fields)
+                        )
+
+    for conflict in merge_conflicts or []:
+        errors.append(f"scaffold merge contradiction: {conflict}")
 
     if missing_accounted:
         errors.append(
@@ -172,6 +123,7 @@ def validate_interview(
         "required_ids": required["all"],
         "missing_accounted_ids": missing_accounted,
         "missing_detail_ids": missing_detail,
+        "missing_qualitative_ids": list(dict.fromkeys(missing_qualitative)),
         "errors": errors,
     }
 

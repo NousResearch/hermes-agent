@@ -79,7 +79,7 @@ def _report(profile: str, ids: list[str], detail_field: str) -> dict:
         "accounted_session_ids": list(ids),
     }
     report[detail_field] = [
-        ({"summary": f"failed execution {item}", "evidence": item, "suggested_fix": "retry"}
+        ({"id": item, "summary": f"failed execution {item}", "evidence": item, "suggested_fix": "retry"}
          if detail_field == "autonomous_failures"
          else {"id": item, "title": "audited task", "summary": item, "why_incomplete": "needs_input"})
         for item in ids
@@ -162,9 +162,7 @@ class InterviewValidationTests(unittest.TestCase):
                     [required_id],
                 )
 
-    def test_autonomous_failure_near_match_in_one_field_does_not_undo_exact_id_in_another(self):
-        """A standalone exact ID in summary satisfies the record even when
-        evidence carries only a near-match; the citation exists."""
+    def test_exact_id_field_wins_even_when_evidence_has_a_near_match(self):
         required_id = PRODUCT_IDS[0]
         audit = _audit()
         audit["profiles"]["product"]["cron_failures"] = [
@@ -172,6 +170,7 @@ class InterviewValidationTests(unittest.TestCase):
         ]
         report = _report("product", [required_id], "autonomous_failures")
         report["autonomous_failures"] = [{
+            "id": required_id,
             "summary": f"eng-completion execution {required_id} stopped",
             "evidence": f"{required_id}-extra context",
             "suggested_fix": "retry",
@@ -181,8 +180,7 @@ class InterviewValidationTests(unittest.TestCase):
 
         self.assertTrue(result["valid"], result["errors"])
 
-    def test_autonomous_failure_accepts_exact_id_in_summary_field(self):
-        """2026-09-03 tick: product/reviewer exact IDs in `summary` were rejected."""
+    def test_summary_id_does_not_substitute_for_documented_exact_id_field(self):
         required_id = PRODUCT_IDS[0]
         audit = _audit()
         audit["profiles"]["product"]["cron_failures"] = [
@@ -197,8 +195,8 @@ class InterviewValidationTests(unittest.TestCase):
 
         result = self.mod.validate_interview("product", report, audit)
 
-        self.assertTrue(result["valid"], result["errors"])
-        self.assertEqual(result["missing_detail_ids"]["autonomous_failures"], [])
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["missing_detail_ids"]["autonomous_failures"], [required_id])
 
     def test_autonomous_failure_rejects_near_match_in_summary(self):
         required_id = PRODUCT_IDS[0]
@@ -269,12 +267,14 @@ class InterviewValidationTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
 
     def test_valid_full_coder_reconciliation(self):
-        result = self.mod.validate_interview(
-            "coder",
-            _report("coder", CODER_IDS, "incomplete_tasks"),
-            _audit(),
-        )
-        self.assertTrue(result["valid"])
+        report = _report("coder", CODER_IDS, "incomplete_tasks")
+        report["autonomous_failures"] = _report(
+            "coder", CODER_IDS, "autonomous_failures"
+        )["autonomous_failures"]
+
+        result = self.mod.validate_interview("coder", report, _audit())
+
+        self.assertTrue(result["valid"], result["errors"])
 
     def test_missing_profile_audit_slice_cannot_be_accepted_clean(self):
         result = self.mod.validate_interview(

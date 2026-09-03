@@ -102,6 +102,7 @@ def audit_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(module, "HOME", home)
     monkeypatch.setattr(module, "KANBAN", home / ".hermes" / "kanban.db")
     monkeypatch.setattr(module, "EXEC_DB", home / ".hermes" / "cron" / "executions.db")
+    monkeypatch.setattr(module, "PROFILES_DIR", home / ".hermes" / "profiles")
     return module, state, home
 
 
@@ -439,6 +440,39 @@ def test_kanban_retry_does_not_hide_failure_for_a_prior_session(audit_env):
     assert "kanban:outcome=failed" in row["fail_hits"]
 
 
+def test_legacy_default_kanban_session_belongs_only_to_task_profile(audit_env):
+    module, _, home = audit_env
+    default_db = home / ".hermes" / "state.db"
+    _state_db(default_db)
+    _session(default_db, "durable-kanban", source="kanban", title="task t_fixture")
+    con = sqlite3.connect(default_db)
+    con.execute("UPDATE sessions SET profile_name = NULL")
+    con.commit()
+    con.close()
+    _message(default_db, "durable-kanban", "user", "Work kanban task t_fixture")
+    _message(default_db, "durable-kanban", "assistant", "Done.")
+
+    board = home / ".hermes" / "kanban.db"
+    _kanban_db(
+        board,
+        task_status="done",
+        run_status="completed",
+        outcome="completed",
+        error=None,
+    )
+    con = sqlite3.connect(board)
+    con.execute("ALTER TABLE task_runs ADD COLUMN profile TEXT DEFAULT 'qa'")
+    con.execute("ALTER TABLE tasks ADD COLUMN assignee TEXT DEFAULT 'qa'")
+    con.commit()
+    con.close()
+
+    default_sessions = module.scan_sessions("default", since=90)
+    qa_sessions = module.scan_sessions("qa", since=90)
+
+    assert default_sessions == []
+    assert [session["id"] for session in qa_sessions] == ["durable-kanban"]
+
+
 def test_multiple_task_ids_correlate_to_the_run_nearest_session_start(audit_env):
     module, db, home = audit_env
     _session(db, "durable-kanban", source="kanban")
@@ -520,6 +554,23 @@ def test_running_cron_execution_is_not_reported_as_failed(audit_env):
     assert module.cron_failures(since=90) == []
 
 
+def test_profile_local_cron_success_is_durable_evidence(audit_env):
+    module, db, home = audit_env
+    sid = "cron_job123_19700101_000140"
+    _session(db, sid, source="cron", title="qa-local-job")
+    _message(db, sid, "user", "Run scheduled work")
+    _cron_db(
+        home / ".hermes" / "profiles" / "qa" / "cron" / "executions.db",
+        status="completed",
+        error=None,
+    )
+
+    row = _only(module)
+
+    assert row["failed"] is False
+    assert row["fail_hits"] == []
+
+
 def test_cron_failure_scan_does_not_drop_older_failure_after_eighty_runs(audit_env):
     module, _, home = audit_env
     path = home / ".hermes" / "cron" / "executions.db"
@@ -538,6 +589,62 @@ def test_cron_failure_scan_does_not_drop_older_failure_after_eighty_runs(audit_e
     failures = module.cron_failures(since=90)
 
     assert [failure["execution_id"] for failure in failures] == ["exec-1"]
+
+
+def test_cron_failure_scan_includes_profile_local_execution_ledgers(audit_env, monkeypatch):
+    module, _, home = audit_env
+    profiles = home / ".hermes" / "profiles"
+    profile_home = profiles / "qa"
+    _cron_db(
+        profile_home / "cron" / "executions.db",
+        status="failed",
+        error="profile-local failure",
+    )
+    (profile_home / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": "job123", "name": "qa-local-job"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PROFILES_DIR", profiles)
+
+    failures = module.cron_failures(since=90)
+
+    assert [(failure["name"], failure["profile"]) for failure in failures] == [
+        ("qa-local-job", "qa")
+    ]
+
+
+def test_cron_failure_scan_skips_uninitialized_profile_ledger(audit_env):
+    module, _, home = audit_env
+    path = home / ".hermes" / "profiles" / "qa" / "cron" / "executions.db"
+    path.parent.mkdir(parents=True)
+    sqlite3.connect(path).close()
+
+    assert module.cron_failures(since=90) == []
+
+
+def test_crashed_kanban_run_without_error_is_a_failure(audit_env):
+    module, _, home = audit_env
+    path = home / ".hermes" / "kanban.db"
+    _kanban_db(
+        path,
+        task_status="ready",
+        run_status="crashed",
+        outcome="crashed",
+        error=None,
+    )
+    con = sqlite3.connect(path)
+    con.execute("ALTER TABLE task_runs ADD COLUMN profile TEXT DEFAULT 'qa'")
+    con.execute("ALTER TABLE task_runs ADD COLUMN summary TEXT")
+    con.execute("ALTER TABLE tasks ADD COLUMN title TEXT DEFAULT 'fixture'")
+    con.execute("ALTER TABLE tasks ADD COLUMN assignee TEXT DEFAULT 'qa'")
+    con.execute("ALTER TABLE tasks ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
+    con.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
+    con.commit()
+    con.close()
+
+    failures = module.kanban_failures(since=90)
+
+    assert [failure["run_id"] for failure in failures] == [7]
 
 
 def test_kanban_failure_scan_does_not_drop_older_failure_after_forty_runs(audit_env):

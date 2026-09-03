@@ -308,6 +308,72 @@ mcp_servers:
 
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
+## Google Workspace remote MCP servers
+
+Google offers remote MCP servers for Gmail, Drive, Calendar, Chat, and the
+People API. They are currently part of the [Google Workspace Developer Preview
+Program](https://developers.google.com/workspace/guides/configure-mcp-servers),
+so their availability and tool sets can change. Google Docs, Sheets, and Slides
+do not appear in Google's current remote-MCP server list; use the bundled
+[`google-workspace`](../skills/bundled/productivity/productivity-google-workspace.md)
+skill and `gws` CLI for those APIs instead.
+
+Each product has its own HTTP endpoint:
+
+| Product | Endpoint |
+| --- | --- |
+| Gmail | `https://gmailmcp.googleapis.com/mcp/v1` |
+| Google Drive | `https://drivemcp.googleapis.com/mcp/v1` |
+| Google Calendar | `https://calendarmcp.googleapis.com/mcp/v1` |
+| Google Chat | `https://chatmcp.googleapis.com/mcp/v1` |
+| People API | `https://people.googleapis.com/mcp/v1` |
+
+Before connecting Hermes, enroll in the Developer Preview, create a Google
+Cloud project, enable the product API and its MCP service, configure the OAuth
+consent screen and requested scopes, and create an OAuth client. Google's
+[Workspace MCP setup guide](https://developers.google.com/workspace/guides/configure-mcp-servers)
+has the current prerequisite list and scope requirements.
+
+Google's servers require a pre-registered OAuth client, so configure a stable
+local callback URL in both Google Cloud and Hermes. For example, register
+`http://localhost:8765/callback` as an authorized redirect URI, then add this
+to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  google-gmail:
+    url: "https://gmailmcp.googleapis.com/mcp/v1"
+    auth: oauth
+    oauth:
+      client_id: "<your-oauth-client-id>"
+      client_secret: "<your-oauth-client-secret>"
+      redirect_port: 8765
+      redirect_host: "localhost"
+      scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"
+    tools:
+      include: [get_thread, search_threads, list_labels]
+```
+
+Start with a narrow, read-only tool allow-list. The sample adds `gmail.compose`
+only because Google's Gmail MCP server exposes draft creation; omit that scope
+and any mutating tools unless you need them. Then authorize and verify the
+server:
+
+```bash
+hermes mcp login google-gmail
+hermes mcp test google-gmail
+```
+
+You can also add a remote server interactively with
+`hermes mcp add google-gmail --url "https://gmailmcp.googleapis.com/mcp/v1" --auth oauth`,
+but add the pre-registered `oauth` client settings before logging in.
+
+Keep the OAuth client secret and generated tokens private: never put them in a
+skill, memory, prompt, or version-controlled project file. Use a separate
+Hermes profile for a work account when appropriate. Workspace data can contain
+indirect prompt-injection content, so do not give write-capable tools access to
+untrusted emails, documents, or chat messages without reviewing the action.
+
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
 ## mTLS / client certificates

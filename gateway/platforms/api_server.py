@@ -4624,6 +4624,9 @@ class APIServerAdapter(BasePlatformAdapter):
         raw_limit = request.query.get("limit")
         raw_offset = request.query.get("offset", "0")
         order = request.query.get("order")
+        include_compacted = _coerce_request_bool(
+            request.query.get("include_compacted")
+        )
         if order not in (None, "oldest", "latest"):
             return web.json_response(
                 _openai_error(
@@ -4656,6 +4659,7 @@ class APIServerAdapter(BasePlatformAdapter):
             limit=limit,
             offset=offset,
             latest=latest_page,
+            include_compacted=include_compacted,
         )
         return web.json_response({
             "object": "list",

@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _is_rate_limit_error,
     _is_model_not_found_error,
     _is_model_incompatible_error,
+    _is_transient_transport_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -1456,6 +1457,151 @@ class TestIsModelNotFoundError:
         exc.status_code = 404
         # billing keyword wins — payment owns it
         assert _is_model_not_found_error(exc) is False
+
+    def test_aggregator_503_model_not_found(self):
+        """new-api / one-api style distributors report an unroutable model as
+        503 model_not_found, not 404. The model is genuinely unserviceable on
+        that route, so it must classify here and become fallback-worthy."""
+        exc = Exception(
+            "Error code: 503 - {'error': {'code': 'model_not_found', "
+            "'message': 'No available channel for model claude-opus-4-8 "
+            "under group default (distributor)', 'type': 'new_api_error'}}"
+        )
+        exc.status_code = 503
+        assert _is_model_not_found_error(exc) is True
+
+    def test_plain_5xx_is_not_model_not_found(self):
+        """Widening the status gate to 5xx must stay body-driven: a generic
+        upstream failure carries no model phrasing and must NOT be claimed,
+        or every transient 500 would be treated as a dead model."""
+        for status, body in (
+            (503, "Service Unavailable: upstream timeout"),
+            (500, "Internal server error"),
+            (502, "Bad gateway"),
+        ):
+            exc = Exception(body)
+            exc.status_code = status
+            assert _is_model_not_found_error(exc) is False, body
+
+    def test_billing_5xx_is_not_model_not_found(self):
+        """Billing language still routes to the payment path even on a 5xx
+        that also mentions model_not_found."""
+        exc = Exception("model_not_found but insufficient funds on this account")
+        exc.status_code = 503
+        assert _is_model_not_found_error(exc) is False
+
+    def test_status_read_from_response_attribute(self):
+        """httpx / OpenAI-SDK wrapping shapes carry the code on ``.response``
+        only. Structured status extraction must look there too, so the same
+        aggregator body classifies identically however the SDK wrapped it."""
+        exc = Exception(
+            "Error code: 503 - {'error': {'code': 'model_not_found', "
+            "'message': 'No available channel for model x'}}"
+        )
+        exc.response = SimpleNamespace(status_code=503)
+        assert _is_model_not_found_error(exc) is True
+
+    def test_response_attribute_status_still_gates_out_unrelated(self):
+        """The ``.response`` read must not become a bypass: an unrelated 401
+        carrying model phrasing is still rejected by the status gate."""
+        exc = Exception("model not found")
+        exc.response = SimpleNamespace(status_code=401)
+        assert _is_model_not_found_error(exc) is False
+
+
+class TestModelNotFoundNotTransient:
+    """A body-confirmed model-not-found is permanent for that route, so it must
+    not consume the same-provider transient retry budget on its way to the
+    fallback chain (the retries cost the full backoff, and on the compression
+    critical path that is user-visible wall clock)."""
+
+    def _agg_503(self):
+        exc = Exception(
+            "Error code: 503 - {'error': {'code': 'model_not_found', "
+            "'message': 'No available channel for model claude-opus-4-8 "
+            "under group default (distributor)', 'type': 'new_api_error'}}"
+        )
+        exc.status_code = 503
+        return exc
+
+    def test_aggregator_503_is_not_transient(self):
+        assert _is_transient_transport_error(self._agg_503()) is False
+
+    def test_plain_503_is_still_transient(self):
+        """The exclusion is body-driven — a generic 503 must keep its retry."""
+        exc = Exception("Service Unavailable")
+        exc.status_code = 503
+        assert _is_transient_transport_error(exc) is True
+
+    def test_no_wasted_same_provider_retries_before_fallback(self):
+        """End-to-end: primary answers 503 model_not_found, configured chain is
+        healthy. The primary must be attempted exactly once."""
+        primary = MagicMock()
+        primary.base_url = "https://aggregator.example.com/v1"
+        primary.chat.completions.create.side_effect = self._agg_503()
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://alt.example.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        with patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("aggregator", "claude-opus-4-8", None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary, "claude-opus-4-8")), \
+             patch("agent.auxiliary_client._validate_llm_response",
+                   side_effect=lambda resp, _task, **_kw: resp), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fb_client, "alt-model",
+                                 "fallback_chain[0](alt)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"fallback": True}
+        assert primary.chat.completions.create.call_count == 1, (
+            "A permanent model_not_found must not burn same-provider retries"
+        )
+        mock_chain.assert_called()
+        assert fb_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_no_wasted_retries_before_fallback(self):
+        """Async parity: same single-attempt-then-chain behaviour."""
+        primary = MagicMock()
+        primary.base_url = "https://aggregator.example.com/v1"
+        primary.chat.completions.create = AsyncMock(side_effect=self._agg_503())
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://alt.example.com/v1"
+        fb_client.chat.completions.create = AsyncMock(
+            return_value={"fallback": True})
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("aggregator", "claude-opus-4-8", None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary, "claude-opus-4-8")), \
+             patch("agent.auxiliary_client._to_async_client",
+                   side_effect=lambda c, m, **_kw: (c, m)), \
+             patch("agent.auxiliary_client._validate_llm_response",
+                   side_effect=lambda resp, _task, **_kw: resp), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fb_client, "alt-model",
+                                 "fallback_chain[0](alt)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"fallback": True}
+        assert primary.chat.completions.create.await_count == 1
+        mock_chain.assert_called()
+        assert fb_client.chat.completions.create.await_count == 1
 
 
 

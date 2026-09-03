@@ -360,6 +360,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-draw-your-font',
                     'user-guide/skills/optional/creative/creative-excalidraw',
                     'user-guide/skills/optional/creative/creative-heartmula',
+                    'user-guide/skills/optional/creative/creative-human-writing',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',

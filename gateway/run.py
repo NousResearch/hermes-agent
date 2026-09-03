@@ -1040,7 +1040,13 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    interim_assistant_messages_enabled: bool | None = None,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
@@ -1051,7 +1057,20 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
-
+    # Lease-contention lifecycle statuses ("Another Hermes process is using
+    # this session", "Still waiting …", "Session is free …") are in-between
+    # chatter — suppress them when the user muted interim assistant messages
+    # for this platform (display.platforms.*.interim_assistant_messages:
+    # false), the same gate that disables the streaming delta consumer.
+    # Routine compression progress is exempt: it has its own opt-in gate
+    # (compression.progress_notices) and must keep flowing when that gate is
+    # open, regardless of interim mode.
+    if (
+        interim_assistant_messages_enabled is False
+        and event_type == "lifecycle"
+        and not _COMPRESSION_PROGRESS_STATUS_RE.search(text)
+    ):
+        return None
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
@@ -5903,6 +5922,9 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            interim_assistant_messages_enabled=getattr(
+                ctx, "interim_assistant_messages_enabled", None
+            ),
         )
         if prepared_message is None:
             logger.debug(

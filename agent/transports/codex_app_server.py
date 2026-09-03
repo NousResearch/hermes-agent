@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -131,6 +132,15 @@ class CodexAppServerClient:
         # (#56747). Hide-only — stdio pipes stay intact for the app-server wire.
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        popen_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            # Codex starts MCP/tool helpers of its own. Put the complete tree
+            # in a dedicated process group so close() can reap descendants as
+            # well as the direct app-server child. Killing only _proc leaked
+            # python MCP workers and codex-code-mode helpers across completed
+            # gateway sessions until the host reached global OOM.
+            popen_kwargs["start_new_session"] = True
+
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -139,7 +149,9 @@ class CodexAppServerClient:
             bufsize=0,
             env=spawn_env,
             creationflags=windows_hide_flags(),
+            **popen_kwargs,
         )
+        self._process_group_id = self._proc.pid if os.name == "posix" else None
         self._next_id = 1
         self._pending: dict[int, _Pending] = {}
         self._pending_lock = threading.Lock()
@@ -183,7 +195,7 @@ class CodexAppServerClient:
         return result
 
     def close(self, timeout: float = 3.0) -> None:
-        """Close stdin and wait for the subprocess to exit, escalating to kill."""
+        """Close stdin and reap the complete Codex subprocess tree."""
         if self._closed:
             return
         self._closed = True
@@ -192,15 +204,36 @@ class CodexAppServerClient:
                 self._proc.stdin.close()
         except Exception:
             pass
+
+        process_group_id = self._process_group_id
+        kill_process_group = getattr(os, "killpg", None)
+        hard_kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+        def _signal_process_tree(sig: int) -> bool:
+            if process_group_id is None or kill_process_group is None:
+                return False
+            try:
+                kill_process_group(process_group_id, sig)
+                return True
+            except OSError:
+                return False
+
         try:
-            self._proc.terminate()
+            if not _signal_process_tree(signal.SIGTERM):
+                self._proc.terminate()
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
-                self._proc.kill()
+                if not _signal_process_tree(hard_kill_signal):
+                    self._proc.kill()
                 self._proc.wait(timeout=1.0)
             except Exception:
                 pass
+        finally:
+            # The direct app-server can exit before an MCP/tool grandchild.
+            # A final group-wide kill guarantees no descendant survives after
+            # the owning Hermes session has been retired or evicted.
+            _signal_process_tree(hard_kill_signal)
 
     def __enter__(self) -> "CodexAppServerClient":
         return self

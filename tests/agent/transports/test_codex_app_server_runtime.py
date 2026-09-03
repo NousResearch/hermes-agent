@@ -111,6 +111,86 @@ class TestCodexAppServerModule:
         assert "-32600" in str(err)
 
 
+class TestProcessTreeCleanup:
+    """Codex-owned MCP/tool descendants must not outlive their session."""
+
+    def test_posix_spawn_uses_dedicated_process_group(self, monkeypatch):
+        import os
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured.update(kwargs)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 4321
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        if os.name == "posix":
+            assert captured["start_new_session"] is True
+            assert client._process_group_id == 4321
+        else:
+            assert "start_new_session" not in captured
+            assert client._process_group_id is None
+
+    def test_close_signals_complete_posix_process_group(self, monkeypatch):
+        import io
+        import signal
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        if cas.os.name != "posix":
+            pytest.skip("POSIX process groups are not available")
+
+        signals = []
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                self.stdin = io.BytesIO()
+                self.stdout = None
+                self.stderr = None
+                self.pid = 4321
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                raise AssertionError(
+                    "direct child termination bypassed process group"
+                )
+
+            def kill(self):
+                raise AssertionError("direct child kill bypassed process group")
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(
+            cas.os,
+            "killpg",
+            lambda pgid, sig: signals.append((pgid, sig)),
+        )
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client.close()
+
+        assert signals == [
+            (4321, signal.SIGTERM),
+            (4321, signal.SIGKILL),
+        ]
+
+
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
     subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their

@@ -95,11 +95,13 @@ import {
   ERASE_SCROLLBACK
 } from './termio/csi.js'
 import {
+  BSU,
   DBP,
   DFE,
   DISABLE_MOUSE_TRACKING,
   enableMouseTrackingFor,
   ENTER_ALT_SCREEN,
+  ESU,
   EXIT_ALT_SCREEN,
   type MouseTrackingMode,
   SHOW_CURSOR
@@ -1358,6 +1360,34 @@ export default class Ink {
   }
 
   /**
+   * Escalation beyond forceRedraw: leave the alternate screen before entering
+   * it again so the terminal allocates a fresh buffer and discards polluted
+   * cells that survive an in-buffer erase. This is the strong ?1049l then
+   * ?1049h swap behind Ctrl+T and the /hardreset slash command. On the main
+   * screen, which has no alternate buffer, it falls back to forceRedraw.
+   */
+  hardResetScreen(): void {
+    if (!this.options.stdout.isTTY || this.isUnmounted || this.isPaused) {
+      return
+    }
+
+    if (!this.altScreenActive) {
+      // Main-screen has no alt buffer to swap; the ERASE+repaint of
+      // forceRedraw is already the strongest available heal there.
+      this.forceRedraw()
+
+      return
+    }
+
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
+    }
+
+    this.reenterAltScreen(true)
+  }
+
+  /**
    * Mark the previous frame as untrustworthy for blit, forcing the next
    * render to do a full-damage diff instead of the per-node fast path.
    *
@@ -1545,18 +1575,25 @@ export default class Ink {
    * which can leave the terminal in main-screen mode while altScreenActive
    * stays true. ENTER_ALT_SCREEN is a terminal-side no-op if already in alt.
    */
-  private reenterAltScreen(): void {
-    // DISABLE_MOUSE_TRACKING before enableMouseTrackingFor — same as
-    // setAltScreenMouseTracking / AlternateScreen mount / handleResize.
-    // DEC private modes have no atomic "set this bitmask" sequence, only
-    // per-mode set/reset, so for 'wheel'/'buttons' presets we must reset
-    // first to drop any lingering DEC 1003 hover from before re-entry.
+  private reenterAltScreen(hardReset = false): void {
+    // DEC private modes have no atomic "set this bitmask" sequence. Reset
+    // mouse modes before restoring the configured preset so a lingering 1003
+    // hover mode cannot survive a wheel or buttons configuration.
+    const resetPrefix = hardReset
+      ? // Close a possibly interrupted synchronized update, drop terminal-wide
+        // mouse modes, and actually leave 1049 before entering it again. Sending
+        // only 1049h while already in the alternate buffer is a no-op in common
+        // emulators and therefore is not a hard reset.
+        ESU + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN + ENTER_ALT_SCREEN + BSU
+      : ENTER_ALT_SCREEN
+
     this.options.stdout.write(
-      ENTER_ALT_SCREEN +
+      resetPrefix +
         ERASE_SCREEN +
         CURSOR_HOME +
         DISABLE_MOUSE_TRACKING +
-        enableMouseTrackingFor(this.altScreenMouseTracking)
+        enableMouseTrackingFor(this.altScreenMouseTracking) +
+        (hardReset ? ESU : '')
     )
     this.resetFramesForAltScreen()
     // ERASE_SCREEN above leaves the physical alt screen blank, and

@@ -99,6 +99,14 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('handles /hardreset locally without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/hardreset')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('screen hard-reset')
+  })
+
   it('opens the editor locally for /prompt without slash worker fallback', () => {
     const ctx = buildCtx()
 

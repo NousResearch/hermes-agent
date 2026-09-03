@@ -1,4 +1,4 @@
-import { forceRedraw, useInput } from '@hermes/ink'
+import { forceRedraw, hardResetScreen, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
@@ -677,6 +677,20 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (isAction(key, ch, 'l')) {
       clearSelection()
       forceRedraw(terminal.stdout ?? process.stdout)
+
+      return
+    }
+
+    // Ctrl+T hard screen reset. The renderer leaves the alternate screen
+    // with ?1049l before entering it again with ?1049h, so the terminal
+    // allocates a clean buffer instead of treating a repeated enter as a no-op.
+    // Like Ctrl+L this is a raw key handler, so it works while a turn is busy.
+    // It touches only the terminal screen and renderer diff model. The React
+    // tree and live turn stay intact. Browsers reserve this shortcut, so the
+    // dashboard exposes /hardreset as the fallback.
+    if (isAction(key, ch, 't')) {
+      clearSelection()
+      hardResetScreen(terminal.stdout ?? process.stdout)
 
       return
     }

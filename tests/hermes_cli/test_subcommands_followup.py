@@ -64,3 +64,49 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_skills_reset_help_distinguishes_plain_reset_from_restore(capsys):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_skills_parser(sub, cmd_skills=_h("skills"))
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["skills", "reset", "--help"])
+
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "byte-identical" in output
+    assert "genuinely differs" in output
+    assert "--restore" in output
+
+
+def test_skills_list_modified_help_points_to_restore(capsys):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_skills_parser(sub, cmd_skills=_h("skills"))
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["skills", "list-modified", "--help"])
+
+    assert exc.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "hermes skills diff <name>" in output
+    assert "hermes skills reset <name> --restore" in output
+    assert "replace the modified copy" in output
+
+
+def test_skills_diff_help_explains_modified_reset_contract(capsys):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_skills_parser(sub, cmd_skills=_h("skills"))
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["skills", "diff", "--help"])
+
+    assert exc.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Plain reset only re-baselines" in output
+    assert "genuinely modified copies stay preserved and skipped" in output
+    assert "hermes skills reset <name> --restore" in output
+    assert "replace the modified copy and resume stock updates" in output

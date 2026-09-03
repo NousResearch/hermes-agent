@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -143,6 +144,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
+        # Seed posts from create_handoff_thread that no message has landed in
+        # yet. The first send into such a thread replaces the seed with its
+        # content (see send), so the content is the top-level post. Bounded.
+        self._empty_handoff_seeds: Dict[str, float] = {}
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
@@ -208,10 +213,16 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[str]:
-        """Resolve the Mattermost root_id from reply_to or metadata."""
-        if self._reply_mode != "thread":
-            return None
-        candidate = reply_to
+        """Resolve the Mattermost root_id from reply_to or metadata.
+
+        ``reply_mode`` decides whether a plain reply nests under the message
+        it answers (``reply_to``). An explicit ``metadata["thread_id"]`` or
+        ``metadata["root_id"]`` is honoured in every mode: the gateway only
+        sets it when the inbound message was already inside a thread, and the
+        cron scheduler sets it to route a continuable brief into the thread
+        it just opened, so ignoring it would post those flat.
+        """
+        candidate = reply_to if self._reply_mode == "thread" else None
         if not candidate and isinstance(metadata, dict):
             candidate = metadata.get("thread_id") or metadata.get("root_id")
         if not candidate:
@@ -385,6 +396,57 @@ class MattermostAdapter(BasePlatformAdapter):
             return data["root_id"]
         return post_id
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Mattermost thread anchor for a session handoff.
+
+        Mattermost threads hang off a root post (``root_id``), not a
+        channel-level construct, so post a seed message into the parent
+        channel and return its post id. The gateway's handoff watcher and the
+        continuable-cron delivery path use that id as the ``thread_id`` for
+        subsequent sends, and key the continuation session to it, so a reply
+        inside the thread sees only that thread's brief (Slack parity:
+        ``SlackAdapter.create_handoff_thread``).
+
+        The seed exists only because the caller needs a thread id before it
+        has the content. The first ``send`` into the thread therefore replaces
+        the seed's text with that content (``_empty_handoff_seeds``), so the
+        brief is the top-level post and the thread root rather than a reply
+        under a placeholder.
+
+        Returns the seed post id as a string, or ``None`` on failure so the
+        caller falls back to the flat channel or DM.
+        """
+        if not self._session:
+            return None
+        seed_text = f":thread: {(name or 'Hermes session').strip()[:80]}"
+        payload = _with_mentions_disabled({
+            "channel_id": parent_chat_id,
+            "message": seed_text,
+        })
+        try:
+            data = await self._api_post("posts", payload)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Handoff thread: seed-post failed for channel %s: %s",
+                self.name, parent_chat_id, exc,
+            )
+            return None
+        post_id = (data or {}).get("id")
+        if not post_id:
+            logger.warning(
+                "[%s] Handoff thread: seed-post returned no id for channel %s: %s",
+                self.name, parent_chat_id, self._last_post_error,
+            )
+            return None
+        self._empty_handoff_seeds[str(post_id)] = time.monotonic()
+        while len(self._empty_handoff_seeds) > 64:
+            self._empty_handoff_seeds.pop(next(iter(self._empty_handoff_seeds)))
+        return str(post_id)
+
     async def send(
         self,
         chat_id: str,
@@ -407,6 +469,18 @@ class MattermostAdapter(BasePlatformAdapter):
             })
             # Thread support: reply_to or metadata["thread_id"] is the root post ID.
             resolved_root = await self._thread_root_for_send(reply_to, metadata)
+            if resolved_root and self._empty_handoff_seeds.pop(resolved_root, None) is not None:
+                # First message into a thread opened by create_handoff_thread:
+                # the seed post becomes this message, so the content sits at
+                # top level and later chunks and replies nest under it.
+                data = await self._api_put(
+                    f"posts/{resolved_root}/patch",
+                    _with_mentions_disabled({"message": chunk}),
+                )
+                if not data or "id" not in data:
+                    return SendResult(success=False, error="Failed to replace seed post")
+                last_id = data["id"]
+                continue
             if resolved_root:
                 payload["root_id"] = resolved_root
 

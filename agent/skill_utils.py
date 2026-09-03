@@ -68,6 +68,12 @@ ORG_PROVENANCE_FILE = ".org-provenance.json"
 # later local edit is detectable and an org pull can refuse to clobber it.
 ORG_BASELINE_FILE = ".org-baseline.json"
 
+# Collective Wisdom managed installs are intentionally separate from the M2
+# whole-org mirror. The only writer of this marker is the Wisdom setup/client
+# path after the Gateway has accepted the profile's installation identity.
+WISDOM_MANAGED_DIR_NAME = "_wisdom"
+WISDOM_ACTIVE_MARKER = ".active_org"
+
 
 def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
@@ -79,6 +85,27 @@ def read_active_org_id(skills_dir: Path) -> Optional[str]:
         return val or None
     except OSError:
         return None
+
+
+def read_active_wisdom_org_id(skills_dir: Path) -> Optional[str]:
+    """The last Gateway-verified org whose managed Wisdom skills may load."""
+    try:
+        marker = skills_dir / WISDOM_MANAGED_DIR_NAME / WISDOM_ACTIVE_MARKER
+        if not marker.exists():
+            return None
+        value = marker.read_text(encoding="utf-8").strip()
+        return value or None
+    except OSError:
+        return None
+
+
+def is_wisdom_managed_path(path, skills_dir: Path) -> bool:
+    """True when *path* is below ``_wisdom/<org-id>/``."""
+    try:
+        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
+    except (OSError, ValueError):
+        return False
+    return bool(rel.parts) and rel.parts[0] == WISDOM_MANAGED_DIR_NAME
 
 
 def is_org_mirror_path(path, skills_dir: Path) -> bool:
@@ -1279,6 +1306,71 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
     return len(desc) > SKILL_PROMPT_DESC_LIMIT
 
 
+def extract_skill_editorial_metadata(
+    frontmatter: Dict[str, Any],
+    *,
+    fallback_name: str,
+    fallback_description: str,
+) -> Dict[str, str]:
+    """Resolve optional human-facing skill copy without changing agent metadata.
+
+    ``name`` and ``description`` remain the canonical agent-facing routing
+    fields. Hermes UIs may use the optional values under ``metadata.hermes``;
+    older and third-party skills fall back to the canonical pair.
+    """
+    metadata = frontmatter.get("metadata")
+    hermes = metadata.get("hermes") if isinstance(metadata, dict) else None
+    if not isinstance(hermes, dict):
+        hermes = {}
+
+    editorial_name = hermes.get("editorial_name")
+    editorial_description = hermes.get("editorial_description")
+    return {
+        "editorial_name": (
+            editorial_name.strip()
+            if isinstance(editorial_name, str) and editorial_name.strip()
+            else fallback_name
+        ),
+        "editorial_description": (
+            editorial_description.strip()
+            if isinstance(editorial_description, str)
+            and editorial_description.strip()
+            else fallback_description
+        ),
+    }
+
+
+def load_skill_editorial_metadata(
+    skill_path: Path,
+    *,
+    fallback_name: str | None = None,
+    fallback_description: str = "",
+) -> Dict[str, str]:
+    """Load human-facing copy from a skill directory with safe fallbacks."""
+    canonical_name = fallback_name or skill_path.name
+    canonical_description = fallback_description
+    try:
+        frontmatter, _body = parse_frontmatter(
+            (skill_path / "SKILL.md").read_text(encoding="utf-8")
+        )
+        name = frontmatter.get("name")
+        description = frontmatter.get("description")
+        if isinstance(name, str) and name.strip():
+            canonical_name = name.strip()
+        if isinstance(description, str) and description.strip():
+            canonical_description = description.strip()
+        return extract_skill_editorial_metadata(
+            frontmatter,
+            fallback_name=canonical_name,
+            fallback_description=canonical_description,
+        )
+    except (OSError, UnicodeError, ValueError):
+        return {
+            "editorial_name": canonical_name,
+            "editorial_description": canonical_description,
+        }
+
+
 # ── File iteration ────────────────────────────────────────────────────────
 
 
@@ -1291,7 +1383,8 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through
     ``skill_view(..., file_path=...)`` rather than active skill roots.
 
-    M2 org mirrors (``_org/``): TOKEN-GATED resolution. Only the active org's
+    M2 org mirrors (``_org/``) and Collective Wisdom installs
+    (``_wisdom/``): TOKEN-GATED resolution. Only the active org's
     subdir (per the sync-client-written ``.active_org`` marker) is walked;
     every other ``_org/<id>/`` (stale mirror from a previous org, or no
     marker at all) is pruned — leave an org and its skills stop resolving,
@@ -1299,15 +1392,22 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """
     skills_dir_str = str(skills_dir)
     active_org = read_active_org_id(skills_dir)
+    active_wisdom_org = read_active_wisdom_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
+    wisdom_root = os.path.join(skills_dir_str, WISDOM_MANAGED_DIR_NAME)
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
+        if root == skills_dir_str and WISDOM_MANAGED_DIR_NAME in dirs and active_wisdom_org is None:
+            dirs.remove(WISDOM_MANAGED_DIR_NAME)
         elif root == org_root:
             # Inside _org/: descend ONLY into the active org's mirror.
             dirs[:] = [d for d in dirs if d == active_org]
+        elif root == wisdom_root:
+            # Inside _wisdom/: descend ONLY into the last Gateway-verified org.
+            dirs[:] = [d for d in dirs if d == active_wisdom_org]
         dirs[:] = [
             d
             for d in dirs

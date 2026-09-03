@@ -35,6 +35,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
@@ -66,6 +67,7 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CollectiveTab } from './collective-tab'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
@@ -73,7 +75,7 @@ import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
 // Skills tab now (EmbeddedHubPicker below the installed list). Legacy
 // `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp'] as const
+const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'collective'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -117,6 +119,18 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
+type SkillPresentation = {
+  description: string
+  editorial_description?: string
+  editorial_name?: string
+  name: string
+}
+
+const skillDisplayName = (skill: SkillPresentation): string => asText(skill.editorial_name) || skill.name
+
+const skillDisplayDescription = (skill: SkillPresentation): string =>
+  asText(skill.editorial_description) || skill.description
+
 // Row subtitle: category, with non-default origins badged.
 function skillSubtitle(skill: SkillInfo): React.ReactNode {
   const category = prettyName(categoryFor(skill))
@@ -146,9 +160,14 @@ function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): Skil
   return skills
     .filter(
       skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+        !q ||
+        includesQuery(skill.name, q) ||
+        includesQuery(skill.description, q) ||
+        includesQuery(skillDisplayName(skill), q) ||
+        includesQuery(skillDisplayDescription(skill), q) ||
+        includesQuery(skill.category, q)
     )
-    .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
+    .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || skillDisplayName(a).localeCompare(skillDisplayName(b)))
 }
 
 // Catalog rows have no usage yet — plain A–Z, same query fields as installed
@@ -162,10 +181,12 @@ function filteredOfficial(skills: OfficialSkillInfo[], query: string): OfficialS
         !q ||
         includesQuery(skill.name, q) ||
         includesQuery(skill.description, q) ||
+        includesQuery(skillDisplayName(skill), q) ||
+        includesQuery(skillDisplayDescription(skill), q) ||
         includesQuery(skill.category, q) ||
         skill.tags.some(tag => includesQuery(tag, q))
     )
-    .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
+    .sort((a, b) => skillDisplayName(a).localeCompare(skillDisplayName(b)))
 }
 
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
@@ -849,12 +870,19 @@ export function SkillsView({
       // searching it is noise.
       searchHidden={mode === 'mcp'}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={
+        mode === 'skills'
+          ? t.skills.searchSkills
+          : mode === 'collective'
+            ? t.skills.searchCollective
+            : t.skills.searchToolsets
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
-        { id: 'mcp', label: t.skills.tabMcp }
+        { id: 'mcp', label: t.skills.tabMcp },
+        { id: 'collective', label: t.skills.tabCollective }
       ]}
     >
       {/* One shared column: the scope selector sits above whichever tab is
@@ -863,8 +891,10 @@ export function SkillsView({
       <div className="flex h-full flex-col">
         {profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
-            {mode === 'mcp' ? (
+          <div className={cn(mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1', 'relative')}>
+            {mode === 'collective' ? (
+              <CollectiveTab profile={scopeProfile} query={query} />
+            ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a
               // different backend that RPC would hot-reload the wrong
@@ -928,8 +958,8 @@ export function SkillsView({
                         }}
                         onToggle={enabled => void handleToggleSkill(skill, enabled)}
                         subtitle={skillSubtitle(skill)}
-                        title={skill.name}
-                        toggleLabel={skill.name}
+                        title={skillDisplayName(skill)}
+                        toggleLabel={skillDisplayName(skill)}
                       />
                     ))}
                     {/* The built-in optional-skills catalog, below the
@@ -962,7 +992,7 @@ export function SkillsView({
                           key={skill.identifier}
                           onSelect={() => setSelectedOfficial(skill.identifier)}
                           subtitle={prettyName(skill.category)}
-                          title={skill.name}
+                          title={skillDisplayName(skill)}
                         />
                       )
                     })}
@@ -1184,7 +1214,7 @@ function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDisplayDescription(skill) || t.skills.noDescription}
         pills={
           <>
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
@@ -1195,7 +1225,7 @@ function SkillDetail({
             )}
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill)}
       />
       {editable && (
         <div className="flex items-center gap-2">
@@ -1262,14 +1292,14 @@ function OfficialSkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDisplayDescription(skill) || t.skills.noDescription}
         pills={
           <>
             <PanelPill>{prettyName(skill.category)}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill)}
       />
       <div className="flex items-center gap-2">
         <Button disabled={installing} onClick={onInstall} size="xs" variant="textStrong">

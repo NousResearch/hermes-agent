@@ -198,6 +198,7 @@ export function subscribeToThreadForeground(shouldReanchor: () => boolean, onRea
 }
 
 interface ThreadMessageListProps {
+  afterContent?: ReactNode
   clampToComposer: boolean
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
@@ -388,6 +389,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
 })
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
+  afterContent,
   clampToComposer,
   components,
   emptyPlaceholder,
@@ -842,6 +844,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             )}
             {rows}
             {loadingIndicator}
+            {afterContent}
             {clampToComposer && (
               <div
                 aria-hidden="true"

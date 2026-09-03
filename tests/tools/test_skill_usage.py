@@ -141,6 +141,37 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
     assert record["patch_generation"] == 1
     assert record["last_reused_patch_generation"] == 1
 
+
+def test_bump_use_associates_wisdom_candidate_with_task_session(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_wisdom import qualification
+    from tools import skill_usage
+
+    captured = {}
+
+    def record_successful_use_async(skill_name, *, task_id=None, session_id=None):
+        captured.update(
+            skill_name=skill_name,
+            task_id=task_id,
+            session_id=session_id,
+        )
+
+    monkeypatch.setattr(
+        qualification,
+        "record_successful_use_async",
+        record_successful_use_async,
+    )
+
+    skill_usage.bump_use("candidate-skill", task_id="session-1")
+
+    assert captured == {
+        "skill_name": "candidate-skill",
+        "task_id": "session-1",
+        "session_id": "session-1",
+    }
+
 def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
     from hermes_cli import lifecycle
     from tools.skill_usage import (

@@ -313,9 +313,23 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
             skill_md = files.get("SKILL.md", "") or ""
 
         m = meta or bundle
+        from agent.skill_utils import (
+            extract_skill_editorial_metadata,
+            parse_frontmatter,
+        )
+
+        name = getattr(m, "name", ident)
+        description = getattr(m, "description", "") or ""
+        frontmatter, _body = parse_frontmatter(skill_md)
+        editorial = extract_skill_editorial_metadata(
+            frontmatter,
+            fallback_name=name,
+            fallback_description=description,
+        )
         return {
-            "name": getattr(m, "name", ident),
-            "description": getattr(m, "description", "") or "",
+            "name": name,
+            "description": description,
+            **editorial,
             "source": getattr(m, "source", "") or "",
             "identifier": getattr(m, "identifier", ident) or ident,
             "trust_level": getattr(m, "trust_level", "community") or "community",
@@ -476,7 +490,9 @@ async def get_skills(profile: Optional[str] = None):
         with _profile_scope(profile):
             config = load_config()
             disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
+            skills = _find_all_skills(
+                skip_disabled=True, include_editorial=True
+            )
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where

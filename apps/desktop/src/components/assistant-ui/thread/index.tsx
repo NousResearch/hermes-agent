@@ -9,9 +9,11 @@ import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
 import { UserMessage } from '@/components/assistant-ui/thread/user-message'
+import { WisdomCandidateCard } from '@/components/assistant-ui/wisdom-candidate-card'
+import { WisdomNoticeCard } from '@/components/assistant-ui/wisdom-notice-card'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import type { HermesGateway } from '@/hermes'
+import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 
@@ -45,6 +47,7 @@ interface ThreadProps {
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
+  wisdomProfile?: ProfileScope
 }
 
 // memo'd on purpose, and load-bearing for session-switch cost. ChatView
@@ -65,7 +68,8 @@ export const Thread = memo(function Thread({
   onDismissError,
   onRestoreToMessage,
   sessionId = null,
-  sessionKey
+  sessionKey,
+  wisdomProfile
 }: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -167,10 +171,29 @@ export const Thread = memo(function Thread({
   // always correct.
   const loadingIndicator = useMemo(() => <BackgroundResumeNotice />, [])
 
+  // Candidate events are written by the Agent against the durable stored
+  // session key. Desktop's runtime session id is a short-lived websocket
+  // owner and changes whenever a stored conversation is resumed, so polling
+  // with it can never hydrate a durable event after reconnect. Fresh sessions
+  // temporarily have no stored key, where the runtime id is the correct
+  // fallback until persistence binds the pair.
+  const wisdomSessionId = sessionKey || sessionId
+
+  const wisdomContent = useMemo(
+    () => (wisdomSessionId ? (
+      <>
+        <WisdomNoticeCard profile={wisdomProfile} />
+        <WisdomCandidateCard profile={wisdomProfile} sessionId={wisdomSessionId} />
+      </>
+    ) : undefined),
+    [wisdomProfile, wisdomSessionId]
+  )
+
   return (
     <ThreadEditContext.Provider value={editContext}>
       <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
         <ThreadMessageList
+          afterContent={wisdomContent}
           clampToComposer={clampToComposer}
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import extract_skill_editorial_metadata, is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunparse
 
@@ -139,6 +139,8 @@ class SkillMeta:
     path: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
+    editorial_name: Optional[str] = None
+    editorial_description: Optional[str] = None
 
 
 @dataclass
@@ -3916,6 +3918,11 @@ class OptionalSkillSource(SkillSource):
             fm = self._parse_frontmatter(content)
             name = fm.get("name", parent.name)
             desc = fm.get("description", "")
+            editorial = extract_skill_editorial_metadata(
+                fm,
+                fallback_name=name,
+                fallback_description=desc,
+            )
             tags = []
             meta_block = fm.get("metadata", {})
             if isinstance(meta_block, dict):
@@ -3935,6 +3942,7 @@ class OptionalSkillSource(SkillSource):
                 # The centralized skills index consumes repo-root-relative paths.
                 path=f"optional-skills/{rel_path}",
                 tags=tags if isinstance(tags, list) else [],
+                **editorial,
             ))
 
         return results
@@ -4006,6 +4014,8 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
         "path": meta.path,
         "tags": meta.tags,
         "extra": meta.extra,
+        "editorial_name": meta.editorial_name,
+        "editorial_description": meta.editorial_description,
     }
 
 
@@ -4783,6 +4793,8 @@ class HermesIndexSource(SkillSource):
             path=entry.get("path"),
             tags=entry.get("tags", []),
             extra=entry.get("extra", {}),
+            editorial_name=entry.get("editorial_name"),
+            editorial_description=entry.get("editorial_description"),
         )
 
 

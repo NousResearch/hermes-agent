@@ -516,6 +516,12 @@ class _SlashWorker:
             inherit_profile_home=False,  # base already carries the HOME contract
             extra={"HERMES_HOME": str(profile_home)} if profile_home else None,
         )
+        # This internal worker must import the same Hermes source as its parent.
+        module_root = str(Path(__file__).resolve().parent.parent)
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (module_root, existing_pythonpath) if part
+        )
         # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so
         # slash_worker child processes can resolve Hermes-managed CLIs
         # (browser-use, uvx) even when the parent gateway was launched with a
@@ -16582,6 +16588,37 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
 )
 
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
+_WISDOM_DIRECT_COMMANDS = frozenset({"wisdom", "collective-wisdom-install"})
+
+
+def _format_live_wisdom_output(session: dict, name: str, arg: str) -> str:
+    """Run the shared Wisdom controller in the gateway's profile scope."""
+    from gateway.wisdom_command import (
+        WisdomCommandContext,
+        WisdomCommandController,
+        command_error_text,
+        render_local_view,
+    )
+    from hermes_wisdom.service import WisdomService
+
+    raw_args = arg.strip()
+    if name == "collective-wisdom-install":
+        raw_args = f"install {raw_args}".strip()
+
+    try:
+        with _session_profile_runtime_scope(session):
+            service = WisdomService()
+            context = WisdomCommandContext(
+                user_id="local-user",
+                chat_id=f"local:{session.get('session_key', '')}",
+                profile=str(get_hermes_home()),
+                organization_id=service.store.active_org_id(),
+                is_group=False,
+            )
+            view = WisdomCommandController().execute(raw_args, service, context)
+            return render_local_view(view, context)
+    except Exception as exc:
+        return f"Collective Wisdom could not continue: {command_error_text(exc)}"
 
 
 def _format_live_review_output(session: Optional[dict], arg: str) -> str:
@@ -16811,6 +16848,8 @@ def _format_live_model_output(session: dict) -> str:
 def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
+    if name in _WISDOM_DIRECT_COMMANDS:
+        return _format_live_wisdom_output(session or {}, name, arg)
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
     if name not in _LIVE_SESSION_DIRECT_COMMANDS:

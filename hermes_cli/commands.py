@@ -132,12 +132,36 @@ class CommandDef:
     # Desktop availability. ``None`` = offered; ``hidden`` = runs but stays out
     # of the popover; otherwise a reason (terminal / messaging / settings / …).
     desktop: str | None = None
+    # Optional help copy for static subcommands. Completion surfaces display it
+    # beside the subcommand name; callers that only understand ``subcommands``
+    # continue to receive the existing flat tuple.
+    subcommand_descriptions: Mapping[str, str] = field(default_factory=dict)
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
 VALID_BUSY_POLICIES: frozenset[str] = frozenset(
     {"dispatch", "reject", "interrupt_then_dispatch"}
 )
+
+
+WISDOM_SUBCOMMAND_HELP: dict[str, str] = {
+    "setup": "Configure this profile for Collective Wisdom",
+    "status": "Show account, organization, setup, and Gateway health",
+    "browse": "[query] — Search skills published by your team",
+    "show": "<skill> — View its description, requirements, scan, and install state",
+    "versions": "<skill> — Browse immutable published versions",
+    "candidates": "[all|query] — Review qualified or manually eligible local skills",
+    "submit": "<local-skill> — Prepare an owner-private contribution draft",
+    "drafts": "List your drafts and moderation states",
+    "review": "<draft> — Review scans, policy, hashes, and available actions",
+    "install": "<id|URL|id@vN> — Plan and confirm a managed installation",
+    "installed": "List and manage skills installed on this device",
+    "check": "Check installed skills and apply eligible automatic updates",
+    "update": "<skill|all> — Plan and confirm available updates",
+    "uninstall": "<skill> — Remove a managed skill after confirmation",
+    "notifications": "Review unseen publication, install, and update events",
+    "help": "Show this guide and command examples",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +353,17 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
                desktop="settings"),
+    CommandDef(
+        "wisdom",
+        "Browse, contribute, install, and manage Collective Wisdom skills",
+        "Tools & Skills",
+        aliases=("collective-wisdom-install",),
+        args_hint="[keyword]",
+        subcommands=tuple(WISDOM_SUBCOMMAND_HELP),
+        subcommand_descriptions=WISDOM_SUBCOMMAND_HELP,
+        busy_policy="reject",
+        argument_mode="mixed",
+    ),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills",
                args_hint="[pending|approve|reject|approval] [id|on|off]",
@@ -495,9 +530,15 @@ for _cmd in COMMAND_REGISTRY:
 
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
 SUBCOMMANDS: dict[str, list[str]] = {}
+SUBCOMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if _cmd.subcommands:
-        SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+        _key = f"/{_cmd.name}"
+        SUBCOMMANDS[_key] = list(_cmd.subcommands)
+        SUBCOMMAND_DESCRIPTIONS[_key] = {
+            subcommand: str(_cmd.subcommand_descriptions.get(subcommand) or "")
+            for subcommand in _cmd.subcommands
+        }
 
 
 # Help renderer sub-grouping: the "Session" category accumulated ~46 commands
@@ -771,6 +812,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "resume",
     "sessions",
     "model",
+    "wisdom",
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
     "restart",
@@ -1478,7 +1520,10 @@ _SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
+#   - start: platform handshake acknowledgement; reached via /hermes start.
+#     Demoted so the complete interactive /wisdom management surface is a
+#     native Slack command without exceeding Slack's 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights", "start"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -2327,6 +2372,9 @@ class SlashCommandCompleter(Completer):
                             sub,
                             start_position=-len(sub_text),
                             display=sub,
+                            display_meta=SUBCOMMAND_DESCRIPTIONS.get(base_cmd, {}).get(
+                                sub, ""
+                            ),
                         )
             return
 

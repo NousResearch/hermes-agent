@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gateway.nousresearch.com/contracts/collective-wisdom/skill-manifest.schema.v1.json",
+  "title": "Hermes Collective Wisdom skill manifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "requirements"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "x-max-utf8-bytes": 512
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hermes",
+        "platforms",
+        "architectures",
+        "model",
+        "tools",
+        "plugins",
+        "credentials",
+        "connections",
+        "filesystem",
+        "network",
+        "runtime",
+        "hardware",
+        "known_limitations"
+      ],
+      "properties": {
+        "hermes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum_version"],
+          "properties": {
+            "minimum_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "x-max-utf8-bytes": 512
+            }
+          }
+        },
+        "platforms": { "$ref": "#/$defs/stringList" },
+        "architectures": { "$ref": "#/$defs/stringList" },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capabilities", "minimum_context_window"],
+          "properties": {
+            "capabilities": { "$ref": "#/$defs/stringList" },
+            "minimum_context_window": {
+              "type": ["integer", "null"],
+              "minimum": 1
+            }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "minimum_version",
+              "auto_install",
+              "requires_admin"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-max-utf8-bytes": 512
+              },
+              "minimum_version": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 512,
+                "x-max-utf8-bytes": 512
+              },
+              "auto_install": { "const": false },
+              "requires_admin": { "type": "boolean" }
+            }
+          }
+        },
+        "plugins": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "minimum_version", "required"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-max-utf8-bytes": 512
+              },
+              "minimum_version": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 512,
+                "x-max-utf8-bytes": 512
+              },
+              "required": { "type": "boolean" }
+            }
+          }
+        },
+        "credentials": { "$ref": "#/$defs/stringList" },
+        "connections": { "$ref": "#/$defs/stringList" },
+        "filesystem": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["read", "write"],
+          "properties": {
+            "read": { "$ref": "#/$defs/stringList" },
+            "write": { "$ref": "#/$defs/stringList" }
+          }
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["destinations"],
+          "properties": {
+            "destinations": { "$ref": "#/$defs/stringList" }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shell", "browser", "code", "sandbox"],
+          "properties": {
+            "shell": { "type": "boolean" },
+            "browser": { "type": "boolean" },
+            "code": { "type": "boolean" },
+            "sandbox": { "type": "boolean" }
+          }
+        },
+        "hardware": { "$ref": "#/$defs/stringList" },
+        "known_limitations": { "$ref": "#/$defs/stringList" }
+      }
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "x-max-utf8-bytes": 512
+      }
+    }
+  }
+}

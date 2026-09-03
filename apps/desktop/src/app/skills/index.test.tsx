@@ -283,6 +283,37 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
   })
 
+  it('uses editorial skill copy while keeping canonical identifiers for actions', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Use when researching the web.',
+        editorial_name: 'Research the Web',
+        editorial_description: 'Find and compare trustworthy sources online.',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled'
+      }
+    ])
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    expect((await screen.findAllByText('Research the Web')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Find and compare trustworthy sources online.')).toBeTruthy()
+    expect(screen.queryByText('Use when researching the web.')).toBeNull()
+    expect(getSkillContent).toHaveBeenCalledWith('web-research', 'default')
+  })
+
   it('hub picker refuses to reinstall an already-installed skill', async () => {
     const { notify } = await import('@/store/notifications')
     const { EmbeddedHubPicker } = await import('./embedded-hub-picker')

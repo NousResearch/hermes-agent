@@ -2379,6 +2379,20 @@ DEFAULT_CONFIG = {
         "ledger": True,
     },
 
+    # Collective Wisdom — local qualification plus owner-consented sharing.
+    # The sync.base_url transport and existing Nous OAuth token are reused;
+    # no Gateway secret or URL is exposed to renderer clients.
+    "wisdom": {
+        "enabled": False,
+        "portal_url": "https://portal.nousresearch.com",
+        "request_timeout": 30,
+        "notifications": {
+            "decisions": "immediate",
+            "installed_updates": "immediate",
+            "new_skills": "daily",
+        },
+    },
+
     # Curator — background skill maintenance.
     #
     # Periodically reviews AGENT-CREATED skills (never bundled or

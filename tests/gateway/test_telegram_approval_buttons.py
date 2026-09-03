@@ -271,6 +271,677 @@ class TestTelegramApprovalCallback:
         assert (tmp_path / ".update_response").read_text() == "y"
 
     @pytest.mark.asyncio
+    async def test_wisdom_update_callback_plans_and_applies_compatible_update(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:plan:update:skill-3"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.update_plan.return_value = {
+            "receipt": "wup_deadbeef",
+            "skill_id": "skill-3",
+            "slug": "team-runbook",
+            "version": 3,
+            "compatibility": {"outcome": "compatible"},
+            "modified": False,
+            "sensitive_expansion": [],
+        }
+        service.update_apply.return_value = {
+            "skill_id": "skill-3",
+            "slug": "team-runbook",
+            "version": 3,
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        assert service.require_setup.call_count == 2
+        service.update_plan.assert_called_once_with("skill-3")
+        service.update_apply.assert_called_once_with(
+            "wup_deadbeef",
+            accept_sensitive=False,
+            accept_partial=False,
+            preserve_modified=False,
+        )
+        edit_kwargs = query.edit_message_text.await_args.kwargs
+        assert "team-runbook v3 updated" in edit_kwargs["text"]
+        assert edit_kwargs["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_wisdom_install_callback_uses_org_default_and_owning_profile(
+        self, monkeypatch, tmp_path
+    ):
+        adapter = _make_adapter()
+        adapter.set_owner_profile("customer-b")
+        query = AsyncMock()
+        query.data = "wi:plan:install:skill-4"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.install_plan.return_value = {
+            "receipt": "wip_deadbeef",
+            "skill_id": "skill-4",
+            "slug": "release-checklist",
+            "version": 2,
+            "compatibility": {"outcome": "compatible"},
+            "allowed": True,
+        }
+        service.install_apply.return_value = {
+            "skill_id": "skill-4",
+            "slug": "release-checklist",
+            "version": 2,
+        }
+        entered_profiles = []
+
+        class _ProfileScope:
+            def __init__(self, home):
+                self.home = home
+
+            def __enter__(self):
+                entered_profiles.append(self.home)
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda profile: tmp_path / "profiles" / profile,
+        )
+        monkeypatch.setattr("gateway.run._profile_runtime_scope", _ProfileScope)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        service.install_plan.assert_called_once_with("skill-4", update_mode=None)
+        service.install_apply.assert_called_once_with(
+            "wip_deadbeef", accept_partial=False
+        )
+        assert entered_profiles == [
+            tmp_path / "profiles" / "customer-b",
+            tmp_path / "profiles" / "customer-b",
+        ]
+        assert "release-checklist v2 installed" in (
+            query.edit_message_text.await_args.kwargs["text"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_notification_is_exact_session_and_non_consuming(
+        self, tmp_path
+    ):
+        from hermes_wisdom.store import WisdomStore
+
+        store = WisdomStore(tmp_path / "wisdom")
+        store.installation_identity()
+        store.verify_installation_identity("org-1")
+        store.record_organization_display_name_check("org-1", "Nous Research")
+        skill = tmp_path / "telegram-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# Telegram skill\n", encoding="utf-8")
+        skill_id = store.register_skill(
+            skill, content_hash="sha256:source", source_kind="local"
+        )
+        event_id = store.emit_local_event(
+            kind="wisdom.candidate",
+            skill_id=skill_id,
+            content_hash="sha256:source",
+            payload={
+                "skill_name": "telegram-skill",
+                "editorial_name": "Telegram Workflow",
+                "editorial_description": "Reuse a reliable Telegram workflow.",
+                "local_reasons": {
+                    "consecutive_business_days": 7,
+                    "business_day_timezone": "Australia/Brisbane",
+                },
+            },
+            session_id="telegram-session",
+            task_id="task-1",
+            qualification="high_usage",
+        )
+        assert event_id is not None
+        adapter = _make_adapter()
+
+        with patch("hermes_wisdom.store.WisdomStore", return_value=store):
+            assert (
+                await adapter.send_wisdom_candidate_notifications(
+                    "12345", "other-session"
+                )
+                == 0
+            )
+            assert (
+                await adapter.send_wisdom_candidate_notifications(
+                    "12345", "telegram-session"
+                )
+                == 1
+            )
+
+        raw_call = adapter._bot.do_api_request.await_args
+        assert raw_call.args == ("sendRichMessage",)
+        html = raw_call.kwargs["api_kwargs"]["rich_message"]["html"]
+        assert "Telegram Workflow" in html
+        assert "Reuse a reliable Telegram workflow." in html
+        assert "Your organisation (Nous Research) has enabled Collective Wisdom" in html
+        assert "Congratulations! Hermes detected a skill" in html
+        assert "Why suggested:" in html
+        assert "consistently across consecutive business days" in html
+        assert "consecutive_business_days" not in html
+        assert "Australia/Brisbane" not in html
+        assert "Would you like to share?" in html
+        assert "Review first" in html
+        assert "Yes" in html
+        assert html.index("Not Now") < html.index("Review first") < html.index("Yes")
+        assert f"wi:defer:{event_id}" in html
+        assert f"wi:draft:{event_id}" in html
+        assert f"wi:publish:{event_id}" in html
+        assert store.pending_telegram_events(
+            kind="wisdom.candidate", session_id="telegram-session"
+        ) == []
+        assert [
+            item["id"]
+            for item in store.local_events(
+                kind="wisdom.candidate", session_id="telegram-session"
+            )
+        ] == [event_id]
+
+    def test_wisdom_candidate_returning_copy_and_mobile_keyboard_order(
+        self, monkeypatch
+    ):
+        from hermes_wisdom.notice import qualification_notice
+
+        captured_rows = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, **kwargs: text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: captured_rows.extend(rows) or rows,
+        )
+        notice = qualification_notice({"notice_variant": "returning"})
+        actions = [
+            {"label": "Not Now", "callback_data": "wi:defer:event-2"},
+            {"label": "Review first", "callback_data": "wi:draft:event-2"},
+            {
+                "label": "Yes",
+                "callback_data": "wi:publish:event-2",
+                "primary": True,
+            },
+        ]
+        html = TelegramAdapter._wisdom_candidate_html(
+            skill_name="another-skill",
+            qualification_reason="It met the local rules.",
+            status=(
+                f"{notice}\n\nNothing is shared without your approval.\n\n"
+                "Would you like to share?"
+            ),
+            actions=actions,
+        )
+        keyboard = TelegramAdapter._wisdom_candidate_keyboard(actions)
+
+        assert "Hermes detected <b>another</b> skill" in html
+        assert keyboard is not None
+        assert captured_rows == [["Not Now", "Review first", "Yes"]]
+
+    def test_wisdom_candidate_reason_explains_refinement_without_raw_evidence(self):
+        reason = TelegramAdapter._wisdom_candidate_qualification_reason("refinement")
+
+        assert "refined this skill repeatedly" in reason
+        assert "used it recently" in reason
+        assert "remained stable" in reason
+        assert "3" not in reason
+        assert "7" not in reason
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_draft_callback_adds_portal_and_publish_actions(
+        self,
+    ):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:draft:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=77)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.draft_candidate.return_value = {
+            "draft_id": "draft-1",
+            "skill_name": "telegram-skill",
+            "state": "ready",
+            "portal_url": "https://portal.test/review/draft-1",
+            "created": True,
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        service.draft_candidate.assert_called_once_with("event-1")
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "Private draft created" in html
+        assert "Yes" in html
+        assert "https://portal.test/review/draft-1" in html
+        assert "wi:defer:event-1" in html
+        assert html.index("Not Now") < html.index("View") < html.index("Yes")
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_not_now_defers_without_declining(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:defer:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=79)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.defer_candidate_prompt.return_value = {
+            "skill_name": "telegram-skill",
+            "qualification": "high_usage",
+            "state": "deferred",
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        service.defer_candidate_prompt.assert_called_once_with(
+            "event-1", surface="telegram"
+        )
+        service.decline_candidate.assert_not_called()
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "Not sharing right now" in html
+        assert "Collective Wisdom" in html
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_publish_callback_reports_moderation_state(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:publish:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=78)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.approve_candidate.return_value = {
+            "skill_name": "telegram-skill",
+            "publication_state": "pending_moderation",
+            "portal_url": "https://portal.test/review/draft-1",
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        service.approve_candidate.assert_called_once_with("event-1")
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "collective administrator" in html
+        assert "https://portal.test/review/draft-1" in html
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_stale_publish_button_reports_portal_winner(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:publish:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=78)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.approve_candidate.return_value = {
+            "skill_name": "telegram-skill",
+            "publication_state": "published",
+            "already_advanced": True,
+            "portal_url": "https://portal.test/review/draft-1",
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "already published to your collective" in html
+        assert "https://portal.test/review/draft-1" in html
+        assert "Approve &amp; publish" not in html
+        assert "wi:publish:event-1" not in html
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_changes_requested_removes_publish_action(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:publish:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=78)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.approve_candidate.return_value = {
+            "skill_name": "telegram-skill",
+            "publication_state": "changes_requested",
+            "already_advanced": True,
+            "portal_url": "https://portal.test/review/draft-1",
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "requested changes" in html
+        assert "Approve &amp; publish" not in html
+        assert "https://portal.test/review/draft-1" in html
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_transient_failure_preserves_retry_controls(self):
+        adapter = _make_adapter()
+        adapter._bot.do_api_request.reset_mock()
+        query = AsyncMock()
+        query.data = "wi:publish:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=78)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.approve_candidate.side_effect = TimeoutError("Gateway timed out")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        adapter._bot.do_api_request.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wisdom_candidate_decline_callback_suppresses_exact_bytes(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:decline:event-1"
+        query.message = MagicMock(chat_id=12345, message_id=79)
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        service = MagicMock()
+        service.decline_candidate.return_value = {
+            "skill_name": "telegram-skill",
+            "state": "declined",
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(
+                    MagicMock(callback_query=query), MagicMock()
+                )
+
+        service.decline_candidate.assert_called_once_with("event-1")
+        html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"][
+            "rich_message"
+        ]["html"]
+        assert "exact bytes will not be suggested again" in html
+
+    @pytest.mark.asyncio
+    async def test_wisdom_install_preserves_rich_notification_and_disables_action(
+        self,
+    ):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:plan:install:skill-4"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 77
+        query.message.rich_message = None
+        query.message.reply_markup = None
+        query.message.api_kwargs = {
+            "rich_message": {
+                "blocks": [
+                    {
+                        "type": "paragraph",
+                        "text": [
+                            "New skill from your team\nrelease-checklist · v2\n",
+                            {
+                                "type": "button",
+                                "button": {
+                                    "text": "Install",
+                                    "style": "primary",
+                                    "callback_data": "wi:plan:install:skill-4",
+                                },
+                            },
+                            " ",
+                            {
+                                "type": "button",
+                                "button": {
+                                    "text": "View ↗",
+                                    "url": "https://portal.test/release-checklist",
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "type": "paragraph",
+                        "text": [
+                            "Update available\nteam-runbook · v3\n",
+                            {
+                                "type": "button",
+                                "button": {
+                                    "text": "Update",
+                                    "style": "primary",
+                                    "callback_data": "wi:plan:update:skill-3",
+                                },
+                            },
+                        ],
+                    },
+                ]
+            }
+        }
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.install_plan.return_value = {
+            "receipt": "wip_deadbeef",
+            "skill_id": "skill-4",
+            "slug": "release-checklist",
+            "version": 2,
+            "compatibility": {"outcome": "compatible"},
+            "allowed": True,
+        }
+        service.install_apply.return_value = {
+            "skill_id": "skill-4",
+            "slug": "release-checklist",
+            "version": 2,
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        adapter._bot.do_api_request.assert_awaited_once()
+        raw_call = adapter._bot.do_api_request.await_args
+        assert raw_call.args == ("editMessageText",)
+        payload = raw_call.kwargs["api_kwargs"]
+        assert payload["chat_id"] == 12345
+        assert payload["message_id"] == 77
+        rich_message = payload["rich_message"]
+        install_button = rich_message["blocks"][0]["text"][1]["button"]
+        assert install_button == {
+            "text": "✓ Installed",
+            "style": "success",
+            "disabled": {},
+        }
+        assert rich_message["blocks"][0]["text"][3]["button"] == {
+            "text": "View ↗",
+            "url": "https://portal.test/release-checklist",
+        }
+        assert rich_message["blocks"][1]["text"][1]["button"] == {
+            "text": "Update",
+            "style": "primary",
+            "callback_data": "wi:plan:update:skill-3",
+        }
+        query.edit_message_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wisdom_update_preserves_fallback_keyboard_and_disables_action(
+        self,
+    ):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:plan:update:skill-3"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 78
+        query.message.rich_message = None
+        query.message.api_kwargs = {}
+        query.message.reply_markup.to_dict.return_value = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Update",
+                        "callback_data": "wi:plan:update:skill-3",
+                        "style": "primary",
+                    },
+                    {"text": "View ↗", "url": "https://portal.test/team-runbook"},
+                ],
+                [
+                    {
+                        "text": "Install",
+                        "callback_data": "wi:plan:install:skill-4",
+                    }
+                ],
+            ]
+        }
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.update_plan.return_value = {
+            "receipt": "wup_deadbeef",
+            "skill_id": "skill-3",
+            "slug": "team-runbook",
+            "version": 3,
+            "compatibility": {"outcome": "compatible"},
+            "modified": False,
+            "sensitive_expansion": [],
+        }
+        service.update_apply.return_value = {
+            "skill_id": "skill-3",
+            "slug": "team-runbook",
+            "version": 3,
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        adapter._bot.do_api_request.assert_awaited_once()
+        raw_call = adapter._bot.do_api_request.await_args
+        assert raw_call.args == ("editMessageReplyMarkup",)
+        keyboard = raw_call.kwargs["api_kwargs"]["reply_markup"]["inline_keyboard"]
+        assert keyboard[0][0] == {
+            "text": "✓ Updated",
+            "style": "success",
+            "disabled": {},
+        }
+        assert keyboard[0][1] == {
+            "text": "View ↗",
+            "url": "https://portal.test/team-runbook",
+        }
+        assert keyboard[1][0] == {
+            "text": "Install",
+            "callback_data": "wi:plan:install:skill-4",
+        }
+        query.edit_message_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wisdom_callback_does_not_apply_when_full_review_is_required(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:plan:update:skill-3"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.update_plan.return_value = {
+            "receipt": "wup_deadbeef",
+            "skill_id": "skill-3",
+            "slug": "team-runbook",
+            "version": 3,
+            "compatibility": {"outcome": "partial"},
+            "modified": False,
+            "sensitive_expansion": [],
+        }
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        service.update_apply.assert_not_called()
+        assert "needs a full review" in (
+            query.edit_message_text.await_args.kwargs["text"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_wisdom_update_confirmation_applies_exact_receipt(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "wi:confirm:update:wup_deadbeef"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock(id="12345", first_name="Shannon")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        service = MagicMock()
+        service.update_apply.return_value = {"skill_id": "skill-3", "version": 3}
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("hermes_wisdom.service.WisdomService", return_value=service):
+                await adapter._handle_callback_query(update, MagicMock())
+
+        service.update_apply.assert_called_once_with(
+            "wup_deadbeef",
+            accept_sensitive=False,
+            accept_partial=False,
+            preserve_modified=False,
+        )
+        assert "Skill updated v3" in query.edit_message_text.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
         """Update prompt buttons should honor TELEGRAM_ALLOWED_USERS."""
         adapter = _make_adapter()
@@ -329,4 +1000,3 @@ class TestTelegramApprovalCallback:
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
-

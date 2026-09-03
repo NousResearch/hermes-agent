@@ -9111,6 +9111,19 @@ def test_complete_slash_returns_plain_string_fields():
         assert isinstance(item["meta"], str), item
 
 
+def test_complete_slash_returns_documented_wisdom_subcommands():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/wisdom "}}
+    )
+
+    items = {item["text"]: item for item in resp["result"]["items"]}
+    assert items["show"]["display"] == "show"
+    assert items["show"]["meta"].startswith("<skill> — View its description")
+    assert items["installed"]["meta"] == (
+        "List and manage skills installed on this device"
+    )
+
+
 def test_complete_slash_includes_tui_details_command():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}
@@ -11353,6 +11366,11 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/update" in pairs
     assert canon["/update"] == "/update"
 
+    assert "/wisdom" in pairs
+    assert canon["/wisdom"] == "/wisdom"
+    assert canon["/collective-wisdom-install"] == "/wisdom"
+    assert "/collective-wisdom-install" not in pairs
+
     assert "/topic" not in canon
     assert "/approve" not in canon
     assert "/deny" not in canon
@@ -11369,6 +11387,7 @@ def test_commands_catalog_includes_desktop_meta_without_skills():
     assert commands["/clear"]["desktop"] == "terminal"
     assert commands["/model"]["desktop"] == "hidden"
     assert commands["/compact"]["argument_mode"] == commands["/compress"]["argument_mode"]
+    assert commands["/wisdom"] == {"argument_mode": "mixed", "desktop": None}
 
     for skill in resp["result"]["skills"]:
         assert skill not in commands
@@ -18824,6 +18843,39 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
         assert all("result" in r for r in results), results
     finally:
         server._sessions.pop("race-spawn", None)
+
+
+def test_slash_exec_wisdom_uses_native_profile_scoped_controller(monkeypatch, tmp_path):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("native /wisdom must not spawn the CLI worker")
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    session = _session(
+        profile_home=str(profile_home),
+        session_key="wisdom-session",
+        slash_worker=None,
+    )
+    server._sessions["wisdom-native"] = session
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        resp = server.handle_request({
+            "id": "wisdom",
+            "method": "slash.exec",
+            "params": {
+                "command": "wisdom help",
+                "session_id": "wisdom-native",
+            },
+        })
+    finally:
+        server._sessions.pop("wisdom-native", None)
+
+    assert "result" in resp
+    assert "Collective Wisdom commands" in resp["result"]["output"]
+    assert "/wisdom browse" in resp["result"]["output"]
+    assert session["slash_worker"] is None
 
 
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):

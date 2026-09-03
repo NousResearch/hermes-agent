@@ -27,6 +27,10 @@ import {
 const CREATE_TEMPLATE = `---
 name: my-skill
 description: One-line description of when to use this skill.
+metadata:
+  hermes:
+    editorial_name: My Skill
+    editorial_description: A human-readable summary of what this skill helps with.
 ---
 
 # My Skill

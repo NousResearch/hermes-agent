@@ -8,6 +8,10 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.skill_utils import (
+    extract_skill_editorial_metadata,
+    load_skill_editorial_metadata,
+)
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -84,6 +88,62 @@ class TestParseFrontmatter:
         assert fm["name"] == "test"
         assert fm["description"] == "A test."
         assert not body.startswith(bom)
+
+
+class TestEditorialMetadata:
+    def test_uses_explicit_human_facing_copy(self):
+        assert extract_skill_editorial_metadata(
+            {
+                "metadata": {
+                    "hermes": {
+                        "editorial_name": "Incident Response",
+                        "editorial_description": "Handle incidents calmly and consistently.",
+                    }
+                }
+            },
+            fallback_name="incident-response",
+            fallback_description="Use when responding to incidents.",
+        ) == {
+            "editorial_name": "Incident Response",
+            "editorial_description": "Handle incidents calmly and consistently.",
+        }
+
+    def test_legacy_and_invalid_values_fall_back(self):
+        assert extract_skill_editorial_metadata(
+            {
+                "metadata": {
+                    "hermes": {
+                        "editorial_name": "   ",
+                        "editorial_description": 42,
+                    }
+                }
+            },
+            fallback_name="incident-response",
+            fallback_description="Use when responding to incidents.",
+        ) == {
+            "editorial_name": "incident-response",
+            "editorial_description": "Use when responding to incidents.",
+        }
+
+    def test_loads_editorial_copy_from_a_skill_directory(self, tmp_path):
+        skill = tmp_path / "incident-response"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\n"
+            "name: incident-response\n"
+            "description: Use when responding to incidents.\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    editorial_name: Incident Response\n"
+            "    editorial_description: Coordinate a calm incident response.\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        assert load_skill_editorial_metadata(skill) == {
+            "editorial_name": "Incident Response",
+            "editorial_description": "Coordinate a calm incident response.",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +277,35 @@ class TestFindAllSkills:
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
 
+    def test_resolves_editorial_copy_with_legacy_fallbacks(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "polished-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    editorial_name: Polished Skill\n"
+                    "    editorial_description: A friendly explanation for people.\n"
+                ),
+            )
+            _make_skill(tmp_path, "legacy-skill")
+            skills = {
+                skill["name"]: skill
+                for skill in _find_all_skills(include_editorial=True)
+            }
+
+        assert skills["polished-skill"]["editorial_name"] == "Polished Skill"
+        assert (
+            skills["polished-skill"]["editorial_description"]
+            == "A friendly explanation for people."
+        )
+        assert skills["legacy-skill"]["editorial_name"] == "legacy-skill"
+        assert (
+            skills["legacy-skill"]["editorial_description"]
+            == skills["legacy-skill"]["description"]
+        )
+
 
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):
         no_desc = tmp_path / "no-desc"
@@ -277,6 +366,26 @@ class TestSkillsList:
         assert all_result["count"] == 2
         assert filtered["count"] == 1
         assert filtered["skills"][0]["name"] == "skill-a"
+
+    def test_does_not_expose_editorial_copy_to_the_agent(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "polished-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    editorial_name: Polished Skill\n"
+                    "    editorial_description: Human-facing copy.\n"
+                ),
+            )
+            skill = json.loads(skills_list())["skills"][0]
+
+        assert skill == {
+            "name": "polished-skill",
+            "description": "Description for polished-skill.",
+            "category": None,
+        }
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"

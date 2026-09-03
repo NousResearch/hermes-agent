@@ -472,6 +472,7 @@ import functools as _functools
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
+from hermes_cli.subcommands.wisdom import build_wisdom_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -13957,6 +13958,7 @@ def main():
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
+    build_wisdom_parser(subparsers)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

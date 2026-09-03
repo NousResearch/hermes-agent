@@ -6,6 +6,8 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import html
+import inspect
 import json
 import logging
 import os
@@ -265,6 +267,275 @@ def send_message_tool(args, **kw):
         return _handle_react(args, remove=True)
 
     return _handle_send(args)
+
+
+def send_telegram_notification_pane(
+    *,
+    message: str,
+    button_rows: list[list[dict[str, str]]],
+    items: list[dict[str, object]] | None = None,
+) -> dict:
+    """Send an internal notification to the Telegram home chat with trusted actions.
+
+    This is intentionally not part of the model-facing ``send_message`` schema.
+    Product notifications can offer trusted managed actions and Portal deep
+    links without giving an arbitrary tool caller a second, Telegram-specific
+    message surface. Rows are explicit so each skill keeps its action and link
+    together. Bot API 10.3 clients render the trusted controls directly inside
+    each rich-message item; the compact inline keyboard is retained as a safe
+    fallback for older Bot API servers and clients.
+    """
+    prepare_send_message_platforms()
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        platform = Platform.TELEGRAM
+        pconfig = config.platforms.get(platform)
+        if not pconfig or not pconfig.enabled:
+            return _error("Telegram is not configured")
+        home = config.get_home_channel(platform)
+        if not home:
+            return _error("Telegram has no configured home channel")
+
+        safe_rows: list[list[dict[str, str]]] = []
+        safe_rows_by_item: list[list[dict[str, str]]] = []
+        button_count = 0
+        for row in button_rows[:8]:
+            safe_row: list[dict[str, str]] = []
+            for button in row[:2]:
+                if button_count >= 16:
+                    break
+                label = str(button.get("label") or "").strip()[:32]
+                url = str(button.get("url") or "").strip()
+                if label and re.fullmatch(r"https?://[^\s]+", url):
+                    safe_row.append({"label": label, "url": url})
+                    button_count += 1
+                    continue
+                callback_data = str(button.get("callback_data") or "").strip()
+                if (
+                    label
+                    and len(callback_data.encode("utf-8")) <= 64
+                    and re.fullmatch(
+                        r"wi:(?:plan:(?:install|update):[A-Za-z0-9_-]+|"
+                        r"confirm:(?:install|update):w(?:ip|up)_[a-f0-9]+|cancel)",
+                        callback_data,
+                    )
+                ):
+                    safe_row.append({
+                        "label": label,
+                        "callback_data": callback_data,
+                    })
+                    button_count += 1
+            safe_rows_by_item.append(safe_row)
+            if safe_row:
+                safe_rows.append(safe_row)
+
+        rich_message_html = None
+        if items:
+            rich_item_parts: list[str] = []
+            for item, item_buttons in zip(items[:8], safe_rows_by_item):
+                heading = html.escape(str(item.get("heading") or "").strip())
+                detail = html.escape(str(item.get("detail") or "").strip())
+                if not heading or not detail:
+                    continue
+                controls: list[str] = []
+                for button in item_buttons:
+                    label = html.escape(button["label"])
+                    if button.get("url"):
+                        controls.append(
+                            '<tg-button type="url" url="'
+                            f'{html.escape(button["url"], quote=True)}">'
+                            f"{label}</tg-button>"
+                        )
+                    else:
+                        controls.append(
+                            '<tg-button type="callback_data" style="primary" data="'
+                            f'{html.escape(button["callback_data"], quote=True)}">'
+                            f"{label}</tg-button>"
+                        )
+                control_html = f"<br/>{' '.join(controls)}" if controls else ""
+                rich_item_parts.append(
+                    f"<p><b>{heading}</b><br/>{detail}{control_html}</p>"
+                )
+            if rich_item_parts:
+                item_count = len(rich_item_parts)
+                rich_parts = [
+                    # Telegram owns rich-message bubble sizing and exposes no
+                    # width/min-width control. Keep a stable, naturally wider
+                    # product heading so short skill names and one-word actions
+                    # do not collapse these notifications into narrow cards.
+                    "<h3>Hermes Collective Wisdom</h3>",
+                    (
+                        f"<p>{item_count} new "
+                        f"{'update' if item_count == 1 else 'updates'}</p>"
+                    ),
+                    *rich_item_parts,
+                ]
+                rich_message_html = "".join(rich_parts)
+
+        from model_tools import _run_async
+
+        result = _run_async(
+            _send_telegram(
+                pconfig.token,
+                home.chat_id,
+                message,
+                disable_link_previews=True,
+                action_button_rows=safe_rows,
+                rich_message_html=rich_message_html,
+            )
+        )
+        return result if isinstance(result, dict) else {"success": bool(result)}
+    except Exception as exc:
+        return _error(f"Telegram notification failed: {exc}")
+
+
+def send_slack_wisdom_notification_pane(
+    *,
+    message: str,
+    button_rows: list[list[dict[str, str]]],
+    items: list[dict[str, object]],
+) -> dict:
+    """Send a trusted Collective Wisdom Block Kit pane to Slack's home chat.
+
+    This internal surface deliberately accepts only Wisdom's compact managed
+    callback grammar and HTTPS Portal links. It is not exposed through the
+    model-facing ``send_message`` tool.
+    """
+    prepare_send_message_platforms()
+    try:
+        from gateway.config import Platform, load_gateway_config
+        from model_tools import _run_async
+
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.SLACK)
+        if not pconfig or not pconfig.enabled:
+            return _error("Slack is not configured")
+        home = config.get_home_channel(Platform.SLACK)
+        if not home:
+            return _error("Slack has no configured home channel")
+
+        blocks: list[dict[str, object]] = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "Hermes Collective Wisdom",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{len(items[:8])} new "
+                        f"{'update' if len(items[:8]) == 1 else 'updates'}"
+                    ),
+                },
+            },
+        ]
+        for item_index, (item, row) in enumerate(
+            zip(items[:8], button_rows[:8])
+        ):
+            heading = str(item.get("heading") or "").strip()[:150]
+            detail = str(item.get("detail") or "").strip()[:2600]
+            if not heading or not detail:
+                continue
+            safe_heading = heading.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            safe_detail = detail.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{safe_heading}*\n{safe_detail}",
+                    },
+                }
+            )
+            buttons: list[dict[str, object]] = []
+            for button_index, button in enumerate(row[:2]):
+                label = str(button.get("label") or "").strip()[:75]
+                if not label:
+                    continue
+                element: dict[str, object] = {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": label, "emoji": True},
+                    "action_id": (
+                        f"hermes_wisdom_feed_{item_index}_{button_index}"
+                    ),
+                }
+                url = str(button.get("url") or "").strip()
+                if re.fullmatch(r"https://[^\s]+", url):
+                    element["url"] = url
+                    element["value"] = "wisdom:portal"
+                else:
+                    callback_data = str(button.get("callback_data") or "").strip()
+                    if not re.fullmatch(
+                        r"wi:plan:(?:install|update):[A-Za-z0-9_-]+",
+                        callback_data,
+                    ):
+                        continue
+                    element["value"] = callback_data
+                    element["style"] = "primary"
+                buttons.append(element)
+            if buttons:
+                blocks.append({"type": "actions", "elements": buttons})
+
+        async def send() -> dict:
+            try:
+                from slack_sdk.web.async_client import AsyncWebClient
+            except ImportError:
+                return _error("slack_sdk is not installed")
+            raw_token = getattr(pconfig, "token", None) or get_secret(
+                "SLACK_BOT_TOKEN", ""
+            )
+            tokens = [
+                token.strip()
+                for token in str(raw_token or "").split(",")
+                if token.strip()
+            ]
+            if not tokens:
+                return _error("Slack bot token is not configured")
+            last_error = "unknown"
+            for token in tokens:
+                try:
+                    client = AsyncWebClient(token=token)
+                    if home.thread_id:
+                        response = await client.chat_postMessage(
+                            channel=home.chat_id,
+                            text=message[:39000],
+                            blocks=blocks[:50],
+                            unfurl_links=False,
+                            unfurl_media=False,
+                            thread_ts=str(home.thread_id),
+                        )
+                    else:
+                        response = await client.chat_postMessage(
+                            channel=home.chat_id,
+                            text=message[:39000],
+                            blocks=blocks[:50],
+                            unfurl_links=False,
+                            unfurl_media=False,
+                        )
+                    payload = getattr(response, "data", response)
+                    if isinstance(payload, dict) and payload.get("ok", True):
+                        return {
+                            "success": True,
+                            "message_id": payload.get("ts"),
+                            "private": str(home.chat_id).startswith("D"),
+                        }
+                    if isinstance(payload, dict):
+                        last_error = str(payload.get("error") or last_error)
+                except Exception as exc:
+                    last_error = str(exc)
+            return _error(f"Slack notification failed: {last_error}")
+
+        result = _run_async(send())
+        return result if isinstance(result, dict) else {"success": bool(result)}
+    except Exception as exc:
+        return _error(f"Slack notification failed: {exc}")
 
 
 def _handle_list():
@@ -1556,7 +1827,19 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    url_buttons=None,
+    action_buttons=None,
+    action_button_rows=None,
+    rich_message_html=None,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1565,7 +1848,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
+        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.constants import ParseMode
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
@@ -1641,12 +1924,115 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 )
             if effective_thread_id is not None:
                 thread_kwargs["message_thread_id"] = effective_thread_id
+
+        if rich_message_html and not media_files:
+            raw_request = getattr(bot, "do_api_request", None)
+            if inspect.iscoroutinefunction(raw_request):
+                rich_payload = {
+                    "chat_id": int_chat_id,
+                    "rich_message": {"html": rich_message_html},
+                    **thread_kwargs,
+                }
+                if disable_link_previews:
+                    rich_payload["link_preview_options"] = {"is_disabled": True}
+                try:
+                    rich_result = await raw_request(
+                        "sendRichMessage", api_kwargs=rich_payload
+                    )
+                except Exception as rich_error:
+                    error_name = rich_error.__class__.__name__.lower()
+                    error_code = getattr(rich_error, "error_code", None)
+                    error_text = str(rich_error).lower()
+                    permanent_rejection = (
+                        error_name in {"badrequest", "endpointnotfound"}
+                        or error_code in {400, 404}
+                        or isinstance(
+                            rich_error,
+                            (AttributeError, TypeError, NotImplementedError),
+                        )
+                        or (
+                            ("method" in error_text or "endpoint" in error_text)
+                            and (
+                                "not found" in error_text
+                                or "does not exist" in error_text
+                            )
+                        )
+                        or "unsupported" in error_text
+                        or "not implemented" in error_text
+                    )
+                    if not permanent_rejection:
+                        logger.warning(
+                            "Telegram rich notification failed transiently; "
+                            "not resending to avoid a duplicate: %s",
+                            _sanitize_error_text(rich_error),
+                        )
+                        return _error(
+                            "Telegram rich notification failed: "
+                            f"{_sanitize_error_text(rich_error)}"
+                        )
+                    logger.debug(
+                        "Telegram rejected the Bot API 10.3 rich notification; "
+                        "falling back to an inline keyboard: %s",
+                        _sanitize_error_text(rich_error),
+                    )
+                else:
+                    message_id = None
+                    if isinstance(rich_result, dict):
+                        message_id = rich_result.get("message_id")
+                        if message_id is None:
+                            message_id = (rich_result.get("result") or {}).get(
+                                "message_id"
+                            )
+                    else:
+                        message_id = getattr(rich_result, "message_id", None)
+                    return {
+                        "success": True,
+                        "message_id": (
+                            str(message_id) if message_id is not None else None
+                        ),
+                    }
         # disable_web_page_preview is only valid for send_message, not
         # send_photo/send_video/etc.  Keep it separate so media sends
         # don't inherit an invalid parameter (issue #27012).
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        reply_markup = None
+        if action_button_rows:
+            reply_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        str(button["label"]),
+                        **(
+                            {"url": str(button["url"])}
+                            if button.get("url")
+                            else {"callback_data": str(button["callback_data"])}
+                        ),
+                    )
+                    for button in row
+                ]
+                for row in action_button_rows
+                if row
+            ])
+        elif action_buttons:
+            reply_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        str(button["label"]),
+                        **(
+                            {"url": str(button["url"])}
+                            if button.get("url")
+                            else {"callback_data": str(button["callback_data"])}
+                        ),
+                    )
+                ]
+                for button in action_buttons
+            ])
+        elif url_buttons:
+            reply_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(str(button["label"]), url=str(button["url"]))]
+                for button in url_buttons
+            ])
 
         last_msg = None
         warnings = []
@@ -1680,27 +2066,31 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
-            for chunk in text_chunks:
+            for index, chunk in enumerate(text_chunks):
+                chunk_kwargs = dict(text_kwargs)
+                if reply_markup is not None and index == len(text_chunks) - 1:
+                    chunk_kwargs["reply_markup"] = reply_markup
                 try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=chunk,
-                        parse_mode=send_parse_mode, **text_kwargs
+                        parse_mode=send_parse_mode, **chunk_kwargs
                     )
                 except Exception as md_error:
                     # Thread not found — retry without message_thread_id so the
                     # message still delivers (matching the gateway adapter's
                     # fallback behaviour, issue #27012).
-                    if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
+                    if _is_telegram_thread_not_found(md_error) and chunk_kwargs.get("message_thread_id") is not None:
                         logger.warning(
                             "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                            text_kwargs.get("message_thread_id"),
+                            chunk_kwargs.get("message_thread_id"),
                         )
                         text_kwargs.pop("message_thread_id", None)
+                        chunk_kwargs.pop("message_thread_id", None)
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=chunk,
-                            parse_mode=send_parse_mode, **text_kwargs
+                            parse_mode=send_parse_mode, **chunk_kwargs
                         )
                     elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                         logger.warning(
@@ -1719,7 +2109,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=plain,
-                            parse_mode=None, **text_kwargs
+                            parse_mode=None, **chunk_kwargs
                         )
                     else:
                         raise

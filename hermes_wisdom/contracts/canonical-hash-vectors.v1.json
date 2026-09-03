@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "SKILL.md",
+      "mode": "file",
+      "content_utf8": "# Canonical Example\n\nFollow these steps.\n",
+      "content_base64": "IyBDYW5vbmljYWwgRXhhbXBsZQoKRm9sbG93IHRoZXNlIHN0ZXBzLgo=",
+      "hash": "sha256:52321eb89a8f2c22e8436c9f1ba0bf2d2f8c557674a2bcecad4c63d9a0a26f3e"
+    },
+    {
+      "path": "refs/notes.txt",
+      "mode": "file",
+      "content_utf8": "Use exact bytes.\n",
+      "content_base64": "VXNlIGV4YWN0IGJ5dGVzLgo=",
+      "hash": "sha256:aa73904fc874145cafd576ced9ace72bf34a07a9e5c178e3ba419dd175f155d4"
+    },
+    {
+      "path": "skill.manifest.json",
+      "mode": "file",
+      "content_utf8": "{\"schema_version\":1,\"name\":\"Canonical example\",\"requirements\":{\"hermes\":{\"minimum_version\":\"1.0.0\"},\"platforms\":[],\"architectures\":[],\"model\":{\"capabilities\":[],\"minimum_context_window\":null},\"tools\":[],\"plugins\":[],\"credentials\":[],\"connections\":[],\"filesystem\":{\"read\":[],\"write\":[]},\"network\":{\"destinations\":[]},\"runtime\":{\"shell\":false,\"browser\":false,\"code\":false,\"sandbox\":true},\"hardware\":[],\"known_limitations\":[]}}",
+      "content_base64": "eyJzY2hlbWFfdmVyc2lvbiI6MSwibmFtZSI6IkNhbm9uaWNhbCBleGFtcGxlIiwicmVxdWlyZW1lbnRzIjp7Imhlcm1lcyI6eyJtaW5pbXVtX3ZlcnNpb24iOiIxLjAuMCJ9LCJwbGF0Zm9ybXMiOltdLCJhcmNoaXRlY3R1cmVzIjpbXSwibW9kZWwiOnsiY2FwYWJpbGl0aWVzIjpbXSwibWluaW11bV9jb250ZXh0X3dpbmRvdyI6bnVsbH0sInRvb2xzIjpbXSwicGx1Z2lucyI6W10sImNyZWRlbnRpYWxzIjpbXSwiY29ubmVjdGlvbnMiOltdLCJmaWxlc3lzdGVtIjp7InJlYWQiOltdLCJ3cml0ZSI6W119LCJuZXR3b3JrIjp7ImRlc3RpbmF0aW9ucyI6W119LCJydW50aW1lIjp7InNoZWxsIjpmYWxzZSwiYnJvd3NlciI6ZmFsc2UsImNvZGUiOmZhbHNlLCJzYW5kYm94Ijp0cnVlfSwiaGFyZHdhcmUiOltdLCJrbm93bl9saW1pdGF0aW9ucyI6W119fQ==",
+      "hash": "sha256:0fb917e5e5641cd16612323e2873fcdbe755e38b306cd6f9b676564116629b4f"
+    }
+  ],
+  "canonical_content_manifest_utf8": "SKILL.md file sha256:52321eb89a8f2c22e8436c9f1ba0bf2d2f8c557674a2bcecad4c63d9a0a26f3e\nrefs/notes.txt file sha256:aa73904fc874145cafd576ced9ace72bf34a07a9e5c178e3ba419dd175f155d4\nskill.manifest.json file sha256:0fb917e5e5641cd16612323e2873fcdbe755e38b306cd6f9b676564116629b4f\n",
+  "content_hash": "sha256:885e321f65a7eb41ba90830aad694b9d4a881a31e49cf4c77045e85e39284569",
+  "package_manifest_hash": "sha256:0fb917e5e5641cd16612323e2873fcdbe755e38b306cd6f9b676564116629b4f",
+  "author_description_input": "  <b>Reuses</b> a proven deployment checklist.  \r\n",
+  "canonical_author_description": "Reuses a proven deployment checklist.",
+  "author_description_hash": "sha256:6b6736801941addd7dd16b6030f5202f33f52540605c8c1e2ee8110014651cd1"
+}

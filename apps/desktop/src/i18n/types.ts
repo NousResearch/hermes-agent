@@ -9,6 +9,157 @@ import type { TipId } from '@/lib/tips/catalog'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
+export interface WisdomTranslations {
+  title: string
+  loading: string
+  unavailable: string
+  setup: string
+  setupDisclosure: string
+  setupAction: string
+  settingUp: string
+  scanLocal: string
+  orgWide: string
+  sharedSkills: (count: number) => string
+  localCandidates: (count: number) => string
+  contributionWorkflow: string
+  potential: string
+  potentialHelp: string
+  noSuggestions: string
+  browseLocal: (count: number) => string
+  browseLocalHelp: string
+  ownerReview: string
+  ownerReviewHelp: string
+  noDrafts: string
+  noShared: string
+  noDescription: string
+  serverScanPassed: string
+  localOnly: string
+  qualifiedLocally: string
+  qualificationFirst: (organizationName?: string | null) => string
+  qualificationReturning: string
+  savedLocally: string
+  prepare: string
+  continueDraft: string
+  reviewExact: string
+  openDraft: string
+  draftState: (state: string) => string
+  authoritative: string
+  versionHistory: string
+  versions: string
+  versionDetails: (version: number) => string
+  immutableVersion: string
+  published: (date: string) => string
+  releaseExplanation: string
+  viewInPortal: string
+  backToSkill: string
+  backToVersions: string
+  prepareTitle: string
+  prepareNotice: string
+  ownerDescription: string
+  systemSpecification: string
+  cancel: string
+  submit: string
+  submitting: string
+  readEvery: string
+  editReview: string
+  editOwnerDescription: string
+  unsavedChanges: string
+  saveAndRescan: string
+  savingRevision: string
+  resetChanges: string
+  reviewedHashes: string
+  ownerReviewExact: string
+  localOverlay: string
+  close: string
+  approve: string
+  publishing: string
+  proposalTitle: string
+  localSuggestion: string
+  preparingLocal: string
+  whySuggested: string
+  proposalNotice: string
+  sharePrompt: string
+  reviewFirst: string
+  notNow: string
+  yes: string
+  muteNotificationsSoon: string
+  unmuteNotificationsSoon: string
+  openCollective: string
+  prepareExact: string
+  skillName: string
+  editDefaultsNotice: string
+  detailedRequirements: string
+  hideDetailedRequirements: string
+  specificationNotice: string
+  openFullReview: string
+  sendPrivateReview: string
+  saveLocal: string
+  savingLocal: string
+  source: string
+  preview: string
+  localDraft: string
+  serverReviewed: string
+  serverEnforced: string
+  localAdvisory: string
+  qualificationLabel: string
+  scanPassed: string
+  reviewFindings: string
+  scanAvailable: string
+  scanUnavailable: string
+  reviewed: string
+  contentHash: string
+  authorDescriptionHash: string
+  packageManifestHash: string
+  serverReviewNotice: string
+  decline: string
+  approvePublish: string
+  checkUpdates: (count: number) => string
+  checking: string
+  refreshShared: string
+  refreshingShared: string
+  installReferenceLabel: string
+  installReferencePlaceholder: string
+  installReferenceHelp: string
+  reviewInstall: string
+  planningInstall: string
+  updateModeLabel: string
+  updateModeDefault: string
+  updateModeManual: string
+  updateModeAutomatic: string
+  updateModeRequired: string
+  updateModeHelp: string
+  updateModePlan: (mode: string) => string
+  install: string
+  uninstall: string
+  checkSkill: string
+  updateAvailable: (version?: number) => string
+  reviewUpdate: string
+  installed: (version: number, mode: string) => string
+  confirmAction: (action: string) => string
+  acceptCompatibility: string
+  acceptSensitive: string
+  preserveModified: string
+  alreadyCurrent: string
+  ownerCopyLabel: string
+  serverFactsLabel: string
+  notifications: string
+  activityReady: (count: number) => string
+  aSkill: string
+  decisionPublished: (skill: string) => string
+  decisionChanges: (skill: string) => string
+  decisionDeclined: (skill: string) => string
+  decisionChanged: (skill: string, state: string) => string
+  installedNotice: (skill: string, version?: string) => string
+  updatedNotice: (skill: string, version?: string) => string
+  updateNotice: (skill: string, version?: string) => string
+  newSkillNotice: (skill: string) => string
+  unavailableNotice: (skill: string) => string
+  archivedNotice: (skill: string) => string
+  takedownNotice: (skill: string) => string
+  viewSkill: string
+  markSeen: string
+}
+
 export type ToolTitleKey =
   | 'browser_click'
   | 'browser_fill'
@@ -1228,13 +1379,16 @@ export interface Translations {
   }
 
   skills: {
+    collective: WisdomTranslations
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
     tabMcp: string
+    tabCollective: string
     all: string
     searchSkills: string
     searchToolsets: string
+    searchCollective: string
     refresh: string
     refreshing: string
     loading: string

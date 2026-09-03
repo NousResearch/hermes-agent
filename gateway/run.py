@@ -18536,9 +18536,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "help": self._handle_help_command,
             "commands": self._handle_commands_command,
             "profile": self._handle_profile_command,
+            "wisdom": self._handle_wisdom_command,
             "update": self._handle_update_command,
             "version": self._handle_version_command,
         }
+
+    async def _handle_wisdom_command(self, event: MessageEvent):
+        """Dispatch `/wisdom` through the active profile's shared service."""
+        source = event.source
+        adapter = self._adapter_for_source(source)
+        raw_args = event.get_command_args()
+        if event.get_command() == "collective-wisdom-install":
+            raw_args = f"install {raw_args}".strip()
+        rich_handler = getattr(adapter, "send_wisdom_command", None)
+        if callable(rich_handler):
+            await rich_handler(raw_args, source=source)
+            return ""
+
+        from gateway.wisdom_command import (
+            WisdomCommandContext,
+            WisdomCommandController,
+        )
+        from hermes_wisdom.service import WisdomService
+
+        profile_home = self._resolve_profile_home_for_source(source)
+
+        def command_action():
+            with _profile_runtime_scope(profile_home):
+                service = WisdomService()
+                context = WisdomCommandContext(
+                    user_id=str(source.user_id or ""),
+                    chat_id=str(source.chat_id),
+                    profile=getattr(source, "profile", None),
+                    organization_id=service.store.active_org_id(),
+                    is_group=str(source.chat_type or "").lower()
+                    in {"group", "supergroup", "channel", "forum"},
+                )
+                return WisdomCommandController().execute(
+                    raw_args, service, context
+                )
+        try:
+            view = await asyncio.to_thread(command_action)
+        except Exception as exc:
+            logger.warning(
+                "Collective Wisdom command failed (%s)", type(exc).__name__
+            )
+            from gateway.wisdom_command import command_error_text
+
+            return f"Collective Wisdom could not continue: {command_error_text(exc)}"
+        return view.to_text()
 
     async def _dispatch_busy_slash_command(
         self, event: MessageEvent, cmd_def, quick_key: str, source,
@@ -19770,6 +19816,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_topic_command(event)
         
         if canonical == "start":
+            start_args = event.get_command_args().strip()
+            if start_args.startswith("wisdom_"):
+                wisdom_denied = self._check_slash_access(source, "wisdom")
+                if wisdom_denied is not None:
+                    return wisdom_denied
+                token = start_args.removeprefix("wisdom_")
+                adapter = self._adapter_for_source(source)
+                continuation = getattr(adapter, "send_wisdom_continuation", None)
+                if callable(continuation):
+                    try:
+                        await continuation(token, source=source)
+                    except (PermissionError, ValueError) as exc:
+                        return str(exc)
+                    except Exception as exc:
+                        logger.warning(
+                            "Collective Wisdom DM continuation failed (%s)",
+                            type(exc).__name__,
+                        )
+                        return (
+                            "Collective Wisdom could not continue that request. "
+                            "Run /wisdom in this chat instead."
+                        )
             logger.info("Ignoring /start platform ping for session %s", _quick_key)
             return ""
 
@@ -24499,6 +24567,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await _deliver()
 
+    async def _defer_wisdom_candidate_notice_after_delivery(
+        self, source: Any, session_id: str
+    ) -> None:
+        """Surface local qualification after the originating client reply."""
+        adapter = self._adapter_for_source(source)
+        sender = getattr(adapter, "send_wisdom_candidate_notifications", None)
+        if adapter is None or not callable(sender):
+            return
+
+        try:
+            metadata = self._thread_metadata_for_source(source)
+        except Exception:
+            metadata = None
+
+        async def _deliver() -> None:
+            try:
+                await sender(
+                    source.chat_id,
+                    session_id,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Wisdom candidate %s delivery failed: %s",
+                    getattr(source, "platform", "platform"),
+                    exc,
+                    exc_info=True,
+                )
+
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            session_key = None
+        if session_key and hasattr(adapter, "register_post_delivery_callback"):
+            try:
+                generation = None
+                active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                if active is not None:
+                    generation = getattr(active, "_hermes_run_generation", None)
+                adapter.register_post_delivery_callback(
+                    session_key,
+                    _deliver,
+                    generation=generation,
+                )
+                return
+            except Exception as exc:
+                logger.debug(
+                    "Wisdom candidate post-delivery callback registration failed: %s",
+                    exc,
+                )
+        await _deliver()
+
     async def _post_turn_goal_continuation(
         self,
         *,
@@ -24634,6 +24754,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception as exc:
             logger.debug("loop completion hook failed: %s", exc)
+        try:
+            await self._defer_wisdom_candidate_notice_after_delivery(
+                source, str(session_entry.session_id)
+            )
+        except Exception as exc:
+            logger.debug("Wisdom candidate notification hook failed: %s", exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
@@ -26800,13 +26926,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # restart/synthetic-send fallback.
             team_id = getattr(source, "scope_id", None)
             user_id = getattr(source, "user_id", None)
-            if team_id or user_id:
+            profile = getattr(source, "profile", None)
+            if team_id or user_id or profile:
                 metadata = dict(metadata or {})
                 if team_id:
                     metadata["slack_team_id"] = str(team_id)
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+                if profile:
+                    metadata.setdefault("profile", str(profile))
         # Routed profile for shared state.db namespaces (#76423): the Telegram
         # prune path needs it because under profile_routes the transport
         # adapter's stamp is not the profile that wrote the binding.

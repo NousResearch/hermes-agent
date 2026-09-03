@@ -2147,7 +2147,14 @@ SKILL_MANAGE_SCHEMA = {
         "op only). Existing skills are modified wherever they live. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
         "when <trigger>. <one-line behavior>.' — skill_view() shows "
-        "format conventions."
+        "format conventions. New skills also include human-facing "
+        "metadata.hermes.editorial_name and editorial_description; these "
+        "decorate UIs without replacing the agent-facing name/description. "
+        "When creating a skill, record only the "
+        "requirements it actually used under `metadata.hermes` as "
+        "`requires_tools`, `requires_toolsets`, and `requires_plugins`; "
+        "Collective Wisdom uses these declarations to prefill the reviewed "
+        "System Specification and never installs dependencies automatically."
     ),
     "parameters": {
         "type": "object",

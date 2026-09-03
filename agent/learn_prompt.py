@@ -61,6 +61,12 @@ Frontmatter:
   cross-platform first (tempfile.gettempdir(), pathlib.Path, psutil); gate only
   when the dependency is genuinely platform-bound. Omit the field for portable
   skills.
+- metadata.hermes.editorial_name: a concise, human-readable title for app
+  surfaces. Use normal title casing and spaces; this is presentation copy, not
+  the agent-facing skill identifier.
+- metadata.hermes.editorial_description: one or two plain-language sentences
+  explaining the skill to a person browsing it. This is presentation copy and
+  does not replace the routing-focused top-level description.
 - metadata.hermes.tags: a few Capitalized, Relevant, Tags.
 
 Body section order (omit a section only if it genuinely has no content):

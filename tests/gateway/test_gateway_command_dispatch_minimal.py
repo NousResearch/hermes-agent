@@ -127,3 +127,22 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}
+
+
+@pytest.mark.asyncio
+async def test_wisdom_dm_continuation_obeys_wisdom_slash_policy():
+    runner, adapter = _make_runner()
+    adapter.send_wisdom_continuation = AsyncMock()
+    checked: list[str] = []
+
+    def check_access(_source, command):
+        checked.append(command)
+        return "denied" if command == "wisdom" else None
+
+    runner._check_slash_access = check_access
+
+    result = await runner._handle_message(_make_event("/start wisdom_token-1"))
+
+    assert result == "denied"
+    assert checked == ["start", "wisdom"]
+    adapter.send_wisdom_continuation.assert_not_awaited()

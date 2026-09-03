@@ -557,6 +557,12 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # ddgs search backend knobs (#102412). Blank = ddgs library default,
+        # so an unset config keeps the previous behaviour bit-for-bit.
+        "ddgs_region": "",       # ddgs region code, e.g. "de-ch" / "uk-en" (default us-en)
+        "ddgs_safesearch": "",   # "on" | "moderate" | "off"
+        "ddgs_timelimit": "",    # result freshness: "d" | "w" | "m" | "y"
+        "ddgs_backend": "",      # engine hint, e.g. "html" or "auto,html"
         # Keyless free-tier ring: with NO web backend configured or keyed,
         # web_search/web_extract rotate round-robin across four vendors'
         # public free tiers (exa, parallel, firecrawl, keenable),

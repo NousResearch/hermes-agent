@@ -5,7 +5,11 @@ parent provider). Reads one JSON request from stdin, writes one JSON envelope
 to stdout, then exits.
 
 Request::
-    {"query": str, "safe_limit": int}
+    {"query": str, "safe_limit": int,
+     "region"?: str, "safesearch"?: str, "timelimit"?: str, "backend"?: str}
+
+    The four optional search options (#102412) map to the corresponding
+    ``web.ddgs_*`` config keys; absent entries keep the ddgs defaults.
 
 Envelope::
     {"ok": true, "results": [...]}
@@ -97,11 +101,16 @@ def main() -> int:
 
     query = str(request.get("query") or "")
     safe_limit = max(1, int(request.get("safe_limit") or 1))
+    opts = {
+        name: request[name]
+        for name in ("region", "safesearch", "timelimit", "backend")
+        if isinstance(request.get(name), str) and request[name]
+    }
     try:
         # Import inside main so script startup stays light / patchable.
         from plugins.web.ddgs.provider import _run_ddgs_search
 
-        results = _run_ddgs_search(query, safe_limit)
+        results = _run_ddgs_search(query, safe_limit, **opts)
         _write_envelope({"ok": True, "results": results})
         return 0
     except Exception as exc:  # noqa: BLE001

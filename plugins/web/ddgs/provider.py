@@ -9,6 +9,16 @@ The ``ddgs`` package is an optional dependency. ``is_available()`` reflects
 whether the package is importable; the plugin still registers either way so
 ``hermes tools`` can prompt the user to install it.
 
+Config keys this provider responds to (all optional; blank/absent = the ddgs
+library default, so unset behaviour is unchanged, #102412)::
+
+    web:
+      search_backend: "ddgs"
+      ddgs_region: "de-ch"         # ddgs region code (library default: us-en)
+      ddgs_safesearch: "moderate"  # on | moderate | off
+      ddgs_timelimit: "d"          # d | w | m | y
+      ddgs_backend: "html"         # engine hint, e.g. "auto" or "auto,html"
+
 Isolation note (#68096): ``ddgs``/``primp`` can block inside native code while
 holding the Python GIL. A ``ThreadPoolExecutor`` + ``future.result(timeout=…)``
 cap (see #52118) cannot fire in that state — the waiter never reacquires the
@@ -49,19 +59,65 @@ class _SearchInterrupted(Exception):
     """Raised when tools.interrupt.is_interrupted() trips during a search wait."""
 
 
-def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
+# ``web.ddgs_*`` search options forwarded to ``DDGS().text()`` (#102412).
+# Keys without a non-blank ``web.ddgs_<name>`` config value are omitted so
+# the ddgs library defaults keep applying.
+_DDGS_TEXT_OPTIONS = ("region", "safesearch", "timelimit", "backend")
+
+
+def _read_ddgs_options() -> Dict[str, str]:
+    """Read the ``web.ddgs_*`` search options from ``config.yaml``.
+
+    Delegates to the registry's ``_read_config_key`` chokepoint (same
+    rationale as ``plugins/web/keyless_mcp.py``: ``web.*`` resolution lives
+    in one place). Returns only the options the user explicitly set.
+    """
+    opts: Dict[str, str] = {}
+    try:
+        from agent.web_search_registry import _read_config_key
+
+        for name in _DDGS_TEXT_OPTIONS:
+            val = _read_config_key("web", f"ddgs_{name}")
+            if val:
+                opts[name] = val
+    except Exception as exc:  # noqa: BLE001 — config layer optional in stripped envs
+        logger.debug("ddgs option read failed: %s", exc)
+    return opts
+
+
+def _run_ddgs_search(
+    query: str,
+    safe_limit: int,
+    *,
+    region: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    timelimit: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Run the blocking ddgs query and return normalized hits.
 
     Module-level (not a closure) so the child worker can import it and so
     tests can patch it for in-process unit tests. ``DDGS(timeout=…)`` bounds
     each individual HTTP request; the overall wall-clock cap is enforced by
-    the parent via process timeout (#68096).
+    the parent via process timeout (#68096). Unset options are omitted from
+    the ``text()`` call so library defaults apply (#102412).
     """
     from ddgs import DDGS  # type: ignore
 
+    text_kwargs: dict[str, Any] = {
+        name: val
+        for name, val in (
+            ("region", region),
+            ("safesearch", safesearch),
+            ("timelimit", timelimit),
+            ("backend", backend),
+        )
+        if val
+    }
+
     results: list[dict[str, Any]] = []
     with DDGS(timeout=10) as client:
-        for i, hit in enumerate(client.text(query, max_results=safe_limit)):
+        for i, hit in enumerate(client.text(query, max_results=safe_limit, **text_kwargs)):
             if i >= safe_limit:
                 break
             url = str(hit.get("href") or hit.get("url") or "")
@@ -139,13 +195,22 @@ def _terminate_and_reap(
         logger.debug("DDGS worker reap error: %s", exc)
 
 
-def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]]:
+def _run_ddgs_search_bounded(
+    query: str,
+    safe_limit: int,
+    *,
+    region: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    timelimit: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Run ``_run_ddgs_search`` in a disposable process with a hard deadline.
 
     The parent never joins the child while it may be inside native code holding
     *its* GIL — it only polls a communicator thread and, on timeout/interrupt,
     terminates the child OS process. Raises ``TimeoutError``,
-    ``_SearchInterrupted``, or ``RuntimeError``.
+    ``_SearchInterrupted``, or ``RuntimeError``. Set search options are
+    forwarded through the JSON request so the worker applies them (#102412).
     """
     # Imported lazily so plugin import stays light for ``hermes tools`` probes.
     from tools.interrupt import is_interrupted
@@ -153,6 +218,14 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     global _last_worker_proc
 
     request: dict[str, Any] = {"query": query, "safe_limit": safe_limit}
+    for name, val in (
+        ("region", region),
+        ("safesearch", safesearch),
+        ("timelimit", timelimit),
+        ("backend", backend),
+    ):
+        if val:
+            request[name] = val
     if _test_hook:
         request["test_hook"] = _test_hook
 
@@ -318,9 +391,10 @@ class DDGSWebSearchProvider(WebSearchProvider):
         # DDGS().text yields at most `max_results` items; we cap defensively
         # in case the package ignores the hint.
         safe_limit = max(1, int(limit))
+        opts = _read_ddgs_options()
 
         try:
-            web_results = _run_ddgs_search_bounded(query, safe_limit)
+            web_results = _run_ddgs_search_bounded(query, safe_limit, **opts)
         except TimeoutError:
             logger.warning(
                 "DDGS search timed out after %ds for query: %r",

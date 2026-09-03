@@ -242,6 +242,8 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     )
     touches: list = []
     agent._touch_activity = lambda desc: touches.append(time.time())
+    started_at: list[float | None] = []
+    monkeypatch.setattr(te, "_begin_tool_execution", lambda *args, **kwargs: None)
 
     agent._execute_tool_calls_concurrent = (
         __import__("run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
@@ -258,6 +260,7 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
             self.tool_calls = tool_calls
 
     def _invoke(name, *a, **kw):
+        started_at.append(agent._current_tool_started_at)
         time.sleep(0.25)
         return json.dumps({"ok": name})
 
@@ -268,3 +271,4 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._execute_tool_calls_concurrent(msg, messages, "task")
 
     assert len(touches) >= 3, f"expected mid-call heartbeats, got {len(touches)}"
+    assert started_at and started_at[0] is not None

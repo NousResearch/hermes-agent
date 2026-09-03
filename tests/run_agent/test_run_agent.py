@@ -2103,6 +2103,46 @@ class TestConcurrentToolExecution:
         assert messages[1]["tool_call_id"] == "c2"
         assert "result_fast" in messages[1]["content"]
 
+    def test_concurrent_activity_marker_survives_timed_out_sibling(
+        self, agent, monkeypatch
+    ):
+        """A detached sibling keeps the activity marker until it exits."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"fast"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"slow"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        slow_started = threading.Event()
+        fast_done = threading.Event()
+        slow_done = threading.Event()
+        release_slow = threading.Event()
+
+        def fake_handle(_name, args, _task_id, **_kwargs):
+            if args["q"] == "slow":
+                slow_started.set()
+                release_slow.wait(5)
+                slow_done.set()
+            else:
+                fast_done.set()
+            return "ok"
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert slow_started.is_set()
+        assert fast_done.is_set()
+        assert not slow_done.is_set()
+        assert agent.get_activity_summary()["current_tool"]
+
+        release_slow.set()
+        deadline = time.monotonic() + 5
+        while not slow_done.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert slow_done.is_set()
+        while agent.get_activity_summary()["current_tool"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not agent.get_activity_summary()["current_tool"]
+
 
     def test_concurrent_submit_shutdown_error_returns_tool_errors(self, agent):
         """Submit-time interpreter shutdown should not escape the outer loop."""

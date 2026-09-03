@@ -2035,7 +2035,6 @@ _XAI_WRAPPING_SPEECH_TAGS = (
     "fast",
     "sing-song",
     "singing",
-    "laugh-speak",
     "emphasis",
 )
 _XAI_SPEECH_TAG_RE = re.compile(
@@ -2084,13 +2083,13 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + inline + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + wrapping + ".\n\n"
         "Rules:\n"
         "- Preserve the spoken words, order, and meaning.\n"
         "- Do not add new spoken sentences or remove existing spoken words.\n"
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         "- Do not explain or comment.\n"
         "- Return only the tagged TTS script."

@@ -13,6 +13,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from './session'
+import { persistUnreadOnBackgroundFinish } from './session-unread-remote'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
@@ -223,13 +224,16 @@ export function markSessionUnreadFinished(storedSessionId: string, profileHint?:
   const durableId = row ? sessionPinId(row) : storedSessionId
   const bucket = $unreadFinishedMarkers.get()[profile] ?? []
 
-  if (bucket.includes(durableId)) {
-    return
+  if (!bucket.includes(durableId)) {
+    const next = [...bucket, durableId]
+
+    setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
   }
 
-  const next = [...bucket, durableId]
-
-  setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
+  // After the local marker is durable: persist() → setSessions would otherwise
+  // recompute unread and drop this id before isMarked could see it. Always
+  // PATCH, even when the marker already existed — Focus never saw the local one.
+  void persistUnreadOnBackgroundFinish(storedSessionId)
 }
 
 /** ACK — the user opened (or is looking at) this session: watermark := its
@@ -559,6 +563,12 @@ function onListChange(): void {
   rehydrateFromDiskOnce()
   ingestRows(rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]))
   recomputeUnread()
+
+  // Replay local greens onto last_read_at so Focus matches Desktop without
+  // waiting for another busy→idle edge (existing-marker heal).
+  for (const id of $unreadFinishedSessionIds.get()) {
+    void persistUnreadOnBackgroundFinish(id)
+  }
 }
 
 // Wiring: module-scope listeners, same pattern as session-states.ts's

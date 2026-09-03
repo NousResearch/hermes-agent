@@ -103,6 +103,15 @@ _CLONE_ALL_STRIP: list[str] = [
 #   profiles      — sibling named profiles (recursive copy never intended)
 #   bin           — installed binaries (tirith etc., ~10 MB) shared per-host
 #   node_modules  — npm packages (hundreds of MB)
+#   models        — local GGUF weights downloaded by the local-models flow
+#                   (tens of GB); resolved from the default root only, a
+#                   named profile never reads its own copy
+#   runtimes      — managed llama.cpp runtime binaries, re-downloaded on demand
+#   node          — managed Node install, re-downloaded on demand
+#
+# The last three mirror ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` (kept as
+# separate literals: backup also matches ``profiles/<name>/`` and importing it
+# here would be a circular import) — change both together.
 #
 # See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
 # exclusion list (export also drops logs / caches because the archive is a
@@ -114,6 +123,9 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "profiles",
     "bin",
     "node_modules",
+    "models",
+    "runtimes",
+    "node",
 })
 
 # Per-profile history artifacts excluded from --clone-all regardless of the

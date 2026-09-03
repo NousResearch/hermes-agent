@@ -9,6 +9,9 @@ Scenarios:
   2. Force-quit mid-tool (double Ctrl+C) — session["history"] has previous turns
   3. Empty session — no-op, no crash
   4. Agent with _persist_session missing — graceful no-op
+  5. Persist *failure* — must be logged, not silently swallowed, and must
+     give _teardown_session a chance to retry before agent.close() destroys
+     the unflushed messages (agent.close() clears _session_messages).
 """
 
 import threading
@@ -146,6 +149,117 @@ class TestFinalizeSessionPersist:
         _finalize_session(session, end_reason="test")
 
         mock_db.end_session.assert_called_once_with("sess_123", "test")
+
+
+class TestFinalizeSessionPersistFailureIsNotSilent:
+    """Regression: a persist failure in _finalize_session must never be a
+    silent no-op. Before this fix, ``except Exception: pass`` swallowed the
+    error, ``_finalized`` was already latched True (so the failure could
+    never be retried through _finalize_session again), and the *next* call
+    into _teardown_session unconditionally ran agent.close() — which clears
+    agent._session_messages (run_agent.py) — destroying the unflushed
+    messages with no trace anywhere.
+    """
+
+    def test_persist_failure_is_logged_and_flagged(self, caplog):
+        """A persist exception must be logged (not swallowed) and recorded on
+        the session so _teardown_session knows to retry before agent.close()
+        would otherwise discard the data."""
+        import logging
+        from tui_gateway.server import _finalize_session
+
+        agent = _make_agent()
+        agent._session_messages = [{"role": "user", "content": "unflushed"}]
+        agent._persist_session.side_effect = RuntimeError("db is locked")
+        session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
+
+        with caplog.at_level(logging.ERROR, logger="tui_gateway.server"):
+            _finalize_session(session)
+
+        assert session.get("_persist_failed") is True
+        assert "persist" in caplog.text.lower(), caplog.text
+
+    def test_persist_success_does_not_flag_failure(self):
+        """Sanity check: the happy path must not set _persist_failed."""
+        from tui_gateway.server import _finalize_session
+
+        agent = _make_agent()
+        agent._session_messages = [{"role": "user", "content": "flushed fine"}]
+        session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
+
+        _finalize_session(session)
+
+        assert not session.get("_persist_failed")
+
+
+class TestTeardownRetriesFailedPersistBeforeClose:
+    """Regression: _teardown_session must not let agent.close() destroy
+    messages that _finalize_session failed to persist without at least one
+    retry, and must fail loud if the retry also fails."""
+
+    def test_teardown_retries_and_succeeds_clears_flag(self, monkeypatch):
+        from tui_gateway.server import _teardown_session
+
+        agent = _make_agent()
+        agent.close = MagicMock()
+        agent._session_messages = [{"role": "user", "content": "unflushed"}]
+        session = _make_session(agent=agent)
+        session["_persist_failed"] = True  # as _finalize_session would leave it
+        session["_finalized"] = True  # skip the finalize body for this test
+        monkeypatch.setattr(
+            "tui_gateway.server._announce_session_reclaimed", lambda *a, **k: None
+        )
+
+        _teardown_session(session, end_reason="test")
+
+        # Retried once via _persist_session, succeeded, so agent.close() ran
+        # (which is what would normally wipe the message list) but the
+        # session is no longer flagged as having lost anything.
+        agent._persist_session.assert_called_once_with(
+            [{"role": "user", "content": "unflushed"}]
+        )
+        assert session.get("_persist_failed") is False
+        agent.close.assert_called_once()
+
+    def test_teardown_logs_loud_when_retry_also_fails(self, monkeypatch, caplog):
+        import logging
+        from tui_gateway.server import _teardown_session
+
+        agent = _make_agent()
+        agent.close = MagicMock()
+        agent._session_messages = [{"role": "user", "content": "still unflushed"}]
+        agent._persist_session.side_effect = RuntimeError("db is locked")
+        session = _make_session(agent=agent)
+        session["_persist_failed"] = True
+        session["_finalized"] = True
+        monkeypatch.setattr(
+            "tui_gateway.server._announce_session_reclaimed", lambda *a, **k: None
+        )
+
+        with caplog.at_level(logging.ERROR, logger="tui_gateway.server"):
+            _teardown_session(session, end_reason="test")
+
+        # agent.close() still runs (teardown must not hang forever), but the
+        # discard is now logged loudly instead of silent, and the failure
+        # flag is left set (nothing pretends the data survived).
+        agent.close.assert_called_once()
+        assert session.get("_persist_failed") is True
+        assert "retry" in caplog.text.lower(), caplog.text
+
+    def test_teardown_skips_retry_when_no_persist_failure_flagged(self):
+        """No _persist_failed flag → no retry attempted; existing behaviour
+        for the common (successful) case is unchanged."""
+        from tui_gateway.server import _teardown_session
+
+        agent = _make_agent()
+        agent.close = MagicMock()
+        session = _make_session(agent=agent)
+        session["_finalized"] = True
+
+        _teardown_session(session, end_reason="test")
+
+        agent._persist_session.assert_not_called()
+        agent.close.assert_called_once()
 
 
 class TestFinalizeSessionPersistE2E:

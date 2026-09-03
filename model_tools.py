@@ -424,6 +424,8 @@ def _compute_tool_definitions(
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
+    effective_disabled_toolsets = list(disabled_toolsets) if disabled_toolsets else []
+
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
         if (
@@ -437,7 +439,18 @@ def _compute_tool_definitions(
             # profiles may intentionally restrict their normal chat toolsets
             # (for token/cost reasons), but that should not strip the kanban
             # worker's completion/block/heartbeat surface.
+            #
+            # This must also override an explicit `kanban` entry in the
+            # profile's own `disabled_toolsets` — the common case for
+            # worker profiles that deliberately keep the full orchestrator
+            # `kanban` toolset off their normal chat surface (#BLK-003: the
+            # injection above was previously undone by the disabled_toolsets
+            # subtraction pass further down, silently stripping
+            # kanban_complete/kanban_block/kanban_heartbeat from every
+            # dispatcher-spawned worker whose profile disables `kanban`).
             effective_enabled_toolsets.append("kanban")
+            if "kanban" in effective_disabled_toolsets:
+                effective_disabled_toolsets.remove("kanban")
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -461,8 +474,8 @@ def _compute_tool_definitions(
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
     # stripped out. See issue #17309.
-    if disabled_toolsets:
-        for toolset_name in disabled_toolsets:
+    if effective_disabled_toolsets:
+        for toolset_name in effective_disabled_toolsets:
             if validate_toolset(toolset_name):
                 from toolsets import bundle_non_core_tools, get_toolset
                 if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):

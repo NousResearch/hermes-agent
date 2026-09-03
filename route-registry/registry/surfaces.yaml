@@ -78,10 +78,15 @@ surfaces:
   - slot-glm53flash-4
 - surface: denji-ledger
   tier: LUNA
-  main_model: stepfun/step-3.7-flash:free
+  main_model: mimo-v2.5
   slots:
-  - slot-step37free-1
-  - slot-step37free-3
+  - slot-mimo-v25-main
+  - slot-mimo-v25-1
+  - slot-mimo-v25-2
+  - slot-mimo-v25-3
+  primary_model_migration:
+    expected_old_main: stepfun/step-3.7-flash:free
+    primary_slot: slot-mimo-v25-main
 - surface: denji-monitor
   tier: LUNA
   main_model: deepseek-v4-flash
@@ -168,19 +173,40 @@ surfaces:
   routes_policy: keep_current
 - surface: gojo-admin
   tier: LUNA
-  main_model: gemma4:31b
-  slots: []
-  routes_policy: keep_current
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
 - surface: gojo-calendar
   tier: LUNA
-  main_model: gemma4:31b
-  slots: []
-  routes_policy: keep_current
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
 - surface: gojo-mailbox
   tier: LUNA
-  main_model: gemma4:31b
-  slots: []
-  routes_policy: keep_current
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
 - surface: kensei
   tier: SOL
   main_model: null
@@ -475,14 +501,28 @@ surfaces:
   - slot-glm53flash-4
 - surface: wesker-backup
   tier: LUNA
-  main_model: gemma4:31b
-  slots: []
-  routes_policy: keep_current
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
 - surface: wesker-ops
   tier: LUNA
-  main_model: gemma4:31b
-  slots: []
-  routes_policy: keep_current
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
 - surface: wesker-scanner
   tier: LUNA
   main_model: deepseek-v4-flash

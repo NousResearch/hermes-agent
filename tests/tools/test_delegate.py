@@ -2235,5 +2235,125 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+# =========================================================================
+# KENSEI nested-delegation hardening (direct fix, 2026-09-04)
+# =========================================================================
+
+
+class TestSplitChildBudget(unittest.TestCase):
+    """_split_child_budget divides batch budgets, never starves."""
+
+    def test_single_child_unchanged(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(50, 1), 50)
+
+    def test_batch_splits_evenly(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(50, 5), 10)
+
+    def test_floor_is_one(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(2, 5), 1)
+        self.assertEqual(_split_child_budget(0, 3), 1)
+
+    def test_bad_input_passes_through(self):
+        from typing import Any
+        from tools.delegate_tool import _split_child_budget
+        _bad: Any = "many"
+        self.assertEqual(_split_child_budget(_bad, 2), "many")
+
+
+class TestDelegationCycleGuard(unittest.TestCase):
+    """_check_delegation_cycle rejects profile self-recursion at spawn."""
+
+    def _chain(self, *profiles):
+        """Build parent mock whose ancestor chain carries profiles[0..]."""
+        parent = MagicMock()
+        cur = parent
+        for name in profiles:
+            ancestor = MagicMock()
+            ancestor._delegate_profile_name = name
+            ancestor._delegate_parent_ref = None
+            cur._delegate_parent_ref = lambda _a=ancestor: _a
+            cur = ancestor
+        return parent
+
+    def test_repeat_profile_raises(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii", "octacon")
+        with self.assertRaises(ValueError) as ctx:
+            _check_delegation_cycle(parent, "remii")
+        self.assertIn("remii", str(ctx.exception))
+
+    def test_repeat_is_case_insensitive(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("Remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "REMII")
+
+    def test_distinct_profile_passes(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii", "octacon")
+        _check_delegation_cycle(parent, "wesker")  # must not raise
+
+    def test_no_profile_skips(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii")
+        _check_delegation_cycle(parent, None)  # must not raise
+
+    def test_no_ancestors_passes(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = MagicMock()
+        parent._delegate_parent_ref = None
+        _check_delegation_cycle(parent, "remii")  # must not raise
+
+    def test_whitespace_padded_name_still_caught(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "  remii  ")
+
+    def test_two_cycle_ab_is_caught_on_return(self):
+        """A -> B -> A: the return hop finds A in the ancestor chain."""
+        from tools.delegate_tool import _check_delegation_cycle
+        # Parent chain: immediate parent is B, grandparent is A.
+        parent = self._chain("octacon", "remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "remii")
+
+
+class TestRegistrySurfaceChain(unittest.TestCase):
+    """_registry_surface_chain resolves governed chains, fail-closed."""
+
+    def test_unknown_profile_returns_none(self):
+        from tools.delegate_tool import _registry_surface_chain
+        self.assertIsNone(_registry_surface_chain("no-such-profile-xyz"))
+
+    def test_kill_switch_returns_none(self):
+        from tools.delegate_tool import _registry_surface_chain
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"fallback_enabled": False}):
+            self.assertIsNone(_registry_surface_chain("remii"))
+
+    def test_known_surface_shape(self):
+        """Structural contract only — no frozen counts or model names."""
+        from tools.delegate_tool import _registry_surface_chain
+        chain = _registry_surface_chain("remii")
+        self.assertIsInstance(chain, list)
+        self.assertGreater(len(chain), 2)
+        for entry in chain:
+            self.assertTrue(entry["provider"])
+            self.assertTrue(entry["model"])
+        # No duplicate deployments in one chain.
+        keys = [(e["provider"], e["model"], e["base_url"]) for e in chain]
+        self.assertEqual(len(keys), len(set(keys)))
+        # Governed tail: tier-correct Codex then local final.
+        self.assertEqual(chain[-1]["provider"], "custom:turbohaul-local")
+        self.assertEqual(chain[-2]["provider"], "openai-codex")
+        # No credentials ever ride the chain entries.
+        for entry in chain:
+            self.assertNotIn("api_key", entry)
+
+
 if __name__ == "__main__":
     unittest.main()

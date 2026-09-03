@@ -15,8 +15,8 @@ slots:
     model: minimax/minimax-m3:free
     base_url: https://api.xkiro.com/v1
     reasoning_effort: medium
-  retire_reason: 'capability violation: xkiro does not carry minimax; the free variant is no longer offered by any provider
-    (verified 2026-09-02)'
+  retire_reason: 'capability violation: xkiro does not carry minimax; the free variant
+    is no longer offered by any provider (verified 2026-09-02)'
 - slot: slot-mini-m3free-2
   model_id: minimax/minimax-m3-free
   provider_account: nous/free
@@ -52,20 +52,22 @@ slots:
 - slot: slot-mini-m3-1
   model_id: minimax-m3
   provider_account: xkiro/free
-  class: perm
-  status: retired
+  class: gated
+  status: candidate
   approved_at: '2026-09-02T00:00:00Z'
   expires_at: null
   usage_limit: null
   allowed_profiles: null
-  replacement_slot: slot-mini-m3-4
+  replacement_slot: null
   disabled: true
   hermes:
     provider: custom:xkiro-free
     model: minimax/minimax-m3
     base_url: https://api.xkiro.com/v1
     reasoning_effort: medium
-  retire_reason: 'capability violation: provider does not carry this model (verified 2026-09-02 via live provider probes)'
+  retire_reason: '2026-09-02 probe said absent; superseded 2026-09-04 by owner
+    dashboard evidence showing minimax/minimax-m3 and minimax/minimax-m3:free live;
+    stays candidate/disabled pending live re-probe before promotion'
 - slot: slot-mini-m3-2
   model_id: minimax-m3
   provider_account: nous/free
@@ -466,7 +468,8 @@ slots:
     model: qwen3.8-27b
     base_url: https://ollama.com/v1
     reasoning_effort: medium
-  retire_reason: 'capability violation: provider does not carry this model (verified 2026-09-02 via live provider probes)'
+  retire_reason: 'capability violation: provider does not carry this model (verified
+    2026-09-02 via live provider probes)'
 - slot: slot-qwen27b-2
   model_id: qwen3.8-27b
   provider_account: commandcode/2
@@ -511,6 +514,102 @@ slots:
   replacement_slot: null
   disabled: true
   hermes: null
+- slot: slot-mimo-v25-main
+  model_id: mimo-v2.5
+  provider_account: opencode-go/1
+  class: perm
+  status: approved
+  approved_at: '2026-09-03T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-1
+  model_id: mimo-v2.5
+  provider_account: opencode-go/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-2
+  model_id: mimo-v2.5
+  provider_account: opencode-go/3
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-3
+  model_id: mimo-v2.5
+  provider_account: opencode-go/4
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mini-m3-5
+  model_id: minimax-m3
+  provider_account: ollama-cloud/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: ollama-cloud
+    model: minimax-m3
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+- slot: slot-qwenflash-1
+  model_id: qwen3.8-flash
+  provider_account: b-ai/2
+  class: needs_classification
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: qwen3.8-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
 codex_fallback:
   sol:
     provider: openai-codex
@@ -531,6 +630,14 @@ limits:
   max_same_model_routes_per_surface: 5
   nim_request_limit: 60
   nim_window_verified: false
+  rotation_policy: paid_free_alternate
+  retry_policy:
+    max_tries: 3
+    advance_on_429: instant
+    advance_on_4xx: instant
+    note: 429/4xx burns one try and advances; do not re-queue same slot.
+  codex_scope: sol,luna
+  codex_note: SOL and LUNA tier surfaces ONLY. No other tier may use openai-codex.
 pool_requirements:
   ollama-cloud:
     strategy: fill_first
@@ -556,20 +663,27 @@ env_bypass:
   ollama-cloud:
   - OLLAMA_API_KEY
 model_capability_matrix:
-  _comment: Verified 2026-09-02 via live provider probes (ollama /api/tags, xkiro & b.ai /models, codex backend). The generator
-    HARD-ERRORS on any slot whose hermes.model is not listed for its hermes.provider. Update only with fresh probe evidence.
+  _comment: Verified 2026-09-02 via live provider probes (ollama /api/tags, xkiro
+    & b.ai /models, codex backend). The generator HARD-ERRORS on any slot whose hermes.model
+    is not listed for its hermes.provider. Update only with fresh probe evidence.
+    2026-09-04 note - qwen3.8-flash added under custom bai on one Sept-03 probe 200 plus
+    owner dashboard free-limited sighting; slot stays candidate/disabled pending verification.
   custom:xkiro-free:
   - deepseek/deepseek-v4-flash
   - deepseek/deepseek-v4-pro
   - z-ai/glm-5.3
   - z-ai/glm-5.3-flash
   - moonshotai/kimi-k3
+  - minimax/minimax-m3
+  - minimax/minimax-m3:free
   custom:xkiro-pro:
   - deepseek/deepseek-v4-flash
   - deepseek/deepseek-v4-pro
   - z-ai/glm-5.3
   - z-ai/glm-5.3-flash
   - moonshotai/kimi-k3
+  - minimax/minimax-m3
+  - minimax/minimax-m3:free
   custom:bai:
   - deepseek-v4-flash
   - deepseek-v4-pro
@@ -578,6 +692,7 @@ model_capability_matrix:
   - kimi-k3
   - minimax-m3
   - qwen3.8-27b
+  - qwen3.8-flash
   openai-codex:
   - gpt-5.6-sol
   - gpt-5.6-luna
@@ -607,10 +722,19 @@ model_capability_matrix:
   gemini:
   - gemini-2.5-flash
   opencode-zen: []
+  opencode-go:
+  - mimo-v2.5
+  - kimi-k3
+  - kimi-k2.7-code
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3
+  - glm-5.3-flash
+  - minimax-m3
 model_routing_constraints:
   codex_isolation:
-    rule: gpt-5.6-* models may ONLY be served by provider openai-codex. No other provider may ever carry a gpt-5.6 slot, gated
-      or perm. Sahil's standing directive 2026-09-02.
+    rule: gpt-5.6-* models may ONLY be served by provider openai-codex. No other provider
+      may ever carry a gpt-5.6 slot, gated or perm. Sahil's standing directive 2026-09-02.
     model_pattern: gpt-5.6-*
     allowed_providers:
     - openai-codex

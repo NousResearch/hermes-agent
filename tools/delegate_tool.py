@@ -136,6 +136,157 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
+# Default per-slot retry/advance policy for delegation fallback resolution.
+# Mirrors the registry retry_policy: 3 tries per slot, instant advance on 429/4xx.
+_DELEGATION_FALLBACK_MAX_TRIES = 3
+_DELEGATION_FALLBACK_ADVANCE_ON_429 = True
+_DELEGATION_FALLBACK_ADVANCE_ON_4XX = True
+
+# Default per-slot retry/advance policy for delegation fallback resolution.
+# 429/4xx burns one try and advances to the next provider/slot immediately.
+_DEFAULT_DELEGATION_RETRY_MAX_TRIES = 3
+_DEFAULT_DELEGATION_ADVANCE_ON_429 = True
+_DEFAULT_DELEGATION_ADVANCE_ON_4XX = True
+
+# KENSEI: registry-backed fallback for delegations (direct fix, 2026-09-04).
+# Children inherit the parent chain, but parents with no chain (e.g. an
+# ad-hoc CLI session) spawn children with an empty chain — a quota/429
+# failure then kills the child outright even though the route-registry
+# holds a governed Main → FB → Codex → local chain for its profile.
+# _registry_surface_chain resolves that chain so every profile delegation
+# fails over exactly like its surface. Fail-closed: any load/validation
+# error returns None and the child keeps the previous (possibly empty)
+# chain — never a loud spawn failure, never a logged credential (chain
+# entries carry provider/model/base_url only, no keys).
+_REGISTRY_CHAIN_CACHE: dict = {"mtimes": None, "chains": {}}
+
+
+def _get_delegation_fallback_enabled() -> bool:
+    """Kill switch for registry-backed delegation fallback (default on).
+
+    Set delegation.fallback_enabled: false in config.yaml to restore the
+    previous inherit-only behavior without a code revert.
+    """
+    try:
+        return is_truthy_value(_load_config().get("fallback_enabled", True))
+    except Exception:
+        return True
+
+
+def _registry_surface_chain(profile_name: str | None) -> Any:
+    """Return the route-registry fallback chain for a profile surface.
+
+    Reuses route_registry.generator.build_chain (perm slots → tier-correct
+    Codex → local) so delegations rotate exactly like surfaces. Returns a
+    list of {provider, model, base_url} dicts, or None when unresolvable
+    (unknown profile, unreadable/invalid registry) — callers treat None
+    as "keep current chain". Typed Any: the value flows straight into
+    AIAgent's fallback_model slot, which accepts both list and dict forms.
+    """
+    if not profile_name or not _get_delegation_fallback_enabled():
+        return None
+    try:
+        import sys as _sys
+
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rr_pkg_dir = os.path.join(_repo_root, "route-registry")
+        if _rr_pkg_dir not in _sys.path:
+            _sys.path.insert(0, _rr_pkg_dir)
+        from route_registry.generator import (
+            build_chain,
+            load_registry,
+            load_surfaces,
+            validate_registry,
+        )
+    except Exception as exc:
+        logger.debug("Delegation fallback: generator import failed: %s", exc)
+        return None
+    try:
+        _slots_path = os.path.join(_repo_root, "route-registry", "registry", "route-slots.yaml")
+        _surf_path = os.path.join(_repo_root, "route-registry", "registry", "surfaces.yaml")
+        _mtimes = (os.path.getmtime(_slots_path), os.path.getmtime(_surf_path))
+        _cached = _REGISTRY_CHAIN_CACHE
+        if _cached["mtimes"] != _mtimes:
+            _reg = load_registry(_slots_path)
+            _by_id = validate_registry(_reg)
+            _surfs = load_surfaces(_surf_path)
+            _chains: dict = {}
+            for _s in _surfs:
+                try:
+                    _entries = build_chain(_s, _by_id, _reg)
+                except Exception as exc:
+                    logger.debug(
+                        "Delegation fallback: chain build failed for surface %r: %s",
+                        _s.get("surface"), exc,
+                    )
+                    continue
+                _slim = [
+                    {
+                        "provider": str(_e.get("provider") or ""),
+                        "model": str(_e.get("model") or ""),
+                        "base_url": str(_e.get("base_url") or ""),
+                    }
+                    for _e in _entries
+                    if str(_e.get("provider") or "") and str(_e.get("model") or "")
+                ]
+                if _slim:
+                    _chains[str(_s.get("surface") or "").lower()] = _slim
+            _cached["chains"] = _chains
+            _cached["mtimes"] = _mtimes
+        return _cached["chains"].get(str(profile_name).lower())
+    except Exception as exc:
+        logger.debug("Delegation fallback: registry chain resolve failed: %s", exc)
+        return None
+
+
+def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
+    """Split a delegation iteration budget across batch children.
+
+    Single-child batches are unchanged. Multi-child batches divide the
+    budget so one fan-out cannot multiply total iterations N-fold.
+    Floor of 1: a zero budget means no child work, never silent starvation.
+    """
+    try:
+        _n = max(1, int(task_count))
+        _cap = max(1, int(effective_max_iter))
+    except (TypeError, ValueError):
+        return effective_max_iter
+    return max(1, _cap // _n)
+
+
+def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
+    """Reject a spawn that would recurse into its own ancestor profile.
+
+    Walks the _delegate_parent_ref chain (cap 8 hops); if the requested
+    profile name matches any ancestor's stamped profile, raises ValueError
+    loudly (same posture as pinned-transport preflight #80450) instead of
+    building a child that recurses until budgets die. Profile-less
+    (inherit-model) children carry no name and skip the check.
+    """
+    if not profile_name:
+        return
+    _want = str(profile_name).strip().lower()
+    if not _want:
+        return
+    _cur = parent_agent
+    for _ in range(8):
+        _ref = getattr(_cur, "_delegate_parent_ref", None)
+        _ancestor = _ref() if callable(_ref) else None
+        if _ancestor is None:
+            return
+        _ancestor_profile = getattr(_ancestor, "_delegate_profile_name", None)
+        if _ancestor_profile and str(_ancestor_profile).strip().lower() == _want:
+            raise ValueError(
+                f"Delegation cycle rejected: profile '{profile_name}' is "
+                f"already in this spawn chain. A profile may not delegate "
+                f"to itself — route the sub-task to a different profile."
+            )
+        _cur = _ancestor
+
+# Depth/cycle/budget guards for nested delegation.
+# - Depth: parent depth + 1 must be < max_spawn_depth.
+# - Cycle: walk _delegate_parent_ref weakref chain; reject if ancestor is child.
+# - Budget: child's remaining parent iteration budget is split by task_count; 0 means no child work.
 _MIN_SPAWN_DEPTH = 1
 # No upper ceiling on spawn depth — like max_concurrent_children, depth has a
 # floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
@@ -1947,6 +2098,10 @@ def _build_child_agent(
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = "orchestrator" if orchestrator_ok else "leaf"
 
+    # KENSEI: spawn-time cycle guard — refuse a child that would recurse
+    # into its own ancestor profile before spending a build + run on it.
+    _check_delegation_cycle(parent_agent, profile)
+
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
     # spawn_requested event, and the _active_subagents registry all share
@@ -2240,10 +2395,12 @@ def _build_child_agent(
         session_ref=child_session_ref,
     )
 
-    # Each subagent gets its own iteration budget capped at max_iterations
-    # (configurable via delegation.max_iterations, default 50).  This means
-    # total iterations across parent + subagents can exceed the parent's
-    # max_iterations.  The user controls the per-subagent cap in config.yaml.
+    # Each subagent gets a share of the delegation iteration budget:
+    # _split_child_budget divides effective_max_iter across the batch
+    # (configurable via delegation.max_iterations, default 50). Single-child
+    # batches keep the full cap; multi-child batches split it so total
+    # iterations across parent + subagents stay bounded by design, with a
+    # floor of 1 per child. The user controls the cap in config.yaml.
 
     child_thinking_cb = None
     if child_progress_cb:
@@ -2388,11 +2545,24 @@ def _build_child_agent(
     # same class of silent-drag the override_provider filter-clearing below
     # already prevents for OpenRouter routing preferences.  Predictability >
     # liveness for explicit pins: the pinned child fails loudly instead.
-    parent_fallback = (
+    parent_fallback: Any = (
         None
         if override_provider
         else (_profile_fallback or getattr(parent_agent, "_fallback_chain", None) or None)
     )
+    # KENSEI: registry-backed fallback (direct fix, 2026-09-04). When neither
+    # the profile nor the parent supplies a chain, resolve the child's
+    # profile surface chain from the route-registry so quota/429 failures
+    # fail over exactly like the surface instead of killing the child.
+    # Explicit pins (override_provider) stay loud-and-pinned per above.
+    if parent_fallback is None and not override_provider:
+        _chain_profile = None
+        if loaded_profile_cfg:
+            _chain_profile = loaded_profile_cfg.get("name")
+        _chain_profile = _chain_profile or profile
+        _registry_chain = _registry_surface_chain(_chain_profile)
+        if _registry_chain:
+            parent_fallback = _registry_chain
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2564,6 +2734,14 @@ def _build_child_agent(
         # Test doubles (MagicMock et al.) may not be weakref-able; control
         # actions then simply don't resolve ownership for this child.
         child._delegate_parent_ref = None
+    # KENSEI: stamp the spawn profile for the spawn-time cycle guard above —
+    # grandchildren compare their requested profile against this chain.
+    # setattr (not direct assignment) so the type checker does not require
+    # the attribute on AIAgent — same pattern as _delegation_id below.
+    try:
+        setattr(child, "_delegate_profile_name", profile)
+    except Exception:
+        pass
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -4390,7 +4568,7 @@ def delegate_task(
     background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
-    # default 2 for parity with the original MAX_DEPTH constant.
+    # default 1 (flat: parent spawns children, children cannot spawn).
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
@@ -4632,7 +4810,10 @@ def delegate_task(
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
                 model=creds["model"],
-                max_iterations=effective_max_iter,
+                # KENSEI: split the delegation budget across batch children
+                # (single-child batches unchanged) so one fan-out cannot
+                # multiply total iterations N-fold. Floor 1, never starves.
+                max_iterations=_split_child_budget(effective_max_iter, n_tasks),
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],

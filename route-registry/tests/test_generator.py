@@ -87,6 +87,24 @@ def tmp_hermes_home(tmp_path):
                 if isinstance(entry, dict):
                     entry.pop("route_model_id", None)
             content_cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    # Same reset pattern for surfaces with new migrations in this test pass.
+    for surf_name, expected_old in [
+        ("denji-ledger", "stepfun/step-3.7-flash:free"),
+        ("gojo-admin", "gemma4:31b"),
+        ("gojo-calendar", "gemma4:31b"),
+        ("gojo-mailbox", "gemma4:31b"),
+        ("wesker-backup", "gemma4:31b"),
+        ("wesker-ops", "gemma4:31b"),
+    ]:
+        cfg = dst / "profiles" / surf_name / "config.yaml"
+        if cfg.exists():
+            doc = yaml.safe_load(cfg.read_text())
+            doc.setdefault("model", {})["default"] = expected_old
+            for entry in doc.get("fallback_providers") or []:
+                if isinstance(entry, dict):
+                    entry.pop("route_model_id", None)
+            cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
     return dst
 
 
@@ -249,12 +267,15 @@ def _strip_bypass_env_keys(home: Path) -> int:
 
 class TestRegistry:
     def test_registry_loads(self, registry):
-        # 31 route slots + 1 emergency reserve.
+        # 37 route slots + 1 emergency reserve.
         # (2026-09-02: was 33 — removed slot-glm53-3/4, the dead slots serving the
-        # retired glm-5.3 model; zero surfaces referenced them.)
+        #  same model; 2026-09-03 add 4 mimo-v2.5 slots for denji-ledger migration;
+        #  2026-09-04 add slot-mini-m3-5 ollama minimax matrix-backed candidate
+        #  plus slot-qwenflash-1 bai candidate, both disabled, no surface refs.
+        #  opencode-go minimax deliberately not added: max 5 same-model routes)
         route_slots = [s for s in registry["slots"] if s["class"] != "emergency_reserve"]
-        assert len(route_slots) == 31
-        assert len(registry["slots"]) == 32
+        assert len(route_slots) == 37
+        assert len(registry["slots"]) == 38
 
     def test_all_slots_have_full_schema(self, registry):
         required = {"slot", "model_id", "provider_account", "class", "status",
@@ -498,8 +519,7 @@ class TestPlan:
     def test_keep_current_surfaces_untouched(self, tmp_hermes_home):
         """Proposal: keep_current surfaces must be untouched by the plan."""
         plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
-        keep = {"default", "dezzy", "gojo", "gojo-admin", "gojo-calendar",
-                "gojo-mailbox", "kensei", "wesker-backup", "wesker-ops", "work"}
+        keep = {"default", "dezzy", "gojo", "kensei", "work"}
         touched = [e["surface"] for e in plan["entries"] if e["changes"]]
         assert not (set(touched) & keep), f"keep_current surfaces modified: {set(touched) & keep}"
         untouched = {e["surface"] for e in plan["entries"] if not e["changes"]}
@@ -555,6 +575,30 @@ class TestPlan:
                     "base_url": primary["base_url"],
                     "reasoning_effort": primary["reasoning_effort"],
                 }
+                checked += 1
+                continue
+            if entry["surface"] == "denji-ledger":
+                assert entry["main_model"] == "mimo-v2.5"
+                if main == "stepfun/step-3.7-flash:free":
+                    model_change = next(c for c in entry["changes"] if c["field"] == "model")
+                    primary = by_id["slot-mimo-v25-main"]["hermes"]
+                    assert model_change["old"]["default"] == main
+                    assert model_change["new"]["default"] == primary["model"]
+                else:
+                    assert main == "mimo-v2.5"
+                    assert not any(c["field"] == "model" for c in entry["changes"])
+                checked += 1
+                continue
+            if entry["surface"] in {"gojo-admin", "gojo-calendar", "gojo-mailbox", "wesker-backup", "wesker-ops"}:
+                assert entry["main_model"] == "deepseek-v4-flash"
+                if main == "gemma4:31b":
+                    model_change = next(c for c in entry["changes"] if c["field"] == "model")
+                    primary = by_id["slot-dsflash-1"]["hermes"]
+                    assert model_change["old"]["default"] == main
+                    assert model_change["new"]["default"] == primary["model"]
+                else:
+                    assert main == "deepseek-v4-flash"
+                    assert not any(c["field"] == "model" for c in entry["changes"])
                 checked += 1
                 continue
             assert entry["main_model"] == main, (

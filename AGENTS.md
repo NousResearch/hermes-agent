@@ -1214,8 +1214,8 @@ Hardening invariants:
 - Grace window: 120s for one-shot jobs whose fire time was missed.
 - File lock at `~/.hermes/cron/.tick.lock` prevents duplicate ticks
   across processes.
-- Cron sessions pass `skip_memory=True` by default; memory providers
-  intentionally do not run during cron.
+- Cron sessions pass `skip_memory=False` by default — memory loads
+  like any other agent run.
 
 Cron deliveries are **not** mirrored into the target gateway session —
 they land in their own cron session with a header/footer frame so the

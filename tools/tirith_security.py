@@ -98,28 +98,35 @@ _INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
 _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
 
 # Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures,
-# disable tirith for the rest of the process to prevent agent hangs (#41400).
-# Reset on successful execution (see _record_tirith_crash / check_command_security).
+# disable tirith to prevent agent hangs (#41400). The breaker HALF-OPENS
+# after _CIRCUIT_RETRY_S: one caller re-probes tirith for real; any
+# completed scan (exit 0/1/2 — allow/block/warn all prove the binary is
+# healthy) fully closes the breaker, a failed probe re-arms the timer.
+# Without the TTL the breaker was a one-way latch: once open, the reset
+# branch was unreachable for the rest of the process.
 #
-# Thread safety: _crash_count and _circuit_open are module-level globals
-# mutated without a lock. check_command_security can be called from
-# concurrent agent threads (gateway multi-session). The race is benign —
-# at worst two threads both increment past _CRASH_LIMIT and both set
-# _circuit_open = True, opening the breaker one call early. No data
-# corruption or security bypass is possible. This intentionally matches
-# the lock-free style of error counters in mcp_tool.py rather than the
-# locked _warn_once pattern, because the worst case is harmless.
+# Thread safety: crash counting stays lock-free (worst case: breaker opens
+# one call early — harmless, matches mcp_tool.py error counters).
+# _breaker_lock guards ONLY the half-open claim (TTL check + timestamp
+# re-arm, nanoseconds); it is never held across the subprocess probe, so
+# it cannot reintroduce the #41400 hang. Claiming re-arms _circuit_open_at
+# first, which makes concurrent callers see a fresh TTL and stay on the
+# fail-open path: exactly one probe per TTL window (single-flight).
 _CRASH_LIMIT = 3
 _crash_count: int = 0
 _circuit_open: bool = False
+_circuit_open_at: float = 0.0
+_CIRCUIT_RETRY_S = 300  # half-open probe interval (seconds)
+_breaker_lock = threading.Lock()
 
 
 def _record_tirith_crash() -> None:
-    """Increment the crash counter and open the circuit breaker if needed."""
-    global _crash_count, _circuit_open
+    """Increment the crash counter and (re-)open the circuit breaker if needed."""
+    global _crash_count, _circuit_open, _circuit_open_at
     _crash_count += 1
     if _crash_count >= _CRASH_LIMIT:
         _circuit_open = True
+        _circuit_open_at = time.monotonic()
         logger.warning(
             "tirith circuit breaker opened after %d consecutive failures; "
             "disabling for the rest of the process",
@@ -738,7 +745,7 @@ def check_command_security(command: str) -> dict:
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
-    global _crash_count, _circuit_open
+    global _crash_count, _circuit_open, _circuit_open_at
 
     cfg = _load_security_config()
 
@@ -746,12 +753,21 @@ def check_command_security(command: str) -> dict:
         return {"action": "allow", "findings": [], "summary": ""}
 
     # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row,
-    # stop trying for the rest of the process.  Without this, a corrupted
-    # or missing binary causes every tool call to hit the same spawn failure
-    # → fail-open → agent retry loop, hanging the user for 20+ minutes
-    # (issue #41400).
+    # stop trying and fail open (issue #41400). After _CIRCUIT_RETRY_S the
+    # breaker half-opens: exactly one caller claims the probe slot (claim =
+    # re-arm _circuit_open_at under _breaker_lock, so concurrent callers see
+    # a fresh TTL and stay fail-open) and falls through to a real scan below.
     if _circuit_open:
-        return {"action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
+        with _breaker_lock:
+            if not _circuit_open:
+                pass  # another thread's probe already closed the breaker
+            elif time.monotonic() - _circuit_open_at < _CIRCUIT_RETRY_S:
+                return {"action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
+            else:
+                _circuit_open_at = time.monotonic()  # claim: single-flight for this TTL window
+                logger.info(
+                    "tirith circuit breaker half-open: probing after %ds", _CIRCUIT_RETRY_S
+                )
 
     # Unsupported platform (Windows etc.) — tirith has no binary here and
     # never will. Skip the resolver entirely so we don't even try to spawn.
@@ -807,10 +823,18 @@ def check_command_security(command: str) -> dict:
 
     # Map exit code to action
     exit_code = result.returncode
+    if exit_code in (0, 1, 2):
+        # Completed scan — allow/block/warn verdicts all prove the binary is
+        # healthy. Clear the crash streak and fully close the breaker (this
+        # is the half-open probe's recovery path, and also fixes the streak
+        # never resetting on block/warn verdicts).
+        _crash_count = 0
+        if _circuit_open:
+            _circuit_open = False
+            _circuit_open_at = 0.0
+            logger.info("tirith circuit breaker closed after successful probe")
     if exit_code == 0:
         action = "allow"
-        # Successful execution — reset circuit breaker
-        _crash_count = 0
     elif exit_code == 1:
         action = "block"
     elif exit_code == 2:

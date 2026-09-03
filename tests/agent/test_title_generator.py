@@ -597,3 +597,36 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestPaperclipSessionHeaderNotTitleable:
+    """Regression: Paperclip's run header must not become an instant title."""
+
+    HEADER = (
+        "# Paperclip Hermes session — agent-123 — run-456 — "
+        "2026-08-10T12:34:56Z"
+    )
+
+    def test_instant_title_skips_header_without_touching_the_store(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+
+        assert apply_instant_title(db, "sess-1", self.HEADER) is None
+        db.set_auto_title.assert_not_called()
+        db.set_session_title.assert_not_called()
+
+    def test_background_titler_still_runs_after_instant_skip(self):
+        from agent.title_generator import maybe_auto_title
+
+        db = MagicMock()
+        import threading
+
+        called = threading.Event()
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            mock_auto.side_effect = lambda *args, **kwargs: called.set()
+            maybe_auto_title(db, "sess-1", self.HEADER, [])
+            assert called.wait(timeout=10), "auto-title thread never ran"
+
+        mock_auto.assert_called_once()

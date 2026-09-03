@@ -152,6 +152,13 @@ _MACHINE_PREFIXES = (
     "[System: The active model for this chat has changed to ",
 )
 
+# Paperclip's hermes_local adapter prefixes each run with a unique session
+# header. The unique suffix is beyond the instant-title window, so deriving an
+# inline title from it creates the same title for every run and triggers the
+# dedupe=False collision path. This is intentionally separate from
+# _MACHINE_PREFIXES: the background titler still owns collision recovery.
+_PAPERCLIP_SESSION_HEADER_PREFIX = "# Paperclip Hermes session"
+
 
 def _title_language() -> str:
     """Return configured title language, or empty string to match the user."""
@@ -509,6 +516,9 @@ def apply_instant_title(
     if not session_db or not session_id:
         return None
     try:
+        if user_message.lstrip().startswith(_PAPERCLIP_SESSION_HEADER_PREFIX):
+            logger.debug("Instant title skipped for Paperclip session header")
+            return None
         if not is_titleable_user_message(user_message):
             return None
         title = derive_title(user_message)

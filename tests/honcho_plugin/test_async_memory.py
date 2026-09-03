@@ -18,6 +18,8 @@ import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
+    DeliveryOutcome,
+    DeliveryState,
     HonchoSession,
     HonchoSessionManager,
 )
@@ -303,7 +305,11 @@ class TestAsyncWriterThread:
         def capture(session):
             flushed.append(session)
             flushed_event.set()
-            return True
+            return DeliveryOutcome(
+                state=DeliveryState.DELIVERED,
+                attempted_count=1,
+                delivered_count=1,
+            )
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
@@ -335,7 +341,14 @@ class TestAsyncWriterThread:
             mgr._cache[sess.key] = sess
 
         flushed = []
-        mgr._flush_session = lambda session: flushed.append(session) or True
+        mgr._flush_session = lambda session: (
+            flushed.append(session)
+            or DeliveryOutcome(
+                state=DeliveryState.DELIVERED,
+                attempted_count=1,
+                delivered_count=1,
+            )
+        )
 
         thread = mgr._async_thread
         mgr.stop_async_writer()
@@ -350,84 +363,98 @@ class TestAsyncWriterThread:
 
 
 # ---------------------------------------------------------------------------
-# async retry on failure
+# async direct delivery failure
 # ---------------------------------------------------------------------------
 
-class TestAsyncWriterRetry:
-    def test_retries_once_on_failure(self, make_manager):
+class TestAsyncWriterFailure:
+    def test_boundary_exception_is_not_retried(self, make_manager):
         mgr = make_manager(write_frequency="async")
         mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
+        attempt_done = threading.Event()
 
-        def flaky_flush(session):
+        def failing_flush(session):
             call_count[0] += 1
-            if call_count[0] == 1:
-                raise ConnectionError("network blip")
-            retry_done.set()
-            return True
+            attempt_done.set()
+            raise ConnectionError("network blip")
 
-        mgr._flush_session = flaky_flush
+        mgr._flush_session = failing_flush
+        mgr._async_queue.put(sess)
+        assert attempt_done.wait(timeout=10), "async writer never attempted delivery"
 
-        with patch("time.sleep"):  # skip the 2s sleep in retry
-            mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
+        mgr.stop_async_writer()
+        assert call_count[0] == 1
+        assert mgr.last_delivery_outcome.state is DeliveryState.FAILED
 
-        mgr.shutdown()
-        assert call_count[0] == 2
-
-    def test_drops_after_two_failures(self, make_manager):
+    def test_terminal_failure_is_retained_without_claiming_drop(self, make_manager, caplog):
         mgr = make_manager(write_frequency="async")
         mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
+        attempt_done = threading.Event()
 
         def always_fail(session):
             call_count[0] += 1
-            if call_count[0] >= 2:
-                retry_done.set()
-            raise RuntimeError("always broken")
+            attempt_done.set()
+            return DeliveryOutcome(
+                state=DeliveryState.FAILED,
+                attempted_count=1,
+                pending_count=1,
+                error_category="sdk_error",
+            )
 
         mgr._flush_session = always_fail
 
-        with patch("time.sleep"):
+        with caplog.at_level("ERROR", logger="plugins.memory.honcho.session"):
             mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
+            assert attempt_done.wait(timeout=10), "async writer never attempted delivery"
 
-        mgr.shutdown()
-        # Should have tried exactly twice (initial + one retry) and not crashed
-        assert call_count[0] == 2
+        mgr.stop_async_writer()
+        assert call_count[0] == 1
+        assert mgr.last_delivery_outcome.state is DeliveryState.FAILED
+        assert "dropping" not in caplog.text.lower()
         assert not mgr._async_thread.is_alive()
 
-    def test_retries_when_flush_reports_failure(self, make_manager):
+    def test_later_flush_all_retries_unsynced_records(self, make_manager):
         mgr = make_manager(write_frequency="async")
         mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
-        retry_done = threading.Event()
+        first_done = threading.Event()
 
         def fail_then_succeed(session):
             call_count[0] += 1
-            if call_count[0] >= 2:
-                retry_done.set()
-            return call_count[0] > 1
+            if call_count[0] == 1:
+                first_done.set()
+                return DeliveryOutcome(
+                    state=DeliveryState.FAILED,
+                    attempted_count=1,
+                    pending_count=1,
+                    error_category="connection",
+                )
+            return DeliveryOutcome(
+                state=DeliveryState.DELIVERED,
+                attempted_count=1,
+                delivered_count=1,
+            )
 
         mgr._flush_session = fail_then_succeed
+        mgr._cache[sess.key] = sess
+        mgr._async_queue.put(sess)
+        assert first_done.wait(timeout=10), "async writer never attempted delivery"
+        result = mgr.flush_all()
 
-        with patch("time.sleep"):
-            mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
-
-        mgr.shutdown()
         assert call_count[0] == 2
+        assert result.state is DeliveryState.DELIVERED
+        mgr._cache.clear()
+        mgr.stop_async_writer()
 
 
 def _prime_migration_session(mgr, key, honcho_session_id, ai_peer_id="custom-ai"):

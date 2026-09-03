@@ -195,6 +195,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             placeholder="async | turn | session | N",
             group="Message writing",
         ),
+        ProviderField(
+            key="messageMetadata",
+            label="Message metadata defaults",
+            kind=KIND_JSON,
+            description=(
+                "Static provider-native metadata defaults for every saved message. "
+                "Runtime identity, session, timestamp, and event fields always override conflicts."
+            ),
+            placeholder='{"schema": "example.provenance/v1", "authority": "user", "extensions": {}}',
+            group="Message writing",
+        ),
         # — Dialectic —
         ProviderField(
             key="dialecticReasoningLevel",

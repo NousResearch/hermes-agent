@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
 from plugins.memory.honcho.client import spawn_context_thread
+from plugins.memory.honcho.session import classify_delivery_error
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -512,6 +513,8 @@ class HonchoMemoryProvider(MemoryProvider):
             context_tokens=cfg.context_tokens,
             runtime_user_peer_name=kwargs.get("user_id") or None,
             runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
+            provenance_context=kwargs,
+            source_session_id=session_id,
         )
 
         self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
@@ -1444,17 +1447,42 @@ class HonchoMemoryProvider(MemoryProvider):
             try:
                 session = self._manager.get_or_create(self._session_key)
                 if clean_user_content:
-                    for chunk in self._chunk_message(clean_user_content, msg_limit):
-                        session.add_message("user", chunk)
+                    chunks = self._chunk_message(clean_user_content, msg_limit)
+                    source_record_id = self._manager.new_source_record_id()
+                    for index, chunk in enumerate(chunks):
+                        self._manager.add_source_message(
+                            session,
+                            "user",
+                            chunk,
+                            source_record_id=source_record_id,
+                            source_session_id=session_id or None,
+                            chunk_index=index,
+                            chunk_count=len(chunks),
+                        )
                 if clean_assistant_content:
-                    for chunk in self._chunk_message(clean_assistant_content, msg_limit):
-                        session.add_message("assistant", chunk)
+                    chunks = self._chunk_message(clean_assistant_content, msg_limit)
+                    source_record_id = self._manager.new_source_record_id()
+                    for index, chunk in enumerate(chunks):
+                        self._manager.add_source_message(
+                            session,
+                            "assistant",
+                            chunk,
+                            source_record_id=source_record_id,
+                            source_session_id=session_id or None,
+                            chunk_index=index,
+                            chunk_count=len(chunks),
+                        )
                 # Route through save() so writeFrequency is honored —
                 # _flush_session() directly bypassed "session"/N batching
                 # and flushed every turn regardless of config.
                 self._manager.save(session)
-            except Exception as e:
-                logger.debug("Honcho sync_turn failed: %s", e)
+            except Exception as exc:
+                category, status = classify_delivery_error(exc)
+                logger.debug(
+                    "Honcho sync_turn failed category=%s status=%s",
+                    category,
+                    status if status is not None else "none",
+                )
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
@@ -1514,8 +1542,13 @@ class HonchoMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=10.0)
         try:
             self._manager.flush_all()
-        except Exception as e:
-            logger.debug("Honcho session-end flush failed: %s", e)
+        except Exception as exc:
+            category, status = classify_delivery_error(exc)
+            logger.debug(
+                "Honcho session-end flush failed category=%s status=%s",
+                category,
+                status if status is not None else "none",
+            )
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas, respecting recall_mode.

@@ -1864,6 +1864,15 @@ display:
   #
   skin: default
 
+  # Communication register for static user-facing messages (approval
+  # prompts, gateway slash-command replies).  A register is a tone
+  # variant of the SAME information -- it does not suppress content.
+  #   "technical" — concise, default, byte-compatible with prior output
+  #   "friendly"  — warmer, more conversational phrasing for a subset
+  #                 of high-visibility messages (locales/en-friendly.yaml)
+  # Unknown values fall back to "technical".
+  message_register: technical
+
 # =============================================================================
 # Model Aliases — short names for /model command
 # =============================================================================

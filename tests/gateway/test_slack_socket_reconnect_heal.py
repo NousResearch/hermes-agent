@@ -276,7 +276,7 @@ class TestSocketModeRestart:
 
     @pytest.mark.asyncio
     async def test_watchdog_restarts_when_transport_disconnected(self, adapter):
-        """A transport that reports itself down still triggers a reconnect."""
+        """A transport that stays down beyond grace still triggers a reconnect."""
         live_task = MagicMock()
         live_task.done.return_value = False
         adapter._socket_mode_task = live_task
@@ -291,7 +291,38 @@ class TestSocketModeRestart:
         adapter._restart_socket_mode = _fake_restart
         adapter._socket_transport_connected = AsyncMock(return_value=False)
         adapter._socket_watchdog_interval_s = 0.01
+        adapter._socket_disconnect_grace_s = 0.0
 
         await adapter._socket_watchdog_loop()
 
         assert reasons == ["transport disconnected"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_leaves_short_disconnect_to_slack_sdk(self, adapter):
+        """One false sample followed by recovery must not rebuild the handler."""
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        adapter._socket_mode_task = live_task
+        adapter._handler = MagicMock()
+        adapter._socket_watchdog_interval_s = 0.001
+        adapter._socket_disconnect_grace_s = 1.0
+        samples = iter((False, True))
+        reasons: list[str] = []
+
+        async def _probe():
+            value = next(samples)
+            if value:
+                adapter._running = False
+            return value
+
+        async def _fake_restart(reason: str) -> None:
+            reasons.append(reason)
+            adapter._running = False
+
+        adapter._socket_transport_connected = _probe
+        adapter._restart_socket_mode = _fake_restart
+
+        await adapter._socket_watchdog_loop()
+
+        assert reasons == []
+        assert adapter._socket_disconnected_since_monotonic is None

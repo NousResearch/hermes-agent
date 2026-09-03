@@ -1292,6 +1292,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # slack_sdk briefly reports disconnected while it rotates Socket Mode
+        # endpoints. Let the SDK own that transient reconnect; rebuilding the
+        # handler on the first false sample races its retry loop and can create
+        # a reconnect storm. Only a sustained disconnect belongs to Hermes.
+        self._socket_disconnect_grace_s = 45.0
+        self._socket_disconnected_since_monotonic: Optional[float] = None
         # Monotonic timestamp of the most recent Socket Mode handler (re)start,
         # used to grant a grace window for the first ping/pong after connect.
         self._socket_handler_started_monotonic: Optional[float] = None
@@ -1450,6 +1456,7 @@ class SlackAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self._handler.start_async())
         self._socket_mode_task = task
         self._socket_handler_started_monotonic = time.monotonic()
+        self._socket_disconnected_since_monotonic = None
         task.add_done_callback(self._on_socket_mode_task_done)
 
     async def _stop_socket_mode_handler(self) -> None:
@@ -1584,8 +1591,19 @@ class SlackAdapter(BasePlatformAdapter):
 
                 connected = await self._socket_transport_connected()
                 if connected is False:
-                    await self._restart_socket_mode("transport disconnected")
-                elif self._socket_ping_pong_stale():
+                    now = time.monotonic()
+                    if self._socket_disconnected_since_monotonic is None:
+                        self._socket_disconnected_since_monotonic = now
+                        continue
+                    if (
+                        now - self._socket_disconnected_since_monotonic
+                        >= self._socket_disconnect_grace_s
+                    ):
+                        await self._restart_socket_mode("transport disconnected")
+                    continue
+                if connected is True:
+                    self._socket_disconnected_since_monotonic = None
+                if self._socket_ping_pong_stale():
                     # is_connected() can lie when the aiohttp session is closed
                     # but the client keeps retrying; ping/pong staleness catches
                     # that wedged-zombie case that the bool check above misses.

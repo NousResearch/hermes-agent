@@ -523,6 +523,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-payments',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/payments/payments-coinbase',
                     'user-guide/skills/optional/payments/payments-mpp-agent',
                     'user-guide/skills/optional/payments/payments-stripe-link-cli',
                     'user-guide/skills/optional/payments/payments-stripe-projects',

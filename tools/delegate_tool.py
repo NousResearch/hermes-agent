@@ -2656,6 +2656,16 @@ def _run_single_child(
     # handed to a Future done-callback instead.
     _child_close_deferred = False
 
+    def _current_child_identity() -> Dict[str, Any]:
+        """Return current join keys, including any compression-rotated session."""
+        raw_session_id = getattr(child, "session_id", None)
+        return {
+            "subagent_id": _subagent_id,
+            "child_session_id": (
+                raw_session_id if isinstance(raw_session_id, str) else ""
+            ),
+        }
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -3110,6 +3120,7 @@ def _run_single_child(
 
             _error_entry = {
                 "task_index": task_index,
+                **_current_child_identity(),
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
                 "error": _err,
@@ -3198,8 +3209,8 @@ def _run_single_child(
 
         # T1-24: structured-output contract validation + ONE bounded retry.
         # Runs only when a schema was attached at dispatch; schema-less
-        # delegations take none of these branches and their result entry
-        # stays byte-identical (wire-shape pinning).
+        # delegations skip validation/retry. Additive host attribution fields
+        # are emitted for every result shape.
         # Pattern from: github/copilot-cli ctx.agent(prompt, {schema}) —
         # PATTERN ONLY, no code copied.
         _output_schema = getattr(child, "_delegate_output_schema", None)
@@ -3386,6 +3397,7 @@ def _run_single_child(
         # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
+            **_current_child_identity(),
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -3601,6 +3613,7 @@ def _run_single_child(
                 logger.debug("Progress callback failure relay failed: %s", e)
         _error_entry = {
             "task_index": task_index,
+            **_current_child_identity(),
             "status": "error",
             "summary": None,
             "error": str(exc),
@@ -4129,12 +4142,21 @@ def delegate_task(
     # live_paths is empty and delegation proceeds exactly as before.
     from tools.delegation_live_log import (
         create_live_transcripts,
+        new_live_delegation_id,
         update_manifest_statuses,
         wrap_progress_callback,
     )
 
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+    # Identity is part of the delegation contract, not the best-effort live-log
+    # side channel. Generate it first and pass it into transcript creation so
+    # cache/path failures cannot erase or fork the durable attribution key.
+    live_deleg_id = new_live_delegation_id()
+    _logged_deleg_id, live_writers, live_paths = create_live_transcripts(
+        task_list,
+        context,
+        delegation_id=live_deleg_id,
+        model=creds.get("model"),
+        provider=creds.get("provider"),
     )
     # Announce the batch tag once so the later ``[tag n/N]`` completion lines
     # (and any nested batch's lines interleaving with them) are attributable.
@@ -4251,6 +4273,22 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        def _child_result_identity(index: int) -> Dict[str, Any]:
+            child_obj = next(
+                (candidate for i, _task, candidate in children if i == index),
+                None,
+            )
+            raw_subagent_id = getattr(child_obj, "_subagent_id", None)
+            raw_session_id = getattr(child_obj, "session_id", None)
+            return {
+                "subagent_id": (
+                    raw_subagent_id if isinstance(raw_subagent_id, str) else None
+                ),
+                "child_session_id": (
+                    raw_session_id if isinstance(raw_session_id, str) else ""
+                ),
+            }
+
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
@@ -4316,6 +4354,7 @@ def delegate_task(
                                 except Exception as exc:
                                     entry = {
                                         "task_index": idx,
+                                        **_child_result_identity(idx),
                                         "status": "error",
                                         "summary": None,
                                         "error": str(exc),
@@ -4328,6 +4367,7 @@ def delegate_task(
                             else:
                                 entry = {
                                     "task_index": idx,
+                                    **_child_result_identity(idx),
                                     "status": "interrupted",
                                     "summary": None,
                                     "error": "Parent agent interrupted — child did not finish in time",
@@ -4353,6 +4393,7 @@ def delegate_task(
                             idx = futures[future]
                             entry = {
                                 "task_index": idx,
+                                **_child_result_identity(idx),
                                 "status": "error",
                                 "summary": None,
                                 "error": str(exc),
@@ -4435,6 +4476,7 @@ def delegate_task(
         update_manifest_statuses(live_deleg_id, results)
 
         combined: Dict[str, Any] = {
+            "delegation_id": live_deleg_id,
             "results": results,
             "total_duration_seconds": total_duration,
         }

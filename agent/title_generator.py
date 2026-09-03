@@ -255,6 +255,17 @@ def is_titleable_user_message(user_message: str) -> bool:
     return bool(_summarize_user_message(user_message).strip())
 
 
+# Markdown code-fence delimiter: ``` or ~~~, optionally followed by an info
+# string (```json, ~~~python). A line that is only a fence carries no intent
+# worth titling — see derive_title.
+_FENCE_LINE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*[\w+.-]*\s*$")
+
+
+def _is_fence_line(line: str) -> bool:
+    """Return whether *line* is nothing but a markdown code-fence delimiter."""
+    return bool(_FENCE_LINE_RE.match(line or ""))
+
+
 def derive_title(user_message: str) -> Optional[str]:
     """Build an instant title from the user's message. No model, never fails.
 
@@ -266,9 +277,18 @@ def derive_title(user_message: str) -> Optional[str]:
     text = _summarize_user_message(user_message)
     if not text:
         return None
-    # First non-empty line: a pasted log or a multi-paragraph brief still gets
-    # named after its opening intent.
-    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    # First line carrying real prose. A message that opens with a code fence
+    # (```json, ~~~py) or a bare fence would otherwise be titled after the
+    # delimiter itself — every such session collides on the same name and
+    # accumulates a "#N" suffix from the lineage deduper.
+    line = next(
+        (
+            ln.strip()
+            for ln in text.splitlines()
+            if ln.strip() and not _is_fence_line(ln)
+        ),
+        "",
+    )
     if not line:
         return None
     line = " ".join(line.split())

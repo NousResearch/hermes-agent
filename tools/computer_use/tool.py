@@ -49,6 +49,7 @@ import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools.approval import is_approval_bypass_active_for_session
 from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
@@ -603,6 +604,9 @@ def _request_approval(action: str, args: Dict[str, Any],
     """
     is_foreground = args.get("delivery_mode") == "foreground"
     scope_key = (action, "foreground" if is_foreground else "background")
+    # Hardline blocklists (keys/type patterns) were already checked above.
+    if is_approval_bypass_active_for_session(session_id):
+        return None
     with _approval_lock:
         if _session_auto_approve.get(session_id):
             return None

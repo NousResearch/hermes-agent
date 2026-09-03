@@ -710,13 +710,26 @@ class InProcessCronScheduler(CronScheduler):
             [p[0] if isinstance(p, tuple) else p for p in profile_homes],
         )
 
+        def eligible_profile_homes():
+            homes = _existing_profile_homes(profile_homes)
+            if profile_gate is None:
+                return homes
+            return [
+                entry
+                for entry in homes
+                if profile_gate(
+                    entry[0] if isinstance(entry, tuple) else None,
+                    entry[1] if isinstance(entry, tuple) else entry,
+                )
+            ]
+
         # Recovery + initial heartbeat for every profile.
         # A profile may have been deleted since this snapshot was taken;
         # never recreate a deleted home's cron workspace via the heartbeat
         # below (#47368).
         # One profile's broken store (corrupt executions.db, unreadable
         # cron dir) must not abort startup for every other profile (#74878).
-        for entry in _existing_profile_homes(profile_homes):
+        for entry in eligible_profile_homes():
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
@@ -747,16 +760,7 @@ class InProcessCronScheduler(CronScheduler):
             # Worst per-profile failure this cycle (fd exhaustion wins) so the
             # #87644 backoff/reclaim is applied once per cycle, not per profile.
             _cycle_exc: BaseException | None = None
-            cycle_homes = _existing_profile_homes(profile_homes)
-            if profile_gate is not None:
-                cycle_homes = [
-                    entry
-                    for entry in cycle_homes
-                    if profile_gate(
-                        entry[0] if isinstance(entry, tuple) else None,
-                        entry[1] if isinstance(entry, tuple) else entry,
-                    )
-                ]
+            cycle_homes = eligible_profile_homes()
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")

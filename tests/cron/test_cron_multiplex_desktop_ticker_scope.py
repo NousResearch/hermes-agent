@@ -99,22 +99,31 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
 
     assert not thread.is_alive()
     assert set(ticked) == {str(orphan)}
-    # The gated profile gets no tick-loop success marker either: its own
-    # gateway owns that status surface.
+    # The gated profile gets no startup heartbeat or tick-loop success marker:
+    # its gateway owns that status surface and the scheduler never enters it.
+    assert not (own_gateway / "cron" / "ticker_heartbeat").exists()
     assert not (own_gateway / "cron" / "ticker_last_success").exists()
     assert (orphan / "cron" / "ticker_last_success").exists()
 
 
-def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch):
-    """The desktop ticker wires the gate to ``_check_gateway_running``."""
+def test_desktop_ticker_gates_on_every_profile_gateway_owner(tmp_path, monkeypatch):
+    """The desktop ticker stands down for direct and multiplex gateway owners."""
     from hermes_cli import web_server
 
-    homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")]
+    homes = [
+        ("default", tmp_path / "default"),
+        ("ops", tmp_path / "ops"),
+        ("mux", tmp_path / "mux"),
+    ]
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
     )
     monkeypatch.setattr(
         "hermes_cli.profiles._check_gateway_running", lambda home: home.name == "ops"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles._served_by_running_multiplexer",
+        lambda name: name == "mux",
     )
     captured = {}
 
@@ -137,3 +146,4 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch):
     assert gate is not None, "desktop ticker did not install a profile gate"
     assert gate("default", tmp_path / "default") is True
     assert gate("ops", tmp_path / "ops") is False
+    assert gate("mux", tmp_path / "mux") is False

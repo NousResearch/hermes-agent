@@ -2,7 +2,14 @@ import type { AppendMessage } from '@assistant-ui/react'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import {
+  type CommandsCatalogLike,
+  desktopOmittedSlashCommands,
+  desktopSlashDescription,
+  desktopSlashUnavailableMessage,
+  filterDesktopCommandsCatalog,
+  rememberDesktopCommandsCatalog
+} from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -469,17 +476,47 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }
 
-export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
-  const desktopCatalog = filterDesktopCommandsCatalog(catalog)
+export function renderCommandsCatalog(
+  catalog: CommandsCatalogLike,
+  copy: Translations['desktop'],
+  options: { includeUnavailable?: boolean } = {}
+): string {
+  rememberDesktopCommandsCatalog(catalog)
+  const desktopCatalog = options.includeUnavailable ? catalog : filterDesktopCommandsCatalog(catalog)
 
   const sections = desktopCatalog.categories?.length
-    ? desktopCatalog.categories
-    : [{ name: copy.desktopCommands, pairs: desktopCatalog.pairs ?? [] }]
+    ? desktopCatalog.categories.map(section => ({ ...section, pairs: [...section.pairs] }))
+    : []
+
+  const listed = new Set(sections.flatMap(section => section.pairs.map(([command]) => command.toLowerCase())))
+  const uncategorizedPairs = (desktopCatalog.pairs ?? []).filter(([command]) => !listed.has(command.toLowerCase()))
+
+  if (uncategorizedPairs.length > 0 || sections.length === 0) {
+    sections.push({ name: copy.desktopCommands, pairs: uncategorizedPairs })
+
+    for (const [command] of uncategorizedPairs) {
+      listed.add(command.toLowerCase())
+    }
+  }
+
+  if (options.includeUnavailable) {
+    const unavailablePairs = desktopOmittedSlashCommands(catalog)
+      .filter(command => !listed.has(command))
+      .map(command => [command, desktopSlashDescription(command)] as [string, string])
+
+    if (unavailablePairs.length > 0) {
+      sections.push({ name: 'Hidden aliases and unavailable commands', pairs: unavailablePairs })
+    }
+  }
 
   const body = sections
     .filter(section => section.pairs.length > 0)
     .map(section => {
-      const rows = section.pairs.map(([cmd, desc]) => `${cmd.padEnd(18)} ${desc}`)
+      const rows = section.pairs.map(([cmd, desc]) => {
+        const unavailable = options.includeUnavailable ? desktopSlashUnavailableMessage(cmd) : null
+
+        return `${cmd.padEnd(18)} ${desc}${desc && unavailable ? ' — ' : ''}${unavailable ?? ''}`.trimEnd()
+      })
 
       return [`${section.name}:`, ...rows].join('\n')
     })

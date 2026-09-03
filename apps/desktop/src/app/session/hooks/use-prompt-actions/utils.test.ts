@@ -2,6 +2,7 @@ import type { AppendMessage } from '@assistant-ui/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import {
   acquireSubmitInFlight,
@@ -23,6 +24,7 @@ import {
   readFileDataUrlForAttach,
   RECENT_INTERRUPT_COOLDOWN_MS,
   releaseSubmitInFlight,
+  renderCommandsCatalog,
   renderRpcResult,
   SessionRecoveryAborted,
   shouldInterruptBeforeRewind,
@@ -33,7 +35,108 @@ import {
   withSessionNotFoundResume
 } from './utils'
 
+describe('desktop command catalog', () => {
+  it('/help all includes unavailable commands omitted from backend categories', () => {
+    const catalog = {
+      categories: [
+        {
+          name: 'Commands',
+          pairs: [['/help', 'Show help']] as [string, string][]
+        }
+      ],
+      canon: {
+        '/remote-alias': '/remote-only'
+      },
+      commands: {
+        '/restart': { desktop: 'terminal' },
+        '/remote-only': { desktop: 'terminal' }
+      }
+    }
+
+    const copy = {} as Parameters<typeof renderCommandsCatalog>[1]
+
+    const all = renderCommandsCatalog(catalog, copy, { includeUnavailable: true })
+    const rowCount = (command: string) => all.match(new RegExp(`^${command}\\s`, 'gm'))?.length ?? 0
+
+    for (const command of [
+      '/restart',
+      '/approve',
+      '/deny',
+      '/sethome',
+      '/set-home',
+      '/remote-only',
+      '/model',
+      '/resume'
+    ]) {
+      expect(rowCount(command), command).toBe(1)
+    }
+
+    for (const alias of [
+      '/fork',
+      '/compact',
+      '/sessions',
+      '/switch',
+      '/reset',
+      '/commands',
+      '/learning',
+      '/memory-graph',
+      '/generate-pet',
+      '/remote-alias'
+    ]) {
+      expect(rowCount(alias), alias).toBe(1)
+    }
+
+    expect(all).toContain('/restart is only available in the terminal interface')
+    expect(all).toContain('/approve is only used from messaging platforms')
+    expect(all).toContain('/remote-only is only available in the terminal interface')
+    expect(all).toMatch(/^\/remote-alias\s+\/remote-only is only available in the terminal interface\.$/m)
+    expect(renderCommandsCatalog(catalog, copy)).not.toContain('/restart')
+    expect(renderCommandsCatalog(catalog, copy)).not.toContain('/commands')
+  })
+
+  it('merges categorized commands with pairs-only skills without duplicates', () => {
+    const copy = {
+      desktopCommands: 'Desktop commands',
+      skillCommandsAvailable: (count: number) => `${count} skill commands available`
+    } as Parameters<typeof renderCommandsCatalog>[1]
+
+    const output = renderCommandsCatalog(
+      {
+        categories: [{ name: 'Info', pairs: [['/help', 'Show help']] }],
+        pairs: [
+          ['/help', 'Show help'],
+          ['/docx', 'Work with Word documents']
+        ],
+        skills: { '/docx': { origin: 'bundled', usage: 1 } },
+        skill_count: 1
+      },
+      copy
+    )
+
+    expect(output.match(/^\/help\s/gm)).toHaveLength(1)
+    expect(output.match(/^\/docx\s/gm)).toHaveLength(1)
+    expect(output).toContain('Work with Word documents')
+  })
+
+  it('uses the exact catalog being rendered for dynamic availability guidance', () => {
+    rememberDesktopCommandsCatalog({ commands: { '/dynamic': { desktop: 'settings' } } })
+
+    const output = renderCommandsCatalog(
+      {
+        commands: { '/dynamic': { desktop: 'terminal' } },
+        pairs: [['/dynamic', 'Dynamic backend command']]
+      },
+      { desktopCommands: 'Desktop commands' } as Parameters<typeof renderCommandsCatalog>[1],
+      { includeUnavailable: true }
+    )
+
+    expect(output).toContain('/dynamic is only available in the terminal interface')
+    expect(output).not.toContain('/dynamic is managed from the desktop sidebar')
+  })
+})
+
 afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
   clearSessionRecentlyInterrupted()
   clearSubmitInFlight()
 })

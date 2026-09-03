@@ -989,7 +989,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           try {
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
-            renderSlashOutput(renderCommandsCatalog(catalog, copy))
+            renderSlashOutput(
+              renderCommandsCatalog(catalog, copy, {
+                includeUnavailable: ctx.arg.trim().toLowerCase() === 'all'
+              })
+            )
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

@@ -533,16 +533,18 @@ Fires **immediately before** every tool execution — built-in tools and plugin 
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
+def my_callback(tool_name: str, args: dict, task_id: str, session_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tool_name` | `str` | Name of the tool about to execute (e.g. `"terminal"`, `"web_search"`, `"read_file"`) |
 | `args` | `dict` | The arguments the model passed to the tool |
-| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `task_id` | `str` | Active task identifier. Empty string if not set. |
+| `session_id` | `str` | Stable Hermes session identifier for the current agent session. Empty string if not set. |
+| `route_metadata` | `dict` | Stable gateway route identity when available: `platform`, `chat_id`, `thread_id`, `user_id`, and `session_key`. CLI sessions normally receive an empty dict. |
 
-**Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
+**Fires:** Immediately before dispatch, including agent-loop tools such as `delegate_task`, `todo`, and `memory`. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times. A block is resolved before the handler or agent-loop dispatcher runs, so the blocked call has no tool side effect. Concurrent calls still receive separate hook invocations.
 
 **Return value — block or require approval:**
 
@@ -552,7 +554,7 @@ return {"action": "block", "message": "Reason the tool call was blocked"}
 return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 ```
 
-The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
+The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Return `None` to allow normal execution. Other return values are ignored, so existing observer-only callbacks keep working unchanged. Hook exceptions are logged and skipped, so a plugin that requires fail-closed policy must catch its own lookup errors and return a block directive.
 
 **Return value — rewrite the tool's arguments:**
 
@@ -573,6 +575,42 @@ Both formats are normalized internally to `{"action": "modify", "args": {...}}`.
 If a `pre_tool_call` callback exceeds `plugins.hook_callback_timeout` (or is still running from a previous timed-out fire), Hermes **fails closed**: the tool is blocked with a timeout message rather than proceeding without a policy decision.
 
 **Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters.
+
+**Concrete admission-control use case:** A mission-admission plugin can match
+`session_id` and `route_metadata` against its own active, subscribed-work index before
+allowing a `delegate_task` call. If the current chat/thread has no active admitted
+work, the hook returns a block directive. Register it like any other plugin hook:
+
+```python
+def admit_mission(tool_name, session_id, route_metadata, **kwargs):
+    if tool_name != "delegate_task":
+        return None
+    if subscribed_work_index.contains_active(session_id, route_metadata):
+        return None
+    return {"action": "block", "message": "No active admitted mission for this route"}
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", admit_mission)
+```
+
+`subscribed_work_index` is deliberately plugin-owned. Hermes supplies generic tool,
+session, and origin context but does not query a board or decide which work is admitted.
+This keeps organisation-specific policy outside core. Route metadata is hook context
+only and does not alter the system prompt, conversation messages, or tool schemas.
+
+**Lifecycle and stability:** `session_id` is stable for the current Hermes session;
+`route_metadata` is a fresh, shallow copy on every invocation, so callback mutation does
+not change agent state. Missing or non-gateway values are omitted, and a non-gateway
+session normally receives `{}`. A reset or new session may produce a new session or
+route identity. Treat route values, especially `session_key`, as opaque correlation
+identifiers rather than credentials or proof of authorisation. The key set is additive
+hook context, not a frozen public wire schema; accept `**kwargs`, use `.get()`, and fail
+according to your plugin's own policy when required identity is absent.
+
+**Compatibility note:** Existing hooks that already accept `**kwargs` need no changes;
+observer callbacks may continue returning `None`. Authors updating older fixed-signature
+callbacks should add `**kwargs` before relying on new context. Existing no-plugin and
+no-directive behaviour remains allow-by-default.
 
 **Example — tool call audit log:**
 

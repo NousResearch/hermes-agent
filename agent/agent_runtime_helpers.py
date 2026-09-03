@@ -2168,6 +2168,18 @@ def switch_model(
     _persist_switch_billing_route(agent)
 
 
+def tool_hook_route_metadata(agent: Any) -> Dict[str, str]:
+    """Return stable, non-message routing identity for plugin tool hooks."""
+    fields = {
+        "platform": getattr(agent, "platform", None),
+        "chat_id": getattr(agent, "_chat_id", None),
+        "thread_id": getattr(agent, "_thread_id", None),
+        "user_id": getattr(agent, "_user_id", None),
+        "session_key": getattr(agent, "_gateway_session_key", None),
+    }
+    return {key: str(value) for key, value in fields.items() if value not in (None, "")}
+
+
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
@@ -2178,6 +2190,7 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
+            route_metadata=tool_hook_route_metadata(agent),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
     except Exception:

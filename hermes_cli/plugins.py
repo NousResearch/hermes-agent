@@ -1772,6 +1772,7 @@ def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[Dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    route_metadata: Optional[Dict[str, Any]] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
@@ -1786,6 +1787,7 @@ def _get_pre_tool_call_directive_details(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        route_metadata=dict(route_metadata or {}),
     )
     modified_args: Optional[Dict[str, Any]] = None
     for result in hook_results:

@@ -45,6 +45,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.agent_runtime_helpers import tool_hook_route_metadata
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -624,6 +625,7 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
             ref.args,
             **tool_hook_ids(agent, ref.task_id, ref.call_id),
             middleware_trace=list(ref.trace),
+            route_metadata=tool_hook_route_metadata(agent),
         )
         return block_msg, (ref.args if modified_args is None else modified_args)
     except Exception:

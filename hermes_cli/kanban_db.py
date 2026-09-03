@@ -9397,6 +9397,35 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _event_resumes_active_pr(kind: str, payload_raw: Optional[str]) -> bool:
+    """Return whether a later lifecycle event deliberately resumes PR work.
+
+    Keep this allowlist narrow: ordinary comments and automatic recovery events
+    are not operator intent and must not weaken duplicate-PR prevention.
+    """
+    try:
+        payload = json.loads(payload_raw) if payload_raw else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if kind == "status":
+        return (
+            payload.get("status") == "ready"
+            or payload.get("requested_status") == "ready"
+        )
+    if kind in {"promoted_manual", "unblocked"}:
+        return True
+    if kind == "reclaimed":
+        return payload.get("manual") is True
+    if kind == "changes_requested":
+        return bool(str(payload.get("reason") or "").strip())
+    if kind == "review_reopened":
+        return payload.get("status", "ready") == "ready"
+    return False
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9448,7 +9477,10 @@ def check_respawn_guard(
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        opened a PR; re-spawning risks a duplicate PR on the same task. A later
+        explicit ready requeue, manual promote/unblock/reclaim, or first-class
+        changes-requested/review-reopened event proves deliberate continuation
+        and bypasses this guard. Comments alone never bypass it.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9537,12 +9569,30 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Only a trusted lifecycle transition *after the latest matching PR
+    #    comment* proves deliberate continuation. This preserves duplicate-PR
+    #    prevention for stale comments and automatic recovery churn.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            continuation_events = conn.execute(
+                "SELECT kind, payload FROM task_events "
+                "WHERE task_id = ? AND created_at > ? "
+                "AND kind IN ('status', 'promoted_manual', 'unblocked', "
+                "'reclaimed', 'changes_requested', 'review_reopened') "
+                "ORDER BY id DESC",
+                (task_id, int(c["created_at"])),
+            ).fetchall()
+            if any(
+                _event_resumes_active_pr(event["kind"], event["payload"])
+                for event in continuation_events
+            ):
+                return None
             return "active_pr"
 
     return None

@@ -510,6 +510,137 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def _add_pr_comment_at(conn, task_id: str, created_at: int) -> None:
+    conn.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at) "
+        "VALUES (?, 'worker', ?, ?)",
+        (
+            task_id,
+            "Opened https://github.com/example/hermes-agent/pull/123",
+            created_at,
+        ),
+    )
+
+
+def test_respawn_guard_active_pr_requires_later_continuation_event(
+    kanban_home, monkeypatch,
+):
+    """A fresh PR comment alone remains duplicate-work proof.
+
+    An older lifecycle event must not launder it into a continuation, while a
+    later explicit ready requeue is trusted as deliberate resumption.
+    """
+    monkeypatch.setattr(kb.time, "time", lambda: 1_200)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="finish active PR", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'status', ?, ?)",
+            (task_id, '{"status":"ready"}', 1_000),
+        )
+        _add_pr_comment_at(conn, task_id, 1_100)
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'status', ?, ?)",
+            (task_id, '{"status":"ready","requested_status":"ready"}', 1_200),
+        )
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+@pytest.mark.parametrize("transition", ["promote", "unblock", "reclaim"])
+def test_respawn_guard_active_pr_allows_explicit_lifecycle_continuations(
+    kanban_home, monkeypatch, transition,
+):
+    """First-class operator promote/unblock/reclaim events resume an active PR."""
+    now = [2_000]
+    monkeypatch.setattr(kb.time, "time", lambda: now[0])
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="continue PR", assignee="alice")
+
+        if transition == "promote":
+            conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
+        elif transition == "unblock":
+            assert kb.block_task(conn, task_id, reason="operator check")
+        else:
+            assert kb.claim_task(conn, task_id) is not None
+
+        _add_pr_comment_at(conn, task_id, now[0])
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+        now[0] += 1
+        if transition == "promote":
+            assert kb.promote_task(conn, task_id, actor="operator") == (True, None)
+        elif transition == "unblock":
+            assert kb.unblock_task(conn, task_id)
+        else:
+            assert kb.reclaim_task(conn, task_id, reason="resume existing PR")
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+def test_respawn_guard_active_pr_allows_changes_requested_instruction(
+    kanban_home, monkeypatch,
+):
+    """A later first-class changes-requested reason is concrete rework proof."""
+    now = [3_000]
+    monkeypatch.setattr(kb.time, "time", lambda: now[0])
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="address review", assignee="implementer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        _add_pr_comment_at(conn, task_id, 3_000)
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+        now[0] += 1
+        review = kb.claim_review_task(conn, task_id)
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="Fix the failing Windows assertion",
+            expected_run_id=review.current_run_id,
+        ) == (True, "implementer")
+
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+def test_dispatch_active_pr_continuation_spawns_but_duplicate_stays_guarded(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Dispatch honors a later explicit requeue without weakening duplicates."""
+    monkeypatch.setattr(kb.time, "time", lambda: 4_001)
+    with kb.connect() as conn:
+        continuation = kb.create_task(conn, title="continue PR", assignee="alice")
+        duplicate = kb.create_task(conn, title="duplicate PR", assignee="alice")
+        for task_id in (continuation, duplicate):
+            _add_pr_comment_at(conn, task_id, 4_000)
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'status', ?, ?)",
+            (
+                continuation,
+                '{"status":"ready","requested_status":"ready"}',
+                4_001,
+            ),
+        )
+
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert continuation in [task_id for task_id, _assignee, _workspace in result.spawned]
+    assert (duplicate, "active_pr") in result.respawn_guarded
+
+
 
 
 

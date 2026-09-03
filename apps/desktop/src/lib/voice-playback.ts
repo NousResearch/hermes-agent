@@ -48,12 +48,25 @@ async function unlockAutoplay(): Promise<void> {
     return
   }
 
-  if (!unlockCtx) {
-    unlockCtx = new Ctor()
-  }
+  try {
+    if (!unlockCtx) {
+      unlockCtx = new Ctor()
+    }
 
-  if (unlockCtx.state === 'suspended') {
-    await unlockCtx.resume()
+    if (unlockCtx.state === 'suspended') {
+      await unlockCtx.resume()
+    }
+  } catch (error) {
+    console.warn('Voice playback autoplay unlock skipped: AudioContext unavailable', error)
+  }
+}
+
+function createAudioContextOrNull(): AudioContext | null {
+  try {
+    return new AudioContext()
+  } catch (error) {
+    console.warn('Voice playback streaming disabled: AudioContext unavailable', error)
+    return null
   }
 }
 
@@ -470,7 +483,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
-      context = new AudioContext()
+      context = createAudioContextOrNull()
+
+      if (!context) {
+        settle(started ? 'done' : 'fallback')
+        return
+      }
 
       // Autoplay policy can hand back a suspended context when playback wasn't
       // started by a user gesture (e.g. a wake-word-started voice turn). Resume

@@ -35,7 +35,7 @@ import pytest
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
 
 _GITHUB_INSTALLER_URL = (
-    "https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1"
+    "https://github.com/astral-sh/uv/releases/download/$UvInstallerVersion/uv-installer.ps1"
 )
 
 
@@ -69,17 +69,13 @@ def test_astral_installer_output_not_swallowed_by_out_null(source: str):
 
 def test_astral_installer_output_is_captured(source: str):
     body = _install_uv_body(source)
-    astral_lines = [
-        ln
-        for ln in body.splitlines()
-        if "irm https://astral.sh/uv/install.ps1 | iex" in ln
-    ]
-    assert astral_lines, "astral uv installer invocation not found in Install-Uv"
-    for ln in astral_lines:
-        assert "Tee-Object" in ln, (
-            "astral uv installer output must be captured (Tee-Object) so the "
-            f"failure path can show it to the user, got: {ln.strip()!r}"
-        )
+    assert "https://astral.sh/uv/$UvInstallerVersion/install.ps1" in body
+    assert "Tee-Object -Variable sourceOut" in body, (
+        "installer output must be captured so failures reach the user"
+    )
+    assert "Get-FileHash -Algorithm SHA256" in body, (
+        "downloaded installer bytes must be verified before execution"
+    )
 
 
 def test_github_releases_fallback_installer_present(source: str):
@@ -90,16 +86,8 @@ def test_github_releases_fallback_installer_present(source: str):
         f"({_GITHUB_INSTALLER_URL}) when astral.sh is blocked "
         "(corporate proxies, #69216)."
     )
-    fallback_lines = [ln for ln in body.splitlines() if _GITHUB_INSTALLER_URL in ln and "irm " in ln]
-    for ln in fallback_lines:
-        stripped = ln.strip()
-        assert stripped.startswith("& $"), (
-            "GitHub fallback installer must be invoked via the resolved "
-            f"PowerShell host variable (`& $...`), got: {stripped!r}"
-        )
-        assert "Tee-Object" in ln, (
-            f"GitHub fallback installer output must be captured too: {stripped!r}"
-        )
+    assert "releases/latest" not in body
+    assert "& $psHostExe -ExecutionPolicy ByPass -File $installerPath" in body
 
 
 def test_existing_uv_salvage_rung_present(source: str):

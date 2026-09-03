@@ -19,12 +19,16 @@ def _run_setup_feishu(
     prompt_choice_responses=None,
     prompt_responses=None,
     existing_env=None,
+    info_messages=None,
 ):
-    """Run _setup_feishu() with mocked I/O and return the env vars that were saved.
+    """Run _setup_feishu() with mocked I/O and return its environment changes.
 
-    Returns a dict of {env_var_name: value} for all save_env_value calls.
+    Returns a tuple of:
+    - saved_env: {env_var_name: value} for all save_env_value calls.
+    - removed_keys: Environment variable names removed during setup.
     """
     existing_env = existing_env or {}
+    info_messages = info_messages if info_messages is not None else []
     prompt_yes_no_responses = list(prompt_yes_no_responses or [True])
     # QR path: method(0), dm(0), group(0) — 3 choices (no connection mode)
     # Manual path: method(1), domain(0), connection(0), dm(0), group(0) — 5 choices
@@ -57,7 +61,7 @@ def _run_setup_feishu(
          patch("hermes_cli.setup.prompt_choice", side_effect=prompt_choice_responses), \
          patch("hermes_cli.cli_output.prompt", side_effect=prompt_responses), \
          patch("hermes_cli.cli_output.print_header"), \
-         patch("hermes_cli.cli_output.print_info"), \
+         patch("hermes_cli.cli_output.print_info", side_effect=info_messages.append), \
          patch("hermes_cli.cli_output.print_success"), \
          patch("hermes_cli.cli_output.print_warning"), \
          patch("hermes_cli.cli_output.print_error"), \
@@ -113,6 +117,25 @@ class TestSetupFeishuConnectionMode:
             prompt_responses=["cli_manual", "secret_manual", ""],  # app_id, app_secret, home_channel
         )
         assert env["FEISHU_CONNECTION_MODE"] == "websocket"
+
+
+    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
+    def test_manual_webhook_explains_secret_contract(self, _mock_probe):
+        info_messages = []
+
+        _run_setup_feishu(
+            qr_result=None,
+            prompt_choice_responses=[1, 0, 1, 0, 0],
+            prompt_responses=["cli_manual", "secret_manual", ""],
+            info_messages=info_messages,
+        )
+
+        output = "\n".join(info_messages)
+        assert "FEISHU_VERIFICATION_TOKEN is required" in output
+        assert "webhook URL verification" in output
+        assert "FEISHU_ENCRYPT_KEY lets Hermes decrypt encrypted callback bodies" in output
+        assert "raw-request signatures on ordinary events" in output
+        assert "configure both secrets for new webhooks" in output
 
 
 # ---------------------------------------------------------------------------
@@ -224,5 +247,3 @@ class TestSetupFeishuAdapterIntegration:
             assert adapter._app_secret == "test_secret_value"
             assert adapter._domain_name == "feishu"
             assert adapter._connection_mode == "websocket"
-
-

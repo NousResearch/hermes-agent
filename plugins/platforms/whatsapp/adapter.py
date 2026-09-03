@@ -1076,6 +1076,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         media_type: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send any media file via bridge /send-media endpoint."""
         if not self._running or not self._http_session:
@@ -1098,6 +1099,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 payload["caption"] = caption
             if file_name:
                 payload["fileName"] = file_name
+            if reply_to:
+                payload["replyTo"] = reply_to
 
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
@@ -1267,7 +1270,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """
         try:
             local_path = await cache_image_from_url(image_url)
-            return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
+            return await self._send_media_to_bridge(chat_id, local_path, "image", caption, reply_to=reply_to)
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata)
 
@@ -1280,7 +1283,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a local image file natively via bridge."""
-        return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
+        return await self._send_media_to_bridge(chat_id, image_path, "image", caption, reply_to=reply_to)
 
     async def send_video(
         self,
@@ -1291,7 +1294,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a video natively via bridge — plays inline in WhatsApp."""
-        return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
+        return await self._send_media_to_bridge(chat_id, video_path, "video", caption, reply_to=reply_to)
 
     async def send_voice(
         self,
@@ -1302,7 +1305,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send an audio file as a WhatsApp voice message via bridge."""
-        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption, reply_to=reply_to)
 
     async def send_document(
         self,
@@ -1317,6 +1320,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return await self._send_media_to_bridge(
             chat_id, file_path, "document", caption,
             file_name or os.path.basename(file_path),
+            reply_to=reply_to,
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

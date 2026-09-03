@@ -76,3 +76,35 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+def test_path_delivery_spills_small_structured_result_without_inline_copy(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    exact = '{"messages":[{"message_id":"one"}]}'
+    results = [{"task_index": 0, "summary": exact, "status": "completed"}]
+
+    dt._deliver_summaries_by_path(
+        results,
+        [{"goal": "Analyse a structured group", "result_delivery": "path"}],
+    )
+
+    path = results[0]["summary_full_path"]
+    assert results[0]["summary_delivery"] == "path"
+    assert results[0]["summary"] == f"Full subagent output saved to: {path}"
+    assert exact not in results[0]["summary"]
+    with open(path, encoding="utf-8") as handle:
+        assert handle.read() == exact
+
+
+def test_inline_delivery_leaves_small_result_unchanged():
+    results = [{"task_index": 0, "summary": "small", "status": "completed"}]
+
+    dt._deliver_summaries_by_path(
+        results,
+        [{"goal": "Return a short summary", "result_delivery": "inline"}],
+    )
+
+    assert results[0]["summary"] == "small"
+    assert "summary_full_path" not in results[0]

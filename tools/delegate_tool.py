@@ -2613,6 +2613,32 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _deliver_summaries_by_path(
+    results: List[Dict[str, Any]], task_list: List[Dict[str, Any]]
+) -> None:
+    """Replace requested inline summaries with a durable path to exact bytes."""
+    for entry in results:
+        task_index = entry.get("task_index")
+        if (
+            not isinstance(task_index, int)
+            or not 0 <= task_index < len(task_list)
+            or task_list[task_index].get("result_delivery") != "path"
+        ):
+            continue
+        summary = entry.get("summary")
+        if not isinstance(summary, str) or not summary:
+            continue
+        path = entry.get("summary_full_path")
+        if not isinstance(path, str) or not path:
+            path = _spill_summary_to_file(task_index, summary)
+        if not path:
+            entry["summary_delivery"] = "inline-fallback"
+            continue
+        entry["summary"] = f"Full subagent output saved to: {path}"
+        entry["summary_full_path"] = path
+        entry["summary_delivery"] = "path"
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -3812,6 +3838,8 @@ def _finalize_child_results(
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
+        _deliver_summaries_by_path(results, task_list)
+
 
 def _run_child_lifecycle(
     task_index: int,
@@ -4087,6 +4115,11 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        result_delivery = task.get("result_delivery", "inline")
+        if result_delivery not in {"inline", "path"}:
+            return tool_error(
+                f"Task {i} result_delivery must be 'inline' or 'path'."
+            )
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -5269,6 +5302,17 @@ DELEGATE_TASK_SCHEMA = {
                                 "schema_valid, plus schema_errors on "
                                 "failure). Keep it forgiving — require only "
                                 "fields you will read."
+                            ),
+                        },
+                        "result_delivery": {
+                            "type": "string",
+                            "enum": ["inline", "path"],
+                            "description": (
+                                "How the exact final answer returns. 'inline' "
+                                "is the default. 'path' stores it in the "
+                                "delegation cache and returns only that path; "
+                                "use it when another tool will consume a large "
+                                "structured result."
                             ),
                         },
                     },

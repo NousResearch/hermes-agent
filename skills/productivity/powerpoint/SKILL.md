@@ -202,6 +202,11 @@ say so rather than approximating.
   unless the spec says otherwise. Custom templates keep their own size.
 - Layout indexes vary by template. For brand templates, list layout names
   first: `pptx_read.py template.pptx --outline` (`layouts_available`).
+- **Body placeholder overflow**: the default body placeholder is ~4.95"
+  tall and inherits an 18pt theme font (~6 lines). Dense bullets silently
+  clip in PowerPoint. `pptx_create.py` reports an `overflow` estimate
+  (slide + estimated vs available inches) in its JSON — check it and trim
+  bullets or shrink the body font until it's empty.
 - `slide.shapes.title` is None on blank layouts — the create script
   handles this, but remember it when writing ad-hoc python-pptx code.
 - Always pass `encoding="utf-8"` when writing spec files; tokens like
@@ -216,5 +221,11 @@ say so rather than approximating.
    and review each PNG with `vision_analyze` — this catches overlapping
    shapes, truncated text, and color problems the outline cannot. If the
    render tools are missing, the script says so; rely on the outline.
-4. The bundled test suite is the full contract:
+4. On create, check the `overflow` array in `pptx_create.py`'s JSON. The
+   default body placeholder is only ~4.95" tall and inherits an 18pt font
+   (~6 lines), so dense bullet content silently overflows and gets clipped
+   in PowerPoint. If any slide reports overflow, trim bullets to terse
+   lines or drop the body font to 13-15pt, then re-create until `overflow`
+   is empty.
+5. The bundled test suite is the full contract:
    `python -m pytest tests/ -q` (requires python-pptx + pytest).

@@ -64,6 +64,57 @@ def _active_cron_provider_name() -> str:
         return "builtin"
 
 
+def _named_profile_shared_gateway_root() -> Optional[Path]:
+    """Default Hermes root when the current home is ``<root>/profiles/<name>``.
+
+    Named-profile CLI (``hermes -p triage ...``) sets ``HERMES_HOME`` to the
+    profile directory. The shared gateway's lock and pid still live in the
+    default root, which is what actually ticks satellite cron stores (#99631).
+    Returns None when the current home *is* the default (already probed) or
+    is not a named-profile directory.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        home = get_hermes_home().resolve()
+        root = get_default_hermes_root().resolve()
+    except Exception:
+        return None
+    if home == root:
+        return None
+    try:
+        rel = home.relative_to(root / "profiles")
+    except ValueError:
+        return None
+    if len(rel.parts) != 1 or not rel.parts[0]:
+        return None
+    return root
+
+
+def _default_home_gateway_is_live(default_root: Path) -> bool:
+    """True when the default-home runtime lock or pid file shows a live gateway."""
+    try:
+        from gateway.status import (
+            _get_gateway_lock_path,
+            _pid_exists,
+            _pid_from_record,
+            _read_pid_record,
+            is_gateway_runtime_lock_active,
+        )
+
+        default_pid_path = default_root / "gateway.pid"
+        try:
+            if is_gateway_runtime_lock_active(_get_gateway_lock_path(default_pid_path)):
+                return True
+        except Exception:
+            pass
+        rec = _read_pid_record(default_pid_path)
+        pid = _pid_from_record(rec)
+        return bool(pid and _pid_exists(pid))
+    except Exception:
+        return False
+
+
 def _builtin_gateway_liveness() -> Optional[bool]:
     """Tri-state liveness of the builtin cron scheduler's trigger.
 
@@ -102,7 +153,15 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             return True
         # Satellite profile: no local gateway.pid, but the default multiplexer
         # ticks this profile's cron store (#97120).
-        return named_profile_served_by_running_multiplexer()
+        if named_profile_served_by_running_multiplexer():
+            return True
+        # ``hermes -p <profile>`` scopes lock/pid probes to the profile home,
+        # so a healthy shared gateway in the default home still looks dead
+        # when multiplex is off or the default pid file is missing (#99631).
+        shared_root = _named_profile_shared_gateway_root()
+        if shared_root is not None:
+            return _default_home_gateway_is_live(shared_root)
+        return False
     except Exception:
         return None
 
@@ -506,6 +565,21 @@ def cron_status():
                     pids = [lock_pid]
         except Exception:
             pass
+        if not pids and not gateway_alive_via_lock:
+            # Named-profile CLI: lock/pid live in the default home (#99631).
+            try:
+                shared_root = _named_profile_shared_gateway_root()
+                if shared_root is not None and _default_home_gateway_is_live(shared_root):
+                    gateway_alive_via_lock = True
+                    from gateway.status import get_running_pid
+
+                    lock_pid = get_running_pid(
+                        shared_root / "gateway.pid", cleanup_stale=False
+                    )
+                    if lock_pid:
+                        pids = [lock_pid]
+            except Exception:
+                pass
     if pids or gateway_alive_via_lock:
         # The gateway PROCESS is alive — but the cron ticker THREAD inside it
         # can die silently, or stay alive while every tick fails. Check both

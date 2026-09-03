@@ -95,6 +95,88 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_single_weekly_window(monkeypatch):
+    """Test the fix for OpenAI returning a single primary_window with weekly duration."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "allowed": True,
+                    "limit_reached": False,
+                    "primary_window": {
+                        "used_percent": 93,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 274246,
+                        "reset_at": 1786376474,
+                    },
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {"available_count": 1},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Plus"
+    # Should have exactly one window, labelled Weekly (derived from limit_window_seconds)
+    assert len(snapshot.windows) == 1
+    assert snapshot.windows[0].label == "Weekly"
+    assert snapshot.windows[0].used_percent == 93.0
+    assert "You have 1 reset banked" in snapshot.details[0]
+
+
+def test_fetch_account_usage_codex_fallback_to_key_position(monkeypatch):
+    """Test fallback to key position when limit_window_seconds is missing."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 10, "reset_at": 1_900_000_000},
+                    "secondary_window": {"used_percent": 20, "reset_at": 1_900_500_000},
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert len(snapshot.windows) == 2
+    # Falls back to position-based labels
+    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[1].label == "Weekly"
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

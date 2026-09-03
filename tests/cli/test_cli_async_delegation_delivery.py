@@ -61,6 +61,7 @@ def test_cli_completion_is_durable_display_only_not_a_recursive_turn(monkeypatch
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
     cli._pending_input = queue.Queue()
+    cli.conversation_history = [{"role": "user", "content": "earlier turn"}]
     persisted = []
     cli.__dict__["_session_db"] = type("DB", (), {
         "append_message": lambda _self, *args, **kwargs: persisted.append((args, kwargs)),
@@ -82,6 +83,13 @@ def test_cli_completion_is_durable_display_only_not_a_recursive_turn(monkeypatch
         ("visible-session", "user"),
         {"content": "completion payload", "display_kind": "async_delegation_complete"},
     )]
+    # The immediate next authorized turn reads this live list, not SQLite.
+    assert cli.conversation_history[-1] == {
+        "role": "user",
+        "content": "completion payload",
+        "display_kind": "async_delegation_complete",
+        "_db_persisted": True,
+    }
 
 
 def test_cli_duplicate_completion_is_persisted_once(monkeypatch):

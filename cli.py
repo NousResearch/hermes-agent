@@ -13628,6 +13628,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     content=synthetic_message,
                     display_kind="async_delegation_complete",
                 )
+                # The next CLI turn uses this live list rather than reloading
+                # SQLite. Keep the durable display event in the same transcript,
+                # without queueing a synthetic model turn.
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": synthetic_message,
+                    "display_kind": "async_delegation_complete",
+                    "_db_persisted": True,
+                })
             else:
                 self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)

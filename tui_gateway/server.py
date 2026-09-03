@@ -12770,12 +12770,8 @@ def _notification_poller_loop(
                 )
                 if db is None or not target_session_id:
                     raise RuntimeError("no durable session for delegation display")
-                db.append_message(
-                    target_session_id,
-                    "user",
-                    content=text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
+                _append_async_delegation_completion(
+                    session, db, target_session_id, text, evt,
                 )
                 _emit("status.update", sid, {"kind": "process", "text": text})
                 with session["history_lock"]:
@@ -12860,12 +12856,8 @@ def _notification_poller_loop(
                 )
                 if db is None or not target_session_id:
                     raise RuntimeError("no durable session for delegation display")
-                db.append_message(
-                    target_session_id,
-                    "user",
-                    content=text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
+                _append_async_delegation_completion(
+                    session, db, target_session_id, text, evt,
                 )
                 _emit("status.update", sid, {"kind": "process", "text": text})
                 with session["history_lock"]:
@@ -12914,6 +12906,55 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
     return metadata
+
+
+def _append_async_delegation_completion(
+    session: dict, db, target_session_id: str, text: str, evt: dict,
+) -> bool:
+    """Persist a display completion and append it to the live model history.
+
+    Delivery is display-only and must never launch a model turn. The next real
+    user turn consumes ``session[\"history\"]`` directly, including after a
+    rollover child replaces the agent session id.
+    """
+    metadata = _async_delegation_display_metadata(evt)
+    delegation_id = metadata["delegation_id"]
+    with session["history_lock"]:
+        history = session.setdefault("history", [])
+        if delegation_id and any(
+            message.get("display_kind") == "async_delegation_complete"
+            and isinstance(message.get("display_metadata"), dict)
+            and message["display_metadata"].get("delegation_id") == delegation_id
+            for message in history
+            if isinstance(message, dict)
+        ):
+            return False
+        row_id = db.append_message(
+            target_session_id,
+            "user",
+            content=text,
+            display_kind="async_delegation_complete",
+            display_metadata=metadata,
+        )
+        completion = {
+            "role": "user",
+            "content": text,
+            "display_kind": "async_delegation_complete",
+            "display_metadata": metadata,
+            "_db_persisted": True,
+        }
+        if isinstance(row_id, int):
+            completion["_row_id"] = row_id
+        history.append(completion)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        agent = session.get("agent")
+        if agent is not None:
+            agent._session_messages = history
+            if hasattr(agent, "_last_flushed_db_idx"):
+                agent._last_flushed_db_idx = len(history)
+            if hasattr(agent, "_db_flush_scan_prefix"):
+                agent._db_flush_scan_prefix = history[:]
+    return True
 
 
 def _wire_agent_terminal_output() -> None:
@@ -14278,12 +14319,8 @@ def _run_prompt_submit(
                         )
                         if db is None or not target_session_id:
                             raise RuntimeError("no durable session for delegation display")
-                        db.append_message(
-                            target_session_id,
-                            "user",
-                            content=synth,
-                            display_kind="async_delegation_complete",
-                            display_metadata=_async_delegation_display_metadata(_evt),
+                        _append_async_delegation_completion(
+                            session, db, target_session_id, synth, _evt,
                         )
                         _emit("status.update", sid, {"kind": "process", "text": synth})
                         with session["history_lock"]:

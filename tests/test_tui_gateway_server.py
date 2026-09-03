@@ -11751,6 +11751,44 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_async_delegation_completion_is_in_live_tui_history_once():
+    """The next real prompt must see the durable completion without a fake turn."""
+    persisted = []
+
+    class _Db:
+        def append_message(self, *_args, **kwargs):
+            persisted.append(kwargs)
+            return 17
+
+    agent = types.SimpleNamespace(session_id="rollover-child")
+    session = _session(agent=agent, history=[{"role": "user", "content": "earlier turn"}])
+    event = {"delegation_id": "deleg-1", "results": []}
+
+    server._append_async_delegation_completion(
+        session, _Db(), "rollover-child", "completion payload", event
+    )
+    server._append_async_delegation_completion(
+        session, _Db(), "rollover-child", "completion payload", event
+    )
+
+    completion = {
+        "role": "user",
+        "content": "completion payload",
+        "display_kind": "async_delegation_complete",
+        "display_metadata": {"delegation_id": "deleg-1", "task_count": 1,
+                             "completed_count": 1, "failed_count": 0},
+        "_row_id": 17,
+        "_db_persisted": True,
+    }
+    assert session["history"].count(completion) == 1
+    assert agent._session_messages is session["history"]
+    assert persisted == [{
+        "content": "completion payload",
+        "display_kind": "async_delegation_complete",
+        "display_metadata": completion["display_metadata"],
+    }]
+
+
 # ── session.steer ────────────────────────────────────────────────────
 
 

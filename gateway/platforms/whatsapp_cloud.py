@@ -1938,6 +1938,27 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # don't carry a caption in Meta's spec, but be defensive.
             inner = raw_message.get(msg_type_str) or {}
             body = str(inner.get("caption") or "")
+        elif msg_type_str == "contacts":
+            formatted_contacts = []
+            for contact in raw_message.get("contacts") or []:
+                if not isinstance(contact, dict):
+                    continue
+                name = contact.get("name") or {}
+                formatted_name = (
+                    str(name.get("formatted_name") or "").strip()
+                    if isinstance(name, dict)
+                    else ""
+                )
+                phone_numbers = []
+                for phone in contact.get("phones") or []:
+                    if not isinstance(phone, dict):
+                        continue
+                    number = str(phone.get("phone") or phone.get("wa_id") or "").strip()
+                    if number:
+                        phone_numbers.append(number)
+                details = " ".join([formatted_name or "unknown", *phone_numbers])
+                formatted_contacts.append(f"[Contact: {details}]")
+            body = "\n".join(formatted_contacts)
 
         message_type = {
             "text": MessageType.TEXT,

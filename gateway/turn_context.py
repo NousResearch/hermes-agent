@@ -97,10 +97,11 @@ class TurnContext:
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
     # display_kind stamped on the persisted user row at turn start when this
-    # turn was self-injected (MessageEvent.internal), e.g.
-    # "internal_notification" for async-delegation/background notifications
-    # (#82888). DB-only presentation metadata; never sent to the provider.
+    # turn was self-injected (MessageEvent.internal). Validated workflow events
+    # also carry a fail-closed metadata envelope. These DB-only presentation
+    # fields are never sent to the provider.
     persist_user_display_kind: Optional[str] = None
+    persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None

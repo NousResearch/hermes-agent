@@ -3,16 +3,16 @@
 Async-delegation batch completions and background watch notifications re-enter
 the gateway as synthetic ``MessageEvent(internal=True)`` turns (see
 ``_inject_watch_notification``). They must keep ``role='user'`` (message
-alternation is sacred) but the persisted row must carry
-``display_kind='internal_notification'`` so transcripts and the desktop UI can
-render them as timeline notices instead of user bubbles.
+alternation is sacred) while trusted transports persist a canonical
+``display_kind='internal_event'`` envelope so transcripts and the desktop UI
+can render them as timeline notices instead of user bubbles.
 
 Covered:
 
-1. an internal event threads ``persist_user_display_kind`` into the agent run;
+1. an internal event threads its display kind and metadata into the agent run;
 2. a real user event does NOT get the marker;
 3. the gateway-side fallback user rows (transient-failure / no-new-messages
-   paths) carry the marker for internal events only;
+   paths) preserve the envelope for internal events only;
 4. a marked row round-trips through SessionDB replay with role='user' intact
    and the marker is stripped from provider-bound payload copies.
 """
@@ -134,7 +134,13 @@ async def test_internal_event_threads_marker_into_agent_run(monkeypatch, tmp_pat
     )
 
     kwargs = runner._run_agent.call_args.kwargs
-    assert kwargs["persist_user_display_kind"] == "internal_notification"
+    assert kwargs["persist_user_display_kind"] == "internal_event"
+    assert (
+        kwargs["persist_user_display_metadata"]["event_kind"]
+        == "workflow.gateway_internal.internal"
+    )
+    assert kwargs["persist_user_display_metadata"]["user_originated"] is False
+    assert "text" not in kwargs["persist_user_display_metadata"]
 
 
 @pytest.mark.asyncio
@@ -186,7 +192,9 @@ async def test_failed_early_fallback_row_is_marked_for_internal_event(
     assert entries, "expected a fallback user-row write"
     for entry in entries:
         assert entry["role"] == "user"  # alternation invariant: role unchanged
-        assert entry["display_kind"] == "internal_notification"
+        assert entry["display_kind"] == "internal_event"
+        assert entry["display_metadata"]["user_originated"] is False
+        assert "text" not in entry["display_metadata"]
 
 
 @pytest.mark.asyncio
@@ -239,7 +247,9 @@ async def test_no_new_messages_fallback_row_is_marked_for_internal_event(
     assert entries
     for entry in entries:
         assert entry["role"] == "user"
-        assert entry["display_kind"] == "internal_notification"
+        assert entry["display_kind"] == "internal_event"
+        assert entry["display_metadata"]["user_originated"] is False
+        assert "text" not in entry["display_metadata"]
 
 
 # ── 4: DB round-trip replay + provider-payload hygiene ─────────────────────

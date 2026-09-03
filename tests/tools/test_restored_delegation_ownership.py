@@ -85,6 +85,13 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     got = q.get_nowait()
     assert got["restored"] is True
     assert got["session_key"] == "OLD_SESSION_A"
+    assert got["event_schema"] == "hermes.internal_event.v1"
+    assert got["event_id"] == "async_delegation:d-old:terminal"
+    assert got["event_kind"] == "workflow.async_delegation.terminal"
+    assert got["workflow_id"] == "delegation:d-old"
+    assert got["display_kind"] == "async_delegation_complete"
+    assert got["user_originated"] is False
+    assert got["terminal"] is True
 
     # The stamp is in-memory only — the durable payload is unchanged.
     with ad._connect() as conn:

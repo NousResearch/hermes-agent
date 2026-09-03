@@ -38,6 +38,7 @@ rewind cursors / retry instead of silently losing the event.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any, Optional
 
@@ -82,6 +83,20 @@ async def deliver_wake(
     Raises on failure (bad arguments, exhausted retries, HTTP error) so the
     caller can rewind/retry instead of treating the wake as delivered.
     """
+    source_identity = ""
+    if source is not None:
+        source_identity = ":".join(
+            str(value or "")
+            for value in (
+                getattr(getattr(source, "platform", None), "value", ""),
+                getattr(source, "chat_id", ""),
+                getattr(source, "thread_id", ""),
+            )
+        )
+    wake_identity = session_id or source_identity
+    event_id = "internal_wake:" + hashlib.sha256(
+        f"{wake_identity}\0{text}".encode("utf-8")
+    ).hexdigest()
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError(
@@ -94,6 +109,10 @@ async def deliver_wake(
             message_type=MessageType.TEXT,
             source=source,
             internal=True,
+            metadata={
+                "type": "gateway_wake",
+                "event_id": event_id,
+            },
         )
         await adapter.handle_message(synth_event)
         return
@@ -133,6 +152,15 @@ def _delegation_display_metadata(evt: dict) -> dict:
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
+    # Stateless API sessions persist the completion directly instead of
+    # running a wake turn (#85957).  Validate and retain the same canonical
+    # envelope used by push, CLI and TUI delivery so this newer path does not
+    # silently downgrade the event to display-only metadata.
+    from tools.async_delegation import internal_event_persistence
+
+    display_kind, envelope = internal_event_persistence(evt)
+    if display_kind == "async_delegation_complete" and envelope is not None:
+        metadata.update(envelope)
     return metadata
 
 
@@ -211,9 +239,14 @@ async def _self_post_chat_completion(
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"  # bare IPv6 literal
     url = f"http://{host}:{port}/v1/chat/completions"
+    event_id = "internal_wake:" + hashlib.sha256(
+        f"{session_id}\0{text}".encode("utf-8")
+    ).hexdigest()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-Hermes-Session-Id": session_id,
+        "X-Hermes-Internal-Event": "1",
+        "X-Hermes-Internal-Event-Id": event_id,
     }
     payload = {
         "model": str(getattr(adapter, "_model_name", "") or "hermes-agent"),

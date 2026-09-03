@@ -121,6 +121,25 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         conn.close()
 
 
+def _assert_internal_event_envelope(evt):
+    delegation_id = evt["delegation_id"]
+    assert evt["event_schema"] == "hermes.internal_event.v1"
+    assert evt["event_id"] == f"async_delegation:{delegation_id}:terminal"
+    assert evt["event_kind"] == "workflow.async_delegation.terminal"
+    assert evt["workflow_id"] == f"delegation:{delegation_id}"
+    assert evt["display_kind"] == "async_delegation_complete"
+    assert evt["user_originated"] is False
+    assert evt["terminal"] is True
+
+
+def test_new_delegation_id_uses_full_uuid_entropy():
+    first = ad._new_delegation_id()
+    second = ad._new_delegation_id()
+    assert first.startswith("deleg_")
+    assert len(first.removeprefix("deleg_")) == 32
+    assert first != second
+
+
 def test_active_for_session_counts_every_live_delegation_state():
     with ad._records_lock:
         ad._records.update(
@@ -229,6 +248,13 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["event_schema"] == "hermes.internal_event.v1"
+    assert evt["event_id"] == f"async_delegation:{res['delegation_id']}:terminal"
+    assert evt["event_kind"] == "workflow.async_delegation.terminal"
+    assert evt["workflow_id"] == f"delegation:{res['delegation_id']}"
+    assert evt["display_kind"] == "async_delegation_complete"
+    assert evt["user_originated"] is False
+    assert evt["terminal"] is True
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -674,6 +700,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 1
     assert evt["results"][0]["summary"] == "done: the real task"
+    _assert_internal_event_envelope(evt)
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text

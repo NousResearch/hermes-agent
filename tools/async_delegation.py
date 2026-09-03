@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -44,7 +45,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -386,6 +387,7 @@ def recover_abandoned_delegations() -> int:
             for _k in ("scope_id", "user_id", "user_name"):
                 if task.get(_k):
                     event[_k] = task[_k]
+            event.update(_internal_event_envelope(delegation_id))
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
@@ -446,6 +448,7 @@ def restore_undelivered_completions(target_queue) -> int:
                 continue
             evt = json.loads(payload)
             if isinstance(evt, dict):
+                evt.update(_internal_event_envelope(delegation_id))
                 evt["restored"] = True
             target_queue.put(evt)
             restored += 1
@@ -709,7 +712,110 @@ def has_live_for_session(
 
 
 def _new_delegation_id() -> str:
-    return f"deleg_{uuid.uuid4().hex[:8]}"
+    return f"deleg_{uuid.uuid4().hex}"
+
+
+def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
+    """Return the stable presentation-neutral identity for a terminal result.
+
+    Hosts may still inject the formatted payload into a model-facing ``user``
+    turn to preserve provider role alternation.  These fields make that transport
+    detail explicit so transcript projections never have to infer authorship
+    from prompt text such as ``[ASYNC DELEGATION ...]``.
+    """
+    delegation_key = str(delegation_id or "").strip()
+    if not delegation_key:
+        raise ValueError("delegation_id is required for an internal event envelope")
+    return {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": f"async_delegation:{delegation_key}:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": f"delegation:{delegation_key}",
+        "display_kind": "async_delegation_complete",
+        "user_originated": False,
+        "terminal": True,
+    }
+
+
+def internal_event_persistence(
+    event: Any,
+    *,
+    trusted_internal: bool = False,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Return validated transcript projection fields for one internal event.
+
+    The formatted completion text may still be sent through a model-facing
+    ``user`` turn for provider role alternation. Persistence must use the
+    canonical envelope, never infer authorship from that text. Malformed or
+    partial metadata fails closed as an ordinary row rather than stamping a
+    spoofable internal-event identity.  Trusted drains may opt into a generic
+    internal envelope for process, Kanban, continuation, and wake events that
+    predate the delegation schema.  That opt-in is deliberately call-site
+    explicit so arbitrary user payloads cannot self-classify as internal.
+    """
+    if not isinstance(event, dict):
+        return None, None
+    delegation_id = str(event.get("delegation_id") or "").strip()
+    if delegation_id:
+        expected = _internal_event_envelope(delegation_id)
+        if not any(event.get(key) != value for key, value in expected.items()):
+            return expected["display_kind"], {
+                "event_schema": expected["event_schema"],
+                "event_id": expected["event_id"],
+                "event_kind": expected["event_kind"],
+                "workflow_id": expected["workflow_id"],
+                "delegation_id": delegation_id,
+                "user_originated": expected["user_originated"],
+                "terminal": expected["terminal"],
+            }
+        if not trusted_internal:
+            return None, None
+    elif not trusted_internal:
+        return None, None
+
+    event_type = str(event.get("type") or event.get("source") or "event").strip()
+    event_type = "".join(
+        char if (char.isalnum() or char in "._-") else "_"
+        for char in event_type.lower()
+    ).strip("._-") or "event"
+    event_id = str(
+        event.get("event_id")
+        or event.get("notification_id")
+        or event.get("message_id")
+        or ""
+    ).strip()
+    if not event_id:
+        fingerprint = json.dumps(
+            event,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        event_id = (
+            "internal_event:"
+            + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+        )
+    event_kind = str(event.get("event_kind") or "").strip()
+    if not event_kind:
+        event_kind = f"workflow.{event_type}.internal"
+    terminal = event.get("terminal")
+    if not isinstance(terminal, bool):
+        terminal = event_type not in {"progress", "status", "watch_match"}
+
+    metadata: Dict[str, Any] = {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": event_id,
+        "event_kind": event_kind,
+        "user_originated": False,
+        "terminal": terminal,
+    }
+    workflow_id = str(event.get("workflow_id") or "").strip()
+    if workflow_id:
+        metadata["workflow_id"] = workflow_id
+    source = str(event.get("source") or "").strip()
+    if source:
+        metadata["source"] = source
+    return "internal_event", metadata
 
 
 def _prune_completed_locked() -> None:
@@ -999,6 +1105,7 @@ def _push_completion_event(
     for _k in ("scope_id", "user_id", "user_name"):
         if record.get(_k):
             evt[_k] = record[_k]
+    evt.update(_internal_event_envelope(record.get("delegation_id")))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
@@ -1213,6 +1320,7 @@ def _push_batch_completion_event(
     for _k in ("scope_id", "user_id", "user_name"):
         if event_record.get(_k):
             evt[_k] = event_record[_k]
+    evt.update(_internal_event_envelope(event_record.get("delegation_id")))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (

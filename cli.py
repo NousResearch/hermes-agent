@@ -5173,6 +5173,20 @@ class _SeededQueryMessage:
         return self.text
 
 
+class _InternalEventInput:
+    """Synthetic CLI turn plus its validated transcript projection metadata."""
+
+    __slots__ = ("text", "display_kind", "display_metadata")
+
+    def __init__(self, text: str, display_kind: str, display_metadata: Dict[str, Any]):
+        self.text = text
+        self.display_kind = display_kind
+        self.display_metadata = display_metadata
+
+    def __str__(self) -> str:
+        return self.text
+
+
 def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
     """Whether a ``-q/--image`` invocation should seed an interactive session.
 
@@ -13605,6 +13619,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from tools.async_delegation import (
             claim_event_delivery,
             complete_event_delivery,
+            internal_event_persistence,
         )
 
         session_key = getattr(self, "session_id", "") or ""
@@ -13615,7 +13630,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            display_kind, display_metadata = internal_event_persistence(
+                event,
+                trusted_internal=True,
+            )
+            if display_kind is not None and display_metadata is not None:
+                self._pending_input.put(
+                    _InternalEventInput(
+                        synthetic_message,
+                        display_kind,
+                        display_metadata,
+                    )
+                )
+            else:
+                self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
@@ -16951,7 +16979,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        voice_input: bool = False,
+        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -17122,6 +17157,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             staged_user_message = stamp_message_timestamp(
                 {"role": "user", "content": message}
             )
+            if persist_user_display_kind is not None:
+                staged_user_message["display_kind"] = persist_user_display_kind
+            if persist_user_display_metadata is not None:
+                staged_user_message["display_metadata"] = persist_user_display_metadata
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -17312,6 +17351,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
+                        persist_user_display_kind=persist_user_display_kind,
+                        persist_user_display_metadata=persist_user_display_metadata,
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
@@ -21071,6 +21112,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                         continue
 
+                    # Internal process events carry transcript projection
+                    # metadata separately from their model-facing text.
+                    persist_user_display_kind = None
+                    persist_user_display_metadata = None
+                    if isinstance(user_input, _InternalEventInput):
+                        persist_user_display_kind = user_input.display_kind
+                        persist_user_display_metadata = user_input.display_metadata
+                        user_input = user_input.text
+
                     # Voice-transcribed messages arrive wrapped in a sentinel
                     # so only genuine STT output gets the voice prefix (#65827).
                     is_voice_input = isinstance(user_input, _VoiceInputMessage)
@@ -21215,7 +21265,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            voice_input=is_voice_input,
+                            persist_user_display_kind=persist_user_display_kind,
+                            persist_user_display_metadata=persist_user_display_metadata,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

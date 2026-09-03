@@ -77,6 +77,8 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
 
     async def handler(request):
         seen["session_id"] = request.headers.get("X-Hermes-Session-Id")
+        seen["internal"] = request.headers.get("X-Hermes-Internal-Event")
+        seen["event_id"] = request.headers.get("X-Hermes-Internal-Event-Id")
         seen["auth"] = request.headers.get("Authorization")
         seen["body"] = await request.json()
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
@@ -91,6 +93,8 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
 
     asyncio.run(run())
     assert seen["session_id"] == "raw-sid-42"
+    assert seen["internal"] == "1"
+    assert seen["event_id"].startswith("internal_wake:")
     assert seen["auth"] == "Bearer sekrit"
     assert seen["body"]["stream"] is False
     assert seen["body"]["messages"] == [
@@ -145,14 +149,18 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
         def _ensure_session_db(self):
             return db
 
+    from tools.async_delegation import _internal_event_envelope
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
     evt = {
         "type": "async_delegation",
-        "delegation_id": "deleg_x",
+        "delegation_id": delegation_id,
         "results": [{"status": "completed"}, {"status": "failed"}],
         "total_duration_seconds": 12.5,
+        **_internal_event_envelope(delegation_id),
     }
     asyncio.run(persist_delegation_delivery(
-        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_x]",
+        DbAdapter(), text=f"[ASYNC DELEGATION BATCH COMPLETE — {delegation_id}]",
         session_id=sid, evt=evt,
     ))
 
@@ -162,10 +170,16 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     assert delivery["role"] == "user"
     assert delivery["display_kind"] == "async_delegation_complete"
     meta = delivery["display_metadata"]
-    assert meta["delegation_id"] == "deleg_x"
+    assert meta["delegation_id"] == delegation_id
     assert meta["task_count"] == 2
     assert meta["failed_count"] == 1
     assert meta["duration_seconds"] == 12.5
+    assert meta["event_schema"] == "hermes.internal_event.v1"
+    assert meta["event_id"] == f"async_delegation:{delegation_id}:terminal"
+    assert meta["event_kind"] == "workflow.async_delegation.terminal"
+    assert meta["workflow_id"] == f"delegation:{delegation_id}"
+    assert meta["user_originated"] is False
+    assert meta["terminal"] is True
 
 
 def test_persist_delegation_delivery_raises_without_db():
@@ -182,3 +196,34 @@ def test_persist_delegation_delivery_raises_without_db():
         ))
 
 
+def test_api_server_internal_projection_requires_authenticated_internal_header():
+    from gateway.platforms.api_server import _trusted_internal_request_projection
+
+    assert _trusted_internal_request_projection(
+        {},
+        api_key_configured=True,
+        session_id="sid",
+        user_message="wake",
+    ) == (None, None)
+
+    headers = {
+        "X-Hermes-Internal-Event": "1",
+        "X-Hermes-Internal-Event-Id": "internal_wake:stable",
+    }
+    with pytest.raises(PermissionError):
+        _trusted_internal_request_projection(
+            headers,
+            api_key_configured=False,
+            session_id="sid",
+            user_message="wake",
+        )
+
+    display_kind, metadata = _trusted_internal_request_projection(
+        headers,
+        api_key_configured=True,
+        session_id="sid",
+        user_message="wake",
+    )
+    assert display_kind == "internal_event"
+    assert metadata["event_id"] == "internal_wake:stable"
+    assert metadata["user_originated"] is False

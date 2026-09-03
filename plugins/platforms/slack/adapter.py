@@ -6129,6 +6129,35 @@ class SlackAdapter(BasePlatformAdapter):
         ):
             return
 
+        # Slack Connect shared channels deliver ONE physical message once per
+        # workspace context: the inner event carries the sender's home team
+        # while the outer payload carries the local team, so the
+        # workspace-scoped id above resolves to two different keys and the bot
+        # replies twice. Suppress the re-delivery on the sender's
+        # client_msg_id — a per-message client UUID that is stable across
+        # workspace contexts but never shared by two distinct messages —
+        # scoped by event_ts so a message_changed event for the same message
+        # is not swallowed as a duplicate of the original. client_msg_id is
+        # absent from the synthetic multi-workspace collision events the
+        # workspace scoping above protects (two workspaces' coincidentally
+        # identical Slack-local ids stay independently deliverable — see
+        # TestSlackWorkspaceCollisionIsolation).
+        client_msg_id = str(event.get("client_msg_id") or "")
+        if (
+            event_ts
+            and client_msg_id
+            and self._dedup.is_duplicate(f"cmid:{client_msg_id}:{event_ts}")
+        ):
+            logger.info(
+                "[Slack] Suppressing cross-workspace duplicate delivery: "
+                "channel=%s ts=%s team=%s client_msg_id=%s",
+                event.get("channel", ""),
+                event_ts,
+                dedup_team_id,
+                client_msg_id,
+            )
+            return
+
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)

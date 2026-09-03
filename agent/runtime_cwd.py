@@ -14,7 +14,7 @@ import logging
 import os
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +82,45 @@ def scope_terminal_cwd() -> str:
     return _terminal_cwd_env()
 
 
+def resolve_kanban_worker_cwd(
+    candidate: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Constrain a worker cwd candidate to its dispatcher-assigned workspace.
+
+    A recorded cwd remains valid when it is the workspace itself or a child
+    reached by ``cd``.  A stale profile/session snapshot outside that tree is
+    replaced with the assigned workspace.
+    """
+    source = os.environ if env is None else env
+    if not str(source.get("HERMES_KANBAN_TASK") or "").strip():
+        return None
+    workspace = str(source.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+    if not workspace:
+        return None
+    workspace = os.path.expanduser(workspace)
+    if not os.path.isabs(workspace) or not os.path.isdir(workspace):
+        return None
+
+    raw_candidate = str(candidate or "").strip()
+    if raw_candidate:
+        expanded = os.path.expanduser(raw_candidate)
+        try:
+            if os.path.commonpath(
+                [os.path.realpath(expanded), os.path.realpath(workspace)]
+            ) == os.path.realpath(workspace):
+                return expanded
+        except (OSError, ValueError):
+            pass
+    return workspace
+
+
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
+    worker_cwd = resolve_kanban_worker_cwd(override)
+    if worker_cwd:
+        return Path(worker_cwd)
     if override:
         p = Path(override).expanduser()
         if p.is_dir():
@@ -108,6 +145,9 @@ def resolve_context_cwd() -> Path | None:
     # developing Hermes (per-surface policy for fallback-picked directories
     # lives in build_context_files_prompt; see #64590).
     override = _session_cwd_override()
+    worker_cwd = resolve_kanban_worker_cwd(override)
+    if worker_cwd:
+        return Path(worker_cwd)
     if override:
         p = Path(override).expanduser()
         if not p.is_dir():

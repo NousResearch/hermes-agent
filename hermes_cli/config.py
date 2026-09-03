@@ -4048,6 +4048,9 @@ def apply_terminal_config_to_env(
     missing env vars; they never replace unrelated exported/.env values.
     """
     target = os.environ if env is None else env
+    from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+    worker_workspace = resolve_kanban_worker_cwd(env=target)
 
     raw_config = read_raw_config()
     raw_terminal_cfg = raw_config.get("terminal")
@@ -4083,6 +4086,16 @@ def apply_terminal_config_to_env(
         if not _terminal_config_value_is_bridgeable(cfg_key, value):
             continue
         if cfg_key == "cwd":
+            # The dispatcher already resolved and validated this task's
+            # workspace before spawning the worker.  A profile-level
+            # terminal.cwd is the profile's stable launch base, not authority
+            # for this individual task.  Keep the worker pin across every
+            # config bridge (including terminal_tool's late first-use bridge),
+            # otherwise relative terminal/file operations escape the assigned
+            # worktree even though Popen used the correct cwd.
+            if worker_workspace is not None:
+                target[env_var] = worker_workspace
+                continue
             raw_cwd = str(value or "").strip()
             if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(
                 terminal_backend, raw_cwd

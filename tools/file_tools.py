@@ -296,11 +296,17 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
          register a raw-keyed cwd before any tool runs). Normally already
          mirrored into the record at registration; kept as a direct fallback
          so a cleared/never-written record still resolves the workspace.
-      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+      3. The active parent session's cwd when a delegated/background task has
+         its own task id but inherits that session's context. This session
+         anchor intentionally precedes ``$TERMINAL_CWD``: the environment
+         value is the session's launch directory, while the recorded cwd may
+         reflect a later ``cd`` in the active conversation.
+      4. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions).
 
-    Returns ``None`` only when there is genuinely no reliable anchor, in which
-    case callers fall back to the process cwd.
+    Returns ``None`` only when there is genuinely no recorded task, inherited
+    session, or environment anchor, in which case callers fall back to the
+    process cwd.
     """
     try:
         from tools.terminal_tool import get_session_cwd
@@ -308,11 +314,39 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         recorded = get_session_cwd(task_id)
     except Exception:
         recorded = None
+    registered = _registered_task_cwd_override(task_id)
+    try:
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        candidate = recorded or registered
+        worker_cwd = resolve_kanban_worker_cwd(candidate)
+    except Exception:
+        worker_cwd = None
+    if worker_cwd and not _uses_container_paths(task_id):
+        return worker_cwd
     if recorded:
         return recorded
-    registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
+
+    # Delegated/background agents keep a distinct task id for observability
+    # while inheriting the desktop/gateway session ContextVar so they share the
+    # parent's environment.  The cwd registry is deliberately keyed by the raw
+    # session id, not by the child task id.  Without this bridge, a child's
+    # first relative file read falls through to the process cwd until it runs a
+    # terminal command of its own, producing false "File not found" results in
+    # a worktree that already contains the file.
+    try:
+        from tools.terminal_tool import _current_session_key, get_session_cwd
+
+        current_session_key = _current_session_key()
+        if current_session_key and current_session_key != task_id:
+            inherited = get_session_cwd(current_session_key)
+            if inherited:
+                return inherited
+    except Exception:
+        logger.debug("session cwd inheritance unavailable", exc_info=True)
+
     return _configured_terminal_cwd()
 
 

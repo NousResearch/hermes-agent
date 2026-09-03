@@ -934,6 +934,213 @@ def test_spawn_scope_unit_is_per_call_not_global(monkeypatch, tmp_path):
     assert not hasattr(kb._default_spawn, "_last_scope_unit")
 
 
+def _patch_managed_gateway(monkeypatch, *, managed: bool):
+    """Force the restart-safe wrap's topology gate.
+
+    ``restart_safe_gateway_child_argv`` wraps a gateway child only when the
+    host is Linux AND this process owns a supervised gateway AND systemd set
+    ``INVOCATION_ID``. These tests run on macOS, so ``_IS_LINUX`` is forced
+    True in BOTH directions and the gateway-topology signals alone decide —
+    otherwise "unmanaged" would pass for the wrong reason (the platform)
+    and prove nothing.
+    """
+    monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+    monkeypatch.setattr(
+        "tools.process_registry._is_supervised_gateway_process",
+        lambda: managed,
+    )
+    if managed:
+        monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    else:
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+
+def test_managed_gateway_isolation_none_records_restart_safe_scope(
+    monkeypatch, tmp_path,
+):
+    """isolation 'none' on a systemd-MANAGED gateway still runs the worker
+    in a scope — upstream's restart-safe wrap, which a plain child needs or
+    the next gateway restart kills it with the service cgroup. 'none' turns
+    off KANBAN's isolation, not that guarantee, so the spawn must record the
+    wrap's own unit as the run's scope. Recording "" for it (the pre-fix
+    behaviour) marked the run registered instantly, left every terminal path
+    with no scope to stop, and hid the unit from the audit sweep."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: none\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_managed_gateway(monkeypatch, managed=True)
+    _patch_systemd_available(monkeypatch, True)
+    _patch_systemd_run_binary(monkeypatch)
+    captured: dict = {}
+    _fake_popen_capture(monkeypatch, captured, pid=4242)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    task = _make_task(task_id="t_scope1", run_id=7)
+    pid = kb._default_spawn(task, str(workspace))
+
+    argv = captured["cmds"][0]
+    assert argv[0] == "/usr/bin/systemd-run"
+    unit_arg = argv[argv.index("--unit") + 1]
+    # The restart-safe wrap's naming, NOT kanban's isolation naming.
+    assert unit_arg == "hermes-worker-kanban-t_scope1-run-7"
+    assert kb._kanban_worker_scope_unit("t_scope1", 7) not in argv
+    # One wrap only — a nested scope would show a second systemd-run.
+    assert argv.count("--unit") == 1
+    assert argv[argv.index("--") + 1] == "hermes"
+    # ... and the run records the unit systemd actually creates, so
+    # `_set_worker_pid` writes worker_scope, teardown has something to
+    # stop, and the audit sweep's parser maps it back to the task.
+    assert pid.scope_unit == "hermes-worker-kanban-t_scope1-run-7.scope"
+    assert captured["kwargs"]["env"]["HERMES_KANBAN_SCOPE"] == pid.scope_unit
+    assert kb._task_id_from_kanban_scope_unit(pid.scope_unit) == "t_scope1"
+
+
+def test_managed_gateway_missing_run_id_refuses_before_any_launch(
+    monkeypatch, tmp_path,
+):
+    """Both launch paths name the unit after the attempt, so a managed
+    dispatch of a task with no current run id is refused above the
+    isolation branch. Previously only the restart-safe path refused and
+    the isolation path minted the attempt-free
+    ``hermes-kanban-<task>.scope`` — a name a retry can collide with."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: auto\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_managed_gateway(monkeypatch, managed=True)
+    _patch_systemd_available(monkeypatch, True)
+    _patch_systemd_run_binary(monkeypatch)
+    captured: dict = {}
+    _fake_popen_capture(monkeypatch, captured)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    with pytest.raises(RuntimeError, match="no current run id"):
+        kb._default_spawn(_make_task(run_id=None), str(workspace))
+
+    assert captured == {}
+
+
+def _fake_refused_launch_popen(monkeypatch, calls, stderr_text: bytes):
+    """First Popen models a systemd-run client that refuses the launch
+    (writes to the spawn-stderr capture, exits non-zero); any later Popen
+    is a live child. Returns nothing — assertions read *calls*."""
+    class FakeProc:
+        def __init__(self, rc):
+            self.pid = 4141 if rc is not None else 4242
+            self.returncode = rc
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        stderr = kwargs.get("stderr")
+        if len(calls) == 1:
+            if hasattr(stderr, "write"):
+                stderr.write(stderr_text)
+                stderr.flush()
+            return FakeProc(1)
+        return FakeProc(None)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+
+def _refused_launch_setup(monkeypatch, tmp_path, *, managed: bool):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    _write_kanban_config(home, "  worker_isolation: auto\n")
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    _patch_managed_gateway(monkeypatch, managed=managed)
+    _patch_systemd_available(monkeypatch, True)
+    _patch_systemd_run_binary(monkeypatch)
+    # The launcher exited non-zero and the transient unit never came up:
+    # the spawn path's definition of a REFUSED launch.
+    monkeypatch.setattr(kb, "_scope_unit_created", lambda _unit: False)
+    monkeypatch.setattr(
+        kb, "_stop_kanban_worker_scope",
+        lambda _unit, **_kwargs: True,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    return workspace
+
+
+def test_managed_gateway_refused_isolation_launch_never_retries(
+    monkeypatch, tmp_path,
+):
+    """A refused isolation launch on a managed gateway has no unisolated
+    fallback to degrade to: the 'plain' argv is itself a systemd-run wrap,
+    so 'auto' must NOT retry. The old retry re-entered systemd-run under a
+    different unit with no launch probe and no stderr capture, then
+    recorded scope "" for a worker that was in fact scoped. Now it fails
+    closed on the refusal's own stderr, as strict mode does."""
+    workspace = _refused_launch_setup(monkeypatch, tmp_path, managed=True)
+    calls: list[list[str]] = []
+    _fake_refused_launch_popen(
+        monkeypatch, calls, b"systemd-run-test: user bus connection refused\n",
+    )
+
+    with pytest.raises(RuntimeError, match="user bus connection refused"):
+        kb._default_spawn(_make_task(), str(workspace))
+
+    # Exactly one launch attempt — no second systemd-run.
+    assert len(calls) == 1
+    assert calls[0][0] == "/usr/bin/systemd-run"
+    # The refusal's stderr is what the dispatcher records as spawn_failed.
+    assert "user bus connection refused" in kb._default_spawn._last_spawn_error
+
+
+def test_unmanaged_host_refused_isolation_launch_retries_plain_argv(
+    monkeypatch, tmp_path,
+):
+    """Off a managed gateway the auto fallback is still correct and still
+    honest: the retry is the genuinely bare worker argv (not one systemd
+    token), and the run records no scope unit."""
+    workspace = _refused_launch_setup(monkeypatch, tmp_path, managed=False)
+    calls: list[list[str]] = []
+    _fake_refused_launch_popen(
+        monkeypatch, calls, b"systemd-run-test: user bus connection refused\n",
+    )
+
+    pid = kb._default_spawn(_make_task(), str(workspace))
+
+    assert len(calls) == 2
+    assert calls[0][0] == "/usr/bin/systemd-run"
+    _assert_plain_argv_shape(calls[1])
+    assert pid == 4242
+    assert pid.scope_unit == ""
+
+
+def test_scope_audit_sweeps_restart_safe_units_on_managed_gateway(
+    monkeypatch, conn,
+):
+    """The audit lists BOTH unit prefixes and runs even with kanban's own
+    isolation off, because a managed gateway's workers live in
+    ``hermes-worker-kanban-*`` units. Gated on isolation alone, the sweep
+    returned early and those units leaked unseen."""
+    monkeypatch.setattr(kb, "_resolve_worker_isolation", lambda *a, **k: "none")
+    _patch_managed_gateway(monkeypatch, managed=True)
+    patterns: list[str] = []
+
+    def fake_list(pattern):
+        patterns.append(pattern)
+        return {}
+
+    monkeypatch.setattr(kb, "_kanban_list_scope_units", fake_list)
+
+    assert kb.reap_orphaned_worker_scopes(conn) == []
+    assert patterns == ["hermes-kanban-*", "hermes-worker-kanban-*"]
+
+
 def test_forced_scope_without_systemd_refuses_spawn(monkeypatch, tmp_path):
     """H: 'systemd-scope' + unusable probe = REFUSED spawn, never a silent
     unisolated fallback. The operator pinned strict — "no worker" beats an

@@ -1402,10 +1402,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
-    -- systemd user-scope unit the live worker runs in when kanban worker
-    -- isolation is active (``hermes-kanban-<task_id>.scope``). NULL when
-    -- the worker runs unisolated (isolation 'none', or systemd-run
-    -- unavailable — macOS, containers). Written at spawn, cleared with
+    -- systemd user-scope unit the live worker runs in: kanban's own
+    -- isolation unit (``hermes-kanban-<task_id>-r<run_id>.scope``), or the
+    -- shared restart-safe wrap's unit on a systemd-managed gateway
+    -- (``hermes-worker-kanban-<task_id>-run-<run_id>.scope``). NULL only
+    -- when the worker genuinely runs unisolated (isolation 'none' off a
+    -- managed gateway, or systemd-run unavailable — macOS, containers).
+    -- Written at spawn, cleared with
     -- worker_pid on every dispatcher-side terminal transition.
     worker_scope         TEXT,
     -- Process creation time (epoch seconds) of the recorded worker_pid.
@@ -9419,8 +9422,15 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
     the argv) and the bookkeeping path (``dispatch_once`` records the unit
     name), so the two can never disagree. Resolution:
 
-    * ``none``  — never; workers spawn exactly as before (legacy argv,
-      process-group kill), the required no-op on macOS/containers.
+    * ``none``  — never; kanban adds no scope of its own, so workers spawn
+      with the legacy argv and process-group kill, the required no-op on
+      macOS/containers. On a systemd-MANAGED gateway the shared
+      restart-safe wrap still applies underneath (a plain child would die
+      with the service cgroup on the next gateway restart), so the worker
+      runs in ``hermes-worker-kanban-<task>-run-<n>.scope``; that unit IS
+      recorded in ``tasks.worker_scope`` and swept by the scope audit —
+      ``none`` turns off kanban's own isolation, not the restart-safe
+      guarantee (see :func:`_managed_gateway_dispatch`).
     * ``systemd-scope`` — scope only when the real
       ``systemd-run --user --scope`` probe passes; on failure warn once
       and REFUSE the spawn (finding H): the spawn path raises so the
@@ -9453,6 +9463,50 @@ def _kanban_worker_scope_enabled(kanban_cfg: Optional[dict] = None) -> bool:
     return available
 
 
+def _managed_gateway_dispatch() -> bool:
+    """True when this dispatcher's children get the restart-safe scope wrap.
+
+    Mirrors the topology gate inside
+    ``tools.process_registry.restart_safe_gateway_child_argv`` exactly: on a
+    systemd-MANAGED gateway every worker is wrapped in
+    ``hermes-worker-kanban-<task>-run-<n>.scope`` regardless of the kanban
+    ``worker_isolation`` setting, because a plain child would be killed with
+    the service cgroup on the next gateway restart.
+
+    Two decisions read this: there is no unisolated fallback to degrade to on
+    such a host (a refused isolation launch fails closed instead of "retrying
+    without isolation" straight back into systemd-run), and the scope audit
+    must sweep the restart-safe unit names even when isolation is ``none``.
+    """
+    from tools.process_registry import (
+        _IS_LINUX,
+        _is_supervised_gateway_process,
+    )
+
+    return bool(
+        _IS_LINUX
+        and _is_supervised_gateway_process()
+        and os.environ.get("INVOCATION_ID")
+    )
+
+
+def _scope_unit_from_argv(argv: list[str]) -> str:
+    """Bus unit name of a ``systemd-run --scope`` argv, ``""`` when absent.
+
+    Read back out of the argv the launch actually uses rather than rebuilt
+    from the naming rule, so a recorded unit can never drift from the one
+    systemd creates. ``systemd-run`` appends the ``.scope`` suffix when
+    ``--unit`` omits it (which the restart-safe wrap does).
+    """
+    try:
+        unit = argv[argv.index("--unit") + 1]
+    except (ValueError, IndexError):
+        return ""
+    if not unit:
+        return ""
+    return unit if unit.endswith(".scope") else f"{unit}.scope"
+
+
 def _kanban_worker_scope_unit(task_id: str, run_id: Optional[int]) -> str:
     """Transient unit name for one ATTEMPT of a task's worker.
 
@@ -9479,8 +9533,18 @@ def _task_id_from_kanban_scope_unit(unit: str) -> Optional[str]:
     ``hermes-kanban-<task>.scope``), or ``None`` for anything else. The
     returned id is the SANITISED form — callers must treat a lookup miss
     as "no matching task", never fall back to fuzzy matching.
+
+    Also parses the restart-safe wrap's own naming,
+    ``hermes-worker-kanban-<task>-run-<run>.scope``: on a systemd-managed
+    gateway that unit — not the isolation one — is what a worker spawned
+    with ``worker_isolation: none`` actually runs in, and the audit sweep
+    lists it alongside the isolation units.
     """
-    m = re.match(r"^hermes-kanban-(?P<tid>.+?)(?:-r\d+)?\.scope$", unit)
+    m = re.match(
+        r"^hermes-(?:worker-)?kanban-(?P<tid>.+?)"
+        r"(?:-r\d+|-run-\d+)?\.scope$",
+        unit,
+    )
     return m.group("tid") if m else None
 
 
@@ -12075,7 +12139,9 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     fires from the worker's own side (completion, block, review paths):
     the worker cannot wait on its own scope teardown, so those stops are
     detached and verified here instead. This sweep lists every active
-    ``hermes-kanban-*`` scope on the user bus and stops the ones no
+    ``hermes-kanban-*`` and ``hermes-worker-kanban-*`` scope (kanban's own
+    isolation units and the shared restart-safe wrap's) on the user bus
+    and stops the ones no
     running task claims — leaked descendants, scopes from tasks that
     completed without a stop, or a stale unit name left over from a
     retry that already moved on to a new unique unit.
@@ -12096,13 +12162,19 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
 
     Returns the list of reaped unit names. Safe to call every tick.
     """
-    if not _kanban_worker_scope_enabled():
+    if not _kanban_worker_scope_enabled() and not _managed_gateway_dispatch():
         return []
     claimed = _claimed_worker_scopes_globally()
     if claimed is None:
         return []  # a board was unreadable — reap nothing this tick
     reaped: list[str] = []
     active = _kanban_list_scope_units("hermes-kanban-*")
+    # The restart-safe wrap names its unit ``hermes-worker-kanban-<task>-
+    # run-<n>.scope``, and on a systemd-managed gateway that is the unit a
+    # worker runs in whenever kanban's own isolation did not wrap the argv
+    # (``worker_isolation: none``). Both prefixes are swept, or those units
+    # are invisible to the audit and leak.
+    active.update(_kanban_list_scope_units("hermes-worker-kanban-*"))
     now = time.monotonic()
     # Units needing synchronous work this sweep: terminal-but-loaded
     # units (collect) plus live/deactivating orphans (probe + stop).
@@ -13109,11 +13181,19 @@ def _set_worker_pid(
     ``worker_pid_started_at`` captures a start-time fingerprint at spawn
     so later liveness checks cannot be fooled by PID reuse.
 
-    For a scoped run the pid is the systemd-run LAUNCHER, not the worker
-    (the launcher client stays in the gateway's cgroup and dies with it);
-    ``worker_registered_at`` stays NULL until the worker registers its
-    own pid via :func:`register_worker_pid`. For a plain spawn the pid IS
-    the worker, so the row counts as registered immediately.
+    For a scoped run the pid is the systemd-run CLIENT's. A real
+    ``systemd-run --user --scope`` execs the command in place, so that pid
+    normally IS the worker's — ``tests/hermes_cli/
+    test_kanban_gateway_restart_handoff.py::
+    test_real_user_systemd_scope_preserves_worker_context`` asserts it
+    against a live systemd — but the dispatcher must never DEPEND on that:
+    a client that forks instead leaves a launcher pid that sits in the
+    gateway's cgroup and dies with it, and even the exec case gives a
+    start-time fingerprint taken before the worker replaced the image.
+    So a scoped row keeps ``worker_registered_at`` NULL until the worker
+    records its own pid + fingerprint via :func:`register_worker_pid`, and
+    liveness reads scope-cgroup truth first. For an unscoped spawn the pid
+    IS the worker, so the row counts as registered immediately.
 
     Status guard: only a task still ``running`` may receive spawn
     bookkeeping. A fast worker can reach a terminal state (complete,
@@ -14847,9 +14927,16 @@ def _default_spawn(
     # argv0 on both sides as "the scope wrap did not happen".  Every path
     # that launches WITHOUT an isolation scope of its own goes through this
     # helper instead, so the restart-safe guarantee still holds on each.
-    def _plain_launch_argv(log_handle=None) -> list[str]:
+    #
+    # It returns ``(argv, scope_unit)``: on a managed gateway "plain" is a
+    # misnomer — the argv IS scoped, just under the restart-safe wrap's own
+    # unit name — and the caller must record THAT unit as the run's
+    # ``worker_scope``.  Reporting "" there left a real scope untracked: the
+    # row counted as registered immediately, no stop was ever requested for
+    # it, and the audit sweep could not see it.
+    def _plain_launch_argv(log_handle=None) -> tuple[list[str], str]:
         try:
-            return _restart_safe_worker_argv(task, cmd)
+            argv = _restart_safe_worker_argv(task, cmd)
         except RuntimeError as exc:
             # Fail closed, but record the cause on the spawn-error channel
             # so the dispatcher classifies it as spawn_failed with real
@@ -14860,6 +14947,22 @@ def _default_spawn(
             if log_handle is not None:
                 log_handle.close()
             raise
+        if argv is cmd or argv[0] == cmd[0]:
+            return argv, ""  # genuinely plain: no wrap was applied
+        return argv, _scope_unit_from_argv(argv)
+
+    # Both launch paths name their unit after the ATTEMPT, so a managed
+    # dispatch of a claimed task with no current run id is refused HERE,
+    # once, above the isolation branch. ``_restart_safe_worker_argv`` makes
+    # the same refusal, but the isolation path never reaches it and would
+    # otherwise mint the attempt-free ``hermes-kanban-<task>.scope`` — an
+    # untraceable name a retry can collide with.
+    if task.current_run_id is None and _managed_gateway_dispatch():
+        _default_spawn._last_spawn_error = (
+            "cannot create restart-safe systemd scope for Kanban worker: "
+            "the claimed task has no current run id"
+        )
+        raise RuntimeError(_default_spawn._last_spawn_error)
 
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
@@ -14943,7 +15046,8 @@ def _default_spawn(
             # mode that is the same refusal as a failed probe (finding H):
             # the operator pinned systemd-scope, so "no worker" beats an
             # unisolated worker. Only auto continues, honestly recording
-            # that no scope was created.
+            # whichever scope the launch actually got (the restart-safe
+            # wrap's on a managed gateway, none anywhere else).
             if strict_scope:
                 _default_spawn._last_spawn_error = (
                     f"worker_isolation=systemd-scope is configured but "
@@ -14953,10 +15057,9 @@ def _default_spawn(
                 )
                 log_f.close()
                 raise RuntimeError(_default_spawn._last_spawn_error)
-            launch_cmd = _plain_launch_argv(log_f)
-            scope_unit = ""
+            launch_cmd, scope_unit = _plain_launch_argv(log_f)
     else:
-        launch_cmd = _plain_launch_argv(log_f)
+        launch_cmd, scope_unit = _plain_launch_argv(log_f)
     if scope_unit:
         env["HERMES_KANBAN_SCOPE"] = scope_unit
 
@@ -15051,9 +15154,13 @@ def _default_spawn(
                         f"replacement beside it"
                     )
                     raise RuntimeError(_default_spawn._last_spawn_error)
-                if _resolve_worker_isolation() != "systemd-scope":
-                    # auto: fall back to a plain spawn for THIS run and
-                    # say so once — a missing user bus must not stall
+                if (
+                    _resolve_worker_isolation() != "systemd-scope"
+                    and not _managed_gateway_dispatch()
+                ):
+                    # auto on a host that can genuinely run the worker
+                    # unwrapped: fall back to a plain spawn for THIS run
+                    # and say so once — a missing user bus must not stall
                     # the board. Reset EVERYTHING the scope wrap changed:
                     # launching the wrapped argv again would re-enter
                     # systemd-run (and "succeed" this time, hiding the
@@ -15061,18 +15168,37 @@ def _default_spawn(
                     # an unisolated worker.
                     _log.warning(
                         "kanban dispatch: task %s systemd-run launch failed "
-                        "(rc=%s: %s) — retrying WITHOUT scope isolation",
+                        "(rc=%s: %s) — retrying WITHOUT scope isolation "
+                        "(unmanaged host: the retry runs the bare worker "
+                        "argv, unisolated, and records no scope unit)",
                         task.id, proc.returncode,
                         err_text or "no stderr captured",
                     )
-                    launch_cmd = _plain_launch_argv()
+                    launch_cmd, scope_unit = _plain_launch_argv()
                     env.pop("HERMES_KANBAN_SCOPE", None)
-                    scope_unit = ""
                     proc = _spawn(subprocess.STDOUT)
                     # NOTE: log_f stays open for the child (see below).
                     return _SpawnedWorkerPid(proc.pid, scope_unit)
-                # systemd-scope mode never degrades silently: fail loudly
-                # so the dispatcher records spawn_failed with the cause.
+                if _managed_gateway_dispatch():
+                    # A systemd-MANAGED gateway has no unisolated fallback
+                    # to degrade to: the "plain" argv is itself a
+                    # systemd-run scope wrap (the restart-safe one), so
+                    # retrying here would re-enter systemd-run under a
+                    # DIFFERENT unit name, with no launch probe and no
+                    # stderr capture, while the row recorded scope "" for
+                    # a worker that is in fact scoped. Fail closed on the
+                    # refusal's own stderr, exactly as strict mode does.
+                    _log.warning(
+                        "kanban dispatch: task %s systemd-run launch failed "
+                        "(rc=%s: %s) — this gateway is systemd-managed, so "
+                        "there is no unisolated fallback to retry with; "
+                        "recording spawn_failed",
+                        task.id, proc.returncode,
+                        err_text or "no stderr captured",
+                    )
+                # systemd-scope mode (and every managed gateway) never
+                # degrades silently: fail loudly so the dispatcher records
+                # spawn_failed with the cause.
                 _default_spawn._last_spawn_error = err_text
                 raise RuntimeError(
                     f"systemd-run launch failed for task {task.id} "

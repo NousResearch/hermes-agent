@@ -95,9 +95,9 @@ from agent.prompt_caching import (
 from agent.provider_projection import splice_provider_projection
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
-    is_zai_coding_overload_error,
+    capacity_overload_policy,
+    capacity_overload_retry_ceiling,
     jittered_backoff,
-    zai_coding_overload_retry_ceiling,
 )
 from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
@@ -6021,18 +6021,22 @@ def run_conversation(
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
                 }
-                # Z.AI Coding Plan GLM-5.2 overload 429s classify as
-                # `overloaded` (to spare the credential pool), but `overloaded`
-                # is excluded from `is_rate_limited` — the gate for the adaptive
-                # Z.AI backoff below. Detect the overload directly so its
-                # long-backoff schedule runs, and raise the retry ceiling so the
-                # long tier (30/60/90/120s) is reachable. See
-                # zai_coding_overload_retry_ceiling() for the ceiling rationale.
-                _is_zai_coding_overload = is_zai_coding_overload_error(
+                # Provider capacity overloads (Z.AI Coding Plan GLM-5.2 1305s,
+                # Cloudflare Workers AI 3040s) need the adaptive long backoff:
+                # the account/endpoint needs time to drain, so the default 2-5s
+                # schedule just burns all three attempts against the same
+                # window. Z.AI overloads additionally classify as `overloaded`,
+                # which is excluded from `is_rate_limited` — the gate for the
+                # adaptive backoff below — so detect the capacity shape directly
+                # and raise the retry ceiling so the long tier (30/60/90/120s)
+                # is reachable. See capacity_overload_retry_ceiling() for the
+                # ceiling rationale.
+                _capacity_policy = capacity_overload_policy(
                     base_url=str(_base), model=_model, error=api_error
                 )
-                if _is_zai_coding_overload:
-                    max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                _is_capacity_overload = _capacity_policy is not None
+                if _is_capacity_overload:
+                    max_retries = max(max_retries, capacity_overload_retry_ceiling())
                 _should_fallback = (
                     (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
@@ -7258,7 +7262,7 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
+                if (is_rate_limited or _is_capacity_overload) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                         retry_count,
                         base_url=str(_base),
@@ -7266,18 +7270,23 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
-                if is_rate_limited or _is_zai_coding_overload:
+                if is_rate_limited or _is_capacity_overload:
+                    _policy_label = {
+                        "zai_coding_overload": "Z.AI Coding overload",
+                        "cloudflare_capacity": "Cloudflare capacity",
+                    }.get(_capacity_policy or "", "")
                     _policy_note = ""
-                    if _backoff_policy == "zai_coding_overload_long":
-                        _policy_note = " (Z.AI Coding overload adaptive long backoff)"
-                    elif _backoff_policy == "zai_coding_overload_short":
-                        _policy_note = " (Z.AI Coding overload short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
+                    if _backoff_policy and _policy_label:
+                        if _backoff_policy.endswith("_long"):
+                            _policy_note = f" ({_policy_label} adaptive long backoff)"
+                        elif _backoff_policy.endswith("_short"):
+                            _policy_note = f" ({_policy_label} short retry)"
+                    _wait_reason = "Provider overloaded" if _is_capacity_overload and not is_rate_limited else "Rate limited"
                     _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
                     # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
+                    # capacity waits are different: they can last minutes, so surface
                     # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
+                    if _backoff_policy and _backoff_policy.endswith("_long"):
                         agent._emit_status(_rate_limit_status)
                     else:
                         agent._buffer_status(_rate_limit_status)

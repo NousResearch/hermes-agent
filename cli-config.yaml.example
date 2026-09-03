@@ -1158,6 +1158,13 @@ agent:
   # to 1 if you use fallback providers and want fast failover on flaky
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
+  #
+  # Provider *capacity* 429s (Z.AI Coding Plan code 1305, Cloudflare Workers AI
+  # code 3040 "Capacity temporarily exceeded") are the exception: those get an
+  # adaptive long backoff (30s → 60s → 90s → 120s) after the first
+  # api_max_retries short attempts, and the retry ceiling is raised
+  # automatically so the long tier is reachable. Lowering api_max_retries only
+  # shortens the fast-retry phase before that schedule starts.
   # api_max_retries: 3
 
   # After the agent edits code without fresh passing verification, nudge it to

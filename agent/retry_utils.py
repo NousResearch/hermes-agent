@@ -18,21 +18,27 @@ from typing import Any, Optional
 _jitter_counter = 0
 _jitter_lock = threading.Lock()
 
-# Z.AI Coding Plan's GLM-5.2 endpoint often returns HTTP 429 code 1305
-# ("The service may be temporarily overloaded...") for otherwise valid
-# Hermes requests. Short retries tend to hammer the same overloaded window;
-# after a few normal retries, progressively widen the wait window. Keep the
-# cap interactive-friendly: a simple TUI message should fail visibly in minutes,
+# Some providers report transient *capacity* pressure as a 429 that a short
+# retry cannot clear: Z.AI Coding Plan's GLM-5.2 endpoint returns code 1305
+# ("The service may be temporarily overloaded..."), and Cloudflare Workers AI
+# returns code 3040 ("Capacity temporarily exceeded, please try again") under
+# account contention. Short retries just hammer the same window; after a few
+# normal retries, progressively widen the wait. Keep the cap
+# interactive-friendly: a simple TUI message should fail visibly in minutes,
 # not sit silent for 20+ minutes.
-_ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
+_CAPACITY_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 
 # Number of initial short retries before the adaptive long-backoff tier kicks
 # in. Shared by ``adaptive_rate_limit_backoff`` (which walks the long table
 # starting at attempt ``short_attempts + 1``) and
-# ``zai_coding_overload_retry_ceiling`` (which sizes the retry loop so every
+# ``capacity_overload_retry_ceiling`` (which sizes the retry loop so every
 # long-tier entry is reachable). Keeping it a single module constant prevents
 # the two from silently desyncing if the short-retry count is ever tuned.
-_ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
+_CAPACITY_OVERLOAD_SHORT_ATTEMPTS = 3
+
+# Back-compat aliases for the Z.AI-only names these constants shipped under.
+_ZAI_CODING_OVERLOAD_LONG_BACKOFF = _CAPACITY_OVERLOAD_LONG_BACKOFF
+_ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = _CAPACITY_OVERLOAD_SHORT_ATTEMPTS
 
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
@@ -159,6 +165,43 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     )
 
 
+def is_cloudflare_capacity_error(*, base_url: str | None, error: Any) -> bool:
+    """Return True for Cloudflare Workers AI transient capacity 429s.
+
+    Workers AI reports account-level contention as HTTP 429 with body code
+    3040 and message "Capacity temporarily exceeded, please try again"
+    (surfaced as ``AiError``). Like the Z.AI overload shape, retrying against
+    the same short window rarely helps — the account needs time to drain.
+
+    The match is deliberately narrow (Cloudflare host + that one message/code)
+    so ordinary quota/billing 429s keep failing fast through the existing
+    classifier. Unlike the Z.AI check there is no model constraint: every
+    ``@cf/...`` model on the account shares the same capacity pool.
+    """
+    base = (base_url or "").lower()
+    status = getattr(error, "status_code", None)
+    text = _error_text(error)
+    return (
+        status == 429
+        and "api.cloudflare.com" in base
+        and ("3040" in text or "capacity temporarily exceeded" in text)
+    )
+
+
+def capacity_overload_policy(*, base_url: str | None, model: str | None, error: Any) -> str | None:
+    """Name the provider capacity-overload policy an error qualifies for.
+
+    Returns ``"zai_coding_overload"``, ``"cloudflare_capacity"``, or ``None``
+    when no provider-specific long-backoff policy applies. Callers use this to
+    gate both the adaptive backoff and the extended retry ceiling.
+    """
+    if is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+        return "zai_coding_overload"
+    if is_cloudflare_capacity_error(base_url=base_url, error=error):
+        return "cloudflare_capacity"
+    return None
+
+
 def adaptive_rate_limit_backoff(
     attempt: int,
     *,
@@ -166,33 +209,39 @@ def adaptive_rate_limit_backoff(
     model: str | None,
     error: Any,
     default_wait: float,
-    short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS,
+    short_attempts: int = _CAPACITY_OVERLOAD_SHORT_ATTEMPTS,
 ) -> tuple[float, str | None]:
     """Provider-aware rate-limit backoff.
 
-    For most providers this returns ``default_wait`` unchanged. For Z.AI
-    Coding Plan GLM-5.2 overloads, keep the first ``short_attempts`` retries on
-    the normal short exponential schedule, then switch to progressively longer
-    waits (30s → 60s → 90s → 120s, capped) plus light jitter.
+    For most providers this returns ``default_wait`` unchanged. For provider
+    capacity overloads (Z.AI Coding Plan GLM-5.2 1305s, Cloudflare Workers AI
+    3040s), keep the first ``short_attempts`` retries on the normal short
+    exponential schedule, then switch to progressively longer waits
+    (30s → 60s → 90s → 120s, capped) plus light jitter.
 
     ``attempt`` is 1-based, matching the retry loop's logged attempt number.
-    Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is suitable
-    for status/log decoration when a provider-specific policy fired.
+    Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is
+    ``"<policy>_short"`` / ``"<policy>_long"`` and is suitable for status/log
+    decoration when a provider-specific policy fired.
     """
-    if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+    policy = capacity_overload_policy(base_url=base_url, model=model, error=error)
+    if policy is None:
         return default_wait, None
     if attempt <= short_attempts:
-        return default_wait, "zai_coding_overload_short"
+        return default_wait, f"{policy}_short"
 
-    idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
-    base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
+    idx = min(attempt - short_attempts - 1, len(_CAPACITY_OVERLOAD_LONG_BACKOFF) - 1)
+    base_delay = _CAPACITY_OVERLOAD_LONG_BACKOFF[idx]
     # A smaller jitter ratio keeps long waits readable while still avoiding
     # synchronized retry storms across concurrent Hermes sessions.
-    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+    return (
+        jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2),
+        f"{policy}_long",
+    )
 
 
-def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
-    """Retry-loop ceiling needed for the full Z.AI overload backoff schedule.
+def capacity_overload_retry_ceiling(short_attempts: int = _CAPACITY_OVERLOAD_SHORT_ATTEMPTS) -> int:
+    """Retry-loop ceiling needed for the full capacity-overload backoff schedule.
 
     The adaptive policy runs ``short_attempts`` short retries, then walks the
     long-backoff table one entry per subsequent attempt. The retry loop gives
@@ -200,9 +249,15 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     attempt's backoff is computed — so the ceiling must sit one past the final
     long-backoff entry for every long tier to actually execute.
 
-    With the default ``api_max_retries`` (3) equal to ``short_attempts`` (3),
-    the loop always gave up before reaching the long tier, leaving the whole
-    long-backoff schedule as dead code. Callers extend the ceiling to this
-    value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
+    With the default ``agent.api_max_retries`` (3) equal to ``short_attempts``
+    (3), the loop always gave up before reaching the long tier, leaving the
+    whole long-backoff schedule as dead code. Callers extend the ceiling to
+    this value for capacity-overload 429s (Z.AI 1305, Cloudflare 3040) so the
+    30/60/90/120s waits run.
     """
-    return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+    return short_attempts + len(_CAPACITY_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# Back-compat alias for the Z.AI-only name this helper shipped under. The
+# ceiling is schedule-derived, so both policies share one value.
+zai_coding_overload_retry_ceiling = capacity_overload_retry_ceiling

@@ -5,7 +5,12 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    is_cloudflare_capacity_error,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+)
 
 
 def test_backoff_is_exponential():
@@ -167,6 +172,143 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
 
     assert long_waits, "long-backoff tier never reached within the retry ceiling"
     assert long_waits == [30.0, 60.0, 90.0, 120.0]
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare Workers AI capacity 429s (code 3040)
+# ---------------------------------------------------------------------------
+
+_CF_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1"
+
+
+def _cf_capacity_error():
+    return SimpleNamespace(
+        status_code=429,
+        body={
+            "errors": [
+                {
+                    "code": 3040,
+                    "message": "AiError: Capacity temporarily exceeded, please try again",
+                }
+            ]
+        },
+    )
+
+
+def test_cf_capacity_error_detected():
+    """The narrow CF capacity shape (429 + cloudflare host + 3040) matches."""
+    assert is_cloudflare_capacity_error(base_url=_CF_BASE_URL, error=_cf_capacity_error())
+
+
+def test_cf_capacity_error_matches_any_cf_model():
+    """Capacity is account-scoped, so detection must not depend on the model."""
+    _wait, policy = adaptive_rate_limit_backoff(
+        1,
+        base_url=_CF_BASE_URL,
+        model="@cf/zai-org/glm-5.3-flash",
+        error=_cf_capacity_error(),
+        default_wait=2.0,
+    )
+    assert policy == "cloudflare_capacity_short"
+
+
+def test_cf_capacity_ignores_other_hosts():
+    """The same body from a non-Cloudflare host is not a CF capacity error."""
+    assert not is_cloudflare_capacity_error(
+        base_url="https://api.deepseek.com/v1", error=_cf_capacity_error()
+    )
+
+
+def test_cf_ordinary_429_still_fails_fast():
+    """Quota/billing 429s from Cloudflare keep the default short backoff."""
+    quota_error = SimpleNamespace(
+        status_code=429,
+        body={"errors": [{"code": 10000, "message": "Daily request limit exceeded"}]},
+    )
+    assert not is_cloudflare_capacity_error(base_url=_CF_BASE_URL, error=quota_error)
+    wait, policy = adaptive_rate_limit_backoff(
+        5,
+        base_url=_CF_BASE_URL,
+        model="@cf/deepseek-ai/deepseek-v4-flash-0731",
+        error=quota_error,
+        default_wait=2.0,
+    )
+    assert (wait, policy) == (2.0, None)
+
+
+def test_cf_capacity_non_429_is_not_capacity():
+    """A 500 carrying the same text is not the capacity 429 shape."""
+    err = SimpleNamespace(
+        status_code=500,
+        body={"errors": [{"code": 3040, "message": "Capacity temporarily exceeded"}]},
+    )
+    assert not is_cloudflare_capacity_error(base_url=_CF_BASE_URL, error=err)
+
+
+def test_cf_capacity_long_tier_reachable_within_ceiling(monkeypatch):
+    """With the extended ceiling, CF capacity 429s walk the full
+    30/60/90/120s schedule — the same tiers the Z.AI path uses."""
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import capacity_overload_retry_ceiling
+
+    err = _cf_capacity_error()
+    ceiling = capacity_overload_retry_ceiling()
+
+    long_waits = []
+    for attempt in range(1, ceiling):
+        _wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url=_CF_BASE_URL,
+            model="@cf/deepseek-ai/deepseek-v4-flash-0731",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "cloudflare_capacity_long":
+            long_waits.append(_wait)
+
+    assert long_waits, "long-backoff tier never reached within the retry ceiling"
+    assert long_waits == [30.0, 60.0, 90.0, 120.0]
+
+
+def test_zai_and_cf_share_one_ceiling():
+    """Both policies walk the same table, so one ceiling covers both. The
+    Z.AI-era name stays exported for callers that still import it."""
+    from agent.retry_utils import (
+        capacity_overload_retry_ceiling,
+        zai_coding_overload_retry_ceiling,
+    )
+
+    assert zai_coding_overload_retry_ceiling() == capacity_overload_retry_ceiling()
+
+
+def test_capacity_policy_prefers_matching_provider():
+    """capacity_overload_policy names the provider that actually matched."""
+    from agent.retry_utils import capacity_overload_policy
+
+    assert (
+        capacity_overload_policy(
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            model="glm-5.2",
+            error=_zai_overload_error(),
+        )
+        == "zai_coding_overload"
+    )
+    assert (
+        capacity_overload_policy(
+            base_url=_CF_BASE_URL,
+            model="@cf/deepseek-ai/deepseek-v4-flash-0731",
+            error=_cf_capacity_error(),
+        )
+        == "cloudflare_capacity"
+    )
+    assert (
+        capacity_overload_policy(
+            base_url="https://api.openai.com/v1",
+            model="gpt-5",
+            error=SimpleNamespace(status_code=429, body={"error": "rate limit"}),
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------

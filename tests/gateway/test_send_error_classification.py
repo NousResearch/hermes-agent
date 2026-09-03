@@ -12,6 +12,7 @@ from gateway.platforms.base import (
     SEND_ERROR_KINDS,
     SendResult,
     classify_send_error,
+    is_chat_level_not_found,
 )
 
 
@@ -31,6 +32,7 @@ class _FakeBadRequest(Exception):
         ("Bad Request: not enough rights to send text messages", "forbidden"),
         ("Bad Request: chat not found", "not_found"),
         ("Bad Request: message to edit not found", "not_found"),
+        ("Bad Request: Topic_closed", "not_found"),
         ("Too Many Requests: retry after 12", "rate_limited"),
         ("Flood control exceeded", "rate_limited"),
         ("ConnectError: connection refused", "transient"),
@@ -56,6 +58,10 @@ def test_every_classification_is_in_the_vocabulary():
     ]
     for s in samples:
         assert classify_send_error(None, s) in SEND_ERROR_KINDS
+
+
+def test_closed_topic_does_not_mark_parent_chat_dead():
+    assert is_chat_level_not_found(None, "Bad Request: Topic_closed") is False
 
 
 def test_telegram_send_failure_populates_error_kind():
@@ -85,5 +91,4 @@ def test_telegram_send_failure_populates_error_kind():
     # so a raw parse failure that still escapes is classified for consumers.
     assert result.error_kind in SEND_ERROR_KINDS
     assert result.error_kind != "unknown" or result.error
-
 

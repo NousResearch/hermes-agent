@@ -8714,6 +8714,55 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         return False
 
+    async def probe_delivery_route(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Validate an exact Telegram chat/topic route without posting a message.
+
+        ``sendChatAction`` exercises the same chat and ``message_thread_id``
+        routing that a later response will use, while creating no durable
+        message.  Unlike :meth:`send_typing`, this probe deliberately does not
+        fall back outside the requested topic: a closed/missing topic must be
+        surfaced to callers before they wake an agent into that dead route.
+        """
+        if not self._bot:
+            return SendResult(
+                success=False,
+                error="Telegram bot is not connected",
+                retryable=True,
+                error_kind="transient",
+            )
+
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            message_thread_id = self._message_thread_id_for_typing(thread_id)
+        except (TypeError, ValueError):
+            return SendResult(
+                success=False,
+                error="Invalid Telegram thread route",
+                retryable=False,
+                error_kind="not_found",
+            )
+
+        try:
+            await self._bot.send_chat_action(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
+            return SendResult(success=True)
+        except Exception as exc:
+            error = _redact_telegram_error_text(exc)
+            error_kind = classify_send_error(exc, error)
+            return SendResult(
+                success=False,
+                error=error,
+                retryable=error_kind not in {"forbidden", "not_found"},
+                error_kind=error_kind,
+            )
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if not self._bot or self._typing_in_cooldown(chat_id):

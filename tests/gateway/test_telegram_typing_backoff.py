@@ -84,3 +84,41 @@ async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
 
     assert adapter._bot.send_chat_action.await_count == 2
     assert "123" not in adapter._telegram_typing_cooldown_until
+
+
+@pytest.mark.asyncio
+async def test_route_probe_rejects_closed_topic_without_fallback():
+    adapter = _make_adapter()
+    adapter._bot.send_chat_action = AsyncMock(
+        side_effect=ValueError("Bad Request: Topic_closed")
+    )
+
+    result = await adapter.probe_delivery_route(
+        "123", metadata={"thread_id": "10728"},
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "not_found"
+    adapter._bot.send_chat_action.assert_awaited_once_with(
+        chat_id=123,
+        action="typing",
+        message_thread_id=10728,
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_probe_accepts_exact_topic():
+    adapter = _make_adapter()
+    adapter._bot.send_chat_action = AsyncMock(return_value=None)
+
+    result = await adapter.probe_delivery_route(
+        "123", metadata={"thread_id": "10728"},
+    )
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_awaited_once_with(
+        chat_id=123,
+        action="typing",
+        message_thread_id=10728,
+    )

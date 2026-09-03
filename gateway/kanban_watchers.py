@@ -1024,6 +1024,62 @@ class GatewayKanbanWatchersMixin:
                             # by the best-effort except below) permanently
                             # lose the event. Mirrors the non-push
                             # (api_server) self-post ordering above.
+                            #
+                            # Some push adapters can validate the exact
+                            # destination without posting a message. Do that
+                            # before wake injection: handle_message() only
+                            # proves the agent started, not that its eventual
+                            # progress/final replies can reach the subscribed
+                            # chat/topic.
+                            _probe_route = getattr(adapter, "probe_delivery_route", None)
+                            if callable(_probe_route):
+                                try:
+                                    _probe_res = await _probe_route(
+                                        sub["chat_id"], metadata=metadata,
+                                    )
+                                except Exception as _probe_err:
+                                    logger.warning(
+                                        "kanban notifier: route probe raised for %s on %s; "
+                                        "retaining subscription for retry: %s",
+                                        sub["task_id"], platform_str, _probe_err,
+                                        exc_info=True,
+                                    )
+                                    _probe_res = None
+
+                                if getattr(_probe_res, "success", False) is False:
+                                    fails = sub_fail_counts.get(sub_key, 0) + 1
+                                    sub_fail_counts[sub_key] = fails
+                                    error_kind = getattr(
+                                        _probe_res, "error_kind", None
+                                    ) or "transient"
+                                    retryable = bool(
+                                        getattr(_probe_res, "retryable", True)
+                                    )
+                                    permanent = (
+                                        not retryable
+                                        and error_kind in {"forbidden", "not_found"}
+                                    )
+                                    logger.warning(
+                                        "kanban notifier: wake-only route probe failed "
+                                        "for %s on %s (kind=%s, attempt %d/%d)",
+                                        sub["task_id"], platform_str, error_kind,
+                                        fails, MAX_SEND_FAILURES,
+                                    )
+                                    if permanent or fails >= MAX_SEND_FAILURES:
+                                        await _to_thread_process_service(
+                                            self._kanban_unsub, sub, board_slug,
+                                        )
+                                        sub_fail_counts.pop(sub_key, None)
+                                    else:
+                                        await _to_thread_process_service(
+                                            self._kanban_rewind,
+                                            sub,
+                                            d["cursor"],
+                                            d.get("old_cursor", 0),
+                                            board_slug,
+                                        )
+                                    continue
+
                             try:
                                 await _push_wake()
                                 sub_fail_counts.pop(sub_key, None)

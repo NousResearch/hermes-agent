@@ -444,6 +444,7 @@ export const en: Translations = {
         agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
+        desktopTargetUnified: 'Uses the desktop half inside the agent plugin package — no separate copy needed',
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
         securityHeading: 'Before you install',
@@ -463,6 +464,9 @@ export const en: Translations = {
         selectComponent: 'Select at least one component to install.',
         agentSuccess: name => `Agent plugin ${name} installed`,
         desktopSuccess: name => `Desktop plugin ${name} installed`,
+        desktopUnifiedEnabled: name => `Desktop UI for ${name} enabled from the agent plugin package`,
+        desktopUnified: name =>
+          `Desktop UI for ${name} is served from the agent plugin package — enable it under Settings → Plugins`,
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
         missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`

@@ -381,7 +381,7 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
   }
 }
 
-async function resolveDiskPluginEntry(
+export async function resolveDiskPluginEntry(
   desktop: Window['hermesDesktop'],
   folderPath: string,
   segments: readonly string[]

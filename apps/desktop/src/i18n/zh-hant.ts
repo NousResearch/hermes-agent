@@ -281,6 +281,13 @@ export const zhHant = defineLocale({
       billing: '帳單',
       notifications: '通知'
     },
+    plugins: {
+      installModal: {
+        desktopTargetUnified: '使用智慧代理外掛套件內建的桌面部分 — 無需另外複製',
+        desktopUnifiedEnabled: name => `已從智慧代理外掛套件啟用 ${name} 的桌面 UI`,
+        desktopUnified: name => `${name} 的桌面 UI 由智慧代理外掛套件提供 — 請在設定 → 外掛中啟用`
+      }
+    },
     notifications: {
       title: '通知',
       intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',

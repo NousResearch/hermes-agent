@@ -386,6 +386,7 @@ export interface Translations {
         agentTargetLocal: (profile: string) => string
         agentTargetRemote: (profile: string) => string
         desktopTarget: string
+        desktopTargetUnified: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -404,6 +405,8 @@ export interface Translations {
         selectComponent: string
         agentSuccess: (name: string) => string
         desktopSuccess: (name: string) => string
+        desktopUnifiedEnabled: (name: string) => string
+        desktopUnified: (name: string) => string
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string

@@ -715,8 +715,11 @@ Installing, sharing, or removing the feature is one folder.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
-disabled until the user toggles it — matching the Python half's
-`plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
+disabled until the user toggles it, or ticks **Desktop UI** when installing the
+package from **Settings → Plugins**, which counts as that toggle the same way the
+install modal's **Enable agent plugin** switch does for the Python half — matching
+the Python half's `plugins.enabled` gate in `config.yaml` (the security boundary
+below). Dropping
 a package into `~/.hermes/plugins` is inert on every surface until the user
 says otherwise. The desktop half degrades gracefully when the backend half is
 off — `ctx.rest` returns errors, not crashes.

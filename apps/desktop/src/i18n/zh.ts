@@ -432,6 +432,7 @@ export const zh: Translations = {
         agentTargetLocal: profile => `安装到 ${profile} 后端（~/.hermes/plugins/）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
+        desktopTargetUnified: '使用智能体插件包内置的桌面部分 — 无需单独复制',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
         securityHeading: '安装前须知',
@@ -450,6 +451,8 @@ export const zh: Translations = {
         selectComponent: '请至少选择一个要安装的组件。',
         agentSuccess: name => `智能体插件 ${name} 已安装`,
         desktopSuccess: name => `桌面插件 ${name} 已安装`,
+        desktopUnifiedEnabled: name => `已从智能体插件包启用 ${name} 的桌面 UI`,
+        desktopUnified: name => `${name} 的桌面 UI 由智能体插件包提供 — 请在设置 → 插件中启用`,
         agentFailed: '智能体插件安装失败',
         desktopFailed: '桌面插件安装失败',
         missingEnv: vars => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`

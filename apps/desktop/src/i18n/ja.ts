@@ -290,6 +290,15 @@ export const ja = defineLocale({
       billing: '請求',
       notifications: '通知'
     },
+    plugins: {
+      installModal: {
+        desktopTargetUnified:
+          'エージェントプラグインパッケージに含まれるデスクトップ部分を使用します — 別途コピーは不要です',
+        desktopUnifiedEnabled: name => `${name} のデスクトップ UI をエージェントプラグインパッケージから有効にしました`,
+        desktopUnified: name =>
+          `${name} のデスクトップ UI はエージェントプラグインパッケージから提供されます — 設定 → プラグインで有効にしてください`
+      }
+    },
     notifications: {
       title: '通知',
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',

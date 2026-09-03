@@ -364,7 +364,12 @@ export const ar = defineLocale({
       disable: 'تعطيل',
       failed: 'فشل',
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
-      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
+      installModal: {
+        desktopTargetUnified: 'يستخدم جزء سطح المكتب المضمّن في حزمة إضافة الوكيل — لا حاجة لنسخة منفصلة',
+        desktopUnifiedEnabled: name => `تم تفعيل واجهة سطح المكتب لـ ${name} من حزمة إضافة الوكيل`,
+        desktopUnified: name => `واجهة سطح المكتب لـ ${name} تأتي من حزمة إضافة الوكيل — فعّلها من الإعدادات ← الإضافات`
+      }
     },
     notifications: {
       title: 'الإشعارات',

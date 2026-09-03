@@ -16,6 +16,7 @@ import {
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
+import { $pluginRecords, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
@@ -30,6 +31,13 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profileScope } from '@/store/profile'
 import { $connection } from '@/store/session'
+
+import {
+  desktopHalfMayShareLocalRoot,
+  findStandaloneDesktopEntry,
+  findUnifiedDesktopEntry,
+  settleUnifiedDesktopPluginId
+} from './plugin-install-plan'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -55,11 +63,15 @@ export function PluginInstallModal() {
   const [forceReinstall, setForceReinstall] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  // An existing desktop-plugins/<name>/plugin.js from an earlier install. The
+  // loader serves that copy, so the install keeps refreshing it (#100412).
+  const [standaloneEntry, setStandaloneEntry] = useState<string | null>(null)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
     setPhase('idle')
     setProbe(null)
+    setStandaloneEntry(null)
     setInstallAgent(true)
     setInstallDesktop(true)
     setEnableAgent(true)
@@ -123,6 +135,16 @@ export function PluginInstallModal() {
         return
       }
 
+      const standalone =
+        result.desktop && result.desktopName
+          ? await findStandaloneDesktopEntry(window.hermesDesktop, result.desktopName)
+          : null
+
+      if (token !== probeToken.current) {
+        return
+      }
+
+      setStandaloneEntry(standalone)
       applyLegacyHint(payload, result)
       setPhase('ready')
     },
@@ -149,6 +171,26 @@ export function PluginInstallModal() {
 
   const agentTargetHint =
     connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
+
+  // A hybrid repo installed into a local backend lands its desktop half at
+  // plugins/<name>/desktop/ too; a second copy under desktop-plugins/ would
+  // load the same plugin id twice (#100412). This is the cheap pre-check for
+  // the caption — the install itself only skips the copy once that unified
+  // entry is actually on disk. An existing standalone copy keeps today's
+  // path: the loader serves it, so Force must keep refreshing it.
+  const desktopMayShareLocalRoot = desktopHalfMayShareLocalRoot({
+    connectionMode: connection?.mode,
+    probeAgent: probe?.agent === true,
+    probeDesktop: probe?.desktop === true,
+    desktopSourceSubdir: probe?.desktopSourceSubdir ?? null,
+    standaloneCopy: standaloneEntry !== null,
+    installAgent,
+    installDesktop
+  })
+
+  const desktopTargetHint = desktopMayShareLocalRoot ? m.desktopTargetUnified : m.desktopTarget
+  // The unified half lives under the agent package's folder, not desktopName.
+  const desktopTargetName = desktopMayShareLocalRoot ? (probe?.agentName ?? probe?.desktopName) : probe?.desktopName
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -177,6 +219,9 @@ export function PluginInstallModal() {
 
     const errors: string[] = []
     const successes: string[] = []
+    // The backend names the install folder after the manifest `name`, which is
+    // what both `pluginName` and the probe's `agentName` report.
+    let agentPluginName: null | string = probe.agentName ?? null
 
     try {
       if (installAgent && probe.agent) {
@@ -187,6 +232,7 @@ export function PluginInstallModal() {
         })
 
         if (result.ok) {
+          agentPluginName = result.pluginName ?? agentPluginName
           successes.push(m.agentSuccess(result.pluginName ?? request.repo))
 
           if (result.missingEnv?.length) {
@@ -204,7 +250,51 @@ export function PluginInstallModal() {
         }
       }
 
-      if (installDesktop && probe.desktop) {
+      // Skip the desktop-plugins/ copy only on hard evidence: the unified
+      // entry plugins/<name>/desktop/plugin.js exists in the root this app
+      // scans. That covers an agent install that just landed it AND one that
+      // failed as "already exists"; a clone failure, a backend on another
+      // hermes home, a root-level plugin.js, or an existing standalone copy
+      // (desktopMayShareLocalRoot is false then) all fall through to the copy
+      // — a wrong guess costs a duplicate, never the loss of the desktop half.
+      const unifiedEntry =
+        installDesktop && probe.desktop && desktopMayShareLocalRoot && agentPluginName
+          ? await findUnifiedDesktopEntry(window.hermesDesktop, agentPluginName)
+          : null
+
+      if (unifiedEntry) {
+        // That root loads opt-in, but the user ticked "Desktop UI" — honour
+        // it the way `enable` honours the agent half. A rescan is dropped
+        // while another scan holds the lock (and watched roots have no poll
+        // to catch up), so rescan-and-wait a few times; if the record never
+        // shows, leave it opt-in and say where to turn it on.
+        const outcome = await settleUnifiedDesktopPluginId(discoverRuntimePlugins, $pluginRecords, unifiedEntry)
+        const desktopName = agentPluginName ?? request.repo
+
+        if (!outcome) {
+          successes.push(m.desktopUnified(desktopName))
+        } else if ('error' in outcome) {
+          // The loader already inventoried it as broken or shadowed; that is
+          // final, not "not yet".
+          errors.push(`${m.desktopFailed}: ${outcome.error}`)
+        } else if ($pluginRecords.get()[outcome.id]?.status === 'loaded') {
+          // Already running (an "already exists" retry of a plugin the user
+          // enabled earlier) — nothing to change, and never risk its state.
+          successes.push(m.desktopUnifiedEnabled(desktopName))
+        } else {
+          try {
+            await setPluginEnabled(outcome.id, true)
+            successes.push(m.desktopUnifiedEnabled(desktopName))
+          } catch (error) {
+            // setPluginEnabled persists the decision before it activates, so
+            // a throw leaves a dangling "on". The record was disabled before
+            // (no decision, or an explicit off); an explicit off is the
+            // closest state the store can express, and renders the same.
+            await setPluginEnabled(outcome.id, false).catch(() => undefined)
+            errors.push(`${m.desktopFailed}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+      } else if (installDesktop && probe.desktop) {
         const installFn = window.hermesDesktop?.installDesktopPlugin
 
         if (!installFn) {
@@ -348,8 +438,8 @@ export function PluginInstallModal() {
                     <span className="min-w-0">
                       <span className="block font-medium text-foreground">{m.desktopLabel}</span>
                       <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {m.desktopTarget}
-                        {probe.desktopName ? ` · ${probe.desktopName}` : ''}
+                        {desktopTargetHint}
+                        {desktopTargetName ? ` · ${desktopTargetName}` : ''}
                       </span>
                     </span>
                   </label>

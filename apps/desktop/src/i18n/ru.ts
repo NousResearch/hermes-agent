@@ -433,6 +433,7 @@ export const ru = defineLocale({
         agentTargetLocal: profile => `Устанавливается в локальный бэкенд ${profile} (~/.hermes/plugins/)`,
         agentTargetRemote: profile => `Устанавливается в подключённый бэкенд ${profile}`,
         desktopTarget: 'Устанавливается в локальную папку desktop-plugins этого приложения',
+        desktopTargetUnified: 'Использует часть для приложения из пакета плагина агента — отдельная копия не нужна',
         desktopOnlyNote: 'Пакеты только для приложения не устанавливают плагин агента.',
         insecureWarning:
           'Этот URL использует небезопасную или локальную схему. Для боевой установки предпочитайте https:// или git@.',
@@ -453,6 +454,9 @@ export const ru = defineLocale({
         selectComponent: 'Выберите хотя бы один компонент для установки.',
         agentSuccess: name => `Плагин агента ${name} установлен`,
         desktopSuccess: name => `Плагин приложения ${name} установлен`,
+        desktopUnifiedEnabled: name => `Интерфейс приложения для ${name} включён из пакета плагина агента`,
+        desktopUnified: name =>
+          `Интерфейс приложения для ${name} берётся из пакета плагина агента — включите его в Настройки → Плагины`,
         agentFailed: 'Не удалось установить плагин агента',
         desktopFailed: 'Не удалось установить плагин приложения',
         missingEnv: vars => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`

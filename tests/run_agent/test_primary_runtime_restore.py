@@ -12,8 +12,22 @@ Verifies that:
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from run_agent import AIAgent
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cooldown_manager():
+    """Persistent cooldown state must not bleed between restoration tests."""
+    from agent.cooldown_manager import CooldownManager, get_cooldown_manager, set_cooldown_manager
+
+    original = get_cooldown_manager()
+    set_cooldown_manager(CooldownManager(storage_path=False))
+    try:
+        yield
+    finally:
+        set_cooldown_manager(original)
 
 
 def _make_tool_defs(*names: str) -> list:

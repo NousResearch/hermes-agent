@@ -1528,6 +1528,14 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def get_tool_schemas_for_catalog(self, *, platform: str) -> List[Dict[str, Any]]:
+        if platform == "cron":
+            return []
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        config = HonchoClientConfig.from_global_config()
+        return [] if config.recall_mode == "context" else list(ALL_TOOL_SCHEMAS)
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         from plugins.memory.honcho.session import HonchoAuthError

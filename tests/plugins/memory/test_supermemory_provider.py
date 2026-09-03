@@ -371,6 +371,31 @@ def test_multi_container_disabled_by_default(provider):
         assert "container_tag" not in s["parameters"]["properties"]
 
 
+def test_catalog_schemas_load_multi_container_config(tmp_path, monkeypatch):
+    _save_supermemory_config(
+        {
+            "container_tag": "profile-{identity}",
+            "enable_custom_container_tags": True,
+            "custom_containers": ["shared"],
+        },
+        str(tmp_path),
+    )
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "reviewer",
+    )
+
+    schemas = SupermemoryMemoryProvider().get_tool_schemas_for_catalog(
+        platform="api_server"
+    )
+
+    for schema in schemas:
+        container = schema["parameters"]["properties"]["container_tag"]
+        assert "profile_reviewer" in container["description"]
+        assert "shared" in container["description"]
+
+
 def test_get_config_schema_minimal():
     """get_config_schema only returns the API key field."""
     p = SupermemoryMemoryProvider()

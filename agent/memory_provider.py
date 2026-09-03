@@ -238,6 +238,15 @@ class MemoryProvider(ABC):
         Return empty list if this provider has no tools (context-only).
         """
 
+    def get_tool_schemas_for_catalog(self, *, platform: str) -> List[Dict[str, Any]]:
+        """Inspect the schemas runtime would expose without initializing resources.
+
+        Providers whose schema surface depends on initialization-time config or
+        platform gates should override this method. The default is suitable for
+        providers with a static schema surface.
+        """
+        return self.get_tool_schemas()
+
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Handle a tool call for one of this provider's tools.
 

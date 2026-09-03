@@ -311,6 +311,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
+    app.router.add_get("/v1/tools", adapter._handle_tools)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -885,6 +886,7 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
+            assert data["endpoints"]["tools"] == {"method": "GET", "path": "/v1/tools"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
     @pytest.mark.asyncio
@@ -972,6 +974,338 @@ class TestToolsetsEndpoint:
             call.kwargs["features"] is feature_snapshot
             for call in has_keys.call_args_list
         )
+
+
+class TestToolsEndpoint:
+    @pytest.mark.asyncio
+    async def test_tools_returns_platform_catalog_with_provenance(self, adapter):
+        config = {
+            "platform_toolsets": {
+                "api_server": ["file", "audit"],
+                "telegram": ["file"],
+            }
+        }
+        schemas = [
+            {"type": "function", "function": {"name": "read_file", "parameters": {}}},
+            {"type": "function", "function": {"name": "mcp__audit__inspect", "parameters": {}}},
+            {"type": "function", "function": {"name": "bfl_flux", "parameters": {}}},
+            {"type": "function", "function": {"name": "kanban_show", "parameters": {}}},
+            {"type": "function", "function": {"name": "missing_entry", "parameters": {}}},
+        ]
+        entries = {
+            "read_file": types.SimpleNamespace(toolset="file"),
+            "mcp__audit__inspect": types.SimpleNamespace(toolset="mcp-audit"),
+            "bfl_flux": types.SimpleNamespace(toolset="bfl"),
+            "kanban_show": types.SimpleNamespace(toolset="kanban"),
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"file", "audit", "bfl", "kanban"},
+        ), patch(
+            "model_tools.get_tool_definitions",
+            return_value=schemas,
+        ) as get_definitions, patch(
+            "tools.mcp_tool.get_mcp_tool_catalog_snapshot",
+            return_value={"audit": {"connected": True, "schemas": []}},
+        ), patch(
+            "tools.registry.registry.get_registered_toolset_aliases",
+            return_value={"audit": "mcp-audit"},
+        ), patch(
+            "tools.registry.registry.get_entry",
+            side_effect=entries.get,
+        ), patch(
+            "hermes_cli.tools_config._RECENTLY_SHIPPED_TOOLSETS",
+            frozenset({"bfl"}),
+        ), patch.object(
+            APIServerAdapter,
+            "_dynamic_platform_tool_definitions",
+            return_value=(
+                [
+                    {"type": "function", "function": {"name": "memory_search", "parameters": {}}},
+                    {"type": "function", "function": {"name": "lcm_grep", "parameters": {}}},
+                ],
+                {"memory_search": "memory", "lcm_grep": "context_engine"},
+            ),
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/tools?platform=api_server")
+                payload = await resp.json()
+
+        assert resp.status == 200
+        assert payload["platform"] == "api_server"
+        assert payload["explicit_config_present"] is True
+        assert payload["enabled_toolsets"] == ["audit", "bfl", "file", "kanban"]
+        by_name = {tool["name"]: tool for tool in payload["data"]}
+        assert by_name["read_file"]["provenance"] == {
+            "source": "configurable",
+            "toolset": "file",
+            "requested_toolsets": ["file"],
+            "source_server": None,
+            "added_below_explicit_config": False,
+        }
+        assert by_name["mcp__audit__inspect"]["provenance"]["source"] == "mcp"
+        assert by_name["mcp__audit__inspect"]["available"] is True
+        assert by_name["mcp__audit__inspect"]["provenance"]["source_server"] == "audit"
+        assert by_name["mcp__audit__inspect"]["provenance"]["added_below_explicit_config"] is False
+        assert by_name["bfl_flux"]["provenance"]["source"] == "recently_shipped"
+        assert by_name["bfl_flux"]["provenance"]["added_below_explicit_config"] is True
+        assert by_name["kanban_show"]["provenance"]["source"] == "default_injected"
+        assert by_name["memory_search"]["provenance"]["source"] == "default_injected"
+        assert by_name["memory_search"]["provenance"]["toolset"] == "memory"
+        assert by_name["lcm_grep"]["provenance"]["source"] == "default_injected"
+        assert by_name["lcm_grep"]["provenance"]["toolset"] == "context_engine"
+        assert by_name["missing_entry"]["provenance"] == {
+            "source": "unresolved",
+            "toolset": None,
+            "requested_toolsets": [],
+            "source_server": None,
+            "added_below_explicit_config": True,
+        }
+        get_definitions.assert_called_once_with(
+            enabled_toolsets=["audit", "bfl", "file", "kanban"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+            update_last_resolved=False,
+        )
+
+    def test_tool_catalog_retains_known_tools_from_disconnected_mcp_server(self):
+        disconnected_schema = {
+            "name": "mcp__aurora__search",
+            "description": "Search Aurora",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"aurora"},
+        ), patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "tools.mcp_tool.get_mcp_tool_catalog_snapshot",
+            return_value={
+                "aurora": {
+                    "connected": False,
+                    "schemas": [disconnected_schema],
+                }
+            },
+        ), patch(
+            "tools.registry.registry.get_registered_toolset_aliases",
+            return_value={},
+        ), patch(
+            "tools.registry.registry.get_entry",
+            return_value=None,
+        ), patch.object(
+            APIServerAdapter,
+            "_dynamic_platform_tool_definitions",
+            return_value=([], {}),
+        ):
+            data, enabled, explicit = APIServerAdapter._model_tool_catalog(
+                {"platform_toolsets": {"api_server": ["aurora"]}},
+                "api_server",
+            )
+
+        assert enabled == ["aurora"]
+        assert explicit is True
+        assert data == [{
+            **disconnected_schema,
+            "available": False,
+            "provenance": {
+                "source": "mcp",
+                "toolset": "mcp-aurora",
+                "requested_toolsets": ["aurora"],
+                "source_server": "aurora",
+                "added_below_explicit_config": False,
+            },
+        }]
+
+    @pytest.mark.asyncio
+    async def test_tools_rejects_unknown_platform(self, adapter):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "platform_toolsets": {
+                    "api_server": ["file"],
+                    "stale-plugin": ["file"],
+                }
+            },
+        ), patch(
+            "hermes_cli.platforms.get_all_platforms",
+            return_value={"api_server": object()},
+        ), patch.object(adapter, "_model_tool_catalog") as catalog:
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/tools?platform=stale-plugin")
+                payload = await resp.json()
+
+        assert resp.status == 400
+        assert payload["error"]["code"] == "invalid_platform"
+        catalog.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tools_accepts_registered_plugin_without_explicit_config(self, adapter):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_registry.register(PlatformEntry(
+            name="plugin-chat",
+            label="Plugin Chat",
+            adapter_factory=lambda _config: None,
+            check_fn=lambda: True,
+        ))
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"platform_toolsets": {"api_server": ["file"]}},
+            ), patch.object(
+                adapter,
+                "_model_tool_catalog",
+                return_value=([], ["messaging"], False),
+            ) as catalog:
+                app = _create_app(adapter)
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.get("/v1/tools?platform=plugin-chat")
+                    payload = await resp.json()
+        finally:
+            platform_registry.unregister("plugin-chat")
+
+        assert resp.status == 200
+        assert payload["platform"] == "plugin-chat"
+        assert payload["explicit_config_present"] is False
+        catalog.assert_called_once_with(
+            {"platform_toolsets": {"api_server": ["file"]}},
+            "plugin-chat",
+        )
+
+    def test_tool_catalog_does_not_report_bypass_without_explicit_config(self):
+        schema = {
+            "type": "function",
+            "function": {"name": "read_file", "parameters": {}},
+        }
+        entry = types.SimpleNamespace(toolset="file")
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"file"},
+        ), patch(
+            "model_tools.get_tool_definitions",
+            return_value=[schema],
+        ), patch(
+            "tools.registry.registry.get_registered_toolset_aliases",
+            return_value={},
+        ), patch(
+            "tools.registry.registry.get_entry",
+            return_value=entry,
+        ):
+            data, enabled, explicit = APIServerAdapter._model_tool_catalog(
+                {"platform_toolsets": {"api_server": ["file"]}},
+                "plugin-chat",
+            )
+
+        assert enabled == ["file"]
+        assert explicit is False
+        assert data[0]["provenance"]["added_below_explicit_config"] is False
+
+    def test_tool_catalog_attributes_explicit_composite_members(self):
+        schema = {
+            "type": "function",
+            "function": {"name": "read_file", "parameters": {}},
+        }
+        entry = types.SimpleNamespace(toolset="file")
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"file"},
+        ), patch(
+            "model_tools.get_tool_definitions",
+            return_value=[schema],
+        ), patch(
+            "tools.registry.registry.get_registered_toolset_aliases",
+            return_value={},
+        ), patch(
+            "tools.registry.registry.get_entry",
+            return_value=entry,
+        ), patch.object(
+            APIServerAdapter,
+            "_dynamic_platform_tool_definitions",
+            return_value=([], {}),
+        ):
+            data, enabled, explicit = APIServerAdapter._model_tool_catalog(
+                {"platform_toolsets": {"api_server": ["hermes-api-server"]}},
+                "api_server",
+            )
+
+        assert enabled == ["file"]
+        assert explicit is True
+        assert data[0]["provenance"] == {
+            "source": "configurable",
+            "toolset": "file",
+            "requested_toolsets": ["file", "hermes-api-server"],
+            "source_server": None,
+            "added_below_explicit_config": False,
+        }
+
+    def test_dynamic_tool_catalog_loads_available_configured_providers(self):
+        memory_provider = types.SimpleNamespace(
+            is_available=lambda: True,
+            get_tool_schemas_for_catalog=lambda *, platform: [
+                {"name": "memory_search", "description": "Search memory", "parameters": {}}
+            ],
+        )
+        context_engine = types.SimpleNamespace(
+            update_model=MagicMock(),
+            get_tool_schemas=lambda: [
+                {"name": "lcm_grep", "description": "Search context", "parameters": {}}
+            ],
+        )
+        config = {
+            "memory": {"provider": "test-memory"},
+            "context": {"engine": "test-context"},
+        }
+
+        with patch(
+            "tools.memory_tool.get_builtin_memory_config",
+            return_value={"provider": "test-memory"},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=memory_provider,
+        ) as load_memory, patch(
+            "plugins.context_engine.load_context_engine",
+            return_value=context_engine,
+        ) as load_context, patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=0,
+        ):
+            definitions, toolsets = APIServerAdapter._dynamic_platform_tool_definitions(
+                config,
+                "api_server",
+                {"memory", "context_engine"},
+            )
+
+        assert {item["function"]["name"] for item in definitions} == {
+            "memory_search",
+            "lcm_grep",
+        }
+        assert toolsets == {
+            "memory_search": "memory",
+            "lcm_grep": "context_engine",
+        }
+        load_memory.assert_called_once_with("test-memory", register_skills=False)
+        load_context.assert_called_once_with("test-context")
+        context_engine.update_model.assert_called_once_with(
+            model="",
+            context_length=0,
+            base_url="",
+            api_key="",
+            provider="",
+            api_mode="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_tools_requires_api_key_when_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/tools")
+
+        assert resp.status == 401
 
 
 # ---------------------------------------------------------------------------

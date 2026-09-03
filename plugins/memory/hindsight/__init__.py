@@ -2221,6 +2221,13 @@ class HindsightMemoryProvider(MemoryProvider):
             return []
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
+    def get_tool_schemas_for_catalog(self, *, platform: str) -> List[Dict[str, Any]]:
+        del platform
+        memory_mode = _load_config().get("memory_mode", "hybrid")
+        if memory_mode == "context":
+            return []
+        return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
             content = args.get("content", "")

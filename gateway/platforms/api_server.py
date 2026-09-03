@@ -2233,6 +2233,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
             ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
+            ("GET", "/v1/tools", self._handle_tools),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
@@ -3526,6 +3527,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
+                "tools": {"method": "GET", "path": "/v1/tools"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
@@ -4264,6 +4266,310 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    async def _handle_tools(self, request: "web.Request") -> "web.Response":
+        """GET /v1/tools — enumerate the complete callable tool catalog.
+
+        Unlike ``/v1/toolsets``, this resolves the same platform toolsets and
+        per-tool availability checks used when constructing an agent. The raw
+        pre-tool-search catalog is returned because every entry remains
+        callable through tool search even when it is not sent eagerly.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.platforms import get_all_platforms
+
+            config = load_config()
+            platform = str(request.query.get("platform") or "api_server").strip()
+            known_platforms = set(get_all_platforms())
+            if not platform or platform not in known_platforms:
+                return web.json_response(
+                    _openai_error(
+                        f"Unknown platform: {platform or '<empty>'}",
+                        code="invalid_platform",
+                    ),
+                    status=400,
+                )
+
+            data, enabled_toolsets, explicit_config_present = await asyncio.to_thread(
+                self._model_tool_catalog,
+                config,
+                platform,
+            )
+        except Exception:
+            logger.exception("GET /v1/tools failed")
+            return web.json_response(
+                _openai_error("Failed to enumerate tools", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response({
+            "object": "list",
+            "platform": platform,
+            "explicit_config_present": explicit_config_present,
+            "enabled_toolsets": enabled_toolsets,
+            "data": data,
+        })
+
+    @staticmethod
+    def _model_tool_catalog(
+        config: Dict[str, Any],
+        platform: str,
+    ) -> tuple[List[Dict[str, Any]], List[str], bool]:
+        """Resolve model-callable schemas and their enablement provenance."""
+        from hermes_cli.tools_config import (
+            _RECENTLY_SHIPPED_TOOLSETS,
+            _get_platform_tools,
+        )
+        from model_tools import get_tool_definitions
+        from tools.mcp_tool import get_mcp_tool_catalog_snapshot
+        from tools.registry import registry
+
+        enabled = _get_platform_tools(config, platform)
+        definitions = get_tool_definitions(
+            enabled_toolsets=sorted(enabled),
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+            update_last_resolved=False,
+        )
+        dynamic_definitions, dynamic_toolsets = (
+            APIServerAdapter._dynamic_platform_tool_definitions(config, platform, enabled)
+        )
+        mcp_snapshot = get_mcp_tool_catalog_snapshot()
+        aliases = registry.get_registered_toolset_aliases()
+
+        def _canonical_toolset(name: str) -> str:
+            if name in aliases:
+                return aliases[name]
+            if name in mcp_snapshot:
+                return f"mcp-{name}"
+            return name
+
+        enabled_canonical = {_canonical_toolset(name) for name in enabled}
+        known_names = {
+            (definition.get("function") or {}).get("name")
+            for definition in definitions
+        }
+        for definition in dynamic_definitions:
+            name = (definition.get("function") or {}).get("name")
+            if name in known_names:
+                continue
+            definitions.append(definition)
+            known_names.add(name)
+        for server_name, snapshot in mcp_snapshot.items():
+            if f"mcp-{server_name}" not in enabled_canonical:
+                continue
+            if snapshot.get("connected"):
+                continue
+            for schema in snapshot.get("schemas", []):
+                name = schema.get("name")
+                if not name or name in known_names:
+                    continue
+                definitions.append({"type": "function", "function": dict(schema)})
+                dynamic_toolsets[name] = f"mcp-{server_name}"
+                known_names.add(name)
+
+        configured = (config.get("platform_toolsets") or {}).get(platform)
+        explicit_config_present = isinstance(configured, list)
+        explicit_names = {str(name) for name in configured} if explicit_config_present else set()
+        explicit_canonical = {_canonical_toolset(name) for name in explicit_names}
+
+        requested_by_canonical: Dict[str, List[str]] = {}
+        for name in sorted(enabled):
+            requested_by_canonical.setdefault(_canonical_toolset(name), []).append(name)
+
+        if explicit_names:
+            from toolsets import TOOLSETS, resolve_toolset
+
+            for explicit_name in sorted(explicit_names):
+                if explicit_name not in TOOLSETS:
+                    continue
+                composite_tools = set(resolve_toolset(explicit_name))
+                for canonical_toolset, requested_names in requested_by_canonical.items():
+                    static_tools = set(
+                        resolve_toolset(canonical_toolset, include_registry=False)
+                    )
+                    if static_tools and static_tools.issubset(composite_tools):
+                        explicit_canonical.add(canonical_toolset)
+                        if explicit_name not in requested_names:
+                            requested_names.append(explicit_name)
+
+        data: List[Dict[str, Any]] = []
+        for definition in definitions:
+            schema = definition.get("function") or {}
+            name = schema.get("name")
+            entry = registry.get_entry(name) if name else None
+            canonical_toolset = entry.toolset if entry else dynamic_toolsets.get(name)
+            requested_toolsets = requested_by_canonical.get(canonical_toolset, [])
+            explicitly_enabled = bool(
+                canonical_toolset in explicit_canonical
+                or explicit_names.intersection(requested_toolsets)
+            )
+
+            source_server = None
+            if entry is None and canonical_toolset is None:
+                source = "unresolved"
+            elif canonical_toolset and canonical_toolset.startswith("mcp-"):
+                source = "mcp"
+                source_server = canonical_toolset[len("mcp-"):]
+            elif explicitly_enabled:
+                source = "configurable"
+            elif canonical_toolset in _RECENTLY_SHIPPED_TOOLSETS:
+                source = "recently_shipped"
+            else:
+                source = "default_injected"
+
+            row = dict(schema)
+            if source == "mcp":
+                row["available"] = bool(
+                    mcp_snapshot.get(source_server, {}).get("connected", True)
+                )
+            row["provenance"] = {
+                "source": source,
+                "toolset": canonical_toolset,
+                "requested_toolsets": requested_toolsets,
+                "source_server": source_server,
+                "added_below_explicit_config": (
+                    explicit_config_present and not explicitly_enabled
+                ),
+            }
+            data.append(row)
+
+        data.sort(key=lambda item: str(item.get("name") or ""))
+        return data, sorted(enabled), explicit_config_present
+
+    @staticmethod
+    def _dynamic_platform_tool_definitions(
+        config: Dict[str, Any],
+        platform: str,
+        enabled_toolsets: set[str],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """Return agent-injected provider schemas absent from the tool registry."""
+        from agent.memory_manager import (
+            memory_provider_tools_enabled,
+            normalize_tool_schema,
+        )
+
+        definitions: List[Dict[str, Any]] = []
+        toolsets: Dict[str, str] = {}
+
+        if memory_provider_tools_enabled(sorted(enabled_toolsets)):
+            try:
+                from plugins.memory import load_memory_provider
+                from tools.memory_tool import get_builtin_memory_config
+
+                provider_name = str(
+                    get_builtin_memory_config(config).get("provider") or ""
+                ).strip()
+                provider = (
+                    load_memory_provider(provider_name, register_skills=False)
+                    if provider_name
+                    else None
+                )
+                if provider is not None and provider.is_available():
+                    for raw_schema in provider.get_tool_schemas_for_catalog(
+                        platform=platform
+                    ):
+                        schema = normalize_tool_schema(raw_schema)
+                        if schema is not None and schema["name"] not in toolsets:
+                            definitions.append({"type": "function", "function": schema})
+                            toolsets[schema["name"]] = "memory"
+            except Exception:
+                logger.debug(
+                    "Failed to resolve memory-provider schemas for tool catalog",
+                    exc_info=True,
+                )
+
+        if "context_engine" in enabled_toolsets:
+            try:
+                import copy
+
+                context_config = config.get("context")
+                if not isinstance(context_config, dict):
+                    context_config = {}
+                engine_name = str(
+                    context_config.get("engine") or "compressor"
+                ).strip()
+                engine = None
+                if engine_name != "compressor":
+                    from plugins.context_engine import load_context_engine
+
+                    engine = load_context_engine(engine_name)
+                    if engine is None:
+                        from hermes_cli.plugins import get_plugin_context_engine
+
+                        candidate = get_plugin_context_engine()
+                        if candidate is not None and candidate.name == engine_name:
+                            engine = copy.deepcopy(candidate)
+                if engine is not None:
+                    model_config = config.get("model")
+                    if not isinstance(model_config, dict):
+                        model_config = {}
+                    raw_model = model_config.get("model") or model_config.get("default") or ""
+                    if isinstance(raw_model, dict):
+                        from hermes_cli.config import split_model_config_default
+
+                        raw_model, _ = split_model_config_default(raw_model)
+                    model = str(raw_model or "").strip()
+                    provider = str(model_config.get("provider") or "").strip()
+                    base_url = str(model_config.get("base_url") or "").strip()
+                    api_key = ""
+                    if provider:
+                        try:
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                            runtime = resolve_runtime_provider(
+                                requested=provider,
+                                target_model=model,
+                            ) or {}
+                            provider = str(runtime.get("provider") or provider).strip()
+                            base_url = str(runtime.get("base_url") or base_url).strip()
+                            api_key = str(runtime.get("api_key") or "").strip()
+                        except Exception:
+                            logger.debug(
+                                "Runtime provider resolution failed for context-engine catalog",
+                                exc_info=True,
+                            )
+                    raw_context_length = model_config.get("context_length")
+                    configured_context_length = (
+                        raw_context_length
+                        if isinstance(raw_context_length, int) and raw_context_length > 0
+                        else None
+                    )
+                    from agent.model_metadata import get_model_context_length
+
+                    context_length = get_model_context_length(
+                        model,
+                        base_url=base_url,
+                        api_key=api_key,
+                        config_context_length=configured_context_length,
+                        provider=provider,
+                        custom_providers=config.get("custom_providers"),
+                    )
+                    engine.update_model(
+                        model=model,
+                        context_length=context_length,
+                        base_url=base_url,
+                        api_key=api_key,
+                        provider=provider,
+                        api_mode=str(model_config.get("api_mode") or ""),
+                    )
+                    for raw_schema in engine.get_tool_schemas():
+                        schema = normalize_tool_schema(raw_schema)
+                        if schema is not None and schema["name"] not in toolsets:
+                            definitions.append({"type": "function", "function": schema})
+                            toolsets[schema["name"]] = "context_engine"
+            except Exception:
+                logger.debug(
+                    "Failed to resolve context-engine schemas for tool catalog",
+                    exc_info=True,
+                )
+
+        return definitions, toolsets
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API

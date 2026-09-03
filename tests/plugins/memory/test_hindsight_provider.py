@@ -247,6 +247,19 @@ class TestSchemas:
         p = provider_with_config(memory_mode="context")
         assert p.get_tool_schemas() == []
 
+    def test_catalog_schemas_respect_configured_memory_mode(self, provider, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_config",
+            lambda: {"memory_mode": "context"},
+        )
+        assert provider.get_tool_schemas_for_catalog(platform="api_server") == []
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_config",
+            lambda: {"memory_mode": "tools"},
+        )
+        assert provider.get_tool_schemas_for_catalog(platform="api_server")
+
 
 # ---------------------------------------------------------------------------
 # Config tests

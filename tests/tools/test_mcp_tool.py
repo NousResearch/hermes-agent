@@ -720,7 +720,12 @@ class TestDiscoverAndRegister:
     def test_tools_registered_in_registry(self):
         """_discover_and_register_server registers tools with correct names."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _discover_and_register_server,
+            _servers,
+            get_mcp_tool_catalog_snapshot,
+        )
 
         mock_registry = ToolRegistry()
         mock_tools = [
@@ -745,6 +750,18 @@ class TestDiscoverAndRegister:
         assert "mcp__fs__write_file" in registered
         assert "mcp__fs__read_file" in mock_registry.get_all_tool_names()
         assert "mcp__fs__write_file" in mock_registry.get_all_tool_names()
+
+        for name in registered:
+            mock_registry.deregister(name)
+        assert mock_registry.get_registered_toolset_aliases() == {}
+        _servers["fs"].session = None
+        snapshot = get_mcp_tool_catalog_snapshot()["fs"]
+        assert snapshot["connected"] is False
+        snapshot_names = {schema["name"] for schema in snapshot["schemas"]}
+        assert {
+            "mcp__fs__read_file",
+            "mcp__fs__write_file",
+        }.issubset(snapshot_names)
 
         _servers.pop("fs", None)
 

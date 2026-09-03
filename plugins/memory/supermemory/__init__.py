@@ -932,6 +932,25 @@ class SupermemoryMemoryProvider(MemoryProvider):
             schemas.append(schema)
         return with_kebab_aliases(schemas)
 
+    def get_tool_schemas_for_catalog(self, *, platform: str) -> List[Dict[str, Any]]:
+        del platform
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import get_hermes_home
+
+        config = _load_supermemory_config(str(get_hermes_home()))
+        raw_tag = (
+            os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+            or config["container_tag"]
+        )
+        identity = str(get_active_profile_name() or "default")
+        self._container_tag = _sanitize_tag(
+            raw_tag.replace("{identity}", identity)
+        )
+        self._enable_custom_containers = config["enable_custom_container_tags"]
+        self._custom_containers = config["custom_containers"]
+        self._allowed_containers = [self._container_tag] + list(self._custom_containers)
+        return self.get_tool_schemas()
+
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
         if not content:

@@ -4,11 +4,30 @@ import json
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho import HonchoMemoryProvider
+
+
+def test_catalog_schemas_respect_platform_and_recall_mode():
+    provider = HonchoMemoryProvider()
+
+    with patch(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        return_value=SimpleNamespace(recall_mode="context"),
+    ):
+        assert provider.get_tool_schemas_for_catalog(platform="api_server") == []
+
+    with patch(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        return_value=SimpleNamespace(recall_mode="tools"),
+    ):
+        assert provider.get_tool_schemas_for_catalog(platform="api_server")
+        assert provider.get_tool_schemas_for_catalog(platform="cron") == []
 
 
 class TestHonchoClientConfigAutoEnable:

@@ -2670,7 +2670,7 @@ class MCPServerTask:
     __slots__ = (
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
-        "_tools", "_error", "_config",
+        "_tools", "_catalog_schemas", "_error", "_config",
         "_sampling", "_elicitation",
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
@@ -2698,6 +2698,7 @@ class MCPServerTask:
         # rebuilt with fresh credentials.
         self._reconnect_event = asyncio.Event()
         self._tools: list = []
+        self._catalog_schemas: Dict[str, dict] = {}
         self._error: Optional[Exception] = None
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
@@ -7713,6 +7714,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     from tools.registry import registry
 
     registered_names: List[str] = []
+    registered_schemas: Dict[str, dict] = {}
     toolset_name = f"mcp-{name}"
 
     # Selective tool loading: honour include/exclude lists from config.
@@ -7917,6 +7919,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         _track_mcp_tool_server(registry_name, name)
         registered_names.append(registry_name)
+        registered_schemas[registry_name] = dict(candidate["schema"])
+
+    # The reconnect lifecycle intentionally removes dead tools from the
+    # callable registry. Preserve the last successfully published schemas so
+    # observational catalogs can distinguish a disconnected known tool from a
+    # capability that was never discovered.
+    with _lock:
+        server._catalog_schemas = registered_schemas
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
@@ -8528,6 +8538,22 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     with _lock:
         server_name = _mcp_tool_server_names.get(tool_name)
         return bool(server_name and server_name in _parallel_safe_servers)
+
+
+def get_mcp_tool_catalog_snapshot() -> Dict[str, dict]:
+    """Return last-known MCP schemas and current connection state by server.
+
+    Servers that have never completed discovery expose an empty schema list;
+    callers must not invent capabilities from configuration alone.
+    """
+    with _lock:
+        return {
+            name: {
+                "connected": server.session is not None,
+                "schemas": [dict(schema) for schema in server._catalog_schemas.values()],
+            }
+            for name, server in _servers.items()
+        }
 
 
 def get_mcp_status() -> List[dict]:

@@ -3,7 +3,7 @@
 Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: Chunk 0 behavioral harness
 Delivery plan: [`../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md`](../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md)
-Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §14, §18 (Phase 2)
 Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-0, F-3; forward notes F-4, F-5)
 
 ## Purpose
@@ -150,9 +150,9 @@ Parameterize tests over the store factory:
 
 ## Non-goals
 
-- Do not add staged reauthorization, the probe-outcome classifier, or the `authorization_endpoint_unavailable` error (F-2, Chunk 3).
+- Do not add staged reauthorization (Chunk 3), the probe-outcome classifier, or the `authorization_endpoint_unavailable` error (F-2, Chunk 2).
 - Do not fix destructive rollback by adding new rollback rules.
-- Do not introduce bundle revisions, CAS, or the identity digest (Chunk 4/5).
+- Do not introduce bundle revisions or CAS (Chunk 4), or the identity digest (Chunk 3 for lock filenames, Chunk 5 for credential filenames).
 - Do not add the `original_expires_in` field or the wall-clock plausibility guard (F-5, Chunk 4).
 - Do not add Keychain or the `credential_ambiguous` error (Chunk 6).
 - Do not migrate user files.

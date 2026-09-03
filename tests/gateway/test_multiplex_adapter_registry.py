@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.secret_scope import get_scoped_secret, reset_secret_scope, set_secret_scope
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
@@ -149,6 +150,33 @@ class TestProfileMessageHandler:
 
         assert await handler(_Evt()) == "ok"
         assert seen["profile"] == "nova-teen-club"
+
+    @pytest.mark.asyncio
+    async def test_primary_handler_preserves_launcher_secret_scope(self):
+        """Primary protected launchers own their ContextVar secret scope."""
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "nova-teen-club"
+
+        async def _fake_handle(event):
+            assert event.source.profile == "nova-teen-club"
+            assert get_scoped_secret("NOVA_OWNER_TELEGRAM_ID") == "owner-from-launcher"
+            return "ok"
+
+        runner._handle_message = _fake_handle
+        handler = runner._active_profile_message_handler()
+
+        class _Src:
+            profile = None
+
+        class _Evt:
+            source = _Src()
+
+        token = set_secret_scope({"NOVA_OWNER_TELEGRAM_ID": "owner-from-launcher"})
+        try:
+            assert await handler(_Evt()) == "ok"
+            assert get_scoped_secret("NOVA_OWNER_TELEGRAM_ID") == "owner-from-launcher"
+        finally:
+            reset_secret_scope(token)
 
     @pytest.mark.asyncio
     async def test_does_not_override_existing_profile(self):

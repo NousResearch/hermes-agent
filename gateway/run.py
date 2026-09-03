@@ -10490,8 +10490,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # never rebuild a secondary adapter with the default profile's credentials.
 
     def _active_profile_message_handler(self):
-        """Return the primary adapter handler with the active profile stamped."""
-        return self._make_profile_message_handler(self._active_profile_name())
+        """Stamp the primary profile without replacing its protected secret scope.
+
+        A dedicated launcher may install credentials in the ContextVar scope
+        before starting a single-profile gateway.  The multiplex handler also
+        loads a profile `.env`, which is correct for secondary adapters but
+        would erase those launcher-protected credentials for every primary
+        inbound message.
+        """
+        profile_name = self._active_profile_name()
+
+        async def _handler(event):
+            try:
+                if getattr(event, "source", None) is not None and not event.source.profile:
+                    event.source.profile = profile_name
+            except Exception:
+                pass
+            return await self._handle_message(event)
+
+        return _handler
 
     def _make_profile_message_handler(self, profile_name: str):
         """Return a message handler that stamps source.profile then delegates.

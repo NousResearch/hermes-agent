@@ -1449,7 +1449,6 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
-        rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
@@ -1470,12 +1469,6 @@ class BaseEnvironment(ABC):
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
-        # Guard against the `A && B &` subshell-wait trap by default.
-        # Some callers (spawn_via_env) already produce shell-safe wrappers and
-        # pass rewrite_compound_background=False.
-        if rewrite_compound_background:
-            from tools.terminal_tool import _rewrite_compound_background
-            exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 

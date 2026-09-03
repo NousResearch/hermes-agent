@@ -268,6 +268,28 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     )
 
 
+def _bare_custom_model_api_key(current_base_url: str) -> str:
+    """Return the key only when config owns the current bare-custom endpoint."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model", {})
+        if not isinstance(model_cfg, dict):
+            return ""
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        current_url = str(current_base_url or "").strip().rstrip("/")
+        if configured_provider != "custom" or not configured_url or configured_url != current_url:
+            return ""
+        for key in ("api_key", "api"):
+            value = model_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except (OSError, TypeError, KeyError, AttributeError):
+        pass
+    return ""
+
+
 _MODEL_DISCOVERY_ERRORS = (
     ImportError,
     OSError,
@@ -3933,6 +3955,7 @@ def list_authenticated_providers(
         )
     ):
         _models = [current_model] if current_model else []
+        _api_key = _bare_custom_model_api_key(current_base_url)
         # With live probing suppressed, use the shared stale/cache path;
         # otherwise probe through the native-aware picker helper.
         native_catalog_empty = False
@@ -3940,7 +3963,7 @@ def list_authenticated_providers(
         try:
             if _probe_live:
                 _live_models = _fetch_picker_live_models(
-                    "",
+                    _api_key,
                     str(current_base_url).strip().rstrip("/"),
                     "custom",
                     False,
@@ -3950,7 +3973,7 @@ def list_authenticated_providers(
                 from hermes_cli.models import cached_fetch_api_models
 
                 _live_models = cached_fetch_api_models(
-                    "",
+                    _api_key,
                     str(current_base_url).strip().rstrip("/"),
                     cache_only=True,
                     timeout=(1.5 if for_picker else 5.0),

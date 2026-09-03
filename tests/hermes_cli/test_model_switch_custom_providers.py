@@ -364,6 +364,122 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
     assert bare_custom["models"] == ["gpt-4o", "gpt-4o-mini"]
 
 
+@pytest.mark.parametrize(
+    ("model_key", "configured_key"),
+    [("api_key", "sk-custom-test"), ("api", "sk-legacy-test")],
+)
+def test_bare_custom_picker_probe_uses_configured_api_key(
+    monkeypatch, model_key, configured_key
+):
+    """Authenticated bare custom endpoints must receive the model config key."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/v1",
+                model_key: configured_key,
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_picker_live_models", _fake_fetch)
+
+    rows = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_current_custom_provider=True,
+    )
+
+    row = next(p for p in rows if p["slug"] == "custom")
+    assert captured == {
+        "api_key": configured_key,
+        "api_url": "https://custom.example.test/v1",
+    }
+    assert row["models"] == ["model-a", "model-b"]
+
+
+def test_bare_custom_picker_does_not_send_config_key_to_different_endpoint(monkeypatch):
+    """A session URL override must not receive the persisted endpoint's key."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://configured.example.test/v1",
+                "api_key": "sk-configured-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a"]
+
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_picker_live_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://session.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_current_custom_provider=True,
+    )
+
+    assert captured == {
+        "api_key": "",
+        "api_url": "https://session.example.test/v1",
+    }
+
+
+def test_bare_custom_picker_url_match_preserves_path_case(monkeypatch):
+    """Case-distinct URL paths must not share an inline credential."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/Tenant/v1",
+                "api_key": "sk-tenant-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, *_args, **_kwargs):
+        captured["api_key"] = api_key
+        return ["model-a"]
+
+    monkeypatch.setattr("hermes_cli.model_switch._fetch_picker_live_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/tenant/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_current_custom_provider=True,
+    )
+
+    assert captured["api_key"] == ""
+
+
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
     """Picker selections for bare custom endpoints should route to current base_url."""
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)

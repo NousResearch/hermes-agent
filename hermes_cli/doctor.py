@@ -17,6 +17,7 @@ from hermes_cli.config import (
     get_hermes_home,
     get_project_root,
     is_nix_install_method,
+    load_config,
     recommended_update_command_for_method,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -351,10 +352,82 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
             )
     return rows
 
-def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
-    """Adjust runtime-gated tool availability for doctor diagnostics."""
+def _config_string_set(section: str, key: str) -> set[str]:
+    """Return a lowercase set from a config list/string at section.key.
+
+    Doctor uses this for operator-declared optional integrations. Rather
+    than silently skipping them, doctor ENUMERATES each skipped item with a
+    clear reason ("declared optional"). Unknown/missing config is a no-op so
+    doctor stays backwards compatible.
+    """
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        return set()
+    raw_section = cfg.get(section) if isinstance(cfg, dict) else {}
+    if not isinstance(raw_section, dict):
+        return set()
+    raw_value = raw_section.get(key, [])
+    if isinstance(raw_value, str):
+        values = [raw_value]
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        return set()
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _doctor_ignored_auth_providers() -> set[str]:
+    return _config_string_set("doctor", "ignore_auth_providers")
+
+
+def _doctor_ignored_toolsets() -> set[str]:
+    return _config_string_set("doctor", "ignore_toolsets")
+
+
+def _is_doctor_auth_ignored(*names: str) -> bool:
+    ignored = _doctor_ignored_auth_providers()
+    return any(str(name).strip().lower() in ignored for name in names)
+
+
+def _maybe_skip_auth_provider(label: str, *aliases: str) -> bool:
+    """Explicitly enumerate an auth-provider row the operator declared
+    optional, instead of silently hiding it.
+
+    Honors ``doctor.ignore_auth_providers`` for *every* auth row (Nous,
+    Codex, MiniMax, xAI, ...) rather than special-casing individual
+    providers. When the row is declared optional we print an explicit
+    enumerated skip line naming the provider AND the reason (operator
+    declared it optional), then return True so the caller skips its own
+    warning/summary handling. The operator SEES the skip; it is not hidden.
+    """
+    if _is_doctor_auth_ignored(label, *aliases):
+        check_info(
+            f"{label}: skipped (declared optional in "
+            f"doctor.ignore_auth_providers)"
+        )
+        return True
+    return False
+
+
+def _is_doctor_tool_ignored(name: str) -> bool:
+    return str(name or "").strip().lower() in _doctor_ignored_toolsets()
+
+
+def _apply_doctor_tool_availability_overrides(
+    available: list[str], unavailable: list[dict]
+) -> tuple[list[str], list[dict], list[dict]]:
+    """Adjust runtime-gated tool availability for doctor diagnostics.
+
+    Operator-declared optional toolsets (``doctor.ignore_toolsets``) are NOT
+    silently dropped: they are pulled out of the missing-warnings list into a
+    separate ``skipped`` list so ``run_doctor`` can ENUMERATE them under an
+    explicit "declared optional" line. Returns
+    (available, unavailable, skipped_optional).
+    """
     updated_available = list(available)
     updated_unavailable = []
+    skipped_optional: list[dict] = []
     for item in unavailable:
         name = item.get("name")
         if _is_kanban_worker_env_gate(item):
@@ -365,8 +438,11 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
             continue
+        if _is_doctor_tool_ignored(str(name or "")):
+            skipped_optional.append(item)
+            continue
         updated_unavailable.append(item)
-    return updated_available, updated_unavailable
+    return updated_available, updated_unavailable, skipped_optional
 
 
 def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
@@ -1942,52 +2018,61 @@ def run_doctor(args):
             get_minimax_oauth_auth_status,
         )
 
-        # Read-only display: refresh-free snapshot — doctor must never
+        # Read-only display: refresh-free snapshot, doctor must never
         # trigger an OAuth refresh as a side effect of a health check.
-        nous_status = get_nous_auth_status_local()
-        if nous_status.get("logged_in"):
-            check_ok("Nous Portal auth", "(logged in)")
-        else:
-            check_warn("Nous Portal auth", "(not logged in)")
+        if not _maybe_skip_auth_provider(
+            "Nous Portal auth", "nous", "nous portal"
+        ):
+            nous_status = get_nous_auth_status_local()
+            if nous_status.get("logged_in"):
+                check_ok("Nous Portal auth", "(logged in)")
+            else:
+                check_warn("Nous Portal auth", "(not logged in)")
 
-        codex_status = get_codex_auth_status()
-        if codex_status.get("logged_in"):
-            check_ok("OpenAI Codex auth", "(logged in)")
-        else:
-            check_warn("OpenAI Codex auth", "(not logged in)")
-            if codex_status.get("error"):
-                check_info(codex_status["error"])
-            # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
-            # only needed to import existing tokens from ~/.codex/auth.json.
-            # Attach the hint to the Codex auth row so it doesn't read as
-            # remediation for whichever provider happens to print next (#27975).
-            if not _safe_which("codex"):
-                check_info(
-                    "codex CLI not installed "
-                    "(optional — only required to import tokens "
-                    "from an existing Codex CLI login)"
-                )
+        if not _maybe_skip_auth_provider(
+            "OpenAI Codex auth", "codex", "openai codex"
+        ):
+            codex_status = get_codex_auth_status()
+            if codex_status.get("logged_in"):
+                check_ok("OpenAI Codex auth", "(logged in)")
+            else:
+                check_warn("OpenAI Codex auth", "(not logged in)")
+                if codex_status.get("error"):
+                    check_info(codex_status["error"])
+                # Native OAuth uses Hermes' own device-code flow, the Codex
+                # CLI is only needed to import existing tokens from
+                # ~/.codex/auth.json. Attach the hint to the Codex auth row so
+                # it doesn't read as remediation for whichever provider prints
+                # next (#27975).
+                if not _safe_which("codex"):
+                    check_info(
+                        "codex CLI not installed "
+                        "(optional, only required to import tokens "
+                        "from an existing Codex CLI login)"
+                    )
 
-        minimax_status = get_minimax_oauth_auth_status()
-        if minimax_status.get("logged_in"):
-            region = minimax_status.get("region", "global")
-            check_ok("MiniMax OAuth", f"(logged in, region={region})")
-        else:
-            check_warn("MiniMax OAuth", "(not logged in)")
+        if not _maybe_skip_auth_provider("MiniMax OAuth", "minimax"):
+            minimax_status = get_minimax_oauth_auth_status()
+            if minimax_status.get("logged_in"):
+                region = minimax_status.get("region", "global")
+                check_ok("MiniMax OAuth", f"(logged in, region={region})")
+            else:
+                check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
-    # xAI OAuth — separate try/except so an import failure here cannot
+    # xAI OAuth, separate try/except so an import failure here cannot
     # disrupt the already-printed Nous/Codex/Gemini/MiniMax rows above.
     try:
-        from hermes_cli.auth import get_xai_oauth_auth_status
-        xai_oauth_status = get_xai_oauth_auth_status() or {}
-        if xai_oauth_status.get("logged_in"):
-            check_ok("xAI OAuth", "(logged in)")
-        else:
-            check_warn("xAI OAuth", "(not logged in)")
-            if xai_oauth_status.get("error"):
-                check_info(xai_oauth_status["error"])
+        if not _maybe_skip_auth_provider("xAI OAuth", "xai"):
+            from hermes_cli.auth import get_xai_oauth_auth_status
+            xai_oauth_status = get_xai_oauth_auth_status() or {}
+            if xai_oauth_status.get("logged_in"):
+                check_ok("xAI OAuth", "(logged in)")
+            else:
+                check_warn("xAI OAuth", "(not logged in)")
+                if xai_oauth_status.get("error"):
+                    check_info(xai_oauth_status["error"])
     except Exception:
         pass
 
@@ -3201,7 +3286,11 @@ def run_doctor(args):
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
         
         available, unavailable = check_tool_availability()
-        available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+        (
+            available,
+            unavailable,
+            skipped_optional,
+        ) = _apply_doctor_tool_availability_overrides(available, unavailable)
 
         # Web is split into search/extract readiness rows so an explicitly
         # selected but unconfigured backend cannot look healthy (#78412).
@@ -3229,6 +3318,21 @@ def run_doctor(args):
                 check_warn(item["name"], f"(missing {vars_str})")
             else:
                 check_warn(item["name"], "(system dependency not met)")
+
+        # Operator-declared optional toolsets are ENUMERATED here, not
+        # hidden. Each is listed by name with the reason it was skipped so
+        # the operator can see exactly what doctor left out and why.
+        if skipped_optional:
+            skipped_names = ", ".join(
+                sorted(
+                    str(item.get("name") or "?")
+                    for item in skipped_optional
+                )
+            )
+            check_info(
+                f"Skipped optional toolset(s): {skipped_names} "
+                f"(declared optional in doctor.ignore_toolsets)"
+            )
 
         # Count missing API-key requirements only for toolsets enabled in the
         # current CLI platform. Default-off or explicitly disabled toolsets may

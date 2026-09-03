@@ -169,6 +169,13 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
 # in this chart?" posted as a reply under an image).
 _THREAD_ROOT_IMAGE_MAX = 4
 
+# Shared budget for Block Kit content nested inside a message's ``attachments``.
+# Slack allows up to 20 attachments per message and each may carry its own
+# blocks, so this is spent across the whole array rather than per attachment —
+# otherwise one alert could cost many times what the top-level ``blocks`` path
+# spends once (:func:`_serialize_slack_blocks_for_agent`, 6000 chars).
+_SLACK_ATTACHMENT_BLOCKS_MAX_CHARS = 6000
+
 
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     """Render a compact text marker for a Slack file attachment.
@@ -6241,6 +6248,11 @@ class SlackAdapter(BasePlatformAdapter):
         slack_attachments = event.get("attachments") or []
         if slack_attachments:
             att_parts: list[str] = []
+            # Slack allows up to 20 attachments per message, and each one may
+            # carry its own Block Kit payload. Serializing them independently
+            # would let a single alert spend many times the budget the
+            # top-level path spends once, so the whole array shares one budget.
+            nested_budget = _SLACK_ATTACHMENT_BLOCKS_MAX_CHARS
             for att in slack_attachments:
                 att_title = att.get("title", "")
                 att_url = att.get("title_link", "") or att.get("from_url", "")
@@ -6261,13 +6273,22 @@ class SlackAdapter(BasePlatformAdapter):
                 # blocks are no less visible than a top-level one's.
                 att_blocks = att.get("blocks") or []
                 att_blocks_parts = []
-                if att_blocks:
+                if att_blocks and nested_budget > 0:
                     nested_rich = _extract_text_from_slack_blocks(att_blocks).strip()
                     if nested_rich:
+                        if len(nested_rich) > nested_budget:
+                            nested_rich = (
+                                nested_rich[:nested_budget].rstrip() + "\n... [truncated]"
+                            )
                         att_blocks_parts.append(nested_rich)
-                    nested_payload = _serialize_slack_blocks_for_agent(att_blocks)
-                    if nested_payload:
-                        att_blocks_parts.append(nested_payload)
+                        nested_budget -= len(nested_rich)
+                    if nested_budget > 0:
+                        nested_payload = _serialize_slack_blocks_for_agent(
+                            att_blocks, max_chars=nested_budget
+                        )
+                        if nested_payload:
+                            att_blocks_parts.append(nested_payload)
+                            nested_budget -= len(nested_payload)
                 att_blocks_text = "\n\n".join(att_blocks_parts)
 
                 # Build a readable representation.

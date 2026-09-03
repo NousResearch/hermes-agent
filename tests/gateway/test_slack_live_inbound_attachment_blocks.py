@@ -222,3 +222,50 @@ class TestAttachmentNestedBlocksOnLiveInbound:
         msg = _deliver(event)
         assert "HEADER_BODY" in msg.text
         assert "SECTION_BODY" in msg.text
+
+
+class TestNestedBlockBudget:
+    """Slack allows 20 attachments per message, each with its own blocks.
+
+    The budget is spent across the whole array, not per attachment: otherwise
+    one alert could cost many multiples of what the top-level ``blocks`` path
+    spends once. Measured before this cap existed, 20 chatty attachments
+    produced ~105k characters of message text.
+    """
+
+    @staticmethod
+    def _chatty_attachment(idx, n_sections=8, chars=400):
+        return {
+            "id": idx,
+            "fallback": "fb",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"f{i} " + ("x" * chars)},
+                }
+                for i in range(n_sections)
+            ],
+        }
+
+    def test_many_attachments_share_one_budget(self):
+        event = _alert_event()
+        event["attachments"] = [self._chatty_attachment(i) for i in range(20)]
+        msg = _deliver(event)
+        # Some framing (headers, separators, the message's own text) sits
+        # outside the nested-blocks budget, so allow modest slack over it.
+        assert len(msg.text) < _slack_mod._SLACK_ATTACHMENT_BLOCKS_MAX_CHARS * 2, (
+            f"20 attachments produced {len(msg.text)} chars; the nested-block "
+            "budget is not shared across the attachment array"
+        )
+
+    def test_first_attachment_still_carries_its_body(self):
+        """The cap must not starve the common single-attachment alert."""
+        event = _alert_event()
+        event["attachments"] = [
+            {"id": 0, "fallback": "fb", "blocks": [
+                {"type": "context",
+                 "elements": [{"type": "mrkdwn", "text": ALERT_BODY}]},
+            ]},
+        ] + [self._chatty_attachment(i) for i in range(1, 20)]
+        msg = _deliver(event)
+        assert ALERT_BODY in msg.text

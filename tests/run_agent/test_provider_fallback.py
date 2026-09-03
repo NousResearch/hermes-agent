@@ -83,6 +83,10 @@ class TestFallbackChainInit:
         (FailoverReason.server_error, "provider server error"),
         (FailoverReason.timeout, "request timeout"),
         (FailoverReason.model_not_found, "model not found"),
+        (
+            FailoverReason.egress_policy_blocked,
+            "local egress policy blocked the request",
+        ),
         (FailoverReason.unknown, "provider failure"),
     ],
 )
@@ -92,6 +96,43 @@ def test_fallback_reason_text_is_operator_friendly(reason, expected):
 
 def test_fallback_reason_text_defaults_when_reason_is_missing():
     assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
+
+
+def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
+    """Unsafe remote payloads must go directly to a local fallback.
+
+    The firewall has already rejected the current request, so retrying the
+    same payload against another remote provider only creates noisy false
+    provider failures and cannot succeed.
+    """
+    agent = _make_agent(
+        fallback_model=[
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            {
+                "provider": "ollama-launch",
+                "model": "hermes-review-fast:latest",
+                "base_url": "http://127.0.0.1:11434/v1",
+            },
+        ]
+    )
+    clients = [_mock_client(base_url="http://127.0.0.1:11434/v1")]
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(clients[0], "hermes-review-fast:latest"),
+    ) as resolve_client:
+        assert (
+            agent._try_activate_fallback(FailoverReason.egress_policy_blocked)
+            is True
+        )
+
+    assert agent.provider == "ollama-launch"
+    assert agent.model == "hermes-review-fast:latest"
+    assert agent._fallback_index == 2
+    resolve_client.assert_called_once()
 
 
 class TestFallbackChainAdvancement:

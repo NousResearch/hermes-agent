@@ -2666,6 +2666,42 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _fallback_destination_class(fb: dict):
+    """Resolve a fallback's configured destination for egress-aware routing.
+
+    Egress policy failures must never walk another remote provider with the
+    same unsafe request.  A fallback entry may omit ``base_url`` and rely on
+    the provider definition in config.yaml, so resolve that URL here rather
+    than trusting the provider label (provider names are not a security
+    boundary).
+    """
+    from agent.llm_egress_firewall import classify_destination
+
+    base_url = (fb.get("base_url") or "").strip()
+    if not base_url:
+        try:
+            from hermes_cli.config import load_config
+
+            provider_cfg = (load_config() or {}).get("providers", {}).get(
+                (fb.get("provider") or "").strip(), {}
+            )
+            if isinstance(provider_cfg, dict):
+                base_url = str(
+                    provider_cfg.get("api")
+                    or provider_cfg.get("base_url")
+                    or ""
+                ).strip()
+        except Exception:
+            # Unknown destination must remain unknown and therefore cannot
+            # inherit local trust after an egress policy rejection.
+            base_url = ""
+    return classify_destination(
+        str(fb.get("provider") or ""),
+        base_url,
+        fb.get("api_mode") or "chat_completions",
+    )
+
+
 def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     """Return a concise operator-facing explanation for a fallback switch."""
     if reason is None:
@@ -2686,6 +2722,9 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
         FailoverReason.model_not_found: "model not found",
         FailoverReason.provider_policy_blocked: "provider policy blocked the request",
         FailoverReason.content_policy_blocked: "content policy blocked the request",
+        FailoverReason.egress_policy_blocked: (
+            "local egress policy blocked the request"
+        ),
         FailoverReason.format_error: "request format rejected",
         FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
         FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
@@ -2767,6 +2806,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
+
+    # An egress policy rejection is deterministic for the current payload.
+    # Only a local/loopback fallback can legally receive that same payload;
+    # skip remote and unknown entries without constructing clients or making
+    # another provider attempt.  This preserves the fail-closed firewall while
+    # preventing the misleading Nous -> OpenAI -> local cascade.
+    if reason == FailoverReason.egress_policy_blocked:
+        from agent.llm_egress_firewall import DestinationClass
+
+        destination = _fallback_destination_class(fb)
+        if destination not in {
+            DestinationClass.LOCAL_PROCESS,
+            DestinationClass.LOOPBACK,
+        }:
+            unavailable.add(fb_key)
+            logger.info(
+                "Fallback skip: %s/%s is not local after egress policy "
+                "blocked the current request (destination=%s)",
+                fb_provider,
+                fb_model,
+                destination.value,
+            )
+            return agent._try_activate_fallback(reason)
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:

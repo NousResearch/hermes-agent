@@ -3360,7 +3360,7 @@ def terminal_tool(
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.process_registry import process_registry
+            from tools.process_registry import process_registry, transform_terminal_output
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
@@ -3396,6 +3396,23 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                # The persistent/background branch returns before the
+                # foreground canonicalization seam below. Apply the same
+                # fail-open hook contract to its immediate model-visible
+                # response, while the process registry handles subsequent
+                # command output from poll/wait/log/kill.
+                background_output = transform_terminal_output(
+                    result_data["output"],
+                    command=command,
+                    returncode=None,
+                    task_id=effective_task_id or "",
+                    env_type=env_type,
+                )
+                from tools.ansi_strip import strip_ansi
+                from agent.redact import redact_terminal_output
+                result_data["output"] = redact_terminal_output(
+                    strip_ansi(background_output), command
+                )
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.

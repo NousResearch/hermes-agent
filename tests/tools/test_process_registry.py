@@ -2807,3 +2807,221 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+class TestHandleProcessTransformHook:
+    """`_handle_process` must invoke the ``transform_terminal_output`` plugin
+    hook on background-process output — issue #70760.
+
+    Without this, plugins that register ``transform_terminal_output`` (output-
+    canonicalization / token-saving proxies) only fire on the foreground
+    terminal path and silently miss every ``process(action="poll"/"wait"/
+    "log")`` result, which is the default path for persistent-shell users.
+    The hook must be fail-open (first valid string return wins; exceptions
+    swallowed) and must run on both ``output`` and ``output_preview`` fields.
+    """
+
+    def _setup(self, monkeypatch, command, output):
+        from tools import process_registry as pr
+
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_transform1", command=command)
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running.clear()
+        reg._finished[sess.id] = sess
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_poll_output_is_transformed_by_hook(self, monkeypatch):
+        """poll() output_preview must pass through transform_terminal_output."""
+        pr, sess = self._setup(monkeypatch, "git log --oneline", "abc123 commit msg")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: ["TRANSFORMED:" + kw["output"]]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert out["output_preview"].startswith("TRANSFORMED:")
+
+    def test_wait_output_is_transformed_by_hook(self, monkeypatch):
+        """wait() output must pass through transform_terminal_output."""
+        pr, sess = self._setup(monkeypatch, "npm test", "all tests passed")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: ["TRANSFORMED:" + kw["output"]]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+        assert out["output"].startswith("TRANSFORMED:")
+
+    def test_log_output_is_transformed_by_hook(self, monkeypatch):
+        """log() output must pass through transform_terminal_output."""
+        pr, sess = self._setup(monkeypatch, "echo hello", "hello")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: ["TRANSFORMED:" + kw["output"]]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert out["output"].startswith("TRANSFORMED:")
+
+    def test_kill_output_is_transformed_by_hook(self, monkeypatch):
+        """kill() output uses the same seam as the other background actions."""
+        pr, sess = self._setup(monkeypatch, "sleep 100", "partial output")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: ["TRANSFORMED:" + kw["output"]]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "kill", "session_id": sess.id}))
+        assert out["output"].startswith("TRANSFORMED:")
+
+    def test_returncode_is_none_while_the_process_has_not_exited(self, monkeypatch):
+        """A running process must pass None, not a fabricated success code."""
+        pr, sess = self._setup(monkeypatch, "tail -f log", "streaming...")
+        sess.exited = False
+        sess.exit_code = None
+        seen = []
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: (seen.append(kw["returncode"]), [])[1]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        pr._handle_process({"action": "poll", "session_id": sess.id})
+        assert seen == [None]
+
+    def test_returncode_is_reported_once_the_process_exited(self, monkeypatch):
+        """A finished process must hand the real exit code to the plugin."""
+        pr, sess = self._setup(monkeypatch, "false", "boom")
+        sess.exited = True
+        sess.exit_code = 1
+        seen = []
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: (seen.append(kw["returncode"]), [])[1]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        pr._handle_process({"action": "wait", "session_id": sess.id})
+        assert seen == [1]
+
+    def test_first_valid_string_return_wins(self, monkeypatch):
+        """The first valid hook string wins, matching the foreground path."""
+        pr, sess = self._setup(monkeypatch, "ls -la", "file1 file2")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: [None, {"bad": True}, "FIRST", "SECOND"]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+        assert out["output"] == "FIRST"
+
+    def test_output_unchanged_when_hook_returns_none(self, monkeypatch):
+        """No valid hook replacement leaves output unchanged."""
+        pr, sess = self._setup(monkeypatch, "echo hi", "original output")
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kw: [None]
+            if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+        assert out["output"] == "original output"
+
+    def test_output_unchanged_when_no_hook_registered(self, monkeypatch):
+        """No registered hook leaves output unchanged."""
+        pr, sess = self._setup(monkeypatch, "echo hi", "plain output")
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda hook_name, **kw: [])
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+        assert out["output"] == "plain output"
+
+    def test_hook_exception_falls_back_to_original(self, monkeypatch):
+        """A plugin exception must not break process polling."""
+        pr, sess = self._setup(monkeypatch, "echo hi", "safe output")
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("plugin crashed")
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _raise)
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+        assert out["output"] == "safe output"
+
+    def test_hook_receives_command_and_returncode(self, monkeypatch):
+        """The hook receives command, exit code, and task ID context."""
+        pr, sess = self._setup(monkeypatch, "pytest -v", "test output")
+        sess.exit_code = 42
+        captured = {}
+
+        def _capture(hook_name, **kw):
+            if hook_name == "transform_terminal_output":
+                captured.update(kw)
+            return []
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture)
+        pr._handle_process({"action": "wait", "session_id": sess.id}, task_id="task-123")
+        assert captured.get("command") == "pytest -v"
+        assert captured.get("returncode") == 42
+        assert captured.get("task_id") == "task-123"
+
+    def test_hook_runs_before_redaction_and_replacement_is_redacted(self, monkeypatch):
+        """Raw output reaches the hook; original and replacement are redacted."""
+        import agent.redact as _r
+
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
+        replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
+        pr, sess = self._setup(
+            monkeypatch,
+            "printenv",
+            f"\x1b[31mOPENAI_API_KEY={original_secret}\x1b[0m",
+        )
+        hook_inputs = []
+
+        def _replace(hook_name, **kw):
+            hook_inputs.append(kw["output"])
+            return [f"\x1b[31mOPENAI_API_KEY={replacement_secret}\x1b[0m"]
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _replace)
+        out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
+
+        assert hook_inputs == [f"\x1b[31mOPENAI_API_KEY={original_secret}\x1b[0m"]
+        assert "\x1b" not in out["output"]
+        assert original_secret not in out["output"]
+        assert replacement_secret not in out["output"]
+        assert "OPENAI_API_KEY=" in out["output"]
+
+
+def test_completion_queue_transforms_and_redacts_output(registry, monkeypatch):
+    """CLI completion events must not bypass the shared output pipeline."""
+    import agent.redact as redact_module
+
+    original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
+    replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
+    session = _make_session(
+        sid="proc_completion_hook",
+        command="echo background",
+        task_id="task-completion",
+        output=f"raw output with {original_secret}",
+        exited=True,
+        exit_code=0,
+    )
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+    seen = []
+
+    def _transform(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            seen.append(kwargs["output"])
+            return [f"hook output with {replacement_secret}"]
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _transform)
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", True)
+    with patch.object(registry, "_write_checkpoint"):
+        registry._move_to_finished(session)
+
+    event = registry.completion_queue.get_nowait()
+    assert seen == [f"raw output with {original_secret}"]
+    assert original_secret not in event["output"]
+    assert replacement_secret not in event["output"]

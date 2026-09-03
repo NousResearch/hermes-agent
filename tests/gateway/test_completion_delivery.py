@@ -263,7 +263,7 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
     registry._finished[session.id] = session
     monkeypatch.setattr(pr_module, "process_registry", registry)
 
-    def _redact(result):
+    def _redact(result, *, task_id=""):
         assert result["output"] == "PRIVATE_TOKEN=opaque-value\n"
         result["output"] = "PRIVATE_TOKEN=<redacted>\n"
         return result

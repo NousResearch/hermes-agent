@@ -574,9 +574,26 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
 # providers/ that is not already declared above.  New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
+def sync_plugin_provider_registry() -> None:
+    """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``.
+
+    Idempotent: profiles already present in the registry are skipped, so this
+    is cheap to call from resolution paths. It runs once at import time and
+    again lazily (via :func:`_registry_lookup`) whenever a name is missing,
+    because the import-time pass can observe a *partial* profile list: if a
+    plugin's own imports pull this module in while
+    ``providers._discover_providers()`` is still iterating the plugin
+    directories, ``list_providers()`` returns only what has been registered so
+    far (the discovery guard is already set), and every plugin discovered
+    after that point would otherwise be invisible to ``resolve_provider()``
+    and fail with "Unknown provider".
+    """
+    try:
+        from providers import list_providers as _list_providers_for_registry
+        _profiles = _list_providers_for_registry()
+    except Exception:
+        return
+    for _pp in _profiles:
         if _pp.name in PROVIDER_REGISTRY:
             continue
         if _pp.auth_type == "external_process":
@@ -620,8 +637,18 @@ try:
         for _alias in _pp.aliases:
             if _alias not in PROVIDER_REGISTRY:
                 PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
-except Exception:
-    pass
+
+
+def _registry_lookup(provider_id: str) -> Optional[ProviderConfig]:
+    """``PROVIDER_REGISTRY.get`` that re-syncs plugin profiles on a miss."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig is None:
+        sync_plugin_provider_registry()
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return pconfig
+
+
+sync_plugin_provider_registry()
 
 
 # =============================================================================
@@ -2864,7 +2891,7 @@ def resolve_provider(
         return "openrouter"
     if normalized == "custom":
         return "custom"
-    if normalized in PROVIDER_REGISTRY:
+    if _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
         # Check for common config.yaml issues that cause this error
@@ -7872,7 +7899,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
@@ -7996,7 +8023,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     ``auth_verified``/``auth_source`` carry positive credential evidence when
     Hermes can actually see some — absence of evidence is not absence of auth.
     """
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
@@ -8148,7 +8175,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     Returns dict with: provider, api_key, base_url, source.
     """
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
@@ -8226,7 +8253,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
             f"Provider '{provider_id}' is not an external-process provider.",

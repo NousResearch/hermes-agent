@@ -2254,6 +2254,38 @@ def _transcribe_groq(
 # ---------------------------------------------------------------------------
 
 
+def _get_openai_stt_prompt(
+    openai_cfg: Optional[dict] = None,
+    prompt: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve an OpenAI-compatible STT prompt with inline input first.
+
+    The optional ``prompt`` argument is the dynamic/static value threaded by
+    the generic STT prompt work in #65632.  ``stt.openai.prompt_file`` is a
+    provider-specific fallback for reusable, version-controlled vocabulary
+    hints.  Reading the file at transcription time lets edits take effect
+    without restarting Hermes.
+    """
+    inline_prompt = str(prompt or "").strip()
+    if inline_prompt:
+        return inline_prompt
+
+    if openai_cfg is None:
+        openai_cfg = _load_stt_config().get("openai", {})
+    if not isinstance(openai_cfg, dict):
+        openai_cfg = {}
+
+    prompt_file = str(openai_cfg.get("prompt_file") or "").strip()
+    if not prompt_file:
+        return None
+
+    try:
+        return Path(prompt_file).expanduser().read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeError) as exc:
+        logger.warning("Configured STT prompt file '%s' could not be read: %s", prompt_file, exc)
+        return None
+
+
 def _transcribe_openai(
     file_path: str,
     model_name: str,
@@ -2294,6 +2326,27 @@ def _transcribe_openai(
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 
+    # Provider-specific file/hotword settings belong only to the configured
+    # ``openai`` backend.  Shared users of this helper (DeepInfra, plugins)
+    # receive only arguments their caller explicitly passes.
+    openai_cfg = _load_stt_config().get("openai", {}) if provider_label == "openai" else {}
+    if not isinstance(openai_cfg, dict):
+        openai_cfg = {}
+
+    base_create_kwargs: Dict[str, Any] = {
+        "model": model_name,
+        "response_format": "text" if model_name == "whisper-1" else "json",
+    }
+    resolved_prompt = _get_openai_stt_prompt(openai_cfg, prompt)
+    if resolved_prompt:
+        base_create_kwargs["prompt"] = resolved_prompt
+    hotwords = str(openai_cfg.get("hotwords") or "").strip()
+    if hotwords:
+        # ``hotwords`` is a Speaches extension, not a generated OpenAI SDK
+        # parameter.  extra_body merges it into the multipart request while
+        # keeping the call valid for the stock SDK.
+        base_create_kwargs["extra_body"] = {"hotwords": hotwords}
+
     try:
         from openai import (
             OpenAI,
@@ -2306,17 +2359,16 @@ def _transcribe_openai(
 
         def _create_transcription(path: str):
             with open(path, "rb") as audio_file:
-                create_kwargs = {
-                    "model": model_name,
-                    "file": audio_file,
-                    "response_format": "text" if model_name == "whisper-1" else "json",
-                }
+                create_kwargs = dict(base_create_kwargs)
+                create_kwargs["file"] = audio_file
+                if "extra_body" in create_kwargs:
+                    create_kwargs["extra_body"] = dict(create_kwargs["extra_body"])
                 if language:
                     if model_name == "gpt-transcribe":
                         # gpt-transcribe replaces the singular ``language``
                         # field with a ``languages`` list; the API rejects
                         # requests that send the legacy field.
-                        create_kwargs["extra_body"] = {"languages": [language]}
+                        create_kwargs.setdefault("extra_body", {})["languages"] = [language]
                     else:
                         create_kwargs["language"] = language
                     logger.debug("Using language hint '%s' for OpenAI STT", language)

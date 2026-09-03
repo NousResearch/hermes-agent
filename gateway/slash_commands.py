@@ -676,6 +676,22 @@ class GatewaySlashCommandsMixin:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
+        if not route_resolved:
+            override = (getattr(self, "_session_model_overrides", {}) or {}).get(session_key)
+            if not override and getattr(self, "session_store", None):
+                try:
+                    override = self.session_store.get_model_override(session_key)
+                except Exception:
+                    override = None
+            if isinstance(override, dict):
+                override_model = _clean_str(override.get("model"))
+                override_provider = _clean_str(override.get("provider"))
+                if override_model:
+                    model_name = override_model
+                    provider_name = override_provider
+                    base_url = _clean_str(override.get("base_url"))
+                    route_resolved = True
+
         persisted_model = _clean_str(persisted_route.get("model"))
         persisted_provider = _clean_str(persisted_route.get("billing_provider"))
         if not route_resolved and persisted_model and persisted_provider:

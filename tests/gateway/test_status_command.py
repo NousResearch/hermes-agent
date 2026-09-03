@@ -189,6 +189,50 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
         db.close()
 
 
+
+@pytest.mark.asyncio
+async def test_status_command_honors_session_model_override_over_dominant_route(tmp_path):
+    """Session-level /model override must take precedence over historical dominant route (#100323)."""
+    source = _make_source()
+    session_key = build_session_key(source)
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="old-model")
+        # Old model accumulated 50 calls
+        db.update_token_counts(
+            "sess-1",
+            model="old-model",
+            billing_provider="old-provider",
+            input_tokens=1000,
+            api_call_count=50,
+        )
+        # User ran /model new-model --provider new-provider (saved in session_store / _session_model_overrides)
+        runner.session_store.set_model_override(
+            session_key,
+            {"model": "new-model", "provider": "new-provider"},
+        )
+        runner._session_model_overrides[session_key] = {
+            "model": "new-model",
+            "provider": "new-provider",
+        }
+
+        result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `new-model` (new-provider)" in result
+        assert "old-model" not in result
+    finally:
+        db.close()
+
 @pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())

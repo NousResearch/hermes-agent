@@ -339,6 +339,73 @@ class TestTelegramTokens:
         assert "ABCDEfghij" not in result
 
 
+class TestInterruptDebugLogRedaction:
+    """#75461: both interrupt_debug.log write sites in cli.py route their
+    message values through redact_sensitive_text(force=True) before the
+    existing 60-char truncation. force=True is mandatory because the file
+    is persistent and must never hold a raw credential even when the user
+    has disabled global logging redaction (security.redact_secrets: false)."""
+
+    # Telegram bot token shape that triggered the original leak.
+    TOKEN = "1234567890:" + "A" * 35
+
+    def test_force_masks_token(self):
+        """The contract both CLI write sites rely on: force=True masks a
+        Telegram-token-shaped payload."""
+        result = redact_sensitive_text(self.TOKEN, force=True)
+        assert "A" * 35 not in result
+        assert "1234567890:***" in result
+
+    def test_force_masks_even_when_redaction_disabled(self, monkeypatch):
+        """Crucial: the persistent debug file must not leak a credential when
+        the user has turned off global redaction. Without force=True the
+        function returns the input unchanged (agent/redact.py:687-688)."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        result = redact_sensitive_text(self.TOKEN, force=True)
+        assert "A" * 35 not in result
+        assert "1234567890:***" in result
+
+    def test_truncation_happens_after_redaction(self):
+        """Both CLI sites apply [:60] after redaction. A long payload whose
+        secret sits near the start must still be masked — the secret cannot
+        survive merely because it falls within the first 60 chars."""
+        payload = self.TOKEN + " trailing context " + "x" * 80
+        truncated = redact_sensitive_text(payload, force=True)[:60]
+        assert "A" * 35 not in truncated
+
+    def test_non_string_payload_coerced_and_masked(self):
+        """Both CLI sites call str() on the payload before redacting; the
+        dict payload path (interrupt queue) must not leak either."""
+        payload = {"msg": self.TOKEN}
+        result = redact_sensitive_text(str(payload), force=True)
+        assert "A" * 35 not in result
+
+    def test_url_userinfo_credentials_masked(self):
+        """P2 follow-up: URL userinfo credentials (``user:pass@``) survive
+        force=True alone. The write sites now pass redact_url_credentials=True,
+        which masks the password portion of the userinfo."""
+        text = "https://alice:CorrectHorseBatteryStaple@example.com/path"
+        result = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+        assert "CorrectHorseBatteryStaple" not in result
+        assert "alice:***@example.com" in result
+
+    def test_url_credential_named_query_param_masked(self):
+        """Credential-named query parameters (OAuth ``code=``, ``token=``, ...)
+        are masked under the same call shape used at the write sites."""
+        text = "https://example.com/oauth/cb?code=abc123xyz789&state=ok"
+        result = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+        assert "abc123xyz789" not in result
+        assert "code=***&state=ok" in result
+
+    def test_url_redaction_truncation_still_works(self):
+        """[:60] is still applied after redaction: a long URL whose credential
+        sits near the start must not survive merely because it falls within the
+        first 60 chars."""
+        payload = "https://alice:secret@example.com/" + "x" * 80
+        truncated = redact_sensitive_text(payload, force=True, redact_url_credentials=True)[:60]
+        assert "secret" not in truncated
+
+
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""

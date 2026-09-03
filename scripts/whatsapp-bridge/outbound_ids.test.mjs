@@ -66,3 +66,21 @@ test('rejects non-positive maxSize', () => {
   assert.throws(() => createOutboundIdTracker(-1), RangeError);
   assert.throws(() => createOutboundIdTracker(1.5), RangeError);
 });
+
+test('snapshot returns remembered ids in insertion order', () => {
+  const tracker = createOutboundIdTracker(5);
+  tracker.remember('a');
+  tracker.remember('b');
+  tracker.remember('c');
+  assert.deepEqual(tracker.snapshot(), ['a', 'b', 'c']);
+});
+
+test('snapshot reflects eviction (bounded persistence contract)', () => {
+  // Persistence consumers (inbound_dedupe.js) rely on snapshot() NOT
+  // exceeding maxSize — the file must stay bounded under sustained traffic.
+  const tracker = createOutboundIdTracker(2);
+  tracker.remember('a');
+  tracker.remember('b');
+  tracker.remember('c');
+  assert.deepEqual(tracker.snapshot(), ['b', 'c']);
+});

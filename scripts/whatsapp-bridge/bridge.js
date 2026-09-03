@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { createInboundDedupe } from './inbound_dedupe.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -280,6 +281,14 @@ const MAX_QUEUE_SIZE = 100;
 // sustained sending.
 const recentlySentIds = createOutboundIdTracker(512);
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
+
+// Inbound redelivery guard: WhatsApp re-delivers un-acked messages with the
+// SAME key.id.  Once forwarded, retries are ignored so the gateway never
+// answers the same message twice (answer loop).  Persisted to disk so a
+// gateway/bridge restart cannot re-trigger it either (see inbound_dedupe.js).
+const inboundDedupe = createInboundDedupe({
+  file: path.join(SESSION_DIR, 'inbound_deduped.json'),
+});
 const messageStore = createBoundedMessageStore(512);
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
@@ -715,6 +724,20 @@ async function startSocket() {
           update: { pollUpdates },
           selectedOptions,
           aggregation,
+        });
+        continue;
+      }
+
+      // Inbound redelivery guard: WhatsApp re-delivers un-acked messages
+      // with the SAME key.id. Once forwarded, ignore retries so the gateway
+      // never answers the same message twice (answer loop). Persisted in
+      // inbound_deduped.json so a bridge restart can't re-trigger it either.
+      if (inboundDedupe.checkAndRemember(msg.key.id)) {
+        emitDebugEvent({
+          stage: 'ignored',
+          reason: 'inbound_redelivery',
+          chatId: redactWhatsAppId(chatId),
+          messageId: msg.key.id,
         });
         continue;
       }

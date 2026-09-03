@@ -41,5 +41,9 @@ export function createOutboundIdTracker(maxSize = 512) {
     return ids.size;
   }
 
-  return { remember, has, size };
+  function snapshot() {
+    return Array.from(ids);
+  }
+
+  return { remember, has, size, snapshot };
 }

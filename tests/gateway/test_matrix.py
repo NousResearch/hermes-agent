@@ -1249,6 +1249,56 @@ class TestMatrixPasswordLoginDeviceId:
 
         await adapter.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_password_login_identifier_uses_localpart(self):
+        """Password login must use the localpart, not the full Matrix user ID.
+
+        Some homeservers (e.g. nope.chat) reject ``identifier=@user:server``
+        for ``m.login.password`` and only accept the localpart. This is a
+        regression test for that behavior.
+        """
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "password": "secret",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.login = AsyncMock(
+            return_value=MagicMock(device_id="PW_DEVICE", access_token="tok")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.api = MagicMock()
+        mock_client.api.token = ""
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await adapter.connect() is True
+
+        mock_client.login.assert_awaited_once()
+        assert mock_client.login.call_args.kwargs["identifier"] == "bot"
+
+        await adapter.disconnect()
+
 
 class TestMatrixDeviceIdConfig:
     """MATRIX_DEVICE_ID should be plumbed through gateway config."""

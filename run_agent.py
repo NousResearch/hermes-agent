@@ -1678,6 +1678,47 @@ class AIAgent:
             "See hermes-agent#21444 for symptom history."
         )
 
+    def _custom_reasoning_hang_hint(
+        self, api_kwargs: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """Return an actionable hint when a stale non-streaming call to a
+        ``provider: custom`` endpoint carried a ``reasoning_effort``.
+
+        vLLM / llama.cpp / SGLang cannot be capability-probed the way
+        Ollama's ``/api/show`` can (#63315), so Hermes forwards the
+        top-level ``reasoning_effort`` field unconditionally on custom
+        endpoints (#90057). When the backend honours it as extended
+        thinking, a request that took seconds without it can stall for
+        minutes — and the only visible symptom is a generic
+        ``Non-streaming API call timed out`` (#100841). This does NOT change
+        the request; it only names the most likely cause in the timeout
+        text so the operator can correlate the stall with
+        ``agent.reasoning_effort`` instead of timing experiments.
+        """
+        if not isinstance(api_kwargs, dict):
+            return None
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        if provider not in {"custom", "vllm", "llamacpp", "llama.cpp", "llama-cpp", "local"}:
+            return None
+        effort = api_kwargs.get("reasoning_effort")
+        if effort is None:
+            extra_body = api_kwargs.get("extra_body")
+            if isinstance(extra_body, dict):
+                effort = extra_body.get("reasoning_effort")
+        effort_str = str(effort or "").strip().lower()
+        if not effort_str or effort_str == "none":
+            return None
+        model = api_kwargs.get("model") or getattr(self, "model", "") or "unknown"
+        return (
+            f"This request forwarded reasoning_effort={effort_str!r} to a custom "
+            f"OpenAI-compatible endpoint (model: {model}). vLLM/llama.cpp/SGLang "
+            "backends that honour it as extended thinking can stall for minutes "
+            "with no error instead of rejecting it (unlike Ollama's clean 400). "
+            "If this persists, set `agent.reasoning_effort: ''` (or `none`) in "
+            "config.yaml, or disable thinking server-side. "
+            "See hermes-agent#100841."
+        )
+
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")

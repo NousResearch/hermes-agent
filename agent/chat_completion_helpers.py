@@ -756,6 +756,30 @@ def _record_interrupted_provider_wait(
     return True
 
 
+def _stale_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
+    """Resolve the most actionable stale-hang hint for this request.
+
+    Order: the Codex silent-reject heuristic first (a wrong model on the
+    ChatGPT backend is the sharper diagnosis), then the custom-provider
+    reasoning_effort hint (#100841). Both return None when they don't apply,
+    so this composes without either helper knowing about the other.
+    """
+    for attr in ("_codex_silent_hang_hint", "_custom_reasoning_hang_hint"):
+        fn = getattr(agent, attr, None)
+        if not callable(fn):
+            continue
+        try:
+            if attr == "_codex_silent_hang_hint":
+                hint = fn(model=api_kwargs.get("model"))
+            else:
+                hint = fn(api_kwargs)
+        except Exception:
+            hint = None
+        if isinstance(hint, str) and hint:
+            return hint
+    return None
+
+
 def _report_stale_nonstream_kill(
     agent,
     api_kwargs: dict,
@@ -1321,7 +1345,8 @@ def direct_api_call(agent, api_kwargs: dict):
             return
         elapsed = time.time() - call_start
         _report_stale_nonstream_kill(
-            agent, api_kwargs, elapsed, stale_timeout, inline=True
+            agent, api_kwargs, elapsed, stale_timeout, inline=True,
+            hint=_stale_hang_hint(agent, api_kwargs),
         )
         _touch_stale_kill_activity(agent, elapsed)
 
@@ -1754,13 +1779,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _elapsed > _ttfb_timeout
             and getattr(agent, "_codex_stream_last_event_ts", None) is None
         ):
-            _silent_hint: Optional[str] = None
-            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
-            if callable(_hint_fn):
-                try:
-                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
-                except Exception:
-                    _silent_hint = None
+            _silent_hint = _stale_hang_hint(agent, api_kwargs)
             logger.warning(
                 "Codex stream produced no bytes within TTFB cutoff "
                 "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
@@ -1850,13 +1869,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
         if _elapsed > _stale_timeout:
-            _silent_hint: Optional[str] = None
-            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
-            if callable(_hint_fn):
-                try:
-                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
-                except Exception:
-                    _silent_hint = None
+            _silent_hint = _stale_hang_hint(agent, api_kwargs)
             _report_stale_nonstream_kill(
                 agent, api_kwargs, _elapsed, _stale_timeout, hint=_silent_hint
             )

@@ -1257,6 +1257,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    session_id: Optional[str]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1281,6 +1282,7 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            session_id=(row["session_id"] if "session_id" in row.keys() else None),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1465,6 +1467,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    session_id          TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2704,6 +2707,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+
+    run_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if run_table_exists:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "session_id" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "session_id", "session_id TEXT"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_runs_session_id "
+            "ON task_runs(session_id)"
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -12080,6 +12099,38 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Runs (attempt history on a task)
 # ---------------------------------------------------------------------------
+
+
+def bind_worker_session(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+    session_id: str,
+) -> bool:
+    """Bind one canonical worker session to the exact active attempt."""
+    clean_session_id = str(session_id or "").strip()
+    if not clean_session_id or len(clean_session_id) > 255:
+        return False
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE task_runs
+               SET session_id = ?
+             WHERE id = ?
+               AND task_id = ?
+               AND status = 'running'
+               AND (session_id IS NULL OR session_id = ?)
+               AND EXISTS (
+                    SELECT 1 FROM tasks
+                     WHERE tasks.id = task_runs.task_id
+                       AND tasks.status = 'running'
+                       AND tasks.current_run_id = task_runs.id
+               )
+            """,
+            (clean_session_id, int(run_id), task_id, clean_session_id),
+        )
+        return cur.rowcount == 1
+
 
 def list_runs(
     conn: sqlite3.Connection,

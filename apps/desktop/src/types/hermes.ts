@@ -468,7 +468,7 @@ export interface PaginatedSessions {
   profile_totals?: Record<string, number>
   /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
    *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
-  errors?: Array<{ profile: string; error: string }>
+  errors?: Array<{ profile: string; error: string; connection_id?: string }>
 }
 
 export interface RpcEvent<T = unknown> {
@@ -562,6 +562,14 @@ export interface SessionInfo {
    *  rows served by the primary/local backend. Opens must route through the
    *  connection-scoped gateway (`ensureGatewayAgent`) when present. */
   connection_id?: string
+  /** Canonical Kanban identity/lifecycle joined read-only from the board run
+   * that owns a `source: "kanban"` worker session. Absent for ordinary sessions
+   * and older backends. */
+  kanban_board?: string
+  kanban_run_status?: string
+  kanban_task_id?: string
+  kanban_task_status?: string
+  kanban_task_title?: string
 }
 
 export type TimelineDisplayMetadata =

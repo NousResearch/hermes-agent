@@ -89,6 +89,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
+import { openCommandCenterSession } from '../command-center/sessions'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -1218,9 +1219,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           <CommandCenterView
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
-            onDeleteSession={removeSession}
+            onDeleteSession={session => removeSession(session.id, session)}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
+            onOpenSession={session => openCommandCenterSession(session, navigate)}
           />
         </Suspense>
       )}

@@ -10,6 +10,18 @@ interface ExportSessionParams {
   session?: SessionInfo
 }
 
+export function sessionExportScope(
+  session?: Pick<SessionInfo, 'connection_id' | 'profile'>,
+  profile?: string | null
+): string | { connectionId: string; profile: string } | undefined {
+  const ownerProfile = profile ?? session?.profile
+  const connectionId = session?.connection_id?.trim()
+
+  return connectionId
+    ? { connectionId, profile: ownerProfile?.trim() || 'default' }
+    : ownerProfile?.trim() || undefined
+}
+
 function sanitizeFilenamePart(value: string) {
   return value
     .trim()
@@ -32,8 +44,8 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
   }
 
   try {
-    const profile = params.profile ?? params.session?.profile
-    const { messages } = await getAllSessionMessages(sessionId, profile)
+    const scope = sessionExportScope(params.session, params.profile)
+    const { messages } = await getAllSessionMessages(sessionId, scope)
 
     const payload = {
       exported_at: new Date().toISOString(),

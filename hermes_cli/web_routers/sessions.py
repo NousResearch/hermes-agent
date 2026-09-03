@@ -190,6 +190,13 @@ def get_sessions(
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+            # SSH/legacy remote Desktop sources list the serving profile through
+            # this flat endpoint rather than /api/profiles/sessions. Apply the
+            # same read-only Kanban task/run join so worker identity and terminal
+            # truth do not depend on which transport served the row.
+            from hermes_cli.web_routers.profiles import _enrich_kanban_session_rows
+
+            _enrich_kanban_session_rows(sessions)
             if not full:
                 _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}

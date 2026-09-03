@@ -360,6 +360,36 @@ describe('connection-qualified session deletion', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
   })
 
+  it('prefers the explicitly selected aggregate row over an ambiguous same-id listed row', async () => {
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId={null}
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId={null}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    const selected = storedSession({ connection_id: 'source-b', id: 'shared-session', profile: 'worker' })
+
+    await act(async () => {
+      await actions?.removeSession('shared-session', selected)
+    })
+
+    expect(deleteSession).toHaveBeenCalledWith('shared-session', {
+      connectionId: 'source-b',
+      profile: 'worker'
+    })
+  })
+
   it('tears down the selected session from synchronous refs when render state is stale', async () => {
     const navigate = vi.fn()
     const requestGateway = vi.fn().mockResolvedValue({})

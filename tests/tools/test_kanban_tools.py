@@ -80,6 +80,31 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_binds_exact_worker_session_to_current_run(worker_env, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None and task.current_run_id is not None
+        run_id = int(task.current_run_id)
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "worker-session-a")
+    result = json.loads(kt._handle_show({}))
+    assert result["session_binding"] is True
+
+    conn = kb.connect()
+    try:
+        run = kb.list_runs(conn, worker_env)[0]
+        assert run.session_id == "worker-session-a"
+    finally:
+        conn.close()
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

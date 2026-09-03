@@ -82,30 +82,54 @@ function isPinned(row: unknown): boolean {
   return Boolean(row && typeof row === 'object' && 'pinned' in row && row.pinned)
 }
 
-function profileSessionId(row: unknown): string | null {
+function durableSessionIdentity(row: unknown): string | null {
   const id = sessionId(row)
 
   if (!id) {
     return null
   }
 
-  const profile =
-    row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' ? row.profile : ''
+  const session = row as Record<string, unknown>
+  const profile = typeof session.profile === 'string' && session.profile.trim() ? session.profile.trim() : 'default'
 
-  return `${profile}\0${id}`
+  const connection =
+    typeof session.connection_id === 'string' && session.connection_id.trim() ? session.connection_id.trim() : 'local'
+
+  const lineage =
+    typeof session._lineage_root_id === 'string' && session._lineage_root_id.trim()
+      ? session._lineage_root_id.trim()
+      : id
+
+  return `${connection}\0${profile}\0${lineage}`
 }
 
 export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
-  const window = rows.slice(offset, offset + limit)
-  const seenRows = new Set(window)
-  const seenIds = new Set(window.map(profileSessionId).filter((id): id is string => id !== null))
+  const seenIdentities = new Set<string>()
 
-  for (const row of rows.slice(offset + limit)) {
+  const deduped = rows.filter(row => {
+    const identity = durableSessionIdentity(row)
+
+    if (identity && seenIdentities.has(identity)) {
+      return false
+    }
+
+    if (identity) {
+      seenIdentities.add(identity)
+    }
+
+    return true
+  })
+
+  const window = deduped.slice(offset, offset + limit)
+  const seenRows = new Set(window)
+  const seenIds = new Set(window.map(durableSessionIdentity).filter((id): id is string => id !== null))
+
+  for (const row of deduped.slice(offset + limit)) {
     if (!isPinned(row)) {
       continue
     }
 
-    const id = profileSessionId(row)
+    const id = durableSessionIdentity(row)
 
     if ((id && seenIds.has(id)) || (!id && seenRows.has(row))) {
       continue
@@ -191,6 +215,12 @@ export interface RegistrySessionSource {
 
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
 
+export interface RegistrySessionError {
+  connection_id: string
+  error: string
+  profile: string
+}
+
 /**
  * Every connected registry gateway's session rows for the unified Sessions
  * list (#88880), tagged with the owning `connection_id` + remote `profile` so
@@ -208,11 +238,12 @@ type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unkno
 export async function fetchRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
-  getJson: GetJsonForDescriptor
+  getJson: GetJsonForDescriptor,
+  onError?: (error: RegistrySessionError) => void
 ): Promise<unknown[]> {
-  const rows: unknown[] = []
+  const tag = (data: unknown, connectionId: string, profileLabel: null | string): unknown[] => {
+    const tagged: unknown[] = []
 
-  const tag = (data: unknown, connectionId: string, profileLabel: null | string) => {
     for (const row of rowsOf(data)) {
       if (!row || typeof row !== 'object') {
         continue
@@ -228,28 +259,39 @@ export async function fetchRegistrySessionRows(
 
       session.is_default_profile = false
       session.connection_id = connectionId
-      rows.push(session)
+      tagged.push(session)
     }
+
+    return tagged
   }
 
-  await Promise.all(
+  const results = await Promise.all(
     sources.map(async source => {
       if (source.kind === 'ssh') {
         // Each ssh-scoped backend serves its own state.db natively.
-        await Promise.all(
+        return Promise.all(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
 
-            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+            try {
+              const data = await getJson(descriptor, `/api/sessions?${params}`)
 
-            if (data) {
-              tag(data, source.connectionId, profileLabel || 'default')
+              return { errors: [], rows: tag(data, source.connectionId, profileLabel || 'default') }
+            } catch (error) {
+              return {
+                errors: [
+                  {
+                    connection_id: source.connectionId,
+                    error: error instanceof Error ? error.message : String(error),
+                    profile: profileLabel || 'default'
+                  }
+                ],
+                rows: []
+              }
             }
           })
         )
-
-        return
       }
 
       // Shared remote/cloud host: one cross-profile read returns every
@@ -257,26 +299,51 @@ export async function fetchRegistrySessionRows(
       const shared = source.backends[0]
 
       if (!shared) {
-        return
+        return []
       }
 
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
 
-      let data = await getJson(shared.descriptor, `/api/profiles/sessions?${params}`).catch(() => null)
+      try {
+        const data = await getJson(shared.descriptor, `/api/profiles/sessions?${params}`)
 
-      if (!data) {
+        return [{ errors: [], rows: tag(data, source.connectionId, null) }]
+      } catch {
         // Older remote without the aggregator: its own default-profile list.
         const flat = new URLSearchParams(searchParams)
         flat.delete('profile')
-        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
-      }
 
-      if (data) {
-        tag(data, source.connectionId, null)
+        try {
+          const data = await getJson(shared.descriptor, `/api/sessions?${flat}`)
+
+          return [{ errors: [], rows: tag(data, source.connectionId, null) }]
+        } catch (error) {
+          return [
+            {
+              errors: [
+                {
+                  connection_id: source.connectionId,
+                  error: error instanceof Error ? error.message : String(error),
+                  profile: 'all'
+                }
+              ],
+              rows: []
+            }
+          ]
+        }
       }
     })
   )
+
+  const rows: unknown[] = []
+
+  for (const sourceResults of results) {
+    for (const result of sourceResults) {
+      rows.push(...result.rows)
+      result.errors.forEach(error => onError?.(error))
+    }
+  }
 
   return rows
 }
@@ -291,11 +358,11 @@ export function spliceRegistrySessionRows(
   registryRows: unknown[],
   profileTotals: Record<string, number>
 ): { added: number } {
-  const seen = new Set(merged.map(sessionId).filter((id): id is string => id !== null))
+  const seen = new Set(merged.map(durableSessionIdentity).filter((id): id is string => id !== null))
   let added = 0
 
   for (const row of registryRows) {
-    const id = sessionId(row)
+    const id = durableSessionIdentity(row)
 
     if (id && seen.has(id)) {
       continue

@@ -11,6 +11,7 @@ import {
   fetchStoredTranscriptAcrossBackends,
   getAllSessionMessages,
   getLatestSessionMessages,
+  type SessionInfo,
   setSessionArchived
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -2387,7 +2388,7 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, selectedSession?: SessionInfo) => {
       clearNotifications()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
@@ -2398,7 +2399,9 @@ export function useSessionActions({
       const listed = findListedSession(storedSessionId)
 
       const removed =
-        listed?.session ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        selectedSession ??
+        listed?.session ??
+        $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to

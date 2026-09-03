@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import re
+import sqlite3
 import subprocess  # noqa: F401
 import sys  # noqa: F401
 import threading
@@ -52,6 +53,131 @@ _log = logging.getLogger("hermes_cli.web_server")
 # (profile, message) per process so a persistent failure is loud in
 # errors.log without turning every sidebar poll into log spam.
 _profile_read_warned: set = set()
+
+
+def _kanban_board_db_paths() -> List[Tuple[str, Path]]:
+    """Return every canonical board DB without opening or creating one."""
+    try:
+        from hermes_cli import kanban_db
+
+        boards = kanban_db.list_boards(include_archived=True)
+    except Exception:
+        _log.exception("profile session aggregation: kanban board discovery failed")
+        return []
+
+    paths: List[Tuple[str, Path]] = []
+    seen: set = set()
+    for board in boards:
+        slug = str(board.get("slug") or "default")
+        raw_path = board.get("db_path")
+        if not raw_path:
+            continue
+        path = Path(raw_path).expanduser()
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append((slug, path))
+    return paths
+
+
+def _enrich_kanban_session_rows(
+    sessions: List[Dict[str, Any]],
+    board_paths: Optional[List[Tuple[str, Path]]] = None,
+) -> None:
+    """Attach canonical task/run identity and lifecycle to Kanban rows.
+
+    SessionDB owns the transcript, while the Kanban run owns whether a worker is
+    still running and when it ended. Read board databases in strict read-only
+    mode; a missing/old/corrupt board is non-fatal and leaves the session row's
+    existing heuristic untouched.
+    """
+    worker_keys = {
+        ((str(session.get("profile") or "").strip() or "default"), str(session.get("id") or ""))
+        for session in sessions
+        if session.get("source") == "kanban" and session.get("id")
+    }
+    if not worker_keys:
+        return
+
+    by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    paths = _kanban_board_db_paths() if board_paths is None else board_paths
+    for board, path in paths:
+        if not path.is_file():
+            continue
+        conn = None
+        try:
+            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
+            conn.row_factory = sqlite3.Row
+            run_columns = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(task_runs)").fetchall()
+            }
+            metadata_session = (
+                "CASE WHEN json_valid(r.metadata) "
+                "THEN json_extract(r.metadata, '$.worker_session_id') END"
+            )
+            worker_session = (
+                f"COALESCE(NULLIF(r.session_id, ''), {metadata_session})"
+                if "session_id" in run_columns
+                else metadata_session
+            )
+            session_ids = sorted({session_id for _, session_id in worker_keys})
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = conn.execute(
+                f"""SELECT r.id AS run_id, {worker_session} AS worker_session_id,
+                           r.task_id, r.profile,
+                           r.status AS run_status, r.started_at, r.ended_at,
+                           t.title AS task_title, t.status AS task_status
+                    FROM task_runs AS r
+                    JOIN tasks AS t ON t.id = r.task_id
+                    WHERE {worker_session} IN ({placeholders})
+                    ORDER BY r.started_at DESC, r.id DESC""",
+                session_ids,
+            ).fetchall()
+        except Exception as exc:
+            _warn_profile_read_error(f"kanban:{board}", exc)
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+
+        for row in rows:
+            key = (
+                (str(row["profile"] or "").strip() or "default"),
+                str(row["worker_session_id"] or ""),
+            )
+            if key not in worker_keys:
+                continue
+            candidate = {**dict(row), "board": board}
+            existing = by_key.get(key)
+            candidate_rank = (candidate["started_at"] or 0, candidate["run_id"] or 0, candidate["board"])
+            existing_rank = (
+                (existing["started_at"] or 0, existing["run_id"] or 0, existing["board"])
+                if existing is not None
+                else None
+            )
+            if existing_rank is None or candidate_rank > existing_rank:
+                by_key[key] = candidate
+
+    for session in sessions:
+        key = ((str(session.get("profile") or "").strip() or "default"), str(session.get("id") or ""))
+        run = by_key.get(key)
+        if session.get("source") != "kanban" or run is None:
+            continue
+        running = run["run_status"] == "running"
+        session.update(
+            {
+                "is_active": running,
+                "kanban_board": run["board"],
+                "kanban_run_status": run["run_status"],
+                "kanban_task_id": run["task_id"],
+                "kanban_task_status": run["task_status"],
+                "kanban_task_title": run["task_title"],
+            }
+        )
+        if not running and run["ended_at"] is not None:
+            session["ended_at"] = run["ended_at"]
 
 
 def _warn_profile_read_error(profile: str, exc: Exception) -> None:
@@ -366,6 +492,10 @@ def get_profiles_sessions(
     if len(merged) > offset + limit:
         seen = {id(s) for s in window}
         window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
+    # SessionDB owns transcript/activity, but the board run owns Kanban worker
+    # lifecycle and task identity. Enrich only the bounded response window so a
+    # broad aggregate does not turn into an unbounded board query.
+    _enrich_kanban_session_rows(window)
     if not full:
         _strip_session_list_rows(window)
     return {

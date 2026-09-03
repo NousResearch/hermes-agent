@@ -535,6 +535,28 @@ def _handle_show(args: dict, **kw) -> str:
             task = kb.get_task(conn, tid)
             if task is None:
                 return tool_error(f"task {tid} not found")
+
+            session_binding = None
+            owned_task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+            if owned_task_id and tid == owned_task_id:
+                run_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+                session_id = (os.environ.get("HERMES_SESSION_ID") or "").strip()
+                if run_raw and session_id:
+                    try:
+                        session_binding = kb.bind_worker_session(
+                            conn, tid, int(run_raw), session_id
+                        )
+                    except (TypeError, ValueError):
+                        session_binding = False
+                    except Exception:
+                        logger.debug(
+                            "kanban_show worker-session bind failed",
+                            exc_info=True,
+                        )
+                        session_binding = False
+                else:
+                    session_binding = False
+
             comments = kb.list_comments(conn, tid)
             events = kb.list_events(conn, tid)
             runs = kb.list_runs(conn, tid)
@@ -561,12 +583,14 @@ def _handle_show(args: dict, **kw) -> str:
                 return {
                     "id": r.id, "profile": r.profile,
                     "status": r.status, "outcome": r.outcome,
+                    "session_id": r.session_id,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
             return json.dumps({
+                "session_binding": session_binding,
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,

@@ -30,7 +30,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionPinId } from '@/store/session'
+import { sessionPinId } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -38,6 +38,7 @@ import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay
 import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
+import { useCommandCenterSessions } from './sessions'
 
 export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
 
@@ -58,10 +59,10 @@ const EMPTY_PINNED: readonly string[] = []
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
-  onDeleteSession: (sessionId: string) => Promise<void>
+  onDeleteSession: (session: SessionInfo) => Promise<void>
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (session: SessionInfo) => void
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -136,14 +137,19 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
 export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
-  // $sessions ticks on every streaming token (title updates, new sessions),
-  // but we only need the data on the Sessions tab. Subscribe conditionally so
-  // the System/Usage/Maintenance tabs don't re-render on every stream delta.
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
-  const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
+
+  const {
+    errors: sessionErrors,
+    loading: sessionsLoading,
+    refresh: refreshSessions,
+    sessions
+  } = useCommandCenterSessions(section === 'sessions')
+
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
 
   const [query, setQuery] = useState('')
+  const [profileFilter, setProfileFilter] = useState('all')
   const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
@@ -162,7 +168,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
   const filteredSessions = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => {
+    const scoped =
+      profileFilter === 'all'
+        ? sessions
+        : sessions.filter(session => (session.profile?.trim() || 'default') === profileFilter)
+
+    const sorted = [...scoped].sort((a, b) => {
       const left = a.last_active || a.started_at || 0
       const right = b.last_active || b.started_at || 0
 
@@ -176,11 +187,18 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
 
     return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
+      const haystack =
+        `${sessionTitle(session)} ${session.id} ${session.profile ?? 'default'} ${session.kanban_task_id ?? ''} ${session.kanban_task_title ?? ''} ${session.kanban_run_status ?? ''}`.toLowerCase()
 
       return haystack.includes(needle)
     })
-  }, [debouncedQuery, sessions])
+  }, [debouncedQuery, profileFilter, sessions])
+
+  const sessionProfiles = useMemo(
+    () =>
+      [...new Set(sessions.map(session => session.profile?.trim() || 'default'))].sort((a, b) => a.localeCompare(b)),
+    [sessions]
+  )
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -243,7 +261,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [refreshUsage, section, usagePeriod])
 
   useRefreshHotkey(() => {
-    if (section === 'system') {
+    if (section === 'sessions') {
+      void refreshSessions()
+    } else if (section === 'system') {
       void refreshSystem()
     } else if (section === 'usage') {
       void refreshUsage(usagePeriod)
@@ -341,12 +361,27 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {section === 'sessions' && (
-                <SearchField
-                  containerClassName="max-w-[40vw]"
-                  onChange={next => setQuery(next)}
-                  placeholder={cc.searchPlaceholder}
-                  value={query}
-                />
+                <>
+                  <select
+                    aria-label={t.profiles.allProfiles}
+                    className="h-7 max-w-44 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) px-2 text-xs text-foreground"
+                    onChange={event => setProfileFilter(event.target.value)}
+                    value={profileFilter}
+                  >
+                    <option value="all">{t.profiles.allProfiles}</option>
+                    {sessionProfiles.map(profile => (
+                      <option key={profile} value={profile}>
+                        {profile}
+                      </option>
+                    ))}
+                  </select>
+                  <SearchField
+                    containerClassName="max-w-[40vw]"
+                    onChange={next => setQuery(next)}
+                    placeholder={cc.searchPlaceholder}
+                    value={query}
+                  />
+                </>
               )}
               {section === 'usage' && (
                 <SegmentedControl
@@ -361,7 +396,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           {section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
+                sessionsLoading ? (
+                  <PageLoader className="min-h-48" label={cc.refreshing} />
+                ) : (
+                  <EmptyPanel description={debouncedQuery || profileFilter !== 'all' ? cc.noResults : cc.noSessions} />
+                )
               ) : (
                 <ul>
                   {filteredSessions.map(session => {
@@ -369,44 +408,61 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     const pinned = pinnedSessionIds.includes(pinId)
 
                     return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
+                      <li
+                        className="group flex items-center gap-2 py-2"
+                        key={`${session.connection_id ?? 'local'}:${session.profile ?? 'default'}:${pinId}`}
+                      >
                         <button
                           className="min-w-0 flex-1 text-left"
-                          onClick={() => onOpenSession(session.id)}
+                          onClick={() => onOpenSession(session)}
                           type="button"
                         >
                           <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
+                            {session.kanban_task_title || sessionTitle(session)}
                           </div>
-                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                            {formatTimestamp(session.last_active || session.started_at)}
+                          <div className="flex min-w-0 items-center gap-1.5 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                            <span>{session.profile?.trim() || 'default'}</span>
+                            {session.kanban_task_id && <span>{session.kanban_task_id}</span>}
+                            {session.source === 'kanban' && (
+                              <span>
+                                {session.kanban_run_status || (session.is_active ? cc.actionRunning : cc.actionDone)}
+                              </span>
+                            )}
+                            <span>{formatTimestamp(session.last_active || session.started_at)}</span>
                           </div>
                         </button>
-                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                          <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? cc.unpinSession : cc.pinSession}
-                          >
-                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
-                          </RowIconButton>
-                          <RowIconButton
-                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title={cc.exportSession}
-                          >
-                            <Download className="size-3.5" />
-                          </RowIconButton>
-                          <RowIconButton
-                            className="hover:text-destructive"
-                            onClick={() => setPendingDelete(session)}
-                            title={cc.deleteSession}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </RowIconButton>
-                        </div>
+                        {session.source !== 'kanban' && (
+                          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                            <RowIconButton
+                              onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                              title={pinned ? cc.unpinSession : cc.pinSession}
+                            >
+                              {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
+                            </RowIconButton>
+                            <RowIconButton
+                              onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
+                              title={cc.exportSession}
+                            >
+                              <Download className="size-3.5" />
+                            </RowIconButton>
+                            <RowIconButton
+                              className="hover:text-destructive"
+                              onClick={() => setPendingDelete(session)}
+                              title={cc.deleteSession}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </RowIconButton>
+                          </div>
+                        )}
                       </li>
                     )
                   })}
                 </ul>
+              )}
+              {sessionErrors.length > 0 && (
+                <div className="py-2 text-[length:var(--conversation-caption-font-size)] text-amber-600">
+                  {sessionErrors.map(error => error.profile).join(', ')}
+                </div>
               )}
             </div>
           ) : section === 'usage' ? (
@@ -519,7 +575,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           destructive
           doneLabel={t.sidebar.row.deleted}
           onClose={() => setPendingDelete(null)}
-          onConfirm={() => void onDeleteSession(pendingDelete.id)}
+          onConfirm={() => void onDeleteSession(pendingDelete)}
           open
           title={t.sidebar.row.deleteTitle}
         />

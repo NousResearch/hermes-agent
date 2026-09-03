@@ -42,7 +42,7 @@ const SESSION: SessionInfo = {
   title: 'Precious conversation'
 } as SessionInfo
 
-function renderCommandCenter(onDeleteSession: (id: string) => Promise<void>) {
+function renderCommandCenter(onDeleteSession: (session: SessionInfo) => Promise<void>) {
   return render(
     <MemoryRouter>
       <CommandCenterView
@@ -78,7 +78,7 @@ describe('Command Center session delete confirmation (#99410)', () => {
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
-    await waitFor(() => expect(onDeleteSession).toHaveBeenCalledWith('sess-1'))
+    await waitFor(() => expect(onDeleteSession).toHaveBeenCalledWith(SESSION))
     expect(dialog).toBeTruthy()
   })
 

@@ -16246,25 +16246,44 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const remoteSet = new Set(remoteProfiles)
   const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
   const profileTotals = { ...(base.profile_totals || {}) }
+  const errors = Array.isArray(base.errors) ? [...base.errors] : []
   let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
 
   // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
+  // Promise.all preserves input order, so errors and row insertion stay
+  // deterministic even when remote responses finish out of order.
+  const remoteResults = await Promise.all(
     remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
+      try {
+        return { list: await remoteSessionList(name, remoteParams), name }
+      } catch (error) {
+        return { error, list: null, name }
       }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
     })
   )
+
+  for (const { error, list, name } of remoteResults) {
+    if (error) {
+      errors.push({
+        error: error instanceof Error ? error.message : String(error),
+        profile: name
+      })
+      delete profileTotals[name] // dead remote → drop its stale local total too
+
+      continue
+    }
+
+    if (!list) {
+      delete profileTotals[name] // dead remote → drop its stale local total too
+
+      continue
+    }
+
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[name] = Number(list.total) || rows.length
+    total += profileTotals[name]
+  }
 
   // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
   // into the unified list. Only already-pooled backends are read — a sidebar
@@ -16274,8 +16293,11 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const registrySources = await pooledRegistrySessionSources()
 
   if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    const registryRows = await fetchRegistrySessionRows(
+      registrySources,
+      remoteParams,
+      (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 }),
+      error => errors.push(error)
     )
 
     const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
@@ -16289,7 +16311,8 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
     ...(base as any),
     sessions: mergeProfileSessionWindow(merged, offset, limit),
     total,
-    profile_totals: profileTotals
+    profile_totals: profileTotals,
+    errors
   }
 }
 

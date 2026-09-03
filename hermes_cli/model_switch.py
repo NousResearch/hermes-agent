@@ -3826,10 +3826,32 @@ def list_authenticated_providers(
             # applying the probe gate to it re-pins the endpoint — see
             # ``_discovery_allowed`` in section 4 for the full rationale.
             _discovery_allowed = bool(api_url) and discover
+            # Local (loopback) endpoints are always probed live: the round
+            # trip is sub-millisecond and independent of internet access, so
+            # suppressing the probe merely to spare remote endpoints would
+            # wrongly hide local models (Ollama / LM Studio / llama.cpp
+            # servers) whenever the session's current provider is a remote
+            # one — and exactly when the user is offline and needs to switch
+            # to local models, the picker must show them in full. (See the
+            # offline-picker report: current provider = remote, ollama row
+            # collapsed to config `default_model` only.)
+            _is_loopback_endpoint = bool(api_url) and _norm_url(api_url).startswith(
+                (
+                    "http://localhost",
+                    "http://127.0.0.1",
+                    "http://[::1]",
+                    "https://localhost",
+                    "https://127.0.0.1",
+                    "https://[::1]",
+                )
+            )
             _probe_live = (
                 _discovery_allowed
                 and (bool(api_key) or not has_explicit_models)
-                and _can_probe_custom_provider(row_is_current=_ep_is_current)
+                and (
+                    _can_probe_custom_provider(row_is_current=_ep_is_current)
+                    or _is_loopback_endpoint
+                )
             )
             native_catalog_empty = False
             if _probe_live:

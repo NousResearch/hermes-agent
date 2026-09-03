@@ -45,6 +45,24 @@ class TestGetCurrentRuntime:
         ) == "auto"
 
 
+class TestGetConfiguredCodexBinary:
+    def test_defaults_for_missing_or_invalid_values(self):
+        assert crs.get_configured_codex_binary({}) == "codex"
+        assert crs.get_configured_codex_binary({"model": {}}) == "codex"
+        assert crs.get_configured_codex_binary(
+            {"model": {"codex_bin": ""}}
+        ) == "codex"
+        assert crs.get_configured_codex_binary(
+            {"model": {"codex_bin": 42}}
+        ) == "codex"
+
+    def test_returns_trimmed_configured_path(self):
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+        assert crs.get_configured_codex_binary(
+            {"model": {"codex_bin": f"  {configured}  "}}
+        ) == configured
+
+
 class TestSetRuntime:
     def test_creates_model_section_if_missing(self):
         cfg = {}
@@ -59,7 +77,21 @@ class TestSetRuntime:
 
 
 class TestApply:
+    def test_binary_check_uses_configured_path(self):
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+        cfg = {
+            "model": {
+                "openai_runtime": "codex_app_server",
+                "codex_bin": configured,
+            }
+        }
+        with patch.object(
+            crs, "check_codex_binary_ok", return_value=(True, "0.130.0")
+        ) as binary_check:
+            result = crs.apply(cfg, None)
 
+        assert result.success
+        binary_check.assert_called_once_with(configured)
 
     def test_reapply_codex_app_server_runs_migration(self):
         """Re-applying codex_app_server when already enabled must still
@@ -168,5 +200,4 @@ class TestApply:
         assert r.new_value == "codex_app_server"
         assert "MCP migration skipped" in r.message
         assert "disk full" in r.message
-
 

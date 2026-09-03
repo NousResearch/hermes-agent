@@ -3380,6 +3380,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "default_headers": runtime.get("default_headers"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
         # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
@@ -3601,6 +3602,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "default_headers": runtime.get("default_headers"),
                     "request_overrides": dict(runtime.get("request_overrides") or {}),
                     "model": entry.get("model"),
                     "request_overrides": runtime.get("request_overrides"),
@@ -9069,6 +9071,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "default_headers": runtime_kwargs.get("default_headers"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
             "capabilities": dict(runtime_kwargs.get("capabilities") or {}),
         }
@@ -9084,6 +9087,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted((runtime.get("default_headers") or {}).items())),
             ),
         }
 

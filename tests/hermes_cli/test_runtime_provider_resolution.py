@@ -816,6 +816,46 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["api_key"] == "no-key-required"
     assert resolved["requested_provider"] == "custom:local-llm"
 
+def test_named_custom_provider_custom_headers_become_default_headers(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Local LLM",
+                    "base_url": "http://localhost:1234/v1",
+                    "custom_headers": {
+                        " X-Test ": " value ",
+                        "X-Empty": "",
+                        "": "bad",
+                        "X-Num": 123,
+                    },
+                    "headers": {"X-Legacy": "must-not-propagate"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://localhost:1234/v1"
+    assert resolved["default_headers"] == {"X-Test": "value", "X-Num": "123"}
+    assert "headers" not in resolved
+    assert "X-Legacy" not in resolved["default_headers"]
+
 
 
 
@@ -970,6 +1010,231 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
 # ------------------------------------------------------------------
 
 
+def test_get_named_custom_provider_includes_model(monkeypatch):
+    """_get_named_custom_provider should include the model field from config."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "custom_providers": [{
+            "name": "my-dashscope",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "model": "qwen3.6-plus",
+        }],
+    })
+
+    result = rp._get_named_custom_provider("my-dashscope")
+    assert result is not None
+    assert result["model"] == "qwen3.6-plus"
+
+
+def test_get_named_custom_provider_excludes_empty_model(monkeypatch):
+    """Empty or whitespace-only model field should not appear in result."""
+    for model_val in ["", "   ", None]:
+        entry = {
+            "name": "test-ep",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+        }
+        if model_val is not None:
+            entry["model"] = model_val
+
+        monkeypatch.setattr(rp, "load_config", lambda e=entry: {
+            "custom_providers": [e],
+        })
+
+        result = rp._get_named_custom_provider("test-ep")
+        assert result is not None
+        assert "model" not in result, (
+            f"model field {model_val!r} should not be included in result"
+        )
+
+
+def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
+    """Model should propagate through the direct (non-pool) resolution path."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "qwen3.6-plus",
+        },
+    )
+    # Ensure pool doesn't intercept
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["model"] == "qwen3.6-plus"
+    assert resolved["provider"] == "custom"
+
+
+def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
+    """Custom provider extra_body should become runtime request_overrides."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+            },
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+    }
+
+
+def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
+    """Model should propagate even when credential pool handles credentials."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "qwen3.6-plus",
+        },
+    )
+    # Pool returns a result (intercepting the normal path)
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["model"] == "qwen3.6-plus", (
+        "model must be injected into pool result"
+    )
+    assert resolved["api_key"] == "pool-key", "pool credentials should be used"
+
+
+def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
+    """Custom provider extra_body should survive credential-pool resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {"enable_thinking": True},
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-gemma",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {"enable_thinking": True}
+    }
+
+
+def test_named_custom_runtime_propagates_custom_headers_pool_path(monkeypatch):
+    """Provider-level custom_headers should survive pool credential resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "***",
+            "custom_headers": {" X-Test ": " value ", "X-Empty": ""},
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "***",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["api_key"] == "***"
+    assert resolved["default_headers"] == {"X-Test": "value"}
+
+
+def test_bare_custom_explicit_base_url_uses_matching_provider_custom_headers(monkeypatch):
+    """Direct-alias/model-switch bare custom paths should recover headers by URL."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "my-server",
+                    "base_url": "http://localhost:8000/v1",
+                    "api_key": "***",
+                    "api_mode": "chat_completions",
+                    "model": "qwen3.6-plus",
+                    "custom_headers": {"X-Test": "value"},
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_base_url="http://localhost:8000/v1/",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["model"] == "qwen3.6-plus"
+    assert resolved["default_headers"] == {"X-Test": "value"}
+
+
+def test_named_custom_runtime_no_model_when_absent(monkeypatch):
+    """When custom_providers entry has no model field, runtime should not either."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert "model" not in resolved
 
 
 # ---------------------------------------------------------------------------

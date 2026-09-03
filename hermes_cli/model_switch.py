@@ -892,6 +892,7 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    default_headers: Optional[dict] = None
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
@@ -2132,6 +2133,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    default_headers = None
     runtime_capabilities: dict[str, bool] = {}
     ollama_headers: dict[str, str] = {}
     validation_headers: dict[str, str] = {}
@@ -2177,12 +2179,15 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                default_headers = runtime.get("default_headers")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
+                _headers = _ucfg.get("custom_headers") if isinstance(_ucfg, dict) else None
+                default_headers = _headers if isinstance(_headers, dict) and _headers else None
         elif target_provider == "custom" and current_base_url:
             api_key = current_api_key
             base_url = current_base_url
@@ -2196,6 +2201,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                default_headers = runtime.get("default_headers")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception as e:
@@ -2257,6 +2263,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                default_headers = runtime.get("default_headers")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
@@ -2565,6 +2572,7 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
+        default_headers=default_headers,
         request_overrides=dict(request_overrides or {}),
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,

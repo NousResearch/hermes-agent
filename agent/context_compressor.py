@@ -3223,6 +3223,7 @@ class ContextCompressor(ContextEngine):
         api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
+        default_headers: Optional[Dict[str, str]] = None,
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
@@ -3237,6 +3238,7 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
         self.context_length = context_length
         # Re-resolve per-model threshold for the NEW model, then re-apply the
         # small-context threshold floor. Starting from _config_threshold_percent
@@ -3347,13 +3349,7 @@ class ContextCompressor(ContextEngine):
 
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:
-        """Normalize a max_tokens value to a positive int or None.
-
-        Only a positive integer is a real output reservation. None (provider
-        default), non-numeric values, or <= 0 all mean "no reservation" — this
-        keeps the threshold arithmetic safe from non-int inputs (e.g. a test
-        MagicMock reaching ContextCompressor via a mocked parent agent).
-        """
+        """Normalize a max_tokens value to a positive int or None."""
         if value is None:
             return None
         try:
@@ -3411,12 +3407,14 @@ class ContextCompressor(ContextEngine):
 
     @staticmethod
     def _compute_threshold_tokens(
-        context_length: int, threshold_percent: float, max_tokens: int | None = None,
+        context_length: int,
+        threshold_percent: float,
+        max_tokens: int | None = None,
     ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
-        The base value is ``effective_input_budget * threshold_percent``, floored
-        at ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
+        The base value is ``effective_input_budget * threshold_percent``, floored at
+        ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
         prematurely at 50%. BUT that floor degenerates at small windows: for a
         model whose ``context_length`` is at/below the minimum (e.g. a 64K
         local model), ``max(0.5*64000, 64000) == 64000`` makes the threshold
@@ -3447,22 +3445,22 @@ class ContextCompressor(ContextEngine):
         operate on the effective input budget. ``max_tokens=None`` (provider
         default) conservatively assumes no reservation (full window).
         """
-        effective_window = context_length - (max_tokens or 0)
-        if effective_window <= 0:
-            effective_window = context_length
-        pct_value = int(effective_window * threshold_percent)
+        effective_input_budget = context_length - (max_tokens or 0)
+        if effective_input_budget <= 0:
+            effective_input_budget = context_length
+        pct_value = int(effective_input_budget * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # The floor must not consume the window's output headroom: cap it at
         # 85% of the effective input budget whenever it is the binding term.
         # (An explicit threshold_percent above 85% is user intent — kept.)
-        trigger_cap = int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO)
-        if effective_window > 0 and floored > pct_value and floored > trigger_cap:
+        trigger_cap = int(effective_input_budget * ContextCompressor._MIN_CTX_TRIGGER_RATIO)
+        if effective_input_budget > 0 and floored > pct_value and floored > trigger_cap:
             floored = max(pct_value, trigger_cap)
         # If the percentage itself reaches the effective window it can never
         # be reached — trigger at 85% of the window, below 100% so compaction
         # fires before the provider rejects (or silently clips) the request.
-        if effective_window > 0 and floored >= effective_window:
-            return max(1, min(trigger_cap, effective_window - 1))
+        if effective_input_budget > 0 and floored >= effective_input_budget:
+            return max(1, min(trigger_cap, effective_input_budget - 1))
         return floored
     def __init__(
         self,
@@ -3478,6 +3476,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        default_headers: Optional[Dict[str, str]] = None,
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
@@ -3493,6 +3492,11 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
+        # Output-token reservation: providers carve max_tokens out of the
+        # context window, so auto-compression should track the usable input
+        # budget. None = provider default => assume no explicit reservation.
+        self.max_tokens = self._coerce_max_tokens(max_tokens)
         # Lean tail mode (#compaction-v2): "lean" = small clamped recency
         # tail + verbatim-user-message summary section + recovery pointers;
         # "legacy" = 0.20*window tail (shipping behavior).
@@ -3555,13 +3559,6 @@ class ContextCompressor(ContextEngine):
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
-        # Output-token reservation: the provider carves max_tokens out of the
-        # context window, so the usable input budget is context_length -
-        # max_tokens. None = provider default => assume no reservation. (#43547)
-        # Coerce defensively: only a positive int is a real reservation; any
-        # other value (None, non-numeric, <=0) means "no reservation" so the
-        # threshold arithmetic never sees a non-int (e.g. a test MagicMock).
-        self.max_tokens = self._coerce_max_tokens(max_tokens)
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
         # When False (default = historical behavior), insert a
@@ -3874,16 +3871,6 @@ class ContextCompressor(ContextEngine):
         """
         if rough_tokens < self.threshold_tokens:
             return False
-        # Immediately after a compaction the post-compression path sets
-        # ``awaiting_real_usage_after_compression`` and parks
-        # ``last_prompt_tokens = -1``, but ``last_real_prompt_tokens`` still
-        # holds the STALE pre-compression value (above threshold — that's why
-        # compaction fired).  Without this guard that stale value defeats the
-        # ``last_real_prompt_tokens >= threshold_tokens`` check below, so
-        # preflight fires a SECOND compaction before the provider has reported
-        # real token usage for the now-shorter conversation.  Defer for exactly
-        # one turn; update_from_response() clears the flag when real usage
-        # arrives.  (#36718)
         if self.awaiting_real_usage_after_compression:
             return True
         if self.last_real_prompt_tokens <= 0:
@@ -5506,6 +5493,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "base_url": self.base_url,
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
+                    "default_headers": self.default_headers,
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 # NO max_tokens: the output cap must never truncate a summary.

@@ -259,6 +259,62 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_cli_passes_runtime_default_headers_to_aiagent(monkeypatch):
+    cli = _import_cli()
+    captured = {}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test/v1",
+            "api_key": "test-key",
+            "source": "custom_provider:test",
+            "default_headers": {"X-Test": "value"},
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://example.test/v1"
+    assert captured["default_headers"] == {"X-Test": "value"}
+
+
+def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://same-endpoint.example/v1",
+            "api_key": "same-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://same-endpoint.example/v1"
+    shell.api_key = "same-key"
+    shell.agent = object()
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.agent is None
+    assert shell.provider == "openai-codex"
+    assert shell.api_mode == "codex_responses"
 
 
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
@@ -678,5 +734,3 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-
-

@@ -612,6 +612,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    default_headers: Dict[str, str] = None,
     requested_provider: str = None,
     capabilities: Optional[Dict[str, bool]] = None,
 ):
@@ -702,6 +703,7 @@ def init_agent(
     # flag is the explicit single-switch off for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
+    agent._default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1225,7 +1227,12 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                default_headers=agent._default_headers,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -1366,6 +1373,12 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+            if agent._default_headers:
+                from agent.client_headers import merge_default_headers
+                client_kwargs["default_headers"] = merge_default_headers(
+                    client_kwargs.get("default_headers"),
+                    agent._default_headers,
+                )
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client
@@ -1389,6 +1402,14 @@ def init_agent(
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
+                elif agent._default_headers:
+                    client_kwargs["default_headers"] = dict(agent._default_headers)
+                if agent._default_headers:
+                    from agent.client_headers import merge_default_headers
+                    client_kwargs["default_headers"] = merge_default_headers(
+                        client_kwargs.get("default_headers"),
+                        agent._default_headers,
+                    )
             else:
                 # No credentials resolved for the configured provider.  Give
                 # the user-configured fallback chain a chance BEFORE failing
@@ -1463,11 +1484,62 @@ def init_agent(
                             _env_hint = _pcfg.api_key_env_vars[0]
                     except Exception:
                         pass
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_env_hint} environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    # --- Init-time fallback (#17929) ---
+                    _fb_entries = []
+                    if isinstance(fallback_model, list):
+                        _fb_entries = [
+                            f for f in fallback_model
+                            if isinstance(f, dict) and f.get("provider") and f.get("model")
+                        ]
+                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                        _fb_entries = [fallback_model]
+                    _fb_resolved = False
+                    for _fb in _fb_entries:
+                        try:
+                            from hermes_cli.fallback_config import resolve_entry_api_key
+                            _fb_explicit_key = resolve_entry_api_key(_fb)
+                            _fb_client, _fb_model = resolve_provider_client(
+                                _fb["provider"], model=_fb["model"], raw_codex=True,
+                                explicit_base_url=_fb.get("base_url"),
+                                explicit_api_key=_fb_explicit_key,
+                            )
+                        except Exception as _fb_exc:
+                            logger.debug(
+                                "Init-time fallback entry %s failed: %s",
+                                _fb.get("provider"), _fb_exc,
+                            )
+                            continue
+                        if _fb_client is not None:
+                            agent.provider = _fb["provider"]
+                            agent.model = _fb_model or _fb["model"]
+                            agent._fallback_activated = True
+                            client_kwargs = {
+                                "api_key": _fb_client.api_key,
+                                "base_url": str(_fb_client.base_url),
+                            }
+                            if _provider_timeout is not None:
+                                client_kwargs["timeout"] = _provider_timeout
+                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "_default_headers", None)
+                            if _fb_headers:
+                                client_kwargs["default_headers"] = dict(_fb_headers)
+                            if agent._default_headers:
+                                from agent.client_headers import merge_default_headers
+                                client_kwargs["default_headers"] = merge_default_headers(
+                                    client_kwargs.get("default_headers"),
+                                    agent._default_headers,
+                                )
+                            _fb_resolved = True
+                            break
+                    if not _fb_resolved:
+                        raise RuntimeError(
+                            f"Provider '{_explicit}' is set in config.yaml but no API key "
+                            f"was found. Set the {_env_hint} environment "
+                            f"variable, or switch to a different provider with `hermes model`."
+                        )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.
                     raise RuntimeError(
@@ -2817,6 +2889,7 @@ def init_agent(
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
             api_mode=agent.api_mode,
+            default_headers=agent._default_headers,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
@@ -2862,6 +2935,7 @@ def init_agent(
             config_context_length=_effective_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
+            default_headers=agent._default_headers,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=_compressor_max_tokens,
             model_thresholds=compression_model_thresholds,
@@ -3237,6 +3311,7 @@ def init_agent(
         "compressor_provider": getattr(_cc, "provider", agent.provider),
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
+        "compressor_default_headers": getattr(_cc, "default_headers", None),
     }
     if agent.api_mode == "anthropic_messages":
         agent._primary_runtime.update({

@@ -653,6 +653,18 @@ class TestApplyIdempotency:
 
 
 
+    def test_marker_removal_is_copy_on_write_for_part_dicts(self):
+        # The per-call api_messages copy is SHALLOW (msg.copy()) — content
+        # part dicts alias the persistent history. Stripping a marker must
+        # never rewrite the stored transcript's part dicts in place.
+        shared_part = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+        history = [{"role": "user", "content": [shared_part]}]
+        api_messages = [m.copy() for m in history]
+        strip_anthropic_cache_control(api_messages)
+        assert "cache_control" in shared_part  # history untouched
+        api_content = api_messages[0]["content"]
+        if isinstance(api_content, list):
+            assert all("cache_control" not in p for p in api_content)
 
 class TestOpenCodeGoOneHourPrecedence:
     """Precedence + eligibility guards for the opencode-go 1h allowance.

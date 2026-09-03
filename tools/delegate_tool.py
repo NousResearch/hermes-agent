@@ -1761,6 +1761,8 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Provider-specific custom headers (e.g. from custom_providers[].custom_headers)
+    override_default_headers: Optional[dict] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1981,6 +1983,9 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
+    # Resolve provider-specific custom headers: delegation override > parent inherit.
+    # Ensures custom_providers[].custom_headers propagate to subagents in inherit mode.
+    effective_default_headers = override_default_headers or getattr(parent_agent, "_default_headers", None)
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),
     # the subagent must use direct API calls — not the parent's ACP transport.
@@ -2122,45 +2127,38 @@ def _build_child_agent(
                 acp_args=effective_acp_args,
                 max_iterations=max_iterations,
 
-                reasoning_config=child_reasoning,
-                prefill_messages=getattr(parent_agent, "prefill_messages", None),
-                fallback_model=parent_fallback,
-                enabled_toolsets=child_toolsets,
-                disabled_toolsets=child_disabled_toolsets,
-                quiet_mode=True,
-                ephemeral_system_prompt=child_prompt,
-                log_prefix=f"[subagent-{task_index}]",
-                platform="subagent",
-                skip_context_files=True,
-                skip_memory=True,
-                clarify_callback=None,
-                thinking_callback=child_thinking_cb,
-                session_db=child_session_db,
-                parent_session_id=getattr(parent_agent, "session_id", None),
-                providers_allowed=child_providers_allowed,
-                providers_ignored=child_providers_ignored,
-                providers_order=child_providers_order,
-                provider_sort=child_provider_sort,
-                provider_require_parameters=child_provider_require_parameters,
-                provider_data_collection=child_provider_data_collection,
-                request_overrides=(
-                    # override_request_overrides is honored whenever set —
-                    # including the inherit branch (override_provider=None),
-                    # where _resolve_delegation_credentials already merged
-                    # delegation.request_overrides OVER the parent's values.
-                    dict(override_request_overrides)
-                    if override_request_overrides is not None
-                    else (
-                        {}
-                        if override_provider
-                        else dict(getattr(parent_agent, "request_overrides", {}) or {})
-                    )
-                ),
-                openrouter_min_coding_score=child_openrouter_min_coding_score,
-                tool_progress_callback=child_progress_cb,
-                iteration_budget=None,  # fresh budget per subagent
-                **child_optional_kwargs,
-            )
+            reasoning_config=child_reasoning,
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
+            fallback_model=parent_fallback,
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled_toolsets,
+            quiet_mode=True,
+            ephemeral_system_prompt=child_prompt,
+            log_prefix=f"[subagent-{task_index}]",
+            platform="subagent",
+            skip_context_files=True,
+            skip_memory=True,
+            clarify_callback=None,
+            thinking_callback=child_thinking_cb,
+            session_db=child_session_db,
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            providers_allowed=child_providers_allowed,
+            providers_ignored=child_providers_ignored,
+            providers_order=child_providers_order,
+            provider_sort=child_provider_sort,
+            provider_require_parameters=child_provider_require_parameters,
+            provider_data_collection=child_provider_data_collection,
+            request_overrides=(
+                dict(override_request_overrides or {})
+                if override_provider
+                else dict(getattr(parent_agent, "request_overrides", {}) or {})
+            ),
+            openrouter_min_coding_score=child_openrouter_min_coding_score,
+            tool_progress_callback=child_progress_cb,
+            iteration_budget=None,  # fresh budget per subagent
+            default_headers=effective_default_headers,
+            **child_optional_kwargs,
+        )
         except BaseException:
             # Construction failed: the dedicated handle has no owner and no
             # child close() will ever run — release it here so the sqlite fds
@@ -4189,32 +4187,28 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
-        try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i,
-                goal=t["goal"],
-                context=_child_context,
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
-            )
-        except ValueError as exc:
-            # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH) refuse the spawn loudly (#80450).
-            return tool_error(str(exc))
+        child = _build_child_preserving_parent_tools(
+            task_index=i,
+            goal=t["goal"],
+            context=_child_context,
+            # Subagents always inherit the parent's toolsets; the model
+            # cannot choose or narrow them (no model-facing toolsets arg).
+            toolsets=None,
+            model=creds["model"],
+            max_iterations=effective_max_iter,
+            task_count=n_tasks,
+            parent_agent=parent_agent,
+            override_provider=creds["provider"],
+            override_base_url=creds["base_url"],
+            override_api_key=creds["api_key"],
+            override_api_mode=creds["api_mode"],
+            override_request_overrides=creds.get("request_overrides"),
+            override_max_tokens=creds.get("max_output_tokens"),
+            override_acp_command=creds.get("command"),
+            override_acp_args=creds.get("args"),
+            override_default_headers=creds.get("default_headers"),
+            role=effective_role,
+        )
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
         if _task_schema is not None:
@@ -5036,6 +5030,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "default_headers": runtime.get("default_headers"),
     }
 
 

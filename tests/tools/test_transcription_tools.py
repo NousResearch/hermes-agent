@@ -408,6 +408,7 @@ class TestTranscribeLocalExtended:
         }
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
@@ -418,6 +419,215 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
 
+    def test_config_defaults_to_auto_when_not_set(self, tmp_path):
+        """Without config, device and compute_type should default to "auto"."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_local
+            _transcribe_local(str(audio), "base")
+
+        mock_whisper_cls.assert_called_once_with("base", device="auto", compute_type="auto")
+
+    def test_multiple_segments_joined(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg1 = MagicMock()
+        seg1.text = "Hello"
+        seg2 = MagicMock()
+        seg2.text = " world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 3.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg1, seg2], mock_info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "Hello world"
+
+    def test_apple_silicon_forces_cpu_without_auto_probe(self, tmp_path):
+        """Apple Silicon/Rosetta should skip device='auto' to avoid SIGABRT."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "safe"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+        mock_whisper_cls = MagicMock(return_value=cpu_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "safe"
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="int8")
+
+    def test_force_cpu_detects_rosetta_on_apple_silicon(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", side_effect=lambda key: {
+                 "sysctl.proc_translated": "1",
+                 "hw.optional.arm64": "1",
+             }.get(key, "")):
+            assert _should_force_faster_whisper_cpu() is True
+
+    def test_force_cpu_false_on_intel_macos(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", return_value="0"):
+            assert _should_force_faster_whisper_cpu() is False
+
+    def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
+        """Missing libcublas at load time → reload on CPU, succeed."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hi"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            if device == "auto":
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            return cpu_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hi"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+
+    def test_runtime_cuda_lib_failure_evicts_cache_and_retries_on_cpu(self, tmp_path):
+        """libcublas dlopen fails at transcribe() → evict cache, reload CPU, retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "recovered"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        # First model loads fine (auto), but transcribe() blows up on dlopen
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+        # Second model (forced CPU) works
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "recovered"
+        # First load is auto, retry forces CPU.
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+        # Cached-bad-model eviction: the broken GPU model was called once,
+        # then discarded; the CPU model served the retry.
+        assert gpu_model.transcribe.call_count == 1
+        assert cpu_model.transcribe.call_count == 1
+
+    def test_cublas_status_not_supported_retries_on_cpu(self, tmp_path):
+        """Blackwell cuBLAS unsupported errors should use the CPU fallback path."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "blackwell fallback"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED"
+        )
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "blackwell fallback"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
         """'CUDA out of memory' is a real error, not a missing lib — surface it."""

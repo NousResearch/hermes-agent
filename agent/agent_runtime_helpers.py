@@ -1495,6 +1495,7 @@ def try_recover_primary_transport(
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1795,6 +1796,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1813,6 +1815,7 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"],
             api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"],
+            default_headers=rt.get("compressor_default_headers"),
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
@@ -2933,6 +2936,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
+_DEFAULT_HEADERS_UNSET = object()
+
+
 def _apply_switched_provider_request_overrides(agent, new_provider):
     """Re-derive the switched-to provider's ``request_overrides`` onto a live agent.
 
@@ -2985,6 +2991,7 @@ def switch_model(
     api_key='',
     base_url='',
     api_mode='',
+    default_headers=_DEFAULT_HEADERS_UNSET,
     capabilities=None,
 ):
     """Switch the model/provider in-place for a live agent.
@@ -3013,6 +3020,8 @@ def switch_model(
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
+    if default_headers is not _DEFAULT_HEADERS_UNSET:
+        agent._default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
     normalized_new_provider = (new_provider or "").strip().lower()
     if not base_url and normalized_new_provider == "openai":
         # An omitted URL means the provider's canonical direct endpoint.
@@ -3227,6 +3236,7 @@ def switch_model(
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=getattr(agent, "_default_headers", None),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -3358,26 +3368,23 @@ def switch_model(
         # length normally resolves via config or static catalogs and
         # never hits a probe, but coerce to empty string defensively.
         _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-        try:
-            new_context_length = get_model_context_length(
-                agent.model,
-                base_url=agent.base_url,
-                api_key=_ctx_api_key,
-                provider=agent.provider,
-                config_context_length=_effective_context_length,
-                custom_providers=_sm_custom_providers,
-            )
-            agent.context_compressor.update_model(
-                model=agent.model,
-                context_length=new_context_length,
-                base_url=agent.base_url,
-                api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-                provider=agent.provider,
-                api_mode=agent.api_mode,
-            )
-        except Exception:
-            _restore_snapshot()
-            raise
+        new_context_length = get_model_context_length(
+            agent.model,
+            base_url=agent.base_url,
+            api_key=_ctx_api_key,
+            provider=agent.provider,
+            config_context_length=_effective_context_length,
+            custom_providers=_sm_custom_providers,
+        )
+        agent.context_compressor.update_model(
+            model=agent.model,
+            context_length=new_context_length,
+            base_url=agent.base_url,
+            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            default_headers=getattr(agent, "_default_headers", None),
+        )
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read
@@ -3439,6 +3446,7 @@ def switch_model(
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        "compressor_default_headers": getattr(_cc, "default_headers", None) if _cc else None,
     }
     if api_mode == "anthropic_messages":
         agent._primary_runtime.update({

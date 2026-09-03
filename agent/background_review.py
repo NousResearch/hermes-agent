@@ -188,17 +188,7 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Background-review aux-model selector + routed digest.
-#
-# The review fork runs on the MAIN model by default ("auto"), replaying the
-# full conversation — already warm in the prompt cache, so cheap cache reads.
-# Optimal and unchanged. A user can route the review to a different, cheaper
-# model via auxiliary.background_review.{provider,model}. A different model
-# cannot reuse the parent's cache (different key), so the fork is cold
-# regardless — replaying the full transcript would just cold-write it. So when
-# (and only when) routed to a different model, we replay a compact DIGEST to
-# minimise cold-written tokens. Same model -> full replay; different model ->
-# digest. That's the whole policy.
+# Background-review model routing
 # ---------------------------------------------------------------------------
 
 # Historical hardcoded iteration budget for the review fork.
@@ -340,6 +330,7 @@ def _resolve_review_runtime(
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
         "api_mode": parent_api_mode,
+        "default_headers": parent_runtime.get("default_headers") or None,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None),
@@ -355,9 +346,10 @@ def _resolve_review_runtime(
     if not (task_provider and task_provider != "auto" and task_model):
         return parent
     if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
-        return parent  # same model/provider as parent -> not routed
+        return parent
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+
         rp = resolve_runtime_provider(
             requested=task_provider,
             target_model=task_model,
@@ -370,6 +362,7 @@ def _resolve_review_runtime(
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
             "api_mode": rp.get("api_mode"),
+            "default_headers": rp.get("default_headers") or None,
             "credential_pool": rp.get("credential_pool"),
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "max_tokens": rp.get("max_output_tokens"),
@@ -415,13 +408,7 @@ def _msg_text(m: Dict) -> str:
 
 
 def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
-    """Compact replay for the routed (different-model) path only.
-
-    Keeps the recent ``tail`` messages verbatim, collapses older turns into one
-    synthetic user-role digest, preserving role alternation. Used ONLY when
-    routed to a different model (cache cold regardless, so fewer cold-written
-    tokens is a pure win). Never on the main-model path (full replay stays warm).
-    """
+    """Compact replay for the routed (different-model) path only."""
     msgs = list(messages_snapshot or [])
     if len(msgs) <= tail:
         return msgs
@@ -436,7 +423,7 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
     for m in old:
         if not isinstance(m, dict):
             continue
-        role = m.get("role")
+        role = m.get("role", "message")
         text = _msg_text(m).replace("\n", " ")
         if role == "user" and text:
             lines.append(f"USER: {text[:300]}")
@@ -1226,6 +1213,7 @@ def build_cache_parity_fork(
         api_mode=_rt.get("api_mode"),
         base_url=_rt.get("base_url") or None,
         api_key=_rt.get("api_key") or None,
+        default_headers=_rt.get("default_headers") or None,
         credential_pool=_rt.get("credential_pool"),
         request_overrides=_rt.get("request_overrides") or {},
         parent_session_id=agent.session_id,
@@ -1500,9 +1488,248 @@ def _run_review_in_thread(
         # thread's writes to devnull and leaves all other threads on the real
         # streams.
         with thread_scoped_silence():
-            review_agent, _rt, _routed = build_cache_parity_fork(
-                agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS
+            # Inherit the parent agent's live runtime (provider, model,
+            # base_url, api_key, api_mode) so the fork uses the exact
+            # same credentials the main turn is using.  Without this,
+            # AIAgent.__init__ re-runs auto-resolution from env vars,
+            # which fails for OAuth-only providers, session-scoped
+            # creds, or credential-pool setups where the resolver can't
+            # reconstruct auth from scratch -- producing the spurious
+            # "No LLM provider configured" warning at end of turn.
+            # _resolve_review_runtime() returns the parent's live runtime by
+            # default (routed=False; main model, warm cache), or — when the user
+            # set auxiliary.background_review.{provider,model} to a different
+            # model — that model's runtime (routed=True). The codex_app_server
+            # -> codex_responses downgrade is applied inside the resolver.
+            _rt = _resolve_review_runtime(agent, task_cfg)
+            _routed = bool(_rt.get("routed"))
+            # skip_memory=True keeps the review fork from
+            # touching external memory plugins (honcho, mem0,
+            # supermemory, etc.).  Without it, the fork's
+            # __init__ rebuilds its own _memory_manager from
+            # config, scoped to the parent's session_id, and
+            # run_conversation() then leaks the harness prompt
+            # into the user's real memory namespace via three
+            # ingestion sites: on_turn_start (cadence + turn
+            # message), prefetch_all (recall query), and
+            # sync_all (harness prompt + review output recorded
+            # as a (user, assistant) turn pair).  Built-in
+            # MEMORY.md / USER.md state is re-bound from the
+            # parent below so memory(action="add") writes from
+            # the review still land on disk; the review just
+            # has zero side effects on external providers.
+            # Match parent's toolset config so ``tools[]`` is byte-identical
+            # in the request body — Anthropic's cache key includes it.
+            # (The runtime whitelist below still restricts dispatch.)
+            _fork_kwargs: Dict[str, Any] = {}
+            if isinstance(_rt.get("max_tokens"), int):
+                _fork_kwargs["max_tokens"] = _rt["max_tokens"]
+            if isinstance(_rt.get("command"), str) and _rt["command"]:
+                _fork_kwargs["acp_command"] = _rt["command"]
+                _fork_kwargs["acp_args"] = _rt.get("args") or []
+            # Match parent's reasoning config so the fork's ``thinking`` /
+            # ``output_config`` are byte-identical in the request body —
+            # Anthropic's cache key is namespaced by ``thinking`` presence.
+            # Same-model path only: when routed to a different aux model the
+            # cache is cold regardless (parity buys nothing) and the parent's
+            # effort vocabulary may not be valid for the routed model/provider
+            # (e.g. OpenRouter ``extra_body.reasoning.effort`` is forwarded
+            # unclamped; codex_responses passes ``max``/``ultra`` through
+            # unmapped except on gpt-5.6/xAI). Let the routed fork use
+            # provider defaults — matching the ``not _routed`` gate on
+            # _cached_system_prompt below.
+            if not _routed:
+                _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
+                # Gateway session context is appended to the parent's cached
+                # system prompt at API-call time through this field.  Preserve
+                # it on same-model forks so the complete effective system
+                # prompt remains byte-identical and can reuse the warm prefix.
+                _fork_kwargs["ephemeral_system_prompt"] = getattr(
+                    agent, "ephemeral_system_prompt", None
+                )
+                # Prefill messages are inserted immediately after the system
+                # message at API-call time (chat_completion_helpers.py /
+                # conversation_loop.py), so a parent with prefill configured
+                # (gateway prefill_messages_file) would otherwise diverge
+                # from the warm prefix at message index 1 — same bug class
+                # as the ephemeral prompt above, one position later.
+                # Deep copy: the unicode-error recovery path mutates
+                # prefill entries IN PLACE (_sanitize_messages_surrogates
+                # via conversation_loop), so sharing dicts would let a
+                # fork-side sanitize rewrite the parent's prefill bytes.
+                _parent_prefill = copy.deepcopy(
+                    getattr(agent, "prefill_messages", None) or []
+                )
+                if _parent_prefill:
+                    _fork_kwargs["prefill_messages"] = _parent_prefill
+                # OpenRouter provider-routing pins: prompt caches live per
+                # UPSTREAM provider, so a fork without the parent's pins can
+                # be routed to a different upstream and miss the warm cache
+                # even with byte-identical prompt/tools bytes.
+                for _pref_attr in (
+                    "providers_allowed",
+                    "providers_ignored",
+                    "providers_order",
+                    "provider_sort",
+                    "provider_require_parameters",
+                    "provider_data_collection",
+                ):
+                    _pref_val = getattr(agent, _pref_attr, None)
+                    if _pref_val:
+                        _fork_kwargs[_pref_attr] = _pref_val
+            review_agent = AIAgent(
+                model=_rt.get("model") or agent.model,
+                max_iterations=_REVIEW_MAX_ITERATIONS,
+                quiet_mode=True,
+                platform=agent.platform,
+                provider=_rt.get("provider") or agent.provider,
+                api_mode=_rt.get("api_mode"),
+                base_url=_rt.get("base_url") or None,
+                api_key=_rt.get("api_key") or None,
+                default_headers=_rt.get("default_headers") or None,
+                credential_pool=_rt.get("credential_pool"),
+                request_overrides=_rt.get("request_overrides") or {},
+                parent_session_id=agent.session_id,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                skip_memory=True,
+                **_fork_kwargs,
             )
+            review_agent._memory_write_origin = "background_review"
+            review_agent._memory_write_context = "background_review"
+            # The review fork pins the parent's cached system prompt and keeps
+            # ``tools[]`` byte-identical to the parent so its outbound request
+            # hits the same provider cache prefix (see the toolset-parity note
+            # above). The between-turns MCP refresh in build_turn_context would
+            # add late-connecting MCP tools to this fork and break that parity,
+            # so opt the review fork out of it.
+            review_agent._skip_mcp_refresh = True
+            review_agent._memory_store = agent._memory_store
+            review_agent._memory_enabled = agent._memory_enabled
+            review_agent._user_profile_enabled = agent._user_profile_enabled
+            review_agent._memory_nudge_interval = 0
+            review_agent._skill_nudge_interval = 0
+            # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
+            # shares the parent's session_id (set below, for prompt-cache
+            # warmth), so without this it would write its harness turn ("Review
+            # the conversation above and update the skill library…") + its own
+            # response straight into the user's REAL session in state.db. On the
+            # user's next live turn the agent re-reads that injected user message
+            # as a standing instruction and "becomes" the curator, refusing the
+            # actual task. _persist_disabled hard-stops every DB write/lazy-open
+            # path (_flush_messages_to_session_db, _ensure_db_session,
+            # _get_session_db_for_recall); the review writes only to the skill
+            # and memory stores via its tools, which is all it needs.
+            review_agent._persist_disabled = True
+            review_agent._session_db = None
+            review_agent._session_json_enabled = False
+            # Suppress all status/warning emits from the fork so the
+            # user only sees the final successful-action summary.
+            # Without this, mid-review "Iteration budget exhausted",
+            # rate-limit retries, compression warnings, and other
+            # lifecycle messages bubble up through _emit_status ->
+            # _vprint and leak past the stdout redirect (they go via
+            # _print_fn/status_callback, which bypass sys.stdout).
+            review_agent.suppress_status_output = True
+            # Share the parent's warm cached system prompt ONLY when the review
+            # runs on the SAME model. A routed review is cache-cold regardless,
+            # so let it build a prompt for its own model/runtime.
+            if not _routed:
+                review_agent._cached_system_prompt = agent._cached_system_prompt
+                review_agent.session_start = agent.session_start
+            review_agent.session_id = agent.session_id
+            # The fork shares the parent's live session_id (pinned above for
+            # prefix-cache parity). It is single-lifecycle and calls close()
+            # right after this run_conversation(); without opting out, close()
+            # would finalize the parent's still-active session row mid
+            # conversation (the review fires every ~10 turns). Leave session
+            # finalization to the real owner (CLI close / gateway reset / cron).
+            review_agent._end_session_on_close = False
+            # DETACHED IN-MEMORY COMPACTION (issue #93057). The fork shares
+            # the parent's session_id (pinned above for prefix-cache parity),
+            # so the historical guard here was ``compression_enabled = False``:
+            # if the fork ran the ordinary compression path it could rotate /
+            # archive the parent's live session — the sibling-session race
+            # behind #38727. But disabling compaction was a proxy for
+            # detachment, and it removed the ONLY bound on the review's
+            # private snapshot: as the review performs tool calls, every
+            # follow-up provider request replayed the snapshot plus the
+            # growing review tool loop (350k-384k input tokens per request in
+            # production, 1.49M total across one 8-request review).
+            #
+            # The fix is detachment, not disablement:
+            #   • Persistence is already off above (_persist_disabled /
+            #     _session_db=None), so the commit site in compress_context
+            #     (``if agent._session_db:``) skips every durable write and
+            #     compaction can only ever rewrite the fork's private
+            #     in-memory transcript.
+            #   • The compressor's OWN session binding still needs severing:
+            #     AIAgent.__init__ bound it to the parent's SessionDB and
+            #     session_id before this function nulled the agent-level
+            #     binding, so durable cooldown/streak/ineffective-count
+            #     writes would otherwise land on the parent's row. Rebinding
+            #     with session_db=None / session_id="" makes every
+            #     compressor persist guard a no-op.
+            #   • Force in-place mode (never rotation) even if the parent's
+            #     config selected rotation, and re-enable compression ONLY
+            #     after the rebind succeeds (fail-closed — see below). While
+            #     enabled, both compression gates stay deferred until the
+            #     fork's first provider response so request #1 replays the
+            #     full snapshot as a warm cache read.
+            _review_compressor = getattr(review_agent, "context_compressor", None)
+            _bind_review_compressor = getattr(
+                _review_compressor, "bind_session_state", None
+            )
+            _review_compression_detached = False
+            if callable(_bind_review_compressor):
+                try:
+                    # Plugin/third-party context engines may not accept these
+                    # kwargs; they own their own persistence policy, so a
+                    # failed rebind leaves the pre-existing flags in place
+                    # and must never abort the review (same tolerance as the
+                    # init-time binding in agent_init.py).
+                    _bind_review_compressor(session_db=None, session_id="")
+                    _review_compression_detached = True
+                except Exception:
+                    # FAIL-CLOSED (adversarial review, #93057): if the rebind
+                    # could not sever the engine's session binding, the
+                    # compressor may still point at the parent's
+                    # SessionDB/session_id. Enabling compression in that
+                    # state would let durable cooldown/streak/ineffective-
+                    # count writes land on the parent's row and re-open the
+                    # #38727 sibling race. Keep the historical
+                    # compression_enabled=False behavior instead and warn;
+                    # the review still runs, bounded by the iteration cap
+                    # and the aggregate input budget below.
+                    logger.warning(
+                        "background-review compressor detachment failed; "
+                        "keeping compression DISABLED on this review fork "
+                        "(fail-closed, issue #93057 / #38727)",
+                        exc_info=True,
+                    )
+            # Force in-place mode (never rotation) even if the parent's
+            # config selected rotation. Re-enable compression ONLY after the
+            # compressor's session binding was successfully severed; an
+            # engine without a bind hook keeps the historical disabled
+            # behavior as well.
+            review_agent.compression_in_place = True
+            review_agent.compression_enabled = _review_compression_detached
+            if _review_compression_detached:
+                # Warm-cache parity: the fork's FIRST provider request
+                # replays the parent's full snapshot as a warm prompt-cache
+                # read, so compaction must not rewrite the snapshot before
+                # that first request goes out. Defer both compression gates
+                # until the first provider response arrives (see
+                # _review_fork_first_request_pending in agent/turn_context.py
+                # and the pre-API gate in agent/conversation_loop.py); from
+                # the second request on, the fork's transcript is its own and
+                # compaction bounds it.
+                review_agent._review_defer_compaction_before_first_response = True
+            # Aggregate input budget: compaction bounds any single request;
+            # this bounds the WHOLE review. Iterations are already capped by
+            # _REVIEW_MAX_ITERATIONS. Checked in agent/conversation_loop.py
+            # via _review_input_budget_exhausted (issue #93057).
+            review_agent._review_input_token_budget = _review_input_token_budget(task_cfg)
 
             # Register this fork on the PARENT's _active_children (the same
             # list interrupt() fans out to for subagent delegation) and

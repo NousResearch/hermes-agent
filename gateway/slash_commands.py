@@ -1959,6 +1959,7 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    default_headers=result.default_headers,
                                     capabilities=getattr(
                                         result, "runtime_capabilities", None
                                     ),
@@ -2021,6 +2022,7 @@ class GatewaySlashCommandsMixin:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "default_headers": result.default_headers,
                             "request_overrides": dict(result.request_overrides or {}),
                             "capabilities": dict(result.runtime_capabilities or {}),
                         }
@@ -2277,6 +2279,7 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        default_headers=result.default_headers,
                         capabilities=getattr(result, "runtime_capabilities", None),
                     )
                 except Exception as exc:
@@ -2336,6 +2339,7 @@ class GatewaySlashCommandsMixin:
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
+                "default_headers": result.default_headers,
                 "request_overrides": dict(result.request_overrides or {}),
                 "capabilities": dict(result.runtime_capabilities or {}),
             }

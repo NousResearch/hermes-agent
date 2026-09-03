@@ -76,6 +76,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     agent.api_mode = "chat_completions"
     agent.client = MagicMock()
     agent.quiet_mode = True
+    agent._default_headers = None
 
     # Store the initial config_context_length override used at agent construction.
     agent._config_context_length = config_context_length
@@ -133,6 +134,54 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_preserves_provider_default_headers():
+    """switch_model should rebuild OpenAI clients with provider-level headers."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._default_headers = {"X-Relay-Key": "relay-secret"}
+
+    captured = {}
+
+    def fake_create(self, kwargs, **_):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with patch.object(AIAgent, "_create_openai_client", fake_create), \
+         patch("agent.model_metadata.get_model_context_length", return_value=128_000), \
+         patch("run_agent.get_model_custom_headers", return_value={}):
+        agent.switch_model(
+            "new-model",
+            "custom",
+            api_key="sk-new",
+            base_url="https://relay.example.com/v1",
+            api_mode="chat_completions",
+        )
+
+    assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+
+def test_current_main_runtime_includes_effective_default_headers():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._client_kwargs = {"default_headers": {"X-Provider": "provider"}}
+    agent._default_headers = {"X-Relay": "secret"}
+
+    runtime = agent._current_main_runtime()
+
+    assert runtime["default_headers"] == {
+        "X-Provider": "provider",
+        "X-Relay": "secret",
+    }
+
+
+def test_current_main_runtime_omits_empty_default_headers():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._client_kwargs = {}
+    agent._default_headers = None
+
+    runtime = agent._current_main_runtime()
+
+    assert "default_headers" not in runtime
+
+
 def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     """A same-provider switch resolves capabilities from the retained URL."""
     agent = _make_agent_with_compressor(config_context_length=None)
@@ -141,14 +190,10 @@ def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     agent.base_url = "https://api.openai.com/v1"
     agent.runtime_capabilities = {"native_compaction": True}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
-
     with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
-
     assert agent.base_url == "https://api.openai.com/v1"
     assert agent.runtime_capabilities == {"native_compaction": True}
-
-
 def test_cross_provider_switch_to_default_openai_preserves_native_capability():
     agent = _make_agent_with_compressor(config_context_length=None)
     agent.provider = "openrouter"
@@ -156,10 +201,8 @@ def test_cross_provider_switch_to_default_openai_preserves_native_capability():
     agent.base_url = "https://openrouter.ai/api/v1"
     agent.runtime_capabilities = {"native_compaction": False}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
-
     with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
-
     assert agent.base_url == "https://api.openai.com/v1"
     assert agent.runtime_capabilities == {"native_compaction": True}
 

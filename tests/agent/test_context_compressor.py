@@ -802,6 +802,38 @@ class TestNonStringContent:
         assert "- keep me" in second and "## Goal" in second
         assert second.count(HISTORICAL_TASK_HEADING) == 1
 
+    def test_summary_call_passes_live_main_runtime(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="codex-token",
+                api_mode="codex_responses",
+                default_headers={"X-Relay-Key": "relay-secret"},
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        assert mock_call.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
+        }
 
 
 class TestSummaryFailureCooldown:
@@ -3451,9 +3483,6 @@ class TestContextLengthSetterCoherence:
         assert c.threshold_percent == 0.75
         # ...and budgets recompute from the same window+percent.
         assert c.threshold_tokens == 150_000
-
-
-
 class TestPreLlmFeasibilityCheck:
     """Tests for the pre-LLM feasibility skip in compress().
 

@@ -368,6 +368,42 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert agent._pending_cli_user_message is None
 
 
+def test_runtime_main_sync_happens_after_restore():
+    agent = _FakeAgent()
+    agent.model = "stale-fallback-model"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "fallback-key"
+    agent.api_mode = "codex_responses"
+
+    def restore_primary():
+        agent.model = "primary-model"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = "primary-key"
+        agent.api_mode = "anthropic_messages"
+        agent.requested_provider = "anthropic"
+
+    agent._restore_primary_runtime = restore_primary
+    calls = []
+    with patch(
+        "agent.auxiliary_client.set_runtime_main",
+        side_effect=lambda *args, **kwargs: calls.append((args, kwargs)),
+    ):
+        _build(agent)
+
+    assert calls == [(
+        ("anthropic", "primary-model"),
+        {
+            "base_url": "https://api.anthropic.com",
+            "api_key": "primary-key",
+            "api_mode": "anthropic_messages",
+            "auth_mode": "",
+            "default_headers": None,
+            "requested_provider": "anthropic",
+            "session_id": "sess-1",
+        },
+    )]
 
 
 

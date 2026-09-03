@@ -3923,8 +3923,83 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         if c and c in agent.valid_tool_names:
             return c
 
-    # Fuzzy match as last resort.
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
+    # ── MCP name bridging (#100807) ────────────────────────────────────
+    # Prompts and skills naturally teach the BARE MCP catalog name
+    # (``entity_search``), but the runtime registers tools as
+    # ``mcp__<server>__<tool>`` — a ~10-19 char prefix that pushes
+    # ``entity_search`` vs ``mcp__example_server__entity_search`` far below
+    # the 0.7 fuzzy cutoff, so the bare name was never repaired and one
+    # invalid name voided the whole tool batch.
+    #
+    # The inverse hazard is worse: the shared ``mcp__`` prefix inflates
+    # ratios BETWEEN mcp tools past the cutoff, so a hallucinated prefixed
+    # name silently fuzzy-resolves to a DIFFERENT real tool (measured 12/12
+    # hallucinations mis-routed on a 51-tool server; a cron asking for core
+    # ``kanban_list`` repaired to ``list_goals`` and ran it). So MCP names
+    # are bridged EXACTLY or not at all — never fuzzy-matched:
+    #
+    #   * bare name  -> exact ``mcp__<server>__<name>`` when exactly one
+    #     registered MCP tool has that catalog suffix (two servers exposing
+    #     the same name is ambiguous -> None, letting the model self-correct
+    #     rather than guessing the server).
+    #   * prefixed emission that does not exist -> strip the prefix and try
+    #     the bare suffix against NON-MCP (core) tools only, exactly, else
+    #     None. Never fall through to fuzzy for anything mcp-shaped.
+    mcp_valid = [t for t in agent.valid_tool_names if t.startswith("mcp__")]
+    lowered_is_mcp = lowered.startswith("mcp__")
+
+    def _mcp_bridge(candidate: str) -> str | None:
+        if mcp_valid and not lowered_is_mcp:
+            # Bare catalog name: match the suffix after the server segment.
+            # Prefixes come from the registered set itself (never by
+            # splitting on the delimiter, which breaks on servers/tools
+            # containing "__" after sanitization).
+            hits = []
+            for vt in mcp_valid:
+                rest = vt[len("mcp__"):]
+                # rest is "<server>__<tool>"; the catalog name matches when
+                # rest ends with "__<candidate>".
+                if rest.endswith(f"__{candidate}"):
+                    hits.append(vt)
+            if len(hits) == 1:
+                return hits[0]
+            # 0 hits (unknown bare name) or 2+ (ambiguous server) -> None
+            return None
+        return None
+
+    bridge = _mcp_bridge(normalized)
+    if bridge is not None:
+        logger.info(
+            "repair_tool_call: bridged bare MCP catalog name %r -> %r",
+            normalized, bridge,
+        )
+        return bridge
+
+    if lowered_is_mcp:
+        # A prefixed emission that did NOT match exactly: strip the prefix
+        # and try the bare suffix against CORE tools only (exact). This
+        # covers emissions like ``mcp__kanban_list`` where the model
+        # prefixed a CORE tool. Never fuzzy — the shared prefix mis-routes.
+        stripped = lowered[len("mcp__"):]
+        core_valid = [t for t in agent.valid_tool_names
+                      if not t.startswith("mcp__")]
+        # The core attempt needs the full candidate set (camel/snake/suffix
+        # variants) for parity with how core names are normalized above.
+        for c in (stripped, _norm(stripped), _camel_snake(stripped)):
+            if c and c in core_valid:
+                logger.info(
+                    "repair_tool_call: stripped MCP prefix from %r -> core %r",
+                    lowered, c,
+                )
+                return c
+        return None
+
+    # Fuzzy match as last resort — core tools only. MCP names never enter
+    # this step: the shared mcp__ prefix inflates every ratio between MCP
+    # tools past the cutoff, which is exactly the silent mis-route (#100807).
+    core_names = [t for t in agent.valid_tool_names
+                  if not t.startswith("mcp__")]
+    matches = get_close_matches(lowered, core_names, n=1, cutoff=0.7)
     if matches:
         return matches[0]
 

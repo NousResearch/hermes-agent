@@ -125,3 +125,72 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+# -- MCP name bridging (#100807) --------------------------------------------
+#
+# Prompts teach the BARE MCP catalog name; the runtime registers
+# ``mcp__<server>__<tool>``. The old bare-fuzzy failed both directions:
+# bare names scored below cutoff (whole batch voided), and hallucinated
+# prefixed names silently fuzzy-resolved to a DIFFERENT real MCP tool
+# (measured 12/12 mis-routes on a 51-tool server).
+
+MCP_VALID = {
+    "mcp__example_server__entity_search",
+    "mcp__example_server__entity_update",
+    "mcp__example_server__drive_read",
+    "mcp__example_server__calendar_update",
+    "mcp__other_server__drive_read",  # same catalog name on 2 servers
+} | VALID  # core tools still registered alongside
+
+MIXED_STUB = SimpleNamespace(valid_tool_names=MCP_VALID)
+
+
+@pytest.fixture
+def mcp_repair():
+    from run_agent import AIAgent
+    return AIAgent._repair_tool_call.__get__(MIXED_STUB, AIAgent)
+
+
+class TestMcpNameBridging:
+    def test_bare_catalog_name_bridges_to_registered_mcp_tool(self, mcp_repair):
+        """entity_search -> mcp__example_server__entity_search (exactly one
+        server exposes it)."""
+        assert mcp_repair("entity_search") == "mcp__example_server__entity_search"
+
+    def test_ambiguous_bare_name_returns_none_not_fuzzy(self, mcp_repair):
+        """drive_read is exposed by TWO servers -> ambiguous -> None. Never
+        guess the server; let the model self-correct."""
+        assert mcp_repair("drive_read") is None
+
+    def test_unknown_bare_name_returns_none_not_fuzzy(self, mcp_repair):
+        """A bare name no MCP server exposes (and no core match) -> None,
+        the existing 'does not exist' error the model self-corrects from."""
+        assert mcp_repair("entity_delete") is None
+
+    def test_hallucinated_prefixed_name_never_mis_routes(self, mcp_repair):
+        """The 12/12 mis-route class: mcp__example_server__entity_delete does
+        NOT exist; under old fuzzy it resolved to entity_update (0.906).
+        Now: None."""
+        assert mcp_repair("mcp__example_server__entity_delete") is None
+
+    def test_prefixed_core_tool_strips_to_core(self, mcp_repair):
+        """A model prefixed a CORE tool with mcp__. Strip to the bare
+        suffix and match core tools exactly."""
+        assert mcp_repair("mcp__todo") == "todo"
+        assert mcp_repair("mcp__web_search") == "web_search"
+
+    def test_exact_mcp_name_passes_through(self, mcp_repair):
+        """An exact registered mcp name is a direct hit, unchanged."""
+        assert (
+            mcp_repair("mcp__example_server__entity_search")
+            == "mcp__example_server__entity_search"
+        )
+
+    def test_core_fuzzy_still_works_alongside_mcp(self, mcp_repair):
+        """Core-only fuzzy behavior is unchanged by the MCP machinery
+        (browser_click variants still repair)."""
+        assert mcp_repair("browser-clic") == "browser_click"
+
+    def test_bare_name_not_registered_anywhere_is_none(self, mcp_repair):
+        assert mcp_repair("totally_unknown") is None

@@ -75,3 +75,18 @@ def test_verify_export_file_checks_count_and_sha(tmp_path):
     assert "sha256" in reason
 
 
+
+
+class TestCorruptTimestamps:
+    """#102352: corrupt timestamps degrade to the raw value."""
+
+    def test_out_of_range_and_nan_fall_back_to_raw(self):
+        from hermes_cli.session_export_md import _iso_timestamp
+
+        assert _iso_timestamp(1e30) == "1e+30"
+        assert _iso_timestamp(float("nan")) == "nan"
+
+    def test_valid_timestamp_unchanged(self):
+        from hermes_cli.session_export_md import _iso_timestamp
+
+        assert _iso_timestamp(1700000000).startswith("2023-11-14T22:13:20")

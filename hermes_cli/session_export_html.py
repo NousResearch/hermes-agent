@@ -655,7 +655,12 @@ def _escape_html(text: str) -> str:
 
 def _format_timestamp(ts: float) -> str:
     if not ts: return "N/A"
-    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, ValueError, OSError, TypeError):
+        # Corrupt timestamps must degrade to the raw value, never abort
+        # the whole export (#102352).
+        return str(ts)
 
 def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
     html_list = []

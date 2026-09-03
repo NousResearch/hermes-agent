@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -1314,18 +1315,59 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
     return 2
 
 
-def _board_task_counts(slug: str) -> dict[str, int]:
-    """Return ``{status: count}`` for a board. Safe to call on an empty DB."""
+def _board_list_db_path(slug: str) -> Path:
+    """Return a board's physical DB path for registry listing.
+
+    Named boards always use their on-disk path under ``boards/<slug>/``.
+    The default board honors a legitimate ``HERMES_KANBAN_DB`` relocation
+    (single-DB deployments / tests), but ignores a worker handoff pin that
+    points at another board's database — otherwise every listed board
+    collapses onto the pinned file.
+    """
+    if slug != kb.DEFAULT_BOARD:
+        return kb.board_dir(slug) / "kanban.db"
+
+    canonical = kb.kanban_home() / "kanban.db"
+    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if not override:
+        return canonical
+
+    override_path = Path(override).expanduser()
     try:
-        path = kb.kanban_db_path(board=slug)
+        resolved = override_path.resolve()
+    except OSError:
+        return override_path
+
+    # Worker pins inject the active board DB.  If that path is clearly
+    # another board under boards_root, keep default on its canonical file.
+    try:
+        rel = resolved.relative_to(kb.boards_root().resolve())
+    except ValueError:
+        # Outside the boards tree — treat as intentional default relocation.
+        return override_path
+    except OSError:
+        return override_path
+
+    if rel.parts and rel.parts[0] not in {"", kb.DEFAULT_BOARD}:
+        return canonical
+    return override_path
+
+
+def _board_task_counts(
+    slug: str, *, db_path: str | Path | None = None
+) -> dict[str, int]:
+    """Return ``{status: count}`` without entering the write/migration path."""
+    try:
+        path = Path(db_path) if db_path is not None else _board_list_db_path(slug)
         if not path.exists():
             return {}
-        with kb.connect_closing(board=slug) as conn:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
             ).fetchall()
-        return {r["status"]: int(r["n"]) for r in rows}
-    except Exception:
+        return {str(status): int(count) for status, count in rows}
+    except (OSError, sqlite3.Error):
         return {}
 
 
@@ -1336,7 +1378,12 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     current = kb.get_current_board()
     for b in boards:
         b["is_current"] = (b["slug"] == current)
-        b["counts"] = _board_task_counts(b["slug"])
+        path = _board_list_db_path(b["slug"])
+        # list_boards() metadata resolves through kanban_db_path(), whose
+        # worker handoff override intentionally pins one DB.  A registry list
+        # must instead expose and count each board's canonical physical path.
+        b["db_path"] = str(path)
+        b["counts"] = _board_task_counts(b["slug"], db_path=path)
         b["total"] = sum(b["counts"].values())
     if getattr(args, "json", False):
         print(json.dumps(boards, indent=2, ensure_ascii=False))

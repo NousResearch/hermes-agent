@@ -7928,8 +7928,11 @@ def _desktop_macos_local_codesign(
             if p.suffix in {".framework", ".app"}:
                 bundles.append(p)
     for bundle in sorted(set(bundles), key=lambda p: len(p.parts), reverse=True):
-        ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
-        sign_path(bundle, entitlements=ent, identifier=_desktop_macos_bundle_id(bundle))
+        sign_path(
+            bundle,
+            entitlements=ent_inherit,
+            identifier=_desktop_macos_bundle_id(bundle),
+        )
 
     # 3) The main bundle, with the app's own entitlements.
     sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
